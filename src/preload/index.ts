@@ -1,8 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron"
 
 const electronAPI = {
-  greet: (name: string): Promise<string> => ipcRenderer.invoke("greet", name),
-
   // ---- Launcher ----
   searchApps: (query: string) => ipcRenderer.invoke("launcher:search", query),
   launchApp: (id: string) => ipcRenderer.invoke("launcher:launch", id),

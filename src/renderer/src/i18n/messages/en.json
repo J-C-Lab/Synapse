@@ -3,24 +3,23 @@
     "title": "DesKit",
     "subtitle": "Desktop productivity toolbox"
   },
-  "demo": {
-    "callGreet": "Call Electron greet()"
-  },
   "launcher": {
     "placeholder": "Search apps and commands…",
     "empty": "No matches",
     "installed": "Installed apps",
     "settings": {
       "title": "Launcher",
-      "hint": "Pick a global shortcut to summon the launcher window from anywhere.",
-      "hotkeyLabel": "Global hotkey",
+      "subtitle": "Summon the command palette from anywhere with a global shortcut.",
+      "hotkeyLabel": "Global shortcut",
+      "hotkeyHint": "Use Electron accelerator syntax — combine modifiers with +.",
       "save": "Save",
-      "examples": "Examples: Control+Space, Alt+Space, CommandOrControl+Shift+P",
-      "active": "Active",
+      "examples": "Examples: Control+Space · Alt+Space · CommandOrControl+Shift+P",
+      "active": "Active shortcut",
       "rescan": "Rescan apps",
       "rescanning": "Rescanning…",
       "rescanned": "App list refreshed.",
-      "saved": "Hotkey updated."
+      "saved": "Hotkey updated.",
+      "invalid": "Could not register that combination. The previous shortcut is still active."
     }
   }
 }

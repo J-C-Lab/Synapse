@@ -158,9 +158,9 @@ import { cn } from "@/lib/utils"
 cn("base-classes", condition && "conditional", className)
 
 // Calling the main process from the renderer — go through lib/electron.ts
-import { greet, isElectron } from "@/lib/electron"
+import { isElectron, searchApps } from "@/lib/electron"
 if (isElectron()) {
-  greet("World").then((msg) => console.log(msg))
+  searchApps("vscode").then((results) => console.log(results))
 }
 
 // i18n

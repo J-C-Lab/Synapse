@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { ElectronDemo } from "@/components/electron-demo"
 import { LauncherPanel } from "@/components/launcher-panel"
 import { LauncherSettings } from "@/components/launcher-settings"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import logoUrl from "../../../resources/logo.svg"
 
 function isLauncherRoute(): boolean {
   if (typeof window === "undefined") return false
@@ -33,12 +33,17 @@ export function App() {
 
   return (
     <TooltipProvider>
-      <div className="flex min-h-screen flex-col items-center justify-center bg-background text-foreground font-sans">
-        <main className="flex w-full max-w-3xl flex-col items-center gap-8 px-8 py-16 sm:items-start">
-          <h1 className="text-3xl font-semibold tracking-tight">{t("app.title")}</h1>
-          <p className="max-w-md text-base text-muted-foreground">{t("app.subtitle")}</p>
+      <div className="min-h-screen bg-background font-sans text-foreground">
+        <main className="mx-auto flex w-full max-w-2xl flex-col gap-8 px-6 py-16">
+          <header className="flex items-center gap-4">
+            <img src={logoUrl} alt="" className="size-12 shrink-0" aria-hidden />
+            <div className="flex flex-col gap-1">
+              <h1 className="text-2xl font-semibold tracking-tight">{t("app.title")}</h1>
+              <p className="text-sm text-muted-foreground">{t("app.subtitle")}</p>
+            </div>
+          </header>
+
           <LauncherSettings />
-          <ElectronDemo />
         </main>
       </div>
     </TooltipProvider>

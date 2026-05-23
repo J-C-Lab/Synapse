@@ -23,10 +23,6 @@ export type UserSettings = DeskitUserSettings
  * Keep this file as the SOLE caller of `window.electronAPI` — business
  * code imports named functions from here, never `electronAPI` directly.
  */
-export async function greet(name: string): Promise<string> {
-  return api().greet(name)
-}
-
 export async function searchApps(query: string): Promise<SearchResult[]> {
   return api().searchApps(query)
 }

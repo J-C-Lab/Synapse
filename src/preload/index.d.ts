@@ -29,7 +29,6 @@ declare global {
 
   interface Window {
     electronAPI?: {
-      greet: (name: string) => Promise<string>
       searchApps: (query: string) => Promise<LauncherSearchResult[]>
       launchApp: (id: string) => Promise<boolean>
       refreshApps: () => Promise<LauncherAppEntry[]>

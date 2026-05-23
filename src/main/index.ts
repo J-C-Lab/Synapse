@@ -3,7 +3,6 @@ import * as path from "node:path"
 import process from "node:process"
 import { pathToFileURL } from "node:url"
 import { app, BrowserWindow, ipcMain, net, protocol, session, shell } from "electron"
-import { greet } from "./ipc/greet"
 import { LauncherService } from "./ipc/launcher-service"
 import { defaultNotificationIcon, showStartupNotification } from "./notifications"
 import { getContentType, resolveStaticPath } from "./protocol/resolve-static-path"
@@ -110,13 +109,6 @@ let mainWindow: BrowserWindow | null = null
 let quitRequested = false
 
 function registerIpc(): void {
-  ipcMain.handle("greet", (_event, name: unknown) => {
-    if (typeof name !== "string") {
-      throw new TypeError("name must be a string")
-    }
-    return greet(name)
-  })
-
   ipcMain.handle("launcher:search", (_event, query: unknown) => {
     return launcher.search(typeof query === "string" ? query : "")
   })
@@ -260,6 +252,7 @@ function trayActions() {
       app.quit()
     },
     getHotkey: () => launcher.getSettings().hotkey,
+    getLocale: () => app.getLocale(),
   }
 }
 
