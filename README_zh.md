@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.svg" alt="DesKit Logo" width="120" />
+  <img src="resources/logo.svg" alt="DesKit Logo" width="120" />
 </p>
 <h1 align="center">DesKit</h1>
 
