@@ -1,9 +1,26 @@
 {
   "app": {
     "title": "DesKit",
-    "subtitle": "桌面端提效工具箱 — Electron + React + electron-vite"
+    "subtitle": "桌面端提效工具箱"
   },
   "demo": {
     "callGreet": "调用 Electron greet()"
+  },
+  "launcher": {
+    "placeholder": "搜索应用与命令…",
+    "empty": "没有匹配项",
+    "installed": "已安装应用",
+    "settings": {
+      "title": "启动器",
+      "hint": "设置一个全局快捷键，在任意位置唤出搜索窗口。",
+      "hotkeyLabel": "全局快捷键",
+      "save": "保存",
+      "examples": "示例：Control+Space、Alt+Space、CommandOrControl+Shift+P",
+      "active": "当前",
+      "rescan": "重新扫描应用",
+      "rescanning": "扫描中…",
+      "rescanned": "应用列表已刷新。",
+      "saved": "快捷键已更新。"
+    }
   }
 }

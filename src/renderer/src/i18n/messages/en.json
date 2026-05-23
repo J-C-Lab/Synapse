@@ -1,9 +1,26 @@
 {
   "app": {
     "title": "DesKit",
-    "subtitle": "Desktop productivity toolbox — Electron + React + electron-vite"
+    "subtitle": "Desktop productivity toolbox"
   },
   "demo": {
     "callGreet": "Call Electron greet()"
+  },
+  "launcher": {
+    "placeholder": "Search apps and commands…",
+    "empty": "No matches",
+    "installed": "Installed apps",
+    "settings": {
+      "title": "Launcher",
+      "hint": "Pick a global shortcut to summon the launcher window from anywhere.",
+      "hotkeyLabel": "Global hotkey",
+      "save": "Save",
+      "examples": "Examples: Control+Space, Alt+Space, CommandOrControl+Shift+P",
+      "active": "Active",
+      "rescan": "Rescan apps",
+      "rescanning": "Rescanning…",
+      "rescanned": "App list refreshed.",
+      "saved": "Hotkey updated."
+    }
   }
 }
