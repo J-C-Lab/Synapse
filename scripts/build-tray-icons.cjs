@@ -1,4 +1,4 @@
-// One-shot SVG -> PNG rasterizer for the system-tray icon.
+// One-shot SVG -> PNG rasterizer for app icons.
 //
 // Run when `resources/logo.svg` changes. Uses the bundled Electron
 // (already a devDep) as a headless Chromium so we don't need any extra
@@ -7,9 +7,10 @@
 //   pnpm exec electron scripts/build-tray-icons.cjs
 //
 // Outputs:
-//   resources/tray.png       (16x16, 1x DPI)
-//   resources/tray@2x.png    (32x32, 2x DPI)
-//   resources/tray@3x.png    (48x48, 3x DPI)
+//   resources/tray.png         (16x16, 1x DPI — tray base)
+//   resources/tray@2x.png      (32x32, 2x DPI)
+//   resources/tray@3x.png      (48x48, 3x DPI)
+//   resources/notification.png (256x256 — Windows toast / Linux notify-send)
 //
 // Electron's nativeImage.createFromPath() automatically picks the @Nx
 // variant matching the active display scale, so the tray stays crisp on
@@ -26,6 +27,7 @@ const SIZES = [
   { scale: 1, size: 16, name: "tray.png" },
   { scale: 2, size: 32, name: "tray@2x.png" },
   { scale: 3, size: 48, name: "tray@3x.png" },
+  { scale: 1, size: 256, name: "notification.png" },
 ]
 
 async function rasterize(win, svg, size) {
@@ -55,8 +57,8 @@ async function main() {
   // mid-tick on first launch occasionally fires ERR_FAILED on the second
   // loadURL. setContentSize + loadURL is rock-solid.
   const win = new BrowserWindow({
-    width: 64,
-    height: 64,
+    width: 256,
+    height: 256,
     show: false,
     frame: false,
     transparent: true,

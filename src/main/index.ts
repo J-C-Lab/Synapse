@@ -276,6 +276,14 @@ if (!gotLock) {
   })
 
   void app.whenReady().then(async () => {
+    // Match package.json build.appId so Windows recognises the app
+    // identity and the post-install Start Menu shortcut's icon flows
+    // through to toast notifications. Without this the OS treats us
+    // as "electron.app.Electron" and shows Electron's default logo.
+    if (process.platform === "win32") {
+      app.setAppUserModelId("com.deskit.desktop")
+    }
+
     applyCsp()
     registerStaticProtocol()
     registerIpc()
@@ -290,7 +298,11 @@ if (!gotLock) {
 
     createTray(defaultTrayIcon(), trayActions())
     rebindHotkey(settings.hotkey)
-    showStartupNotification({ hotkey: settings.hotkey, iconPath: defaultNotificationIcon() })
+    showStartupNotification({
+      hotkey: settings.hotkey,
+      locale: app.getLocale(),
+      iconPath: defaultNotificationIcon(),
+    })
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {
