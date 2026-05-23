@@ -123,3 +123,41 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Accent presets — only --primary / --ring shift per accent so the rest
+   of the chrome stays neutral (matches Windows Settings behavior). The
+   default ("neutral" or no attribute) uses the values in :root / .dark
+   above. */
+:root[data-accent="blue"] {
+  --primary: oklch(0.55 0.2 254);
+  --ring: oklch(0.55 0.2 254);
+}
+:root[data-accent="green"] {
+  --primary: oklch(0.55 0.18 152);
+  --ring: oklch(0.55 0.18 152);
+}
+:root[data-accent="rose"] {
+  --primary: oklch(0.6 0.22 16);
+  --ring: oklch(0.6 0.22 16);
+}
+:root[data-accent="violet"] {
+  --primary: oklch(0.55 0.24 295);
+  --ring: oklch(0.55 0.24 295);
+}
+
+.dark[data-accent="blue"] {
+  --primary: oklch(0.7 0.18 254);
+  --ring: oklch(0.7 0.18 254);
+}
+.dark[data-accent="green"] {
+  --primary: oklch(0.72 0.17 152);
+  --ring: oklch(0.72 0.17 152);
+}
+.dark[data-accent="rose"] {
+  --primary: oklch(0.72 0.2 16);
+  --ring: oklch(0.72 0.2 16);
+}
+.dark[data-accent="violet"] {
+  --primary: oklch(0.72 0.21 295);
+  --ring: oklch(0.72 0.21 295);
+}

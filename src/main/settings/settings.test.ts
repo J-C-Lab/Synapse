@@ -18,7 +18,10 @@ describe("normalizeSettings", () => {
   })
 
   it("keeps a valid hotkey and trims whitespace", () => {
-    expect(normalizeSettings({ hotkey: "  Alt+Space  " })).toEqual({ hotkey: "Alt+Space" })
+    expect(normalizeSettings({ hotkey: "  Alt+Space  " })).toEqual({
+      ...defaultSettings,
+      hotkey: "Alt+Space",
+    })
   })
 
   it("falls back to default when hotkey is blank", () => {
@@ -26,7 +29,26 @@ describe("normalizeSettings", () => {
   })
 
   it("strips unknown fields", () => {
-    expect(normalizeSettings({ hotkey: "Alt+K", evil: true })).toEqual({ hotkey: "Alt+K" })
+    expect(normalizeSettings({ hotkey: "Alt+K", evil: true })).toEqual({
+      ...defaultSettings,
+      hotkey: "Alt+K",
+    })
+  })
+
+  it("accepts known theme modes and rejects others", () => {
+    expect(normalizeSettings({ themeMode: "dark" })).toEqual({
+      ...defaultSettings,
+      themeMode: "dark",
+    })
+    expect(normalizeSettings({ themeMode: "neon" })).toEqual(defaultSettings)
+  })
+
+  it("accepts known accents and rejects others", () => {
+    expect(normalizeSettings({ accent: "blue" })).toEqual({
+      ...defaultSettings,
+      accent: "blue",
+    })
+    expect(normalizeSettings({ accent: "puce" })).toEqual(defaultSettings)
   })
 })
 
@@ -49,9 +71,10 @@ describe("loadSettings / saveSettings", () => {
 
   it("round-trips through save + load", async () => {
     const file = settingsFilePath(dir)
-    await saveSettings(file, { hotkey: "Alt+Shift+P" })
+    const written = { ...defaultSettings, hotkey: "Alt+Shift+P", themeMode: "dark" as const }
+    await saveSettings(file, written)
     const settings = await loadSettings(file)
-    expect(settings).toEqual({ hotkey: "Alt+Shift+P" })
+    expect(settings).toEqual(written)
   })
 
   it("normalizes a malformed file rather than throwing", async () => {

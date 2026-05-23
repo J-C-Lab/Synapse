@@ -3,6 +3,45 @@
     "title": "DesKit",
     "subtitle": "Desktop productivity toolbox"
   },
+  "nav": {
+    "home": "Home",
+    "settings": "Settings",
+    "features": "Features",
+    "appLauncher": "App Launcher"
+  },
+  "home": {
+    "quickActions": "Quick actions",
+    "quickActionsHint": "Common tasks from the home page so you don't have to dig into settings.",
+    "rescan": "Rescan apps",
+    "openSettings": "Open settings"
+  },
+  "settings": {
+    "title": "Settings",
+    "subtitle": "Tune appearance and feature behavior."
+  },
+  "appearance": {
+    "title": "Appearance",
+    "subtitle": "Switch between light and dark, or pick an accent color.",
+    "mode": "Color scheme",
+    "mode.light": "Light",
+    "mode.dark": "Dark",
+    "mode.system": "System",
+    "accent": "Accent",
+    "accent.neutral": "Neutral",
+    "accent.blue": "Blue",
+    "accent.green": "Green",
+    "accent.rose": "Rose",
+    "accent.violet": "Violet"
+  },
+  "appLauncher": {
+    "feature": {
+      "title": "App Launcher",
+      "subtitle": "Summon a command palette from anywhere to launch installed apps.",
+      "aboutTitle": "About this feature",
+      "aboutBody": "Press the global shortcut to open a search box. Start menu shortcuts and Microsoft Store apps are indexed automatically.",
+      "openSettings": "Configure in Settings"
+    }
+  },
   "launcher": {
     "placeholder": "Search apps and commands…",
     "empty": "No matches",

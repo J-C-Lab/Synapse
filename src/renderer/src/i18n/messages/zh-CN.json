@@ -3,6 +3,45 @@
     "title": "DesKit",
     "subtitle": "桌面端提效工具箱"
   },
+  "nav": {
+    "home": "主页",
+    "settings": "设置",
+    "features": "功能",
+    "appLauncher": "应用启动器"
+  },
+  "home": {
+    "quickActions": "快捷操作",
+    "quickActionsHint": "在主页快速执行常用任务，无需进入设置。",
+    "rescan": "重新扫描应用",
+    "openSettings": "前往设置"
+  },
+  "settings": {
+    "title": "设置",
+    "subtitle": "调整外观和功能行为。"
+  },
+  "appearance": {
+    "title": "外观",
+    "subtitle": "在浅色与深色间切换，或挑选一个主题配色。",
+    "mode": "配色模式",
+    "mode.light": "浅色",
+    "mode.dark": "深色",
+    "mode.system": "跟随系统",
+    "accent": "主题色",
+    "accent.neutral": "中性",
+    "accent.blue": "蓝色",
+    "accent.green": "绿色",
+    "accent.rose": "玫红",
+    "accent.violet": "紫罗兰"
+  },
+  "appLauncher": {
+    "feature": {
+      "title": "应用启动器",
+      "subtitle": "在任意位置唤出命令面板，快速启动已安装的应用。",
+      "aboutTitle": "关于该功能",
+      "aboutBody": "按下全局快捷键即可打开搜索框，自动索引开始菜单快捷方式和应用商店应用。",
+      "openSettings": "前往设置配置"
+    }
+  },
   "launcher": {
     "placeholder": "搜索应用与命令…",
     "empty": "没有匹配项",

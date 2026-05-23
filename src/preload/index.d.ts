@@ -23,8 +23,13 @@ declare global {
     matches: number[]
   }
 
+  type DeskitThemeMode = "light" | "dark" | "system"
+  type DeskitThemeAccent = "neutral" | "blue" | "green" | "rose" | "violet"
+
   interface DeskitUserSettings {
     hotkey: string
+    themeMode: DeskitThemeMode
+    accent: DeskitThemeAccent
   }
 
   interface Window {

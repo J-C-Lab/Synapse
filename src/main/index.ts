@@ -136,11 +136,27 @@ function registerIpc(): void {
   })
 }
 
-function coercePatch(value: unknown): { hotkey?: string } {
+function coercePatch(value: unknown): Partial<{
+  hotkey: string
+  themeMode: "light" | "dark" | "system"
+  accent: "neutral" | "blue" | "green" | "rose" | "violet"
+}> {
   if (!value || typeof value !== "object") return {}
   const v = value as Record<string, unknown>
-  const out: { hotkey?: string } = {}
+  const out: ReturnType<typeof coercePatch> = {}
   if (typeof v.hotkey === "string") out.hotkey = v.hotkey
+  if (v.themeMode === "light" || v.themeMode === "dark" || v.themeMode === "system") {
+    out.themeMode = v.themeMode
+  }
+  if (
+    v.accent === "neutral" ||
+    v.accent === "blue" ||
+    v.accent === "green" ||
+    v.accent === "rose" ||
+    v.accent === "violet"
+  ) {
+    out.accent = v.accent
+  }
   return out
 }
 
