@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2022",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "baseUrl": ".",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "paths": {
+      "@/*": ["src/renderer/src/*"]
+    },
+    "resolveJsonModule": true,
+    "types": ["vite/client", "@testing-library/jest-dom"],
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/renderer/src/**/*", "src/preload/index.d.ts"]
+}

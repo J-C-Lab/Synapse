@@ -1,0 +1,12 @@
+node_modules
+.agents
+.claude
+out
+release
+coverage
+pnpm-lock.yaml
+docs/.next
+docs/.source
+docs/superpowers
+*.min.js
+*.min.css

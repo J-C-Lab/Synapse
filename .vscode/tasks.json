@@ -1,0 +1,100 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "app:dev",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["dev"],
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": ".",
+          "file": 1,
+          "location": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "(dev server running|renderer dev server|Electron app launched|ready in)"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "app:build",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["build"],
+      "group": "build",
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "app:preview",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["preview"],
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "typecheck",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["typecheck"],
+      "group": "build",
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "typecheck:native",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["typecheck:native"],
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "lint",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["lint"],
+      "group": "build",
+      "problemMatcher": "$eslint-stylish"
+    },
+    {
+      "label": "format:check",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["format:check"],
+      "problemMatcher": []
+    },
+    {
+      "label": "test",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["test"],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "test:watch",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["test:watch"],
+      "isBackground": true,
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "docs:dev",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["docs:dev"],
+      "isBackground": true,
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "app": {
+    "title": "DesKit",
+    "subtitle": "Desktop productivity toolbox — Electron + React + electron-vite"
+  },
+  "demo": {
+    "callGreet": "Call Electron greet()"
+  }
+}

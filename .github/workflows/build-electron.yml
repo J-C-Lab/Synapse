@@ -1,0 +1,214 @@
+name: Build Electron
+
+# ============================================================================
+# Electron Desktop Application Build
+# ============================================================================
+# Builds the Electron desktop application for Windows, macOS, and Linux.
+# This workflow works OUT-OF-THE-BOX without requiring any secrets.
+#
+# OPTIONAL SECRETS (for code signing - DISABLED by default):
+# ----------------------------------------------------------------
+# For macOS Code Signing:
+#   - APPLE_CERTIFICATE: Base64-encoded .p12 certificate
+#   - APPLE_CERTIFICATE_PASSWORD: Certificate password
+#   - APPLE_SIGNING_IDENTITY: Developer ID Application identity
+#   - APPLE_ID: Apple ID email
+#   - APPLE_PASSWORD: App-specific password
+#   - APPLE_TEAM_ID: Apple Developer Team ID
+#
+# For Windows Code Signing:
+#   - WINDOWS_CERTIFICATE: Base64-encoded PFX certificate
+#   - WINDOWS_CERTIFICATE_PASSWORD: Certificate password
+#
+# CODE SIGNING IS DISABLED BY DEFAULT - Electron builds will be unsigned.
+# ============================================================================
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  build-electron:
+    name: Build Electron App (${{ matrix.platform }} ${{ matrix.arch }})
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-latest
+            arch: x64
+            build_flag: --linux
+          - platform: windows-latest
+            arch: x64
+            build_flag: --win
+          - platform: macos-latest
+            arch: x64
+            build_flag: --mac --x64
+          - platform: macos-latest
+            arch: arm64
+            build_flag: --mac --arm64
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.0.8
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # Resolve the exact electron version from package.json so the cache key
+      # only invalidates when electron itself is bumped — not when an unrelated
+      # dev dep changes pnpm-lock.yaml.
+      - name: Resolve electron version
+        id: electron-version
+        shell: bash
+        run: |
+          v=$(node -p "require('./package.json').devDependencies.electron.replace(/^[\^~]/, '')")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      # Cache Electron's downloaded Chromium binary and electron-builder's
+      # bundled NSIS / winCodeSign / WiX downloads so we don't re-fetch
+      # ~260 MB on every CI run.
+      #
+      # NOTE: actions/cache uses minimatch internally, which requires forward
+      # slashes even on Windows — backslash paths silently match nothing.
+      - name: Cache Electron binaries
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: ${{ runner.os }}-electron-${{ steps.electron-version.outputs.version }}-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-${{ steps.electron-version.outputs.version }}-
+            ${{ runner.os }}-electron-
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build electron-vite app
+        run: pnpm build
+
+      - name: Verify electron-vite output
+        shell: bash
+        run: |
+          test -f out/main/index.js || { echo "::error::out/main/index.js missing"; exit 1; }
+          test -f out/preload/index.js || { echo "::error::out/preload/index.js missing"; exit 1; }
+          test -f out/renderer/index.html || { echo "::error::out/renderer/index.html missing"; exit 1; }
+          echo "electron-vite output OK ($(du -sh out/ | cut -f1))"
+
+      # Code signing is OPTIONAL and DISABLED by default.
+      # For production releases with signing, populate the env block below.
+      - name: Build Electron app
+        # env:
+        #   # Optional: macOS code signing
+        #   APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        #   APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        #   APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        #   APPLE_ID: ${{ secrets.APPLE_ID }}
+        #   APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        #   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        #   # Optional: Windows code signing
+        #   CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
+        #   CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm exec electron-builder ${{ matrix.build_flag }} --publish=never
+
+      # Boots the unpacked Linux build under Xvfb to confirm the renderer
+      # actually loads. Catches regressions in main-process bootstrap code
+      # (CSP, custom protocol, preload path) that produce successful builds
+      # but blank-screen runtime — exactly the bug class the static-export +
+      # file:// path used to fall into.
+      - name: Smoke-test built app (Linux)
+        if: matrix.platform == 'ubuntu-latest'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libnss3 libatk-bridge2.0-0 libdrm2 libxkbcommon0 libgbm1 libasound2t64 libgtk-3-0
+          BIN=$(find release/linux-unpacked -maxdepth 1 -type f -executable | head -n1)
+          if [ -z "$BIN" ]; then
+            echo "::error::No executable found in release/linux-unpacked/"
+            ls -la release/linux-unpacked/ || true
+            exit 1
+          fi
+          echo "Smoke-testing $BIN"
+          # timeout exits 124 when it kills the process — that's the success
+          # path here (app stayed alive long enough to render).
+          set +e
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" \
+            timeout --preserve-status 12s "$BIN" --no-sandbox --disable-dev-shm-usage
+          code=$?
+          set -e
+          if [ "$code" != "124" ] && [ "$code" != "143" ] && [ "$code" != "0" ]; then
+            echo "::error::App crashed during smoke test with exit code $code"
+            exit 1
+          fi
+          echo "Smoke test passed (exit code $code)"
+
+      - name: Upload Linux artifacts (AppImage)
+        if: matrix.platform == 'ubuntu-latest'
+        uses: actions/upload-artifact@v7
+        with:
+          name: electron-linux-${{ matrix.arch }}-appimage
+          path: release/*.AppImage
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload Linux artifacts (deb)
+        if: matrix.platform == 'ubuntu-latest'
+        uses: actions/upload-artifact@v7
+        with:
+          name: electron-linux-${{ matrix.arch }}-deb
+          path: release/*.deb
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload Windows artifacts (NSIS)
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@v7
+        with:
+          name: electron-windows-${{ matrix.arch }}-nsis
+          path: release/*.exe
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload Windows artifacts (MSI)
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@v7
+        with:
+          name: electron-windows-${{ matrix.arch }}-msi
+          path: release/*.msi
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload macOS artifacts (DMG)
+        if: matrix.platform == 'macos-latest'
+        uses: actions/upload-artifact@v7
+        with:
+          name: electron-macos-${{ matrix.arch }}-dmg
+          path: release/*.dmg
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload macOS artifacts (ZIP)
+        if: matrix.platform == 'macos-latest'
+        uses: actions/upload-artifact@v7
+        with:
+          name: electron-macos-${{ matrix.arch }}-zip
+          path: release/*.zip
+          retention-days: 30
+          if-no-files-found: warn
