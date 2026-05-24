@@ -43,6 +43,7 @@ skills-lock.json
 # docs workspace
 /docs/.next/
 /docs/.source/
+/docs/next-env.d.ts
 
 # docs
 DesKit/
