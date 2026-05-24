@@ -68,7 +68,11 @@ export function buildEntryFromShortcut(
   ext: string,
   shellApi: ShortcutResolver
 ): AppEntry | null {
-  const name = path.basename(shortcutPath, ext).trim()
+  // Always parse as a Windows path: in production this code only runs on
+  // Windows, and unit tests use Windows-style fixture paths that need to
+  // resolve identically on the Linux CI runner. Defaulting to `path` would
+  // pick `path.posix` on Linux and leave "C:\Foo\Bar.lnk" un-split.
+  const name = path.win32.basename(shortcutPath, ext).trim()
   if (!name) return null
 
   // Skip well-known noise that pollutes the launcher list — uninstallers,
