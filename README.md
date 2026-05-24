@@ -66,7 +66,7 @@ resources/                # electron-builder icons and resources
 
 Requirements:
 
-- Node.js 20+
+- Node.js 22.13+
 - pnpm 11.x
 
 Install dependencies:

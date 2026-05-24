@@ -137,7 +137,11 @@ function registerIpc(): void {
   })
 }
 
-function broadcastSettingsChanged(settings: { hotkey: string; themeMode: string; accent: string }): void {
+function broadcastSettingsChanged(settings: {
+  hotkey: string
+  themeMode: string
+  accent: string
+}): void {
   // Notify every renderer (main shell + long-lived launcher window) so
   // they can re-apply theme/hotkey state without reloading. Skip
   // destroyed windows defensively to avoid sending to torn-down webContents.

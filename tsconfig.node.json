@@ -3,12 +3,11 @@
     "composite": true,
     "target": "ES2022",
     "lib": ["ES2022"],
-    "baseUrl": ".",
     "module": "ESNext",
     "moduleResolution": "bundler",
     "paths": {
-      "@main/*": ["src/main/*"],
-      "@preload/*": ["src/preload/*"]
+      "@main/*": ["./src/main/*"],
+      "@preload/*": ["./src/preload/*"]
     },
     "resolveJsonModule": true,
     "types": ["node", "electron-vite/node"],

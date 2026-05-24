@@ -66,7 +66,7 @@ resources/                # electron-builder 图标和资源
 
 环境要求：
 
-- Node.js 20+
+- Node.js 22.13+
 - pnpm 11.x
 
 安装依赖：

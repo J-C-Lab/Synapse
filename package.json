@@ -8,7 +8,7 @@
   "license": "MIT",
   "main": "out/main/index.js",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "prepare": "husky",
