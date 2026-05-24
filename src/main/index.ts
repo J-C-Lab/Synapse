@@ -132,8 +132,20 @@ function registerIpc(): void {
     const next = await launcher.updateSettings(coercePatch(patch))
     rebindHotkey(next.hotkey)
     refreshTrayMenu(trayActions())
+    broadcastSettingsChanged(next)
     return next
   })
+}
+
+function broadcastSettingsChanged(settings: { hotkey: string; themeMode: string; accent: string }): void {
+  // Notify every renderer (main shell + long-lived launcher window) so
+  // they can re-apply theme/hotkey state without reloading. Skip
+  // destroyed windows defensively to avoid sending to torn-down webContents.
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send("settings:changed", settings)
+    }
+  }
 }
 
 function coercePatch(value: unknown): Partial<{

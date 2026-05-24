@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react"
-import { getSettings, isElectron, updateSettings } from "@/lib/electron"
+import { getSettings, isElectron, onSettingsChanged, updateSettings } from "@/lib/electron"
 
 type ResolvedScheme = "light" | "dark"
 
@@ -64,6 +64,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
+  }, [])
+
+  // The launcher window stays mounted across hide/show, so it never
+  // re-fetches settings on its own. Main process broadcasts after every
+  // settings:update so both windows stay in sync.
+  useEffect(() => {
+    if (!isElectron()) return
+    return onSettingsChanged((s) => {
+      setMode(s.themeMode)
+      setAccentState(s.accent)
+    })
   }, [])
 
   useEffect(() => {

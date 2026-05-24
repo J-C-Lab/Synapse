@@ -50,3 +50,7 @@ export async function updateSettings(patch: Partial<UserSettings>): Promise<User
 export function onLauncherFocus(handler: () => void): () => void {
   return api().onLauncherFocus(handler)
 }
+
+export function onSettingsChanged(handler: (settings: UserSettings) => void): () => void {
+  return api().onSettingsChanged(handler)
+}

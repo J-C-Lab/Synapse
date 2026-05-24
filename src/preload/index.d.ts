@@ -41,6 +41,7 @@ declare global {
       getSettings: () => Promise<DeskitUserSettings>
       updateSettings: (patch: Partial<DeskitUserSettings>) => Promise<DeskitUserSettings>
       onLauncherFocus: (handler: () => void) => () => void
+      onSettingsChanged: (handler: (settings: DeskitUserSettings) => void) => () => void
     }
   }
 }
