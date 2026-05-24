@@ -139,10 +139,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb libnss3 libatk-bridge2.0-0 libdrm2 libxkbcommon0 libgbm1 libasound2t64 libgtk-3-0
-          BIN=$(find release/linux-unpacked -maxdepth 1 -type f -executable | head -n1)
-          if [ -z "$BIN" ]; then
-            echo "::error::No executable found in release/linux-unpacked/"
+          APP_NAME=$(node -p "require('./package.json').build.productName || require('./package.json').name")
+          BIN="release/linux-unpacked/$APP_NAME"
+          if [ ! -x "$BIN" ]; then
+            echo "::error::Expected app executable not found at $BIN"
             ls -la release/linux-unpacked/ || true
+            find release/linux-unpacked -maxdepth 1 -type f -executable -print || true
             exit 1
           fi
           echo "Smoke-testing $BIN"
