@@ -1,5 +1,5 @@
 import type { ReactNode } from "react"
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react"
+import { createContext, use, useCallback, useEffect, useMemo, useState } from "react"
 import { getSettings, isElectron, onSettingsChanged, updateSettings } from "@/lib/electron"
 
 type ResolvedScheme = "light" | "dark"
@@ -36,9 +36,9 @@ function applyToDom(scheme: ResolvedScheme, accent: DeskitThemeAccent): void {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [themeMode, setMode] = useState<DeskitThemeMode>("system")
-  const [accent, setAccentState] = useState<DeskitThemeAccent>("neutral")
-  const [loaded, setLoaded] = useState(false)
+  const [themeMode, setThemeMode] = useState<DeskitThemeMode>("system")
+  const [accent, setAccent] = useState<DeskitThemeAccent>("neutral")
+  const [loaded, setLoaded] = useState(() => !isElectron())
 
   // First paint — apply the OS preference immediately so the very first
   // frame is in the right scheme. Once settings come back from IPC the
@@ -50,16 +50,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // Pull persisted settings as the source of truth. Outside Electron
   // (e.g. unit tests via jsdom) we just keep defaults.
   useEffect(() => {
-    if (!isElectron()) {
-      setLoaded(true)
-      return
-    }
+    if (!isElectron()) return
     let cancelled = false
     void getSettings()
       .then((s) => {
         if (cancelled) return
-        setMode(s.themeMode)
-        setAccentState(s.accent)
+        setThemeMode(s.themeMode)
+        setAccent(s.accent)
         setLoaded(true)
       })
       .catch((err: unknown) => {
@@ -78,8 +75,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!isElectron()) return
     return onSettingsChanged((s) => {
-      setMode(s.themeMode)
-      setAccentState(s.accent)
+      setThemeMode(s.themeMode)
+      setAccent(s.accent)
     })
   }, [])
 
@@ -97,13 +94,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return () => mql.removeEventListener("change", onChange)
   }, [themeMode, accent])
 
-  const setThemeMode = useCallback((mode: DeskitThemeMode) => {
-    setMode(mode)
+  const updateThemeMode = useCallback((mode: DeskitThemeMode) => {
+    setThemeMode(mode)
     if (isElectron()) void updateSettings({ themeMode: mode })
   }, [])
 
-  const setAccent = useCallback((next: DeskitThemeAccent) => {
-    setAccentState(next)
+  const updateAccent = useCallback((next: DeskitThemeAccent) => {
+    setAccent(next)
     if (isElectron()) void updateSettings({ accent: next })
   }, [])
 
@@ -112,13 +109,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       themeMode,
       accent,
       resolvedScheme: resolveScheme(themeMode),
-      setThemeMode,
-      setAccent,
+      setThemeMode: updateThemeMode,
+      setAccent: updateAccent,
     }),
-    [themeMode, accent, setThemeMode, setAccent]
+    [themeMode, accent, updateThemeMode, updateAccent]
   )
 
-  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
+  return <ThemeContext value={value}>{children}</ThemeContext>
 }
 
 // Co-locating the hook with its provider is a deliberate, conventional
@@ -126,7 +123,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 // Fast Refresh adds friction with no real upside.
 // eslint-disable-next-line react-refresh/only-export-components
 export function useTheme(): ThemeContextValue {
-  const ctx = useContext(ThemeContext)
+  const ctx = use(ThemeContext)
   if (!ctx) throw new Error("useTheme must be used within <ThemeProvider>")
   return ctx
 }

@@ -124,6 +124,27 @@
   }
 }
 
+/* Custom scrollbar — thin, themed, auto-hides when not scrolling.
+   Uses border/ring/muted tokens so it follows light/dark + accent. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}
+
 /* Accent presets — only --primary / --ring shift per accent so the rest
    of the chrome stays neutral (matches Windows Settings behavior). The
    default ("neutral" or no attribute) uses the values in :root / .dark

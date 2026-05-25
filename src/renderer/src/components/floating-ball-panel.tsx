@@ -121,7 +121,7 @@ export function FloatingBallPanel() {
     >
       <div
         className={cn(
-          "absolute left-1/2 top-1/2 size-[220px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/40 bg-background/90 shadow-2xl shadow-black/20 backdrop-blur-xl transition-[opacity,transform] duration-150",
+          "absolute left-1/2 top-1/2 size-[220px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/40 dark:border-white/20 bg-background/90 shadow-2xl shadow-black/20 backdrop-blur-xl transition-[opacity,transform] duration-150",
           expanded ? "opacity-100" : "pointer-events-none opacity-0"
         )}
         aria-hidden={!expanded}
@@ -159,7 +159,7 @@ export function FloatingBallPanel() {
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         title={t("floatingBall.title")}
-        className="absolute left-1/2 top-1/2 grid size-14 -translate-x-1/2 -translate-y-1/2 cursor-move place-items-center rounded-full border border-border bg-white shadow-xl transition hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="absolute left-1/2 top-1/2 grid size-14 -translate-x-1/2 -translate-y-1/2 cursor-move place-items-center rounded-full border border-border bg-white dark:bg-popover shadow-xl transition hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <img src={logoUrl} alt="" draggable={false} className="size-8" aria-hidden />
         <span className="sr-only">{t("floatingBall.title")}</span>

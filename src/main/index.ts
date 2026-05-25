@@ -2,7 +2,7 @@ import type { SearchWindowDeps } from "./search-window"
 import * as path from "node:path"
 import process from "node:process"
 import { pathToFileURL } from "node:url"
-import { app, BrowserWindow, ipcMain, net, protocol, session } from "electron"
+import { app, BrowserWindow, ipcMain, Menu, net, protocol, session } from "electron"
 import {
   destroyFloatingBallWindow,
   hideFloatingBallWindow,
@@ -350,6 +350,10 @@ if (!gotLock) {
     applyCsp()
     registerStaticProtocol()
     registerIpc()
+
+    // Remove the default File/Edit/View… menu bar — the app uses a tray icon
+    // and sidebar navigation instead.
+    Menu.setApplicationMenu(null)
 
     const settings = await launcher.init()
 
