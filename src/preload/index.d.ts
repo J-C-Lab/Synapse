@@ -41,6 +41,7 @@ declare global {
       launchApp: (id: string) => Promise<boolean>
       refreshApps: () => Promise<LauncherAppEntry[]>
       hideLauncher: () => Promise<void>
+      notifyLauncherReady: () => void
       openFloatingBallFeature: (feature: DeskitFloatingBallFeature) => Promise<void>
       toggleFloatingBallMenu: () => Promise<void>
       moveFloatingBallBy: (delta: { x: number; y: number }) => Promise<void>

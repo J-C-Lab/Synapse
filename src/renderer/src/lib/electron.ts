@@ -40,6 +40,10 @@ export async function hideLauncher(): Promise<void> {
   await api().hideLauncher()
 }
 
+export function notifyLauncherReady(): void {
+  api().notifyLauncherReady()
+}
+
 export async function openFloatingBallFeature(feature: FloatingBallFeature): Promise<void> {
   await api().openFloatingBallFeature(feature)
 }

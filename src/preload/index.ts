@@ -20,6 +20,7 @@ const electronAPI = {
   launchApp: (id: string) => ipcRenderer.invoke("launcher:launch", id),
   refreshApps: () => ipcRenderer.invoke("launcher:refresh"),
   hideLauncher: () => ipcRenderer.invoke("launcher:hide"),
+  notifyLauncherReady: () => ipcRenderer.send("launcher:ready"),
 
   // ---- Floating Ball ----
   openFloatingBallFeature: (feature: "appLauncher") =>

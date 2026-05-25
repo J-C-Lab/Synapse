@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import {
   Command,
@@ -8,7 +8,13 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command"
-import { hideLauncher, launchApp, onLauncherFocus, searchApps } from "@/lib/electron"
+import {
+  hideLauncher,
+  launchApp,
+  notifyLauncherReady,
+  onLauncherFocus,
+  searchApps,
+} from "@/lib/electron"
 
 export function LauncherPanel() {
   const { t } = useTranslation()
@@ -17,12 +23,14 @@ export function LauncherPanel() {
   const [loading, setLoading] = useState(true)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const requestSeqRef = useRef(0)
+  const didMountQueryEffectRef = useRef(false)
+  const reportedReadyRef = useRef(false)
 
   // The renderer's <body> defaults to bg-background (opaque white) which
   // bleeds through Electron's transparent launcher window. Force html/body
   // transparent while this panel is mounted so the popover is the only
   // painted surface.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const html = document.documentElement
     const body = document.body
     const prev = {
@@ -67,11 +75,22 @@ export function LauncherPanel() {
   // Debounce keystrokes — typing fast through "Visual Studio Code" should
   // not fire eight IPC round-trips.
   useEffect(() => {
+    if (!didMountQueryEffectRef.current) {
+      didMountQueryEffectRef.current = true
+      return
+    }
+
     const handle = window.setTimeout(() => {
       void runSearch(query)
     }, 80)
     return () => window.clearTimeout(handle)
   }, [query, runSearch])
+
+  useEffect(() => {
+    if (loading || reportedReadyRef.current) return
+    reportedReadyRef.current = true
+    notifyLauncherReady()
+  }, [loading])
 
   // Reset state every time the launcher window regains focus so the user
   // starts from a clean slate instead of stale text from a previous summon.

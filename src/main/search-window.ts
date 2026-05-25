@@ -1,3 +1,4 @@
+import type { WebContents } from "electron"
 import * as path from "node:path"
 import process from "node:process"
 import { BrowserWindow, screen } from "electron"
@@ -6,6 +7,7 @@ import { attachWindowSecurity } from "./window-security"
 const SEARCH_WIDTH = 720
 const SEARCH_HEIGHT = 480
 const SEARCH_HASH = "search"
+const SEARCH_REVEAL_DELAY_MS = 32
 
 export interface SearchWindowDeps {
   /** Vite dev-server URL when running `pnpm dev`; undefined in production. */
@@ -16,6 +18,10 @@ export interface SearchWindowDeps {
 
 let searchWindow: BrowserWindow | null = null
 let searchWindowQuitting = false
+let searchWindowReady = false
+let searchWindowShown = false
+let pendingSearchWindowShow = false
+let searchWindowRevealToken = 0
 
 export function setSearchWindowQuitting(quitting: boolean): void {
   searchWindowQuitting = quitting
@@ -23,6 +29,11 @@ export function setSearchWindowQuitting(quitting: boolean): void {
 
 export function ensureSearchWindow(deps: SearchWindowDeps): BrowserWindow {
   if (searchWindow && !searchWindow.isDestroyed()) return searchWindow
+
+  searchWindowReady = false
+  searchWindowShown = false
+  pendingSearchWindowShow = false
+  searchWindowRevealToken += 1
 
   searchWindow = new BrowserWindow({
     width: SEARCH_WIDTH,
@@ -47,6 +58,9 @@ export function ensureSearchWindow(deps: SearchWindowDeps): BrowserWindow {
       webviewTag: false,
     },
   })
+  searchWindow.setOpacity(0)
+  searchWindow.setIgnoreMouseEvents(true)
+  searchWindow.setFocusable(false)
 
   // Hide instead of closing — re-creating a BrowserWindow on every hotkey
   // press makes the first show feel sluggish.
@@ -59,6 +73,10 @@ export function ensureSearchWindow(deps: SearchWindowDeps): BrowserWindow {
 
   searchWindow.on("closed", () => {
     searchWindow = null
+    searchWindowReady = false
+    searchWindowShown = false
+    pendingSearchWindowShow = false
+    searchWindowRevealToken += 1
   })
 
   // Auto-hide when the user clicks elsewhere — same behaviour as
@@ -86,24 +104,71 @@ export function getSearchWindow(): BrowserWindow | null {
 export function showSearchWindow(deps: SearchWindowDeps): void {
   const win = ensureSearchWindow(deps)
   centerOnActiveDisplay(win)
-  win.show()
-  win.focus()
-  win.webContents.send("launcher:focus")
+  searchWindowShown = true
+
+  if (!searchWindowReady) {
+    pendingSearchWindowShow = true
+    return
+  }
+
+  revealSearchWindow(win)
 }
 
 export function hideSearchWindow(): void {
   const win = getSearchWindow()
   if (!win) return
-  if (win.isVisible()) win.hide()
+  searchWindowShown = false
+  pendingSearchWindowShow = false
+  searchWindowRevealToken += 1
+  win.setOpacity(0)
+  win.setIgnoreMouseEvents(true)
+  win.setFocusable(false)
 }
 
 export function toggleSearchWindow(deps: SearchWindowDeps): void {
   const win = getSearchWindow()
-  if (win && win.isVisible()) {
+  if (win && searchWindowShown) {
     hideSearchWindow()
   } else {
     showSearchWindow(deps)
   }
+}
+
+export function markSearchWindowReady(sender: WebContents): void {
+  const win = getSearchWindow()
+  if (!win || BrowserWindow.fromWebContents(sender) !== win) return
+
+  searchWindowReady = true
+  prepareHiddenSearchWindow(win)
+
+  if (pendingSearchWindowShow) {
+    pendingSearchWindowShow = false
+    searchWindowShown = true
+    revealSearchWindow(win)
+  }
+}
+
+function prepareHiddenSearchWindow(win: BrowserWindow): void {
+  win.setOpacity(0)
+  win.setIgnoreMouseEvents(true)
+  win.setFocusable(false)
+  if (!win.isVisible()) win.showInactive()
+}
+
+function revealSearchWindow(win: BrowserWindow): void {
+  const token = ++searchWindowRevealToken
+
+  win.setOpacity(0)
+  win.setFocusable(true)
+  win.setIgnoreMouseEvents(false)
+  if (!win.isVisible()) win.showInactive()
+  win.webContents.send("launcher:focus")
+
+  setTimeout(() => {
+    if (token !== searchWindowRevealToken || !searchWindowShown || win.isDestroyed()) return
+    win.setOpacity(1)
+    win.focus()
+  }, SEARCH_REVEAL_DELAY_MS)
 }
 
 function centerOnActiveDisplay(win: BrowserWindow): void {

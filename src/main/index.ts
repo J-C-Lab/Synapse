@@ -17,6 +17,7 @@ import { getContentType, resolveStaticPath } from "./protocol/resolve-static-pat
 import {
   ensureSearchWindow,
   hideSearchWindow,
+  markSearchWindowReady,
   setSearchWindowQuitting,
   showSearchWindow,
   toggleSearchWindow,
@@ -134,6 +135,10 @@ function registerIpc(): void {
 
   ipcMain.handle("launcher:hide", () => {
     hideSearchWindow()
+  })
+
+  ipcMain.on("launcher:ready", (event) => {
+    markSearchWindowReady(event.sender)
   })
 
   ipcMain.handle("floating-ball:toggle-menu", () => {
