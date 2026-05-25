@@ -11,8 +11,10 @@ import {
 } from "./settings"
 
 describe("normalizeSettings", () => {
-  it("uses Control+Space as the default launcher hotkey", () => {
-    expect(defaultSettings.hotkey).toBe("Control+Space")
+  it("uses Control+Space when launcher hotkey is missing", () => {
+    expect(normalizeSettings({})).toMatchObject({
+      hotkey: "Control+Space",
+    })
   })
 
   it("returns defaults for unknown input", () => {
