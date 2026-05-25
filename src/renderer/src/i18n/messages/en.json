@@ -78,7 +78,7 @@
       "title": "Launcher",
       "subtitle": "Summon the command palette from anywhere with a global shortcut.",
       "hotkeyLabel": "Global shortcut",
-      "hotkeyHint": "Use Electron accelerator syntax — combine modifiers with +.",
+      "hotkeyHint": "Focus the field and press a key combination, or type Electron accelerator syntax manually.",
       "save": "Save",
       "examples": "Examples: Control+Space · Alt+Space · CommandOrControl+Shift+P",
       "active": "Active shortcut",

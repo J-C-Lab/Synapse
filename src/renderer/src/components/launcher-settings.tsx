@@ -1,3 +1,4 @@
+import type { KeyboardEvent } from "react"
 import { Keyboard, RefreshCw, Sparkles } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
@@ -73,6 +74,52 @@ function splitAccelerator(accelerator: string): string[] {
     })
 }
 
+const modifierKeys = new Set(["Alt", "Control", "Meta", "Shift"])
+
+function acceleratorFromKeyboardEvent(event: KeyboardEvent<HTMLInputElement>): string | null {
+  if (modifierKeys.has(event.key)) return null
+
+  const key = normalizeAcceleratorKey(event)
+  if (!key) return null
+
+  const modifiers: string[] = []
+  if (event.ctrlKey) modifiers.push("Control")
+  if (event.altKey) modifiers.push("Alt")
+  if (event.shiftKey) modifiers.push("Shift")
+  if (event.metaKey) modifiers.push("Meta")
+
+  if (modifiers.length === 0) return null
+  return [...modifiers, key].join("+")
+}
+
+function normalizeAcceleratorKey(event: KeyboardEvent<HTMLInputElement>): string | null {
+  if (event.key === " ") return "Space"
+  if (event.key.length === 1) return event.key.toUpperCase()
+  if (event.code.startsWith("Key")) return event.code.slice(3).toUpperCase()
+  if (event.code.startsWith("Digit")) return event.code.slice(5)
+
+  switch (event.key) {
+    case "ArrowDown":
+    case "ArrowLeft":
+    case "ArrowRight":
+    case "ArrowUp":
+    case "Backspace":
+    case "Delete":
+    case "End":
+    case "Enter":
+    case "Escape":
+    case "Home":
+    case "Insert":
+    case "PageDown":
+    case "PageUp":
+    case "Space":
+    case "Tab":
+      return event.key
+    default:
+      return /^F\d{1,2}$/.test(event.key) ? event.key : null
+  }
+}
+
 /**
  * Settings card for the launcher: rebind the global hotkey and trigger
  * a manual app re-scan. Stays compact so it can sit on the main shell
@@ -96,6 +143,20 @@ export function LauncherSettings() {
   if (!isElectron()) return null
 
   const dirty = hotkey.trim() !== "" && hotkey !== savedHotkey
+
+  function onHotkeyKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (modifierKeys.has(event.key)) {
+      event.preventDefault()
+      return
+    }
+
+    const next = acceleratorFromKeyboardEvent(event)
+    if (!next) return
+
+    event.preventDefault()
+    setStatus(null)
+    setHotkey(next)
+  }
 
   async function onSave() {
     setStatus(null)
@@ -150,7 +211,8 @@ export function LauncherSettings() {
               id="hotkey-input"
               value={hotkey}
               onChange={(e) => setHotkey(e.target.value)}
-              placeholder="Control+Space"
+              onKeyDown={onHotkeyKeyDown}
+              placeholder="Alt+Space"
               spellCheck={false}
               autoComplete="off"
               className="font-mono text-sm"

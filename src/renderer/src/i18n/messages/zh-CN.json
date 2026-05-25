@@ -78,7 +78,7 @@
       "title": "启动器",
       "subtitle": "设置一个全局快捷键，在任意位置唤出命令面板。",
       "hotkeyLabel": "全局快捷键",
-      "hotkeyHint": "使用 Electron 快捷键语法，多个修饰键用 + 连接。",
+      "hotkeyHint": "聚焦输入框后按下组合键，也可手动输入 Electron 快捷键语法。",
       "save": "保存",
       "examples": "示例：Control+Space · Alt+Space · CommandOrControl+Shift+P",
       "active": "当前快捷键",
