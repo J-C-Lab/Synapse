@@ -71,9 +71,89 @@ describe("launcher settings", () => {
 
     const input = await screen.findByLabelText("launcher.settings.hotkeyLabel")
     await user.click(screen.getByRole("button", { name: "launcher.settings.capture" }))
-    fireEvent.keyDown(input, { altKey: true, code: "Space", key: " " })
+    const defaultAllowed = fireEvent.keyDown(input, { altKey: true, code: "Space", key: " " })
 
+    expect(defaultAllowed).toBe(false)
     expect(input).toHaveValue("Alt+Space")
+  })
+
+  it("captures Space from the physical key code", async () => {
+    const user = userEvent.setup()
+    render(<LauncherSettings />)
+
+    const input = await screen.findByLabelText("launcher.settings.hotkeyLabel")
+    await user.click(screen.getByRole("button", { name: "launcher.settings.capture" }))
+    const defaultAllowed = fireEvent.keyDown(input, {
+      altKey: true,
+      code: "Space",
+      key: "Spacebar",
+    })
+
+    expect(defaultAllowed).toBe(false)
+    expect(input).toHaveValue("Alt+Space")
+  })
+
+  it("captures shifted plus as the Electron Plus accelerator", async () => {
+    const user = userEvent.setup()
+    render(<LauncherSettings />)
+
+    const input = await screen.findByLabelText("launcher.settings.hotkeyLabel")
+    await user.click(screen.getByRole("button", { name: "launcher.settings.capture" }))
+    const defaultAllowed = fireEvent.keyDown(input, {
+      ctrlKey: true,
+      shiftKey: true,
+      code: "Equal",
+      key: "+",
+    })
+
+    expect(defaultAllowed).toBe(false)
+    expect(input).toHaveValue("Control+Shift+Plus")
+  })
+
+  it("cancels capture on Escape without changing the hotkey", async () => {
+    const user = userEvent.setup()
+    render(<LauncherSettings />)
+
+    const input = await screen.findByLabelText("launcher.settings.hotkeyLabel")
+    await user.click(screen.getByRole("button", { name: "launcher.settings.capture" }))
+
+    const captureButton = screen.getByRole("button", {
+      name: "launcher.settings.capturing",
+    })
+    expect(captureButton).toHaveAttribute("aria-pressed", "true")
+
+    const defaultAllowed = fireEvent.keyDown(input, { code: "Escape", key: "Escape" })
+
+    expect(defaultAllowed).toBe(false)
+    expect(input).toHaveValue("Control+Space")
+    expect(screen.getByRole("button", { name: "launcher.settings.capture" })).toHaveAttribute(
+      "aria-pressed",
+      "false"
+    )
+  })
+
+  it("prevents browser input side effects after capturing a printable shortcut", async () => {
+    const user = userEvent.setup()
+    render(<LauncherSettings />)
+
+    const input = await screen.findByLabelText("launcher.settings.hotkeyLabel")
+    await user.click(screen.getByRole("button", { name: "launcher.settings.capture" }))
+    const defaultAllowed = fireEvent.keyDown(input, { ctrlKey: true, code: "KeyV", key: "v" })
+
+    expect(defaultAllowed).toBe(false)
+    expect(input).toHaveValue("Control+V")
+  })
+
+  it("captures Tab when used with a modifier", async () => {
+    const user = userEvent.setup()
+    render(<LauncherSettings />)
+
+    const input = await screen.findByLabelText("launcher.settings.hotkeyLabel")
+    await user.click(screen.getByRole("button", { name: "launcher.settings.capture" }))
+    const defaultAllowed = fireEvent.keyDown(input, { ctrlKey: true, code: "Tab", key: "Tab" })
+
+    expect(defaultAllowed).toBe(false)
+    expect(input).toHaveValue("Control+Tab")
   })
 
   it("captures the command key as an Electron macOS accelerator on macOS", async () => {

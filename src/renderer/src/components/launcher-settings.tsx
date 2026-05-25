@@ -99,7 +99,16 @@ function isMacPlatform(): boolean {
 }
 
 function normalizeAcceleratorKey(event: KeyboardEvent<HTMLInputElement>): string | null {
-  if (event.key === " ") return "Space"
+  if (
+    event.code === "Space" ||
+    event.key === " " ||
+    event.key === "Space" ||
+    event.key === "Spacebar"
+  ) {
+    return "Space"
+  }
+  if (event.key === "+") return "Plus"
+  if (event.code === "NumpadAdd") return "Plus"
   if (event.key.length === 1) return event.key.toUpperCase()
   if (event.code.startsWith("Key")) return event.code.slice(3).toUpperCase()
   if (event.code.startsWith("Digit")) return event.code.slice(5)
@@ -155,21 +164,21 @@ export function LauncherSettings() {
   function onHotkeyKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (!capturingHotkey) return
 
+    event.preventDefault()
+    event.stopPropagation()
+
     if (event.key === "Escape") {
-      event.preventDefault()
       setCapturingHotkey(false)
       return
     }
 
     if (modifierKeys.has(event.key)) {
-      event.preventDefault()
       return
     }
 
     const next = acceleratorFromKeyboardEvent(event)
     if (!next) return
 
-    event.preventDefault()
     setStatus(null)
     setHotkey(next)
     setCapturingHotkey(false)
@@ -234,11 +243,17 @@ export function LauncherSettings() {
               ref={hotkeyInputRef}
               id="hotkey-input"
               value={hotkey}
-              onChange={(e) => setHotkey(e.target.value)}
+              onChange={(e) => {
+                if (!capturingHotkey) setHotkey(e.target.value)
+              }}
               onKeyDown={onHotkeyKeyDown}
+              onPaste={(e) => {
+                if (capturingHotkey) e.preventDefault()
+              }}
               placeholder="Control+Space"
               spellCheck={false}
               autoComplete="off"
+              readOnly={capturingHotkey}
               className="font-mono text-sm"
             />
             <Button

@@ -78,7 +78,7 @@
       "title": "Launcher",
       "subtitle": "Summon the command palette from anywhere with a global shortcut.",
       "hotkeyLabel": "Global shortcut",
-      "hotkeyHint": "Type Electron accelerator syntax manually, or click Capture and press a key combination. Occupied shortcuts cannot be captured; use an available combination or type it manually.",
+      "hotkeyHint": "You can manually enter Electron shortcut syntax, or click to capture and then press the key combination. Shortcut combinations that are already in use may not be captured; please use unused combinations or enter them manually.",
       "capture": "Capture",
       "capturing": "Press keys...",
       "save": "Save",
