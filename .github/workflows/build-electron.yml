@@ -139,7 +139,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb libnss3 libatk-bridge2.0-0 libdrm2 libxkbcommon0 libgbm1 libasound2t64 libgtk-3-0
-          APP_NAME=$(node -p "require('./package.json').build.productName || require('./package.json').name")
+          APP_NAME=$(node -p "require('./package.json').name")
           BIN="release/linux-unpacked/$APP_NAME"
           if [ ! -x "$BIN" ]; then
             echo "::error::Expected app executable not found at $BIN"
