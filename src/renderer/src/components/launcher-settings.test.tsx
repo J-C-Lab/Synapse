@@ -168,6 +168,27 @@ describe("launcher settings", () => {
     expect(input).toHaveValue("Command+K")
   })
 
+  it("cancels capture when the input loses focus", async () => {
+    const user = userEvent.setup()
+    render(<LauncherSettings />)
+
+    const input = await screen.findByLabelText("launcher.settings.hotkeyLabel")
+    await user.click(screen.getByRole("button", { name: "launcher.settings.capture" }))
+
+    expect(screen.getByRole("button", { name: "launcher.settings.capturing" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    )
+
+    fireEvent.blur(input)
+
+    expect(screen.getByRole("button", { name: "launcher.settings.capture" })).toHaveAttribute(
+      "aria-pressed",
+      "false"
+    )
+    expect(input).toHaveValue("Control+Space")
+  })
+
   it("keeps meta as the Windows key accelerator off macOS", async () => {
     const user = userEvent.setup()
     render(<LauncherSettings />)

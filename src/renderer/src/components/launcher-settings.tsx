@@ -246,6 +246,7 @@ export function LauncherSettings() {
               onChange={(e) => {
                 if (!capturingHotkey) setHotkey(e.target.value)
               }}
+              onBlur={() => setCapturingHotkey(false)}
               onKeyDown={onHotkeyKeyDown}
               onPaste={(e) => {
                 if (capturingHotkey) e.preventDefault()
