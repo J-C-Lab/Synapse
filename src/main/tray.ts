@@ -40,6 +40,14 @@ function trayStrings(locale: string): TrayStrings {
 }
 
 let tray: Tray | null = null
+let pendingSingleClick: ReturnType<typeof setTimeout> | null = null
+const TRAY_DOUBLE_CLICK_GRACE_MS = 200
+
+function clearPendingSingleClick(): void {
+  if (!pendingSingleClick) return
+  clearTimeout(pendingSingleClick)
+  pendingSingleClick = null
+}
 
 export function createTray(iconPath: string, actions: TrayActions): Tray {
   // nativeImage automatically picks @2x / @3x variants next to the base
@@ -49,8 +57,17 @@ export function createTray(iconPath: string, actions: TrayActions): Tray {
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon)
   tray.setToolTip("DesKit")
   refreshTrayMenu(actions)
-  tray.on("click", actions.onOpenSearch)
-  tray.on("double-click", actions.onShowMainWindow)
+  tray.on("click", () => {
+    clearPendingSingleClick()
+    pendingSingleClick = setTimeout(() => {
+      pendingSingleClick = null
+      actions.onOpenSearch()
+    }, TRAY_DOUBLE_CLICK_GRACE_MS)
+  })
+  tray.on("double-click", () => {
+    clearPendingSingleClick()
+    actions.onShowMainWindow()
+  })
   return tray
 }
 
@@ -73,6 +90,7 @@ export function refreshTrayMenu(actions: TrayActions): void {
 }
 
 export function destroyTray(): void {
+  clearPendingSingleClick()
   tray?.destroy()
   tray = null
 }

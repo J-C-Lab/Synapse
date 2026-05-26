@@ -1,11 +1,26 @@
 import { vi } from "vitest"
 
+type Listener = (...args: unknown[]) => void
+
+function createEventTarget() {
+  const listeners = new Map<string, Listener[]>()
+  return {
+    on: vi.fn((event: string, listener: Listener) => {
+      listeners.set(event, [...(listeners.get(event) ?? []), listener])
+    }),
+    emit: vi.fn((event: string, ...args: unknown[]) => {
+      for (const listener of listeners.get(event) ?? []) listener(...args)
+    }),
+  }
+}
+
 export const contextBridge = { exposeInMainWorld: vi.fn() }
 export const ipcRenderer = { invoke: vi.fn(), on: vi.fn() }
 export const ipcMain = { handle: vi.fn(), on: vi.fn() }
 export const app = {
   whenReady: vi.fn(() => Promise.resolve()),
   getAppPath: vi.fn(() => "/app"),
+  getVersion: vi.fn(() => "0.0.0"),
   isPackaged: false,
   on: vi.fn(),
   quit: vi.fn(),
@@ -29,6 +44,17 @@ export const BrowserWindow = Object.assign(
   { getAllWindows: vi.fn(() => []) }
 )
 export const session = { defaultSession: { webRequest: { onHeadersReceived: vi.fn() } } }
+export const nativeImage = {
+  createEmpty: vi.fn(() => ({ isEmpty: vi.fn(() => true) })),
+  createFromPath: vi.fn(() => ({ isEmpty: vi.fn(() => false) })),
+}
+export const Menu = { buildFromTemplate: vi.fn((template: unknown) => template) }
+export const Tray = vi.fn(() => ({
+  ...createEventTarget(),
+  setToolTip: vi.fn(),
+  setContextMenu: vi.fn(),
+  destroy: vi.fn(),
+}))
 export const protocol = {
   registerSchemesAsPrivileged: vi.fn(),
   handle: vi.fn(),
@@ -63,6 +89,9 @@ export default {
   app,
   BrowserWindow,
   session,
+  nativeImage,
+  Menu,
+  Tray,
   protocol,
   net,
   shell,
