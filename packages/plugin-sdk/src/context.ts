@@ -55,6 +55,19 @@ export interface SystemAPI {
   }) => Promise<{ path: string }>
 }
 
+/**
+ * Per-invocation runtime handed to every command hook.
+ *
+ * The host constructs a fresh `PluginContext` for each `run` /
+ * `onSearchChange` / `onAction` / `dispose` call so that `locale`, `theme`
+ * and `preferences` always reflect the current user settings. Plugins
+ * should treat the object as ephemeral — capturing it across calls (e.g.
+ * stashing `ctx` in module scope from `run` and reusing it later) will
+ * read stale settings and is not supported.
+ *
+ * Long-lived subscriptions (e.g. `clipboard.watch`) intentionally outlive
+ * a single ctx and stay valid until the plugin is disabled.
+ */
 export interface PluginContext {
   pluginId: string
   /** BCP-47 locale, e.g. `en` or `zh-CN`. Updated when the user changes language. */
