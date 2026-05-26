@@ -7,6 +7,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "paths": {
+      "@deskit/plugin-sdk": ["./packages/plugin-sdk/src/index.ts"],
       "@main/*": ["./src/main/*"],
       "@preload/*": ["./src/preload/*"]
     },
@@ -19,5 +20,10 @@
     "isolatedModules": true,
     "skipLibCheck": true
   },
-  "include": ["src/main/**/*", "src/preload/**/*", "electron.vite.config.ts"]
+  "include": [
+    "src/main/**/*",
+    "src/preload/**/*",
+    "packages/plugin-sdk/src/**/*",
+    "electron.vite.config.ts"
+  ]
 }
