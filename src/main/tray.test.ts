@@ -25,35 +25,29 @@ function latestTray() {
 
 describe("tray click handling", () => {
   beforeEach(() => {
-    vi.useFakeTimers()
     vi.clearAllMocks()
   })
 
   afterEach(() => {
     destroyTray()
-    vi.useRealTimers()
   })
 
-  it("defers the single-click launcher action", () => {
+  it("opens the launcher immediately on tray click", () => {
     const actions = createActions()
     createTray("tray.png", actions)
 
     latestTray().emit("click")
 
-    expect(actions.onOpenSearch).not.toHaveBeenCalled()
-    vi.runOnlyPendingTimers()
     expect(actions.onOpenSearch).toHaveBeenCalledTimes(1)
   })
 
-  it("cancels the pending single-click action when the tray is double-clicked", () => {
+  it("does not bind tray double-click to the main window", () => {
     const actions = createActions()
     createTray("tray.png", actions)
 
-    latestTray().emit("click")
     latestTray().emit("double-click")
-    vi.runOnlyPendingTimers()
 
     expect(actions.onOpenSearch).not.toHaveBeenCalled()
-    expect(actions.onShowMainWindow).toHaveBeenCalledTimes(1)
+    expect(actions.onShowMainWindow).not.toHaveBeenCalled()
   })
 })
