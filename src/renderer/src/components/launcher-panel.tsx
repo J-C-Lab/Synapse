@@ -3,7 +3,7 @@ import type {
   PluginActionContext,
   PluginToastView,
   RenderablePluginView,
-} from "@/components/plugins/view-renderer"
+} from "@/components/plugins/view-types"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
@@ -46,9 +46,11 @@ export function LauncherPanel() {
   const [mode, setMode] = useState<"search" | "command-view">("search")
   const [activeCommand, setActiveCommand] = useState<ActiveCommand | null>(null)
   const [pluginView, setPluginView] = useState<RenderablePluginView | null>(null)
+  const [pluginSearchText, setPluginSearchText] = useState("")
   const inputRef = useRef<HTMLInputElement | null>(null)
   const requestSeqRef = useRef(0)
   const pluginSearchSeqRef = useRef(0)
+  const didMountPluginSearchEffectRef = useRef(false)
   const didMountQueryEffectRef = useRef(false)
   const reportedReadyRef = useRef(false)
 
@@ -148,6 +150,7 @@ export function LauncherPanel() {
       setMode("search")
       setActiveCommand(null)
       setPluginView(null)
+      setPluginSearchText("")
       inputRef.current?.focus()
     })
     return cleanup
@@ -164,6 +167,7 @@ export function LauncherPanel() {
     setMode("search")
     setActiveCommand(null)
     setPluginView(null)
+    setPluginSearchText("")
     inputRef.current?.focus()
     if (command) {
       try {
@@ -196,6 +200,22 @@ export function LauncherPanel() {
     [activeCommand]
   )
 
+  useEffect(() => {
+    if (mode !== "command-view" || !activeCommand) {
+      didMountPluginSearchEffectRef.current = false
+      return
+    }
+    if (!didMountPluginSearchEffectRef.current) {
+      didMountPluginSearchEffectRef.current = true
+      return
+    }
+
+    const handle = window.setTimeout(() => {
+      void invokeActiveCommand(pluginSearchText)
+    }, 100)
+    return () => window.clearTimeout(handle)
+  }, [activeCommand, invokeActiveCommand, mode, pluginSearchText])
+
   const runPluginCommand = useCallback(
     async (command: DeskitPluginCommandResult) => {
       try {
@@ -216,6 +236,8 @@ export function LauncherPanel() {
           title: command.title,
         })
         setPluginView((view ?? { type: "list", items: [] }) as RenderablePluginView)
+        setPluginSearchText("")
+        didMountPluginSearchEffectRef.current = false
         setMode("command-view")
       } catch (err) {
         console.error("invokePluginCommand failed", err)
@@ -276,6 +298,8 @@ export function LauncherPanel() {
             title: action.label ?? action.commandId,
           })
           setPluginView(next as RenderablePluginView)
+          setPluginSearchText("")
+          didMountPluginSearchEffectRef.current = false
         }
         return
       }
@@ -324,7 +348,7 @@ export function LauncherPanel() {
             <ViewRenderer
               view={pluginView}
               onAction={onPluginAction}
-              onSearchChange={invokeActiveCommand}
+              onSearchChange={setPluginSearchText}
               onClose={closePluginView}
               className="min-h-0 flex-1"
             />

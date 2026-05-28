@@ -1,7 +1,5 @@
-import type { PluginToastView } from "@/components/plugins/view-renderer"
+import type { LocalizedString, PluginToastView } from "@/components/plugins/view-types"
 import { toast } from "sonner"
-
-type LocalizedString = string | Record<string, string>
 
 export function showPluginToast(view: PluginToastView, locale: string): void {
   const message = localize(view.message, locale)
