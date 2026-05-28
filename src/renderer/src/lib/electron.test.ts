@@ -1,20 +1,34 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
+  disposePluginCommand,
+  getPlugin,
   getSettings,
   hideFloatingBall,
   hideLauncher,
+  installMarketplacePlugin,
+  installPluginFolder,
+  installPluginPackage,
+  invokePluginCommand,
   isElectron,
   launchApp,
+  listMarketplacePlugins,
+  listPlugins,
   moveFloatingBallBy,
   notifyLauncherReady,
   onFloatingBallFeatures,
   onFloatingBallMenuState,
   onLauncherFocus,
+  onPluginRegistryChanged,
   onSettingsChanged,
   openFloatingBallFeature,
   refreshApps,
+  reloadPlugin,
   searchApps,
+  searchPluginCommands,
+  setPluginEnabled,
+  setPluginPreference,
   toggleFloatingBallMenu,
+  uninstallPlugin,
   updateSettings,
 } from "./electron"
 
@@ -29,6 +43,19 @@ function mockApi() {
     toggleFloatingBallMenu: vi.fn().mockResolvedValue(undefined),
     moveFloatingBallBy: vi.fn().mockResolvedValue(undefined),
     hideFloatingBall: vi.fn().mockResolvedValue(undefined),
+    listPlugins: vi.fn().mockResolvedValue([]),
+    getPlugin: vi.fn().mockResolvedValue(null),
+    setPluginEnabled: vi.fn().mockResolvedValue({ pluginId: "plugin" }),
+    setPluginPreference: vi.fn().mockResolvedValue(undefined),
+    installPluginFolder: vi.fn().mockResolvedValue({ pluginId: "plugin" }),
+    installPluginPackage: vi.fn().mockResolvedValue({ pluginId: "plugin" }),
+    uninstallPlugin: vi.fn().mockResolvedValue(undefined),
+    reloadPlugin: vi.fn().mockResolvedValue({ pluginId: "plugin" }),
+    searchPluginCommands: vi.fn().mockResolvedValue([]),
+    invokePluginCommand: vi.fn().mockResolvedValue({ type: "toast" }),
+    disposePluginCommand: vi.fn().mockResolvedValue(undefined),
+    listMarketplacePlugins: vi.fn().mockResolvedValue([]),
+    installMarketplacePlugin: vi.fn().mockResolvedValue({ id: "plugin" }),
     getSettings: vi.fn().mockResolvedValue({
       hotkey: "CommandOrControl+Space",
       themeMode: "system",
@@ -46,6 +73,7 @@ function mockApi() {
     onLauncherFocus: vi.fn().mockReturnValue(() => {}),
     onFloatingBallMenuState: vi.fn().mockReturnValue(() => {}),
     onFloatingBallFeatures: vi.fn().mockReturnValue(() => {}),
+    onPluginRegistryChanged: vi.fn().mockReturnValue(() => {}),
     onSettingsChanged: vi.fn().mockReturnValue(() => {}),
   }
   ;(window as unknown as { electronAPI: object }).electronAPI = api
@@ -141,6 +169,86 @@ describe("lib/electron", () => {
       expect(api.updateSettings).toHaveBeenCalledWith({ themeMode: "dark" })
     })
 
+    it("listPlugins calls listPlugins", async () => {
+      const api = mockApi()
+      await listPlugins()
+      expect(api.listPlugins).toHaveBeenCalled()
+    })
+
+    it("getPlugin forwards plugin id", async () => {
+      const api = mockApi()
+      await getPlugin("com.deskit.test")
+      expect(api.getPlugin).toHaveBeenCalledWith("com.deskit.test")
+    })
+
+    it("setPluginEnabled forwards plugin id and enabled state", async () => {
+      const api = mockApi()
+      await setPluginEnabled("com.deskit.test", false)
+      expect(api.setPluginEnabled).toHaveBeenCalledWith("com.deskit.test", false)
+    })
+
+    it("setPluginPreference forwards preference patch", async () => {
+      const api = mockApi()
+      await setPluginPreference("com.deskit.test", "unit", "ms")
+      expect(api.setPluginPreference).toHaveBeenCalledWith("com.deskit.test", "unit", "ms")
+    })
+
+    it("installPluginFolder forwards folder path", async () => {
+      const api = mockApi()
+      await installPluginFolder("/tmp/plugin")
+      expect(api.installPluginFolder).toHaveBeenCalledWith("/tmp/plugin")
+    })
+
+    it("installPluginPackage forwards zip path", async () => {
+      const api = mockApi()
+      await installPluginPackage("/tmp/plugin.deskit")
+      expect(api.installPluginPackage).toHaveBeenCalledWith("/tmp/plugin.deskit")
+    })
+
+    it("uninstallPlugin forwards plugin id", async () => {
+      const api = mockApi()
+      await uninstallPlugin("com.deskit.test")
+      expect(api.uninstallPlugin).toHaveBeenCalledWith("com.deskit.test")
+    })
+
+    it("reloadPlugin forwards optional plugin id", async () => {
+      const api = mockApi()
+      await reloadPlugin("com.deskit.test")
+      expect(api.reloadPlugin).toHaveBeenCalledWith("com.deskit.test")
+    })
+
+    it("searchPluginCommands forwards query options", async () => {
+      const api = mockApi()
+      await searchPluginCommands("time", "zh-CN", 5)
+      expect(api.searchPluginCommands).toHaveBeenCalledWith("time", "zh-CN", 5)
+    })
+
+    it("invokePluginCommand forwards invocation payload", async () => {
+      const api = mockApi()
+      await invokePluginCommand("com.deskit.test", "test.run", "run", { initialQuery: "1" })
+      expect(api.invokePluginCommand).toHaveBeenCalledWith("com.deskit.test", "test.run", "run", {
+        initialQuery: "1",
+      })
+    })
+
+    it("disposePluginCommand forwards command identity", async () => {
+      const api = mockApi()
+      await disposePluginCommand("com.deskit.test", "test.run")
+      expect(api.disposePluginCommand).toHaveBeenCalledWith("com.deskit.test", "test.run")
+    })
+
+    it("listMarketplacePlugins calls listMarketplacePlugins", async () => {
+      const api = mockApi()
+      await listMarketplacePlugins()
+      expect(api.listMarketplacePlugins).toHaveBeenCalled()
+    })
+
+    it("installMarketplacePlugin forwards id and version", async () => {
+      const api = mockApi()
+      await installMarketplacePlugin("com.deskit.test", "0.1.0")
+      expect(api.installMarketplacePlugin).toHaveBeenCalledWith("com.deskit.test", "0.1.0")
+    })
+
     it("onLauncherFocus forwards handler and returns unsubscribe", () => {
       const api = mockApi()
       const handler = vi.fn()
@@ -161,6 +269,13 @@ describe("lib/electron", () => {
       const handler = vi.fn()
       onFloatingBallFeatures(handler)
       expect(api.onFloatingBallFeatures).toHaveBeenCalledWith(handler)
+    })
+
+    it("onPluginRegistryChanged forwards handler", () => {
+      const api = mockApi()
+      const handler = vi.fn()
+      onPluginRegistryChanged(handler)
+      expect(api.onPluginRegistryChanged).toHaveBeenCalledWith(handler)
     })
 
     it("onSettingsChanged forwards handler", () => {

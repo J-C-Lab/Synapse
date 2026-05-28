@@ -45,6 +45,7 @@ export interface PluginBridgeOptions {
   userDataDir: string
   adapters: PluginBridgeAdapters
   runtime?: () => PluginRuntimeSnapshot
+  preferences?: (pluginId: string, manifest: PluginManifest) => Record<string, unknown>
   storageFlushMs?: number
   clipboardPollMs?: number
 }
@@ -79,7 +80,10 @@ export class PluginBridge {
       pluginId,
       locale: runtime.locale,
       theme: runtime.theme,
-      preferences: preferencesFromManifest(manifest),
+      preferences: {
+        ...preferencesFromManifest(manifest),
+        ...(this.options.preferences?.(pluginId, manifest) ?? {}),
+      },
       storage: this.createStorageAPI(pluginId, gate),
       clipboard: {
         read: async () => {

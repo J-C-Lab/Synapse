@@ -12,7 +12,9 @@ import {
   toggleFloatingBallMenu,
 } from "./floating-ball-window"
 import { LauncherService } from "./ipc/launcher-service"
+import { registerPluginIpc } from "./ipc/plugins"
 import { defaultNotificationIcon, showStartupNotification } from "./notifications"
+import { PluginHost } from "./plugins/plugin-host"
 import { getContentType, resolveStaticPath } from "./protocol/resolve-static-path"
 import {
   ensureSearchWindow,
@@ -113,6 +115,7 @@ function registerStaticProtocol(): void {
 }
 
 const launcher = new LauncherService()
+let plugins: PluginHost
 let mainWindow: BrowserWindow | null = null
 // Tracks whether quit was explicitly requested through the tray menu, so
 // the main-window close handler can distinguish "user clicked X" (hide)
@@ -177,6 +180,16 @@ function registerIpc(): void {
     broadcastSettingsChanged(next)
     return next
   })
+
+  registerPluginIpc(ipcMain, plugins, broadcastPluginRegistryChanged)
+}
+
+function broadcastPluginRegistryChanged(entries: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send("plugins:registry-changed", entries)
+    }
+  }
 }
 
 function broadcastSettingsChanged(settings: ReturnType<typeof launcher.getSettings>): void {
@@ -224,6 +237,27 @@ function coercePatch(value: unknown): Partial<{
 
 function searchWindowDeps(): SearchWindowDeps {
   return { rendererDevUrl, appOrigin: APP_ORIGIN }
+}
+
+function createPluginHost(): PluginHost {
+  return new PluginHost({
+    userDataDir: app.getPath("userData"),
+    resourcesDir: pluginResourcesDir(),
+    runtime: () => {
+      const settings = launcher.getSettings()
+      return {
+        locale: app.getLocale(),
+        theme: {
+          mode: settings.themeMode === "dark" ? "dark" : "light",
+          accent: settings.accent,
+        },
+      }
+    },
+  })
+}
+
+function pluginResourcesDir(): string {
+  return app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), "resources")
 }
 
 function floatingBallDeps() {
@@ -349,6 +383,7 @@ if (!gotLock) {
 
     applyCsp()
     registerStaticProtocol()
+    plugins = createPluginHost()
     registerIpc()
 
     // Remove the default File/Edit/View… menu bar — the app uses a tray icon
@@ -356,6 +391,7 @@ if (!gotLock) {
     Menu.setApplicationMenu(null)
 
     const settings = await launcher.init()
+    await plugins.init()
 
     // Pre-warm both the main window (so the first show is instant) and the
     // app cache (so the first launcher query has results).
@@ -383,6 +419,7 @@ if (!gotLock) {
   app.on("will-quit", () => {
     setSearchWindowQuitting(true)
     destroyFloatingBallWindow()
+    void plugins?.flush()
     unbindGlobalShortcut()
     destroyTray()
   })

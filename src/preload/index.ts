@@ -34,6 +34,32 @@ const electronAPI = {
   getSettings: () => ipcRenderer.invoke("settings:get"),
   updateSettings: (patch: SettingsPatch) => ipcRenderer.invoke("settings:update", patch),
 
+  // ---- Plugins ----
+  listPlugins: () => ipcRenderer.invoke("plugin:list"),
+  getPlugin: (pluginId: string) => ipcRenderer.invoke("plugin:get", pluginId),
+  setPluginEnabled: (pluginId: string, enabled: boolean) =>
+    ipcRenderer.invoke("plugin:set-enabled", { pluginId, enabled }),
+  setPluginPreference: (pluginId: string, key: string, value: unknown) =>
+    ipcRenderer.invoke("plugin:set-preference", { pluginId, key, value }),
+  installPluginFolder: (folderPath: string) =>
+    ipcRenderer.invoke("plugin:install-folder", folderPath),
+  installPluginPackage: (zipPath: string) => ipcRenderer.invoke("plugin:install-package", zipPath),
+  uninstallPlugin: (pluginId: string) => ipcRenderer.invoke("plugin:uninstall", pluginId),
+  reloadPlugin: (pluginId?: string) => ipcRenderer.invoke("plugin:reload", pluginId),
+  searchPluginCommands: (query: string, locale?: string, limit?: number) =>
+    ipcRenderer.invoke("plugin:search-commands", { query, locale, limit }),
+  invokePluginCommand: (
+    pluginId: string,
+    commandId: string,
+    phase: "run" | "onSearchChange" | "onAction",
+    payload?: unknown
+  ) => ipcRenderer.invoke("plugin:invoke", { pluginId, commandId, phase, payload }),
+  disposePluginCommand: (pluginId: string, commandId: string) =>
+    ipcRenderer.invoke("plugin:dispose-command", { pluginId, commandId }),
+  listMarketplacePlugins: () => ipcRenderer.invoke("marketplace:list"),
+  installMarketplacePlugin: (id: string, version?: string) =>
+    ipcRenderer.invoke("marketplace:install", { id, version }),
+
   // Subscribe to the "search window just gained focus" pulse so the
   // renderer can reset its input + selection without polling.
   onLauncherFocus: (handler: () => void): (() => void) => {
@@ -53,6 +79,12 @@ const electronAPI = {
       handler(features)
     ipcRenderer.on("floating-ball:features", listener)
     return () => ipcRenderer.removeListener("floating-ball:features", listener)
+  },
+
+  onPluginRegistryChanged: (handler: (plugins: unknown[]) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, plugins: unknown[]): void => handler(plugins)
+    ipcRenderer.on("plugins:registry-changed", listener)
+    return () => ipcRenderer.removeListener("plugins:registry-changed", listener)
   },
 
   // Pushed by main after any settings:update so that windows other than
