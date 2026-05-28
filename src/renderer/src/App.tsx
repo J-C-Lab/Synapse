@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { AppShell } from "@/components/app-shell"
 import { FloatingBallPanel } from "@/components/floating-ball-panel"
 import { LauncherPanel } from "@/components/launcher-panel"
+import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { ThemeProvider } from "@/hooks/use-theme"
 
@@ -42,6 +43,7 @@ export function App() {
             <AppShell />
           </div>
         )}
+        <Toaster />
       </TooltipProvider>
     </ThemeProvider>
   )

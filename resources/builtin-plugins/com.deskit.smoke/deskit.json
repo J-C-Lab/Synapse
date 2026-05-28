@@ -1,0 +1,22 @@
+{
+  "id": "com.deskit.smoke",
+  "name": "Smoke",
+  "displayName": { "en": "Smoke Test", "zh-CN": "冒烟测试" },
+  "description": { "en": "Test plugin host UI.", "zh-CN": "测试插件宿主 UI。" },
+  "version": "0.1.0",
+  "author": "DesKit",
+  "engines": { "deskit": "^0.1.0" },
+  "main": "dist/index.js",
+  "contributes": {
+    "commands": [
+      {
+        "id": "smoke.list",
+        "title": { "en": "Smoke List", "zh-CN": "冒烟列表" },
+        "subtitle": { "en": "Render a host list view", "zh-CN": "渲染宿主列表视图" },
+        "keywords": ["smoke", "test", "冒烟"],
+        "mode": "view"
+      }
+    ]
+  },
+  "permissions": []
+}

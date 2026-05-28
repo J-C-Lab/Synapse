@@ -67,6 +67,7 @@
   "launcher": {
     "placeholder": "搜索应用与命令…",
     "empty": "没有匹配项",
+    "commands": "命令",
     "installed": "已安装应用",
     "kind": {
       "win32": "应用",

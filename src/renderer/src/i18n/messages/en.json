@@ -67,6 +67,7 @@
   "launcher": {
     "placeholder": "Search apps and commands…",
     "empty": "No matches",
+    "commands": "Commands",
     "installed": "Installed apps",
     "kind": {
       "win32": "App",
