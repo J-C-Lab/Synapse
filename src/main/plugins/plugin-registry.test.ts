@@ -7,6 +7,7 @@ import type {
   PluginSandboxRuntime,
 } from "./types"
 import { describe, expect, it, vi } from "vitest"
+import { PermissionDenied } from "./permissions"
 import { PluginRegistry } from "./plugin-registry"
 
 describe("pluginRegistry", () => {
@@ -82,7 +83,7 @@ describe("pluginRegistry", () => {
     expect(registry.searchCommands("run")).toHaveLength(0)
   })
 
-  it("marks plugins crashed when command invocation throws", async () => {
+  it("marks plugins crashed and rethrows a typed sentinel when command invocation throws", async () => {
     const sandbox = fakeSandbox()
     sandbox.invokeCommand = vi.fn<PluginSandboxRuntime["invokeCommand"]>(() => {
       throw new Error("boom")
@@ -92,8 +93,26 @@ describe("pluginRegistry", () => {
 
     await expect(
       registry.invoke({ pluginId: "com.deskit.test", commandId: "test.run", phase: "run" })
-    ).rejects.toThrow("boom")
+    ).rejects.toMatchObject({
+      name: "PluginCrashedError",
+      pluginId: "com.deskit.test",
+    })
     expect(registry.get("com.deskit.test")?.status).toBe("crashed")
+  })
+
+  it("passes PermissionDenied through invoke without crashing the plugin", async () => {
+    const sandbox = fakeSandbox()
+    sandbox.invokeCommand = vi.fn<PluginSandboxRuntime["invokeCommand"]>(() => {
+      throw new PermissionDenied("com.deskit.test", "clipboard:write")
+    })
+    const registry = new PluginRegistry({ sandbox })
+    await registry.load([discovered()])
+
+    await expect(
+      registry.invoke({ pluginId: "com.deskit.test", commandId: "test.run", phase: "run" })
+    ).rejects.toBeInstanceOf(PermissionDenied)
+    // Permission denials are policy decisions — the plugin must stay active.
+    expect(registry.get("com.deskit.test")?.status).toBe("active")
   })
 })
 

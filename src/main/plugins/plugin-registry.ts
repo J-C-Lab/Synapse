@@ -9,6 +9,25 @@ import type {
 } from "./types"
 import { EventEmitter } from "node:events"
 import { fuzzyMatch } from "../launcher/search"
+import { PermissionDenied } from "./permissions"
+
+/**
+ * Thrown after the registry has marked a plugin crashed and recovered
+ * the underlying sandbox error. Lets callers distinguish "the host
+ * decided this plugin is now disabled" from a raw `Error` whose
+ * message happens to mention "crashed".
+ */
+export class PluginCrashedError extends Error {
+  readonly pluginId: string
+  readonly cause?: unknown
+
+  constructor(pluginId: string, cause: unknown) {
+    super(`Plugin crashed: ${pluginId}`)
+    this.name = "PluginCrashedError"
+    this.pluginId = pluginId
+    this.cause = cause
+  }
+}
 
 export interface PluginRegistryEvents {
   changed: [PluginRegistryEntry[]]
@@ -121,8 +140,12 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     try {
       return await this.options.sandbox.invokeCommand(request)
     } catch (err) {
+      // Permission denials are policy decisions, not plugin defects —
+      // leave the plugin active and surface the original error so the
+      // IPC layer can map it to PLUGIN_PERMISSION_DENIED.
+      if (err instanceof PermissionDenied) throw err
       this.markCrashed(request.pluginId, err)
-      throw err
+      throw new PluginCrashedError(request.pluginId, err)
     }
   }
 
@@ -130,8 +153,9 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     try {
       await this.options.sandbox.disposeCommand(pluginId, commandId)
     } catch (err) {
+      if (err instanceof PermissionDenied) throw err
       this.markCrashed(pluginId, err)
-      throw err
+      throw new PluginCrashedError(pluginId, err)
     }
   }
 
