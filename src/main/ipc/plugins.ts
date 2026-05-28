@@ -2,6 +2,8 @@ import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { PluginHost } from "../plugins/plugin-host"
 import type { PluginInvokePhase, PluginInvokeRequest } from "../plugins/types"
 import { PermissionDenied } from "../plugins/permissions"
+import { PluginHostNotImplementedError, PluginPreferenceTypeError } from "../plugins/plugin-host"
+import { PluginCrashedError } from "../plugins/plugin-registry"
 
 export type PluginIpcErrorCode =
   | "IPC_FORBIDDEN"
@@ -22,6 +24,20 @@ export interface PluginIpcError {
 
 export type PluginIpcResult<T> = { ok: true; data: T } | { ok: false; error: PluginIpcError }
 
+/**
+ * Thrown by the `requireXxx` payload guards below. Distinguishing
+ * IPC-layer payload validation errors from `TypeError`s thrown
+ * inside plugin code (which `PluginRegistry.invoke` rethrows) is
+ * what keeps the IPC mapper from labelling a plugin crash as
+ * `IPC_INVALID_PAYLOAD`.
+ */
+export class PluginIpcInvalidPayloadError extends TypeError {
+  constructor(message: string) {
+    super(message)
+    this.name = "PluginIpcInvalidPayloadError"
+  }
+}
+
 export interface PluginIpcHandlers {
   list: () => unknown
   get: (pluginId: unknown) => unknown
@@ -41,13 +57,6 @@ export interface PluginIpcHandlers {
 export interface RegisterPluginIpcOptions {
   isTrustedSender: (event: IpcMainInvokeEvent) => boolean
   onRegistryChanged: (entries: unknown) => void
-}
-
-export class PluginIpcNotImplementedError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = "PluginIpcNotImplementedError"
-  }
 }
 
 export function createPluginIpcHandlers(host: PluginHost): PluginIpcHandlers {
@@ -76,7 +85,7 @@ export function createPluginIpcHandlers(host: PluginHost): PluginIpcHandlers {
     installFolder: (folderPath) => host.installFolder(requireString(folderPath, "folderPath")),
 
     async installPackage(_zipPath) {
-      throw new PluginIpcNotImplementedError("Plugin package installation is not implemented yet")
+      throw new PluginHostNotImplementedError("Plugin package installation is not implemented yet")
     },
 
     uninstall: (pluginId) => host.uninstall(requireString(pluginId, "pluginId")),
@@ -107,7 +116,7 @@ export function createPluginIpcHandlers(host: PluginHost): PluginIpcHandlers {
     marketplaceList: () => [],
 
     async marketplaceInstall(_payload) {
-      throw new PluginIpcNotImplementedError("Marketplace installation is not implemented yet")
+      throw new PluginHostNotImplementedError("Marketplace installation is not implemented yet")
     },
   }
 }
@@ -262,37 +271,44 @@ function parseInvokePayload(payload: unknown): PluginInvokeRequest {
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError(`${label} must be an object`)
+    throw new PluginIpcInvalidPayloadError(`${label} must be an object`)
   }
   return value as Record<string, unknown>
 }
 
 function requireString(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim()) {
-    throw new TypeError(`${label} must be a non-empty string`)
+    throw new PluginIpcInvalidPayloadError(`${label} must be a non-empty string`)
   }
   return value.trim()
 }
 
 function requireBoolean(value: unknown, label: string): boolean {
-  if (typeof value !== "boolean") throw new TypeError(`${label} must be a boolean`)
+  if (typeof value !== "boolean") {
+    throw new PluginIpcInvalidPayloadError(`${label} must be a boolean`)
+  }
   return value
 }
 
 function requirePhase(value: unknown): PluginInvokePhase {
   if (value === "run" || value === "onSearchChange" || value === "onAction") return value
-  throw new TypeError("phase must be run, onSearchChange, or onAction")
+  throw new PluginIpcInvalidPayloadError("phase must be run, onSearchChange, or onAction")
 }
 
 function toPluginIpcError(err: unknown): PluginIpcError {
-  if (err instanceof PluginIpcNotImplementedError) {
+  if (err instanceof PluginHostNotImplementedError) {
     return {
       code: "PLUGIN_NOT_IMPLEMENTED",
       message: "This plugin feature is not implemented yet.",
     }
   }
 
-  if (err instanceof TypeError) {
+  // Order matters here: PluginIpcInvalidPayloadError extends TypeError, but
+  // we also want to map PluginPreferenceTypeError (also a TypeError subclass)
+  // to IPC_INVALID_PAYLOAD. Plain TypeErrors that bubble out of plugin code
+  // via PluginCrashedError.cause never reach this branch — they arrive
+  // wrapped in PluginCrashedError below.
+  if (err instanceof PluginIpcInvalidPayloadError || err instanceof PluginPreferenceTypeError) {
     return {
       code: "IPC_INVALID_PAYLOAD",
       message: err.message,
@@ -303,6 +319,15 @@ function toPluginIpcError(err: unknown): PluginIpcError {
     return {
       code: "PLUGIN_PERMISSION_DENIED",
       message: "Plugin permission denied.",
+      details: { pluginId: err.pluginId, permission: err.permission },
+    }
+  }
+
+  if (err instanceof PluginCrashedError) {
+    return {
+      code: "PLUGIN_CRASHED",
+      message: "Plugin crashed.",
+      details: { pluginId: err.pluginId },
     }
   }
 
@@ -326,12 +351,6 @@ function toPluginIpcError(err: unknown): PluginIpcError {
       code: "PLUGIN_NOT_ACTIVE",
       message: "Plugin is not active.",
       details: { pluginId: message.slice("Plugin is not active:".length).trim() },
-    }
-  }
-  if (message.toLowerCase().includes("crashed")) {
-    return {
-      code: "PLUGIN_CRASHED",
-      message: "Plugin crashed.",
     }
   }
 

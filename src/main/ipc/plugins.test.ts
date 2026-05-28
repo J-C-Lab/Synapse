@@ -1,6 +1,9 @@
 import type { IpcMainInvokeEvent } from "electron"
 import type { PluginHost } from "../plugins/plugin-host"
 import { describe, expect, it, vi } from "vitest"
+import { PermissionDenied } from "../plugins/permissions"
+import { PluginHostNotImplementedError } from "../plugins/plugin-host"
+import { PluginCrashedError } from "../plugins/plugin-registry"
 import { createPluginIpcHandlers, invokePluginIpcHandler } from "./plugins"
 
 function fakeHost(): PluginHost {
@@ -9,11 +12,12 @@ function fakeHost(): PluginHost {
     get: vi.fn((pluginId: string) => ({ pluginId })),
     setEnabled: vi.fn(async (pluginId: string, enabled: boolean) => ({ pluginId, enabled })),
     setPreference: vi.fn(async () => {}),
-    installFolder: vi.fn(async (folderPath: string) => ({
-      pluginId: "com.deskit.test",
-      folderPath,
-    })),
-    uninstall: vi.fn(async () => {}),
+    installFolder: vi.fn(async () => {
+      throw new PluginHostNotImplementedError("Folder plugin installation is planned later")
+    }),
+    uninstall: vi.fn(async () => {
+      throw new PluginHostNotImplementedError("Plugin uninstall is planned later")
+    }),
     reload: vi.fn(async (pluginId?: string) => (pluginId ? { pluginId } : undefined)),
     searchCommands: vi.fn((query: string) => [{ commandId: "test.run", query }]),
     invoke: vi.fn(async (payload: unknown) => ({ type: "toast", payload })),
@@ -162,6 +166,84 @@ describe("plugin ipc handlers", () => {
       },
     })
     warn.mockRestore()
+  })
+
+  it("maps installFolder host stub to PLUGIN_NOT_IMPLEMENTED", async () => {
+    const handlers = createPluginIpcHandlers(fakeHost())
+    const result = await invokePluginIpcHandler(
+      "plugin:install-folder",
+      fakeEvent("app://app/index.html"),
+      () => handlers.installFolder("/tmp/plugin"),
+      () => true
+    )
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "PLUGIN_NOT_IMPLEMENTED",
+        message: "This plugin feature is not implemented yet.",
+      },
+    })
+  })
+
+  it("maps PluginCrashedError to PLUGIN_CRASHED with pluginId", async () => {
+    const result = await invokePluginIpcHandler(
+      "plugin:invoke",
+      fakeEvent("app://app/index.html"),
+      () => {
+        throw new PluginCrashedError("com.deskit.test", new TypeError("plugin code blew up"))
+      },
+      () => true
+    )
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "PLUGIN_CRASHED",
+        message: "Plugin crashed.",
+        details: { pluginId: "com.deskit.test" },
+      },
+    })
+  })
+
+  it("maps PermissionDenied to PLUGIN_PERMISSION_DENIED with details", async () => {
+    const result = await invokePluginIpcHandler(
+      "plugin:invoke",
+      fakeEvent("app://app/index.html"),
+      () => {
+        throw new PermissionDenied("com.deskit.test", "clipboard:write")
+      },
+      () => true
+    )
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "PLUGIN_PERMISSION_DENIED",
+        message: "Plugin permission denied.",
+        details: { pluginId: "com.deskit.test", permission: "clipboard:write" },
+      },
+    })
+  })
+
+  it("does not misclassify a plugin-thrown TypeError as IPC_INVALID_PAYLOAD", async () => {
+    // Plugin code can throw TypeError too — registry wraps it in
+    // PluginCrashedError so the IPC mapper picks the crashed branch
+    // instead of the invalid-payload branch.
+    const result = await invokePluginIpcHandler(
+      "plugin:invoke",
+      fakeEvent("app://app/index.html"),
+      () => {
+        throw new PluginCrashedError(
+          "com.deskit.test",
+          new TypeError("plugin called undefined.foo")
+        )
+      },
+      () => true
+    )
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error.code).toBe("PLUGIN_CRASHED")
   })
 })
 
