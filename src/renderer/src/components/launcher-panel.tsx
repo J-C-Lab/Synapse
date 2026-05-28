@@ -1,3 +1,4 @@
+import type { LauncherItem } from "@/components/launcher-results"
 import type {
   PluginAction,
   PluginActionContext,
@@ -7,6 +8,7 @@ import type {
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
+import { mergeLauncherResults } from "@/components/launcher-results"
 import { ViewRenderer } from "@/components/plugins/view-renderer"
 import { clipboardText, localize, showPluginToast } from "@/components/plugins/view-utils"
 import {
@@ -27,10 +29,6 @@ import {
   searchApps,
   searchPluginCommands,
 } from "@/lib/electron"
-
-type LauncherItem =
-  | { kind: "app"; value: string; result: LauncherSearchResult }
-  | { kind: "plugin"; value: string; result: DeskitPluginCommandResult }
 
 interface ActiveCommand {
   pluginId: string
@@ -83,6 +81,7 @@ export function LauncherPanel() {
   // in main using fuzzy scoring, so we disable cmdk's filter and pass the
   // backend results straight through.
   const items = useMemo(() => results, [results])
+  const groups = useMemo(() => launcherGroups(items), [items])
 
   const runSearch = useCallback(
     async (next: string) => {
@@ -97,18 +96,7 @@ export function LauncherPanel() {
           }),
         ])
         if (seq === requestSeqRef.current) {
-          setResults([
-            ...commands.map((result) => ({
-              kind: "plugin" as const,
-              value: `plugin:${result.pluginId}:${result.commandId}`,
-              result,
-            })),
-            ...apps.map((result) => ({
-              kind: "app" as const,
-              value: `app:${result.entry.id}`,
-              result,
-            })),
-          ])
+          setResults(mergeLauncherResults(apps, commands, i18n.language))
         }
       } finally {
         if (seq === requestSeqRef.current) setLoading(false)
@@ -363,48 +351,60 @@ export function LauncherPanel() {
             />
             <CommandList className="max-h-none flex-1">
               {!loading && items.length === 0 && <CommandEmpty>{t("launcher.empty")}</CommandEmpty>}
-              <CommandGroup heading={t("launcher.commands")}>
-                {items
-                  .filter((item) => item.kind === "plugin")
-                  .map((item) => (
-                    <CommandItem
-                      key={item.value}
-                      value={item.value}
-                      onSelect={() => onSelect(item.value)}
-                    >
-                      <LauncherPluginItem item={item.result} locale={i18n.language} />
-                    </CommandItem>
-                  ))}
-              </CommandGroup>
-              <CommandGroup heading={t("launcher.installed")}>
-                {items
-                  .filter((item) => item.kind === "app")
-                  .map((item) => (
-                    <CommandItem
-                      key={item.value}
-                      value={item.value}
-                      onSelect={() => onSelect(item.value)}
-                    >
-                      <div className="flex flex-1 flex-col">
-                        <span className="text-sm">{item.result.entry.name}</span>
-                        {item.result.entry.description && (
-                          <span className="text-xs text-muted-foreground">
-                            {item.result.entry.description}
-                          </span>
-                        )}
-                      </div>
-                      <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
-                        {t(`launcher.kind.${item.result.entry.kind}`)}
-                      </span>
-                    </CommandItem>
-                  ))}
-              </CommandGroup>
+              {groups.map((group) => (
+                <CommandGroup
+                  key={group.kind}
+                  heading={
+                    group.kind === "plugin" ? t("launcher.commands") : t("launcher.installed")
+                  }
+                >
+                  {group.items.map((item) =>
+                    item.kind === "plugin" ? (
+                      <CommandItem
+                        key={item.value}
+                        value={item.value}
+                        onSelect={() => onSelect(item.value)}
+                      >
+                        <LauncherPluginItem item={item.result} locale={i18n.language} />
+                      </CommandItem>
+                    ) : (
+                      <CommandItem
+                        key={item.value}
+                        value={item.value}
+                        onSelect={() => onSelect(item.value)}
+                      >
+                        <div className="flex flex-1 flex-col">
+                          <span className="text-sm">{item.result.entry.name}</span>
+                          {item.result.entry.description && (
+                            <span className="text-xs text-muted-foreground">
+                              {item.result.entry.description}
+                            </span>
+                          )}
+                        </div>
+                        <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+                          {t(`launcher.kind.${item.result.entry.kind}`)}
+                        </span>
+                      </CommandItem>
+                    )
+                  )}
+                </CommandGroup>
+              ))}
             </CommandList>
           </>
         )}
       </Command>
     </div>
   )
+}
+
+function launcherGroups(
+  items: LauncherItem[]
+): Array<{ kind: LauncherItem["kind"]; items: LauncherItem[] }> {
+  const kinds = [...new Set(items.map((item) => item.kind))]
+  return kinds.map((kind) => ({
+    kind,
+    items: items.filter((item) => item.kind === kind),
+  }))
 }
 
 function isPluginToastView(value: unknown): value is PluginToastView {
