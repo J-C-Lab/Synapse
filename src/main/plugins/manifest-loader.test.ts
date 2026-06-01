@@ -39,9 +39,24 @@ describe("parsePluginManifest", () => {
           activationEvents: ["clipboard:change"],
           commands: [{ id: "test.run", title: "Run", mode: "view" }],
         },
+        permissions: ["clipboard:read"],
       })
     )
     expect(parsed.contributes.activationEvents).toEqual(["clipboard:change"])
+  })
+
+  it("rejects clipboard activation events without clipboard read permission", () => {
+    expect(() =>
+      parsePluginManifest(
+        manifest({
+          contributes: {
+            activationEvents: ["clipboard:change"],
+            commands: [{ id: "test.run", title: "Run", mode: "view" }],
+          },
+          permissions: [],
+        })
+      )
+    ).toThrow(ManifestValidationError)
   })
 
   it("rejects unknown activation events", () => {

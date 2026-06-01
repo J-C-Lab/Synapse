@@ -1,10 +1,11 @@
-import type { ClipboardContent, LocalizedString, View } from "@deskit/plugin-sdk"
+import type { ClipboardContent, LocalizedString, PluginModule, View } from "@deskit/plugin-sdk"
 import type {
   DiscoveredPlugin,
   ManifestCommand,
   PluginCommandResult,
   PluginEventRequest,
   PluginInvokeRequest,
+  PluginManifest,
   PluginRegistryEntry,
   PluginSandboxRuntime,
 } from "./types"
@@ -47,6 +48,7 @@ interface CommandIndexEntry {
 export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
   private readonly entries = new Map<string, PluginRegistryEntry>()
   private readonly commandIndex = new Map<string, CommandIndexEntry>()
+  private readonly clipboardChangeListeners = new Set<string>()
   private readonly now: () => number
 
   constructor(private readonly options: PluginRegistryOptions) {
@@ -65,6 +67,7 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     }
     this.entries.clear()
     this.commandIndex.clear()
+    this.clipboardChangeListeners.clear()
 
     for (const plugin of discovered) {
       await this.addDiscoveredPlugin(plugin)
@@ -89,25 +92,33 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     if (!enabled) {
       await this.options.sandbox.unloadPlugin(pluginId)
       this.removeCommands(pluginId)
+      this.clipboardChangeListeners.delete(pluginId)
       const next = { ...entry, status: "disabled" as const }
       this.entries.set(pluginId, next)
       this.emitChanged()
       return next
     }
 
-    const loaded = await this.options.sandbox.loadPlugin({
-      pluginId,
-      rootDir: entry.rootDir,
-      source: entry.source,
-      status: "valid",
-      manifest: entry.manifest,
-    })
-    validateManifestCommands(entry.manifest.contributes.commands, loaded.module.commands)
-    const next = { ...entry, status: "active" as const, error: undefined, loadedAt: this.now() }
-    this.entries.set(pluginId, next)
-    this.indexCommands(next)
-    this.emitChanged()
-    return next
+    try {
+      const loaded = await this.options.sandbox.loadPlugin({
+        pluginId,
+        rootDir: entry.rootDir,
+        source: entry.source,
+        status: "valid",
+        manifest: entry.manifest,
+      })
+      validateManifestCommands(entry.manifest.contributes.commands, loaded.module.commands)
+      validateActivationEvents(entry.manifest, loaded.module)
+      this.indexActivationEvents(entry.manifest, loaded.module)
+      const next = { ...entry, status: "active" as const, error: undefined, loadedAt: this.now() }
+      this.entries.set(pluginId, next)
+      this.indexCommands(next)
+      this.emitChanged()
+      return next
+    } catch (err) {
+      await this.unloadAfterLoadFailure(pluginId)
+      throw err
+    }
   }
 
   searchCommands(query: string, locale = "en", limit = 20): PluginCommandResult[] {
@@ -161,11 +172,10 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
   }
 
   async dispatchClipboardChange(content: ClipboardContent): Promise<void> {
-    const entries = this.list().filter(
-      (entry) =>
-        entry.status === "active" &&
-        entry.manifest?.contributes.activationEvents?.includes("clipboard:change")
-    )
+    const entries = [...this.clipboardChangeListeners].flatMap((pluginId) => {
+      const entry = this.entries.get(pluginId)
+      return entry?.status === "active" ? [entry] : []
+    })
 
     await Promise.all(
       entries.map((entry) =>
@@ -176,6 +186,14 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
         })
       )
     )
+  }
+
+  hasClipboardChangeListeners(): boolean {
+    return this.clipboardChangeListeners.size > 0
+  }
+
+  hasClipboardChangeListener(pluginId: string): boolean {
+    return this.clipboardChangeListeners.has(pluginId)
   }
 
   private async dispatchEvent(request: PluginEventRequest): Promise<void> {
@@ -207,6 +225,8 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     try {
       const loaded = await this.options.sandbox.loadPlugin(plugin)
       validateManifestCommands(plugin.manifest.contributes.commands, loaded.module.commands)
+      validateActivationEvents(plugin.manifest, loaded.module)
+      this.indexActivationEvents(plugin.manifest, loaded.module)
       const entry: PluginRegistryEntry = {
         pluginId: plugin.pluginId,
         rootDir: plugin.rootDir,
@@ -218,6 +238,7 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
       this.entries.set(plugin.pluginId, entry)
       this.indexCommands(entry)
     } catch (err) {
+      await this.unloadAfterLoadFailure(plugin.pluginId)
       this.entries.set(plugin.pluginId, {
         pluginId: plugin.pluginId,
         rootDir: plugin.rootDir,
@@ -249,6 +270,7 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     const entry = this.entries.get(pluginId)
     if (!entry) return
     this.removeCommands(pluginId)
+    this.clipboardChangeListeners.delete(pluginId)
     this.entries.set(pluginId, {
       ...entry,
       status: "crashed",
@@ -259,6 +281,25 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
 
   private emitChanged(): void {
     this.emit("changed", this.list())
+  }
+
+  private async unloadAfterLoadFailure(pluginId: string): Promise<void> {
+    this.clipboardChangeListeners.delete(pluginId)
+    try {
+      await this.options.sandbox.unloadPlugin(pluginId)
+    } catch (err) {
+      console.warn(`[plugin-registry] Failed to unload ${pluginId} after load failure`, err)
+    }
+  }
+
+  private indexActivationEvents(manifest: PluginManifest, module: PluginModule): void {
+    this.clipboardChangeListeners.delete(manifest.id)
+    if (
+      manifest.contributes.activationEvents?.includes("clipboard:change") &&
+      module.events?.onClipboardChange
+    ) {
+      this.clipboardChangeListeners.add(manifest.id)
+    }
   }
 }
 
@@ -276,6 +317,21 @@ function validateManifestCommands(
     if (!exported[command.id]) {
       throw new Error(`Manifest command is not exported by plugin module: ${command.id}`)
     }
+  }
+}
+
+function validateActivationEvents(manifest: PluginManifest, module: PluginModule): void {
+  if (!manifest.contributes.activationEvents?.includes("clipboard:change")) return
+  if (!manifest.permissions.includes("clipboard:read")) {
+    throw new Error("Manifest activation event clipboard:change requires clipboard:read permission")
+  }
+  const events = module.events
+  if (
+    !events ||
+    typeof events !== "object" ||
+    typeof (events as { onClipboardChange?: unknown }).onClipboardChange !== "function"
+  ) {
+    throw new Error("Manifest activation event clipboard:change requires events.onClipboardChange")
   }
 }
 

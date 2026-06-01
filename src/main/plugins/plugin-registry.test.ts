@@ -81,6 +81,7 @@ describe("pluginRegistry", () => {
 
     expect(registry.get("com.deskit.test")?.status).toBe("crashed")
     expect(registry.searchCommands("run")).toHaveLength(0)
+    expect(sandbox.unloadPlugin).toHaveBeenCalledWith("com.deskit.test")
   })
 
   it("marks plugins crashed and rethrows a typed sentinel when command invocation throws", async () => {
@@ -116,7 +117,6 @@ describe("pluginRegistry", () => {
   })
 
   it("dispatches clipboard changes to active listeners", async () => {
-    const onClipboardChange = vi.fn(async () => {})
     const sandbox = fakeSandbox({
       commands: {
         "clipboard.history": {
@@ -125,7 +125,7 @@ describe("pluginRegistry", () => {
           },
         },
       },
-      events: { onClipboardChange },
+      events: { onClipboardChange: async () => {} },
     })
     const registry = new PluginRegistry({ sandbox })
     await registry.load([
@@ -135,6 +135,7 @@ describe("pluginRegistry", () => {
         activationEvents: ["clipboard:change"],
       }),
     ])
+    expect(registry.hasClipboardChangeListeners()).toBe(true)
 
     await registry.dispatchClipboardChange({ type: "text", text: "hello" })
 
@@ -143,7 +144,58 @@ describe("pluginRegistry", () => {
       event: "clipboard:change",
       payload: { content: { type: "text", text: "hello" } },
     })
-    expect(onClipboardChange).toHaveBeenCalledTimes(1)
+  })
+
+  it("marks clipboard listeners crashed when clipboard read permission is missing", async () => {
+    const sandbox = fakeSandbox({
+      commands: {
+        "clipboard.history": {
+          run() {
+            return { type: "toast", level: "success", message: "ok" }
+          },
+        },
+      },
+      events: { onClipboardChange: async () => {} },
+    })
+    const registry = new PluginRegistry({ sandbox })
+
+    await registry.load([
+      discovered({
+        id: "com.deskit.clipboard",
+        commandId: "clipboard.history",
+        activationEvents: ["clipboard:change"],
+        permissions: [],
+      }),
+    ])
+
+    expect(registry.get("com.deskit.clipboard")?.status).toBe("crashed")
+    expect(registry.hasClipboardChangeListeners()).toBe(false)
+    expect(sandbox.unloadPlugin).toHaveBeenCalledWith("com.deskit.clipboard")
+  })
+
+  it("marks clipboard listeners crashed when handler is not exported", async () => {
+    const sandbox = fakeSandbox({
+      commands: {
+        "clipboard.history": {
+          run() {
+            return { type: "toast", level: "success", message: "ok" }
+          },
+        },
+      },
+    })
+    const registry = new PluginRegistry({ sandbox })
+
+    await registry.load([
+      discovered({
+        id: "com.deskit.clipboard",
+        commandId: "clipboard.history",
+        activationEvents: ["clipboard:change"],
+      }),
+    ])
+
+    expect(registry.get("com.deskit.clipboard")?.status).toBe("crashed")
+    expect(registry.hasClipboardChangeListeners()).toBe(false)
+    expect(sandbox.unloadPlugin).toHaveBeenCalledWith("com.deskit.clipboard")
   })
 })
 
@@ -161,9 +213,7 @@ function fakeSandbox(pluginModule?: PluginModule): PluginSandboxRuntime {
       return { type: "toast", level: "success", message: "ok" }
     }),
     disposeCommand: vi.fn(async () => {}),
-    dispatchEvent: vi.fn<PluginSandboxRuntime["dispatchEvent"]>(async (request) => {
-      await pluginModule?.events?.onClipboardChange?.(request.payload, {} as never)
-    }),
+    dispatchEvent: vi.fn<PluginSandboxRuntime["dispatchEvent"]>(async () => {}),
   }
 }
 
@@ -188,6 +238,7 @@ function discovered(
     commandId?: string
     title?: string
     activationEvents?: PluginManifest["contributes"]["activationEvents"]
+    permissions?: string[]
   } = {}
 ): DiscoveredPlugin {
   const pluginManifest = manifest(overrides)
@@ -206,6 +257,7 @@ function manifest(
     commandId?: string
     title?: string
     activationEvents?: PluginManifest["contributes"]["activationEvents"]
+    permissions?: string[]
   } = {}
 ): PluginManifest {
   const id = overrides.id ?? "com.deskit.test"
@@ -231,6 +283,8 @@ function manifest(
         },
       ],
     },
-    permissions: [],
+    permissions:
+      overrides.permissions ??
+      (overrides.activationEvents?.includes("clipboard:change") ? ["clipboard:read"] : []),
   }
 }

@@ -89,6 +89,9 @@ export class PluginHost {
   private readonly devFilePath: string
   private clipboardTimer?: ReturnType<typeof setInterval>
   private lastClipboardSnapshot?: string
+  private readonly handleRegistryChanged = (): void => {
+    this.syncClipboardWatcher()
+  }
 
   constructor(private readonly options: PluginHostOptions) {
     this.builtinDir = path.join(options.resourcesDir, "builtin-plugins")
@@ -103,6 +106,7 @@ export class PluginHost {
     })
     this.sandbox = new PluginSandbox({ bridge: this.bridge })
     this.registry = new PluginRegistry({ sandbox: this.sandbox })
+    this.registry.on("changed", this.handleRegistryChanged)
   }
 
   async init(): Promise<void> {
@@ -113,7 +117,6 @@ export class PluginHost {
       devFilePath: this.devFilePath,
     })
     await this.registry.load(discovered)
-    this.syncClipboardWatcher()
   }
 
   list(): PluginRegistryEntry[] {
@@ -126,9 +129,7 @@ export class PluginHost {
   }
 
   async setEnabled(pluginId: string, enabled: boolean): Promise<PluginRegistryEntry> {
-    const entry = this.withPreferences(await this.registry.setEnabled(pluginId, enabled))
-    this.syncClipboardWatcher()
-    return entry
+    return this.withPreferences(await this.registry.setEnabled(pluginId, enabled))
   }
 
   searchCommands(query: string, locale?: string, limit?: number): PluginCommandResult[] {
@@ -233,6 +234,7 @@ export class PluginHost {
   }
 
   dispose(): void {
+    this.registry.off("changed", this.handleRegistryChanged)
     this.stopClipboardWatcher()
   }
 
@@ -261,13 +263,7 @@ export class PluginHost {
   }
 
   private hasClipboardChangeListeners(): boolean {
-    return this.registry
-      .list()
-      .some(
-        (entry) =>
-          entry.status === "active" &&
-          entry.manifest?.contributes.activationEvents?.includes("clipboard:change")
-      )
+    return this.registry.hasClipboardChangeListeners()
   }
 
   private startClipboardWatcher(): void {
@@ -301,7 +297,6 @@ export class PluginHost {
     await this.registry.dispatchClipboardChange(content).catch((err) => {
       console.warn("[plugin-host] Clipboard change dispatch failed", err)
     })
-    this.syncClipboardWatcher()
   }
 
   private async downloadMarketplacePackage(entry: MarketplaceEntry): Promise<string> {
