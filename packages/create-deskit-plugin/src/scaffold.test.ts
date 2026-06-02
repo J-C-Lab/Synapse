@@ -41,9 +41,11 @@ describe("scaffoldPlugin", () => {
     expect(await exists(path.join(targetDir, "deskit.json"))).toBe(true)
     expect(await exists(path.join(targetDir, "package.json"))).toBe(true)
     expect(await exists(path.join(targetDir, "src", "index.ts"))).toBe(true)
-    // _gitignore must land as .gitignore
+    // _gitignore / _github must land as their dotfile names
     expect(await exists(path.join(targetDir, ".gitignore"))).toBe(true)
     expect(await exists(path.join(targetDir, "_gitignore"))).toBe(false)
+    expect(await exists(path.join(targetDir, ".github", "workflows", "release.yml"))).toBe(true)
+    expect(await exists(path.join(targetDir, "_github"))).toBe(false)
 
     const manifest = parseManifest(
       JSON.parse(await fs.readFile(path.join(targetDir, "deskit.json"), "utf-8"))

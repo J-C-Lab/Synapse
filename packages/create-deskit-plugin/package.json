@@ -1,6 +1,6 @@
 {
   "name": "create-deskit-plugin",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Scaffold a new DesKit plugin project",
   "license": "MIT",
   "bin": {

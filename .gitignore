@@ -18,6 +18,8 @@ junit.xml
 
 # workspace package build output
 /packages/*/dist/
+# generated from the zod schema at build time (packages/plugin-manifest)
+/packages/*/schema/
 
 # misc
 .DS_Store

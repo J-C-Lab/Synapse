@@ -1,6 +1,6 @@
 {
   "name": "@deskit/plugin-manifest",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DesKit plugin manifest schema, validation, and engine-compatibility helpers — shared by the DesKit host and the plugin CLI",
   "license": "MIT",
   "sideEffects": false,
@@ -15,10 +15,11 @@
   "files": [
     "README.md",
     "dist",
+    "schema",
     "src"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/gen-schema.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

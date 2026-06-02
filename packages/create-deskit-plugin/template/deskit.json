@@ -1,5 +1,5 @@
 {
-  "$schema": "https://deskit.app/schema/plugin.json",
+  "$schema": "https://unpkg.com/@deskit/plugin-manifest/schema/deskit-manifest.schema.json",
   "id": "com.example.hello-world",
   "name": "hello-world",
   "displayName": { "en": "Hello World", "zh-CN": "你好世界" },

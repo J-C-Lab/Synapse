@@ -96,13 +96,19 @@ async function ensureWritableDir(targetDir: string, force: boolean): Promise<voi
   }
 }
 
+// npm won't publish dotfiles like `.gitignore`/`.github`, so the template
+// ships them with a leading underscore and we restore the dot on scaffold.
+const DOTFILE_RENAMES: Record<string, string> = {
+  _gitignore: ".gitignore",
+  _github: ".github",
+}
+
 async function copyDir(srcDir: string, destDir: string, files: string[]): Promise<void> {
   await fs.mkdir(destDir, { recursive: true })
   const entries = await fs.readdir(srcDir, { withFileTypes: true })
   for (const entry of entries) {
     const srcPath = path.join(srcDir, entry.name)
-    // npm strips .gitignore from published packages, so it ships as _gitignore.
-    const destName = entry.name === "_gitignore" ? ".gitignore" : entry.name
+    const destName = DOTFILE_RENAMES[entry.name] ?? entry.name
     const destPath = path.join(destDir, destName)
     if (entry.isDirectory()) {
       await copyDir(srcPath, destPath, files)
