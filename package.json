@@ -13,11 +13,13 @@
   "scripts": {
     "prepare": "husky",
     "dev": "electron-vite dev",
-    "build": "pnpm build:sdk && electron-vite build",
+    "build": "pnpm build:packages && electron-vite build",
     "build:sdk": "pnpm -F @deskit/plugin-sdk build",
+    "build:manifest": "pnpm -F @deskit/plugin-manifest build",
+    "build:packages": "pnpm build:sdk && pnpm build:manifest",
     "preview": "electron-vite preview",
     "start": "electron-vite preview",
-    "typecheck": "pnpm -F @deskit/plugin-sdk typecheck && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "typecheck": "pnpm -F @deskit/plugin-sdk typecheck && pnpm -F @deskit/plugin-manifest typecheck && pnpm -F @deskit/plugin-cli typecheck && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "typecheck:native": "tsgo -p tsconfig.node.json --noEmit && tsgo -p tsconfig.web.json --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -36,6 +38,7 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.0.0",
+    "@deskit/plugin-manifest": "workspace:*",
     "@radix-ui/react-slot": "^1.2.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

@@ -15,7 +15,17 @@ import { defineConfig, externalizeDepsPlugin } from "electron-vite"
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    // @deskit/plugin-manifest is a workspace package with runtime code (zod
+    // schema). Bundle it from source instead of externalizing it so the app
+    // needs no prior `pnpm build:manifest` in dev/build — mirrors how the SDK
+    // is aliased to source for tsc/vitest. zod stays externalized (real dep).
+    plugins: [externalizeDepsPlugin({ exclude: ["@deskit/plugin-manifest"] })],
+    resolve: {
+      alias: {
+        "@deskit/plugin-manifest": resolve(__dirname, "packages/plugin-manifest/src/index.ts"),
+        "@deskit/plugin-sdk": resolve(__dirname, "packages/plugin-sdk/src/index.ts"),
+      },
+    },
     build: {
       rollupOptions: {
         input: { index: resolve(__dirname, "src/main/index.ts") },

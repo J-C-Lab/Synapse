@@ -1,3 +1,17 @@
+// Manifest types live in the shared @deskit/plugin-manifest package so the
+// host and the plugin CLI validate `deskit.json` against one source of truth.
+// Imported for local use below and re-exported so existing `./types` imports
+// across the main process keep working unchanged.
+import type {
+  CommandMode,
+  ManifestCommand,
+  ManifestPreference,
+  ManifestPreferenceOption,
+  ManifestPreferenceType,
+  PluginActivationEvent,
+  PluginManifest,
+} from "@deskit/plugin-manifest"
+
 import type {
   ClipboardContent,
   CommandInvocation,
@@ -5,6 +19,16 @@ import type {
   PluginModule,
   View,
 } from "@deskit/plugin-sdk"
+
+export type {
+  CommandMode,
+  ManifestCommand,
+  ManifestPreference,
+  ManifestPreferenceOption,
+  ManifestPreferenceType,
+  PluginActivationEvent,
+  PluginManifest,
+}
 
 export const PLUGIN_HOST_VERSION = "0.2.0"
 
@@ -20,53 +44,6 @@ export const pluginSourcePriority: Record<PluginSourceKind, number> = {
   user: 2,
   dev: 1,
 }
-
-export type CommandMode = "view" | "no-view"
-
-export interface ManifestCommand {
-  id: string
-  title: LocalizedString
-  subtitle?: LocalizedString
-  keywords?: string[]
-  mode: CommandMode
-  icon?: string
-}
-
-export type ManifestPreferenceType = "text" | "number" | "checkbox" | "select"
-
-export interface ManifestPreferenceOption {
-  value: string
-  label: LocalizedString
-}
-
-export interface ManifestPreference {
-  id: string
-  type: ManifestPreferenceType
-  label: LocalizedString
-  default?: unknown
-  options?: ManifestPreferenceOption[]
-}
-
-export interface PluginManifest {
-  $schema?: string
-  id: string
-  name: string
-  displayName: LocalizedString
-  description: LocalizedString
-  version: string
-  author: string
-  icon?: string
-  engines: { deskit: string }
-  main: string
-  contributes: {
-    activationEvents?: PluginActivationEvent[]
-    commands: ManifestCommand[]
-    preferences?: ManifestPreference[]
-  }
-  permissions: string[]
-}
-
-export type PluginActivationEvent = "clipboard:change"
 
 export type DiscoveredPluginStatus = "valid" | "invalid" | "shadowed"
 

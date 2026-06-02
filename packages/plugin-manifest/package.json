@@ -1,7 +1,7 @@
 {
-  "name": "@deskit/plugin-sdk",
-  "version": "0.3.0",
-  "description": "DesKit plugin SDK — declarative command + view contract for plugin authors",
+  "name": "@deskit/plugin-manifest",
+  "version": "0.1.0",
+  "description": "DesKit plugin manifest schema, validation, and engine-compatibility helpers — shared by the DesKit host and the plugin CLI",
   "license": "MIT",
   "sideEffects": false,
   "exports": {
@@ -20,6 +20,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@deskit/plugin-sdk": "workspace:*",
+    "zod": "^4.4.3"
   },
   "publishConfig": {
     "access": "public"

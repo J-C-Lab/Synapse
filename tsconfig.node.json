@@ -8,6 +8,7 @@
     "moduleResolution": "bundler",
     "paths": {
       "@deskit/plugin-sdk": ["./packages/plugin-sdk/src/index.ts"],
+      "@deskit/plugin-manifest": ["./packages/plugin-manifest/src/index.ts"],
       "@main/*": ["./src/main/*"],
       "@preload/*": ["./src/preload/*"]
     },
@@ -24,6 +25,7 @@
     "src/main/**/*",
     "src/preload/**/*",
     "packages/plugin-sdk/src/**/*",
+    "packages/plugin-manifest/src/**/*",
     "electron.vite.config.ts"
   ],
   "exclude": ["packages/plugin-sdk/src/__examples__/**"]

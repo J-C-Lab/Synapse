@@ -1,0 +1,38 @@
+{
+  "name": "@deskit/plugin-cli",
+  "version": "0.1.0",
+  "description": "DesKit plugin build tool — bundles a plugin project into an installable .deskit package",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "deskit-plugin": "./dist/cli.js"
+  },
+  "files": [
+    "README.md",
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@deskit/plugin-manifest": "workspace:*",
+    "esbuild": "^0.25.0",
+    "yazl": "^3.3.1"
+  },
+  "devDependencies": {
+    "@types/yauzl": "2.10.3",
+    "@types/yazl": "^2.4.6",
+    "yauzl": "2.10.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
