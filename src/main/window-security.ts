@@ -22,7 +22,7 @@ export function attachWindowSecurity(win: BrowserWindow, allowedOrigin: string):
       event.preventDefault()
       return
     }
-    if (target.origin === allowedOrigin) return
+    if (isSameOrigin(target, allowedOrigin)) return
     event.preventDefault()
     if (target.protocol === "http:" || target.protocol === "https:") {
       void shell.openExternal(url)
@@ -36,4 +36,17 @@ export function attachWindowSecurity(win: BrowserWindow, allowedOrigin: string):
     webPreferences.contextIsolation = true
     event.preventDefault()
   })
+}
+
+// Whether `target` shares the allowed origin. The production renderer uses the
+// custom `app://` scheme, whose origin Node's URL parser serializes to "null",
+// so fall back to comparing scheme + host when `.origin` can't be matched.
+export function isSameOrigin(target: URL, allowedOrigin: string): boolean {
+  if (target.origin !== "null" && target.origin === allowedOrigin) return true
+  try {
+    const allowed = new URL(allowedOrigin)
+    return target.protocol === allowed.protocol && target.host === allowed.host
+  } catch {
+    return false
+  }
 }

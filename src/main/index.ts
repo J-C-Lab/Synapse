@@ -41,7 +41,7 @@ import {
 } from "./search-window"
 import { bindGlobalShortcut, unbindGlobalShortcut } from "./shortcut"
 import { createTray, defaultTrayIcon, destroyTray, refreshTrayMenu } from "./tray"
-import { attachWindowSecurity } from "./window-security"
+import { attachWindowSecurity, isSameOrigin } from "./window-security"
 
 const isDev = !app.isPackaged
 // electron-vite injects this in dev (Vite dev server URL). Undefined in prod.
@@ -292,8 +292,10 @@ function isTrustedIpcSender(event: IpcMainInvokeEvent): boolean {
     return false
   }
 
-  if (target.origin === APP_ORIGIN) return true
-  if (rendererDevUrl && target.origin === new URL(rendererDevUrl).origin) return true
+  // The production renderer is served from the custom `app://app` scheme;
+  // isSameOrigin handles that scheme's "null" origin (see window-security).
+  if (isSameOrigin(target, APP_ORIGIN)) return true
+  if (rendererDevUrl && isSameOrigin(target, new URL(rendererDevUrl).origin)) return true
   return false
 }
 
