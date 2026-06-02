@@ -121,12 +121,16 @@ export async function pairLanDevice(deviceId: string): Promise<LanPairing> {
   return api().pairLanDevice(deviceId)
 }
 
-export async function confirmLanPairing(pairingId: string): Promise<LanPairing[]> {
-  return api().confirmLanPairing(pairingId)
+export async function confirmLanPairing(pairingId: string, sas: string): Promise<LanPairing[]> {
+  return api().confirmLanPairing(pairingId, sas)
 }
 
 export async function rejectLanPairing(pairingId: string): Promise<LanPairing[]> {
   return api().rejectLanPairing(pairingId)
+}
+
+export async function disconnectLanDevice(deviceId: string): Promise<void> {
+  await api().disconnectLanDevice(deviceId)
 }
 
 export async function listLanTransfers(): Promise<LanTransfer[]> {
@@ -147,6 +151,10 @@ export async function acceptLanTransfer(transferId: string): Promise<LanTransfer
 
 export async function rejectLanTransfer(transferId: string): Promise<LanTransfer> {
   return api().rejectLanTransfer(transferId)
+}
+
+export async function removeLanTransferHistory(transferId: string): Promise<LanTransfer[]> {
+  return api().removeLanTransferHistory(transferId)
 }
 
 export async function listPlugins(): Promise<PluginRegistryEntry[]> {

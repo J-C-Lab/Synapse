@@ -237,13 +237,15 @@ declare global {
       listLanDevices: () => Promise<DeskitLanDevice[]>
       listLanPairings: () => Promise<DeskitLanPairing[]>
       pairLanDevice: (deviceId: string) => Promise<DeskitLanPairing>
-      confirmLanPairing: (pairingId: string) => Promise<DeskitLanPairing[]>
+      confirmLanPairing: (pairingId: string, sas: string) => Promise<DeskitLanPairing[]>
       rejectLanPairing: (pairingId: string) => Promise<DeskitLanPairing[]>
+      disconnectLanDevice: (deviceId: string) => Promise<void>
       listLanTransfers: () => Promise<DeskitLanTransfer[]>
       sendLanFile: (deviceId: string) => Promise<DeskitLanTransfer | null>
       resumeLanTransfer: (transferId: string) => Promise<DeskitLanTransfer>
       acceptLanTransfer: (transferId: string) => Promise<DeskitLanTransfer | null>
       rejectLanTransfer: (transferId: string) => Promise<DeskitLanTransfer>
+      removeLanTransferHistory: (transferId: string) => Promise<DeskitLanTransfer[]>
       listPlugins: () => Promise<DeskitPluginIpcResult<DeskitPluginRegistryEntry[]>>
       getPlugin: (
         pluginId: string

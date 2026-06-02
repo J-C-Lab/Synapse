@@ -1,5 +1,6 @@
 import type { CSSProperties, RefObject } from "react"
 import type { LanDevice, LanPairing, LanStatus, LanTransfer } from "@/lib/electron"
+import { REGEXP_ONLY_DIGITS } from "input-otp"
 import {
   AlertCircle,
   Check,
@@ -9,6 +10,8 @@ import {
   RefreshCw,
   RotateCcw,
   ShieldCheck,
+  Trash2,
+  Unplug,
   Wifi,
   X,
 } from "lucide-react"
@@ -25,12 +28,28 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp"
 import { Progress } from "@/components/ui/progress"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   acceptLanTransfer,
   confirmLanPairing,
+  disconnectLanDevice,
   getLanStatus,
   isElectron,
   listLanDevices,
@@ -43,6 +62,7 @@ import {
   pairLanDevice,
   rejectLanPairing,
   rejectLanTransfer,
+  removeLanTransferHistory,
   resumeLanTransfer,
   sendLanFile,
   updateSettings,
@@ -124,6 +144,10 @@ export function LanTransferPage() {
       setPending(false)
     }
   }
+
+  const awaitingPairings = pairings.filter((pairing) => pairing.state === "awaiting-confirmation")
+  const incomingPairings = awaitingPairings.filter((pairing) => pairing.direction === "incoming")
+  const outgoingPairings = awaitingPairings.filter((pairing) => pairing.direction === "outgoing")
 
   if (!electronReady) {
     return (
@@ -214,6 +238,7 @@ export function LanTransferPage() {
                 key={device.deviceId}
                 device={device}
                 disabled={pending}
+                onDisconnect={() => mutate(() => disconnectLanDevice(device.deviceId))}
                 onPair={() => mutate(() => pairLanDevice(device.deviceId))}
                 onSend={() => mutate(() => sendLanFile(device.deviceId))}
               />
@@ -222,27 +247,34 @@ export function LanTransferPage() {
         )}
       </section>
 
-      {pairings.some((pairing) => pairing.state === "awaiting-confirmation") && (
+      {incomingPairings.length > 0 && (
         <section className="flex flex-col gap-3">
           <div>
             <h2 className="text-lg font-semibold">{t("lan.pairings.title")}</h2>
             <p className="text-sm text-muted-foreground">{t("lan.pairings.subtitle")}</p>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
-            {pairings
-              .filter((pairing) => pairing.state === "awaiting-confirmation")
-              .map((pairing) => (
-                <PairingCard
-                  key={pairing.id}
-                  pairing={pairing}
-                  disabled={pending}
-                  onConfirm={() => mutate(() => confirmLanPairing(pairing.id))}
-                  onReject={() => mutate(() => Promise.resolve(rejectLanPairing(pairing.id)))}
-                />
-              ))}
+            {incomingPairings.map((pairing) => (
+              <IncomingPairingCard
+                key={pairing.id}
+                pairing={pairing}
+                disabled={pending}
+                onReject={() => mutate(() => rejectLanPairing(pairing.id))}
+              />
+            ))}
           </div>
         </section>
       )}
+
+      {outgoingPairings.map((pairing) => (
+        <OutgoingPairingDialog
+          key={pairing.id}
+          pairing={pairing}
+          disabled={pending}
+          onConfirm={(sas) => confirmLanPairing(pairing.id, sas)}
+          onCancel={() => mutate(() => rejectLanPairing(pairing.id))}
+        />
+      ))}
 
       <section className="flex flex-col gap-3">
         <div>
@@ -265,6 +297,7 @@ export function LanTransferPage() {
                 disabled={pending}
                 onAccept={() => mutate(() => acceptLanTransfer(transfer.id))}
                 onReject={() => mutate(() => rejectLanTransfer(transfer.id))}
+                onRemove={() => mutate(() => removeLanTransferHistory(transfer.id))}
                 onResume={() => mutate(() => resumeLanTransfer(transfer.id))}
               />
             ))}
@@ -445,11 +478,13 @@ function clamp(value: number, minimum: number, maximum: number): number {
 function DeviceCard({
   device,
   disabled,
+  onDisconnect,
   onPair,
   onSend,
 }: {
   device: LanDevice
   disabled: boolean
+  onDisconnect: () => void
   onPair: () => void
   onSend: () => void
 }) {
@@ -476,10 +511,21 @@ function DeviceCard({
         <p>{t("lan.devices.platform", { platform: device.platform })}</p>
         <div className="flex gap-2 pt-2">
           {device.paired ? (
-            <Button size="sm" disabled={disabled || !device.online} onClick={onSend}>
-              <FileUp className="size-4" aria-hidden />
-              {t("lan.actions.sendFile")}
-            </Button>
+            <>
+              <Button size="sm" disabled={disabled || !device.online} onClick={onSend}>
+                <FileUp className="size-4" aria-hidden />
+                {t("lan.actions.sendFile")}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={disabled || !device.online}
+                onClick={onDisconnect}
+              >
+                <Unplug className="size-4" aria-hidden />
+                {t("lan.actions.disconnect")}
+              </Button>
+            </>
           ) : (
             <Button size="sm" disabled={disabled || !device.online} onClick={onPair}>
               <ShieldCheck className="size-4" aria-hidden />
@@ -492,15 +538,13 @@ function DeviceCard({
   )
 }
 
-function PairingCard({
+function IncomingPairingCard({
   pairing,
   disabled,
-  onConfirm,
   onReject,
 }: {
   pairing: LanPairing
   disabled: boolean
-  onConfirm: () => void
   onReject: () => void
 }) {
   const { t } = useTranslation()
@@ -508,19 +552,15 @@ function PairingCard({
     <Card>
       <CardHeader>
         <CardTitle>{pairing.deviceName}</CardTitle>
-        <CardDescription>{t(`lan.pairings.${pairing.direction}`)}</CardDescription>
+        <CardDescription>{t("lan.pairings.incoming")}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <div className="rounded-md bg-muted px-4 py-3 text-center">
           <p className="text-xs text-muted-foreground">{t("lan.pairings.sas")}</p>
           <p className="mt-1 font-mono text-3xl font-semibold tracking-[0.3em]">{pairing.sas}</p>
         </div>
-        <p className="text-xs text-muted-foreground">{t("lan.pairings.confirmHint")}</p>
-        <div className="flex gap-2">
-          <Button size="sm" disabled={disabled} onClick={onConfirm}>
-            <Check className="size-4" aria-hidden />
-            {t("lan.actions.confirm")}
-          </Button>
+        <p className="text-xs text-muted-foreground">{t("lan.pairings.showCodeHint")}</p>
+        <div className="flex">
           <Button size="sm" variant="outline" disabled={disabled} onClick={onReject}>
             <X className="size-4" aria-hidden />
             {t("lan.actions.reject")}
@@ -531,63 +571,175 @@ function PairingCard({
   )
 }
 
+function OutgoingPairingDialog({
+  pairing,
+  disabled,
+  onConfirm,
+  onCancel,
+}: {
+  pairing: LanPairing
+  disabled: boolean
+  onConfirm: (sas: string) => Promise<unknown>
+  onCancel: () => void
+}) {
+  const { t } = useTranslation()
+  const [code, setCode] = useState("")
+  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  async function submit() {
+    if (code.length < 6 || submitting || disabled) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      await onConfirm(code)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setCode("")
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !submitting) onCancel()
+      }}
+    >
+      <DialogContent showCloseButton={false} className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{t("lan.pairings.enterCodeTitle")}</DialogTitle>
+          <DialogDescription>
+            {t("lan.pairings.enterCodeBody", { name: pairing.deviceName })}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col items-center gap-3 py-2">
+          <InputOTP
+            autoFocus
+            maxLength={6}
+            pattern={REGEXP_ONLY_DIGITS}
+            inputMode="numeric"
+            value={code}
+            disabled={submitting || disabled}
+            onChange={setCode}
+            onComplete={() => void submit()}
+            containerClassName="justify-center"
+          >
+            <InputOTPGroup>
+              {[0, 1, 2, 3, 4, 5].map((index) => (
+                <InputOTPSlot
+                  key={index}
+                  index={index}
+                  className="h-12 w-10 text-lg"
+                  aria-invalid={Boolean(error)}
+                />
+              ))}
+            </InputOTPGroup>
+          </InputOTP>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" disabled={submitting} onClick={onCancel}>
+            <X className="size-4" aria-hidden />
+            {t("lan.actions.reject")}
+          </Button>
+          <Button
+            disabled={code.length < 6 || submitting || disabled}
+            onClick={() => void submit()}
+          >
+            <Check className="size-4" aria-hidden />
+            {t("lan.actions.confirm")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function TransferCard({
   transfer,
   disabled,
   onAccept,
   onReject,
+  onRemove,
   onResume,
 }: {
   transfer: LanTransfer
   disabled: boolean
   onAccept: () => void
   onReject: () => void
+  onRemove: () => void
   onResume: () => void
 }) {
   const { t } = useTranslation()
   const progress = transfer.size === 0 ? 100 : (transfer.transferredBytes / transfer.size) * 100
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{transfer.fileName}</CardTitle>
-        <CardDescription>
-          {t(`lan.transfers.${transfer.direction}`, { name: transfer.deviceName })}
-        </CardDescription>
-        <CardAction>
-          <Badge variant="outline">{t(`lan.transfers.state.${transfer.state}`)}</Badge>
-        </CardAction>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <Progress value={progress} />
-        <p className="text-xs text-muted-foreground">
-          {t("lan.transfers.progress", {
-            current: formatBytes(transfer.transferredBytes),
-            total: formatBytes(transfer.size),
-          })}
-        </p>
-        {transfer.error && <p className="text-xs text-destructive">{transfer.error}</p>}
-        <div className="flex gap-2">
-          {transfer.direction === "outgoing" && transfer.state === "paused" && (
-            <Button size="sm" disabled={disabled} onClick={onResume}>
-              <RotateCcw className="size-4" aria-hidden />
-              {t("lan.actions.resume")}
-            </Button>
-          )}
-          {transfer.direction === "incoming" && transfer.state === "awaiting-confirmation" && (
-            <>
-              <Button size="sm" disabled={disabled} onClick={onAccept}>
-                <Check className="size-4" aria-hidden />
-                {t("lan.actions.accept")}
-              </Button>
-              <Button size="sm" variant="outline" disabled={disabled} onClick={onReject}>
-                <X className="size-4" aria-hidden />
-                {t("lan.actions.reject")}
-              </Button>
-            </>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <Card>
+          <CardHeader>
+            <CardTitle>{transfer.fileName}</CardTitle>
+            <CardDescription>
+              {t(`lan.transfers.${transfer.direction}`, { name: transfer.deviceName })}
+            </CardDescription>
+            <CardAction>
+              <Badge variant="outline">{t(`lan.transfers.state.${transfer.state}`)}</Badge>
+            </CardAction>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <Progress value={progress} />
+            <p className="text-xs text-muted-foreground">
+              {t("lan.transfers.progress", {
+                current: formatBytes(transfer.transferredBytes),
+                total: formatBytes(transfer.size),
+              })}
+            </p>
+            {transfer.error && <p className="text-xs text-destructive">{transfer.error}</p>}
+            <div className="flex gap-2">
+              {transfer.direction === "outgoing" && transfer.state === "paused" && (
+                <Button size="sm" disabled={disabled} onClick={onResume}>
+                  <RotateCcw className="size-4" aria-hidden />
+                  {t("lan.actions.resume")}
+                </Button>
+              )}
+              {transfer.direction === "incoming" && transfer.state === "awaiting-confirmation" && (
+                <>
+                  <Button size="sm" disabled={disabled} onClick={onAccept}>
+                    <Check className="size-4" aria-hidden />
+                    {t("lan.actions.accept")}
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={disabled} onClick={onReject}>
+                    <X className="size-4" aria-hidden />
+                    {t("lan.actions.reject")}
+                  </Button>
+                </>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem
+          variant="destructive"
+          disabled={disabled || !isFinishedTransfer(transfer)}
+          onSelect={onRemove}
+        >
+          <Trash2 className="size-4" aria-hidden />
+          {t("lan.actions.deleteHistory")}
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  )
+}
+
+function isFinishedTransfer(transfer: LanTransfer): boolean {
+  return (
+    transfer.state === "completed" ||
+    transfer.state === "rejected" ||
+    transfer.state === "failed" ||
+    transfer.state === "paused"
   )
 }
 

@@ -127,6 +127,12 @@ export class IncomingTransferStore {
     return toPublicTransfer(transfer)
   }
 
+  async remove(id: string): Promise<void> {
+    this.require(id)
+    await fs.rm(this.transferDir(id), { recursive: true, force: true })
+    this.transfers.delete(id)
+  }
+
   list(): LanTransfer[] {
     return [...this.transfers.values()].map(toPublicTransfer)
   }
@@ -225,6 +231,11 @@ export class OutgoingTransferStore {
     Object.assign(transfer, patch)
     await this.save()
     return toPublicTransfer(transfer)
+  }
+
+  async remove(id: string): Promise<void> {
+    if (!this.transfers.delete(id)) throw new Error("Transfer was not found.")
+    await this.save()
   }
 
   private async save(): Promise<void> {

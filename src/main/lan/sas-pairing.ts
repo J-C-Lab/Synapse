@@ -152,16 +152,27 @@ export class SasPairingManager {
     return [...this.sessions.values()].map(toPublicPairing)
   }
 
-  confirm(id: string): TrustedLanDevice {
+  get(id: string): LanPairing | null {
     const session = this.sessions.get(id)
-    if (!session || session.state !== "awaiting-confirmation") {
-      throw new Error("Pairing request is no longer awaiting confirmation.")
-    }
-    session.state = "confirmed"
-    return {
-      ...session.peerIdentity,
-      pairedAt: this.now(),
-    }
+    return session ? toPublicPairing(session) : null
+  }
+
+  peerFingerprint(id: string): string {
+    return this.requireAwaiting(id).peerIdentity.certificateFingerprint
+  }
+
+  prepareOutgoingConfirmation(id: string, sas: string): TrustedLanDevice {
+    const session = this.requireAwaiting(id, "outgoing")
+    if (session.sas !== sas) throw new Error("Security code is incorrect.")
+    return this.toTrustedDevice(session)
+  }
+
+  prepareIncomingConfirmation(id: string): TrustedLanDevice {
+    return this.toTrustedDevice(this.requireAwaiting(id, "incoming"))
+  }
+
+  markConfirmed(id: string, direction: LanPairingDirection): void {
+    this.requireAwaiting(id, direction).state = "confirmed"
   }
 
   reject(id: string): void {
@@ -188,6 +199,25 @@ export class SasPairingManager {
     }
     this.sessions.set(id, session)
     return toPublicPairing(session)
+  }
+
+  private requireAwaiting(id: string, direction?: LanPairingDirection): PairingSession {
+    const session = this.sessions.get(id)
+    if (
+      !session ||
+      session.state !== "awaiting-confirmation" ||
+      (direction && session.direction !== direction)
+    ) {
+      throw new Error("Pairing request is no longer awaiting confirmation.")
+    }
+    return session
+  }
+
+  private toTrustedDevice(session: PairingSession): TrustedLanDevice {
+    return {
+      ...session.peerIdentity,
+      pairedAt: this.now(),
+    }
   }
 
   private prune(): void {

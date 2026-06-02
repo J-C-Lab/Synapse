@@ -81,10 +81,26 @@ Start the desktop app in development mode:
 pnpm dev
 ```
 
+### LAN Transfer Simulation
+
+To test LAN transfer workflows on one computer, start two isolated development instances in
+separate terminals:
+
+```bash
+pnpm dev:lan:a
+pnpm dev:lan:b
+```
+
+The instances appear as `DesKit Sim A` and `DesKit Sim B`. Each uses a separate development-only
+profile for its device identity, certificate, trusted devices, settings, and transfers. Enable
+nearby device discovery in both windows, then connect the devices and compare the security codes.
+
 ## Scripts
 
 ```bash
 pnpm dev                # Start Electron dev mode
+pnpm dev:lan:a          # Start isolated LAN simulator device A
+pnpm dev:lan:b          # Start isolated LAN simulator device B
 pnpm build              # Build SDK, then main/preload/renderer into out/
 pnpm build:sdk          # Build workspace SDK declarations and JS output
 pnpm preview            # Preview the production build

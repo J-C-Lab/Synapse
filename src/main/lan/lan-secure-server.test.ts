@@ -33,8 +33,9 @@ describe("lanSecureServer", () => {
     const incomingPairing = bob.server.listPairings()[0]
     expect(incomingPairing?.sas).toBe(outgoingPairing.sas)
 
-    await alice.server.confirmPairing(outgoingPairing.id)
-    await bob.server.confirmPairing(incomingPairing.id)
+    await alice.server.confirmPairing(outgoingPairing.id, outgoingPairing.sas)
+    expect(bob.trustedDevices.has("alice")).toBe(true)
+    expect(alice.trustedDevices.has("bob")).toBe(true)
 
     const sourcePath = path.join(alice.dir, "payload.bin")
     const payload = Buffer.alloc(1024 * 1024 + 37, 7)
@@ -51,6 +52,37 @@ describe("lanSecureServer", () => {
     const destinationPath = path.join(bob.dir, "accepted.bin")
     await bob.server.acceptTransfer(incoming!.id, destinationPath)
     await expect(fs.readFile(destinationPath)).resolves.toEqual(payload)
+
+    await expect(bob.server.removeTransferHistory(incoming!.id)).resolves.toEqual([])
+    await expect(fs.readFile(destinationPath)).resolves.toEqual(payload)
+
+    await alice.server.disconnect(deviceFor(bob))
+    expect(alice.trustedDevices.has("bob")).toBe(false)
+    expect(bob.trustedDevices.has("alice")).toBe(false)
+  }, 10_000)
+
+  it("rejects a server whose certificate no longer matches the pinned fingerprint", async () => {
+    const alice = await createPeer("alice", "Alice desktop")
+    const bob = await createPeer("bob", "Bob laptop")
+    const impostor = await createPeer("impostor", "Impostor")
+    alice.devices.set("bob", deviceFor(bob))
+    bob.devices.set("alice", deviceFor(alice))
+
+    const outgoingPairing = await alice.server.pair(deviceFor(bob))
+    await alice.server.confirmPairing(outgoingPairing.id, outgoingPairing.sas)
+
+    const sourcePath = path.join(alice.dir, "private.txt")
+    await fs.writeFile(sourcePath, "private payload")
+    const impersonatedBob = { ...deviceFor(bob), port: impostor.server.port() }
+
+    await expect(alice.server.sendFile(impersonatedBob, sourcePath)).resolves.toMatchObject({
+      error: "Peer TLS certificate fingerprint mismatch.",
+      state: "paused",
+      transferredBytes: 0,
+    })
+    const paused = alice.server.listTransfers()[0]!
+    await expect(alice.server.removeTransferHistory(paused.id)).resolves.toEqual([])
+    expect(impostor.server.listTransfers()).toEqual([])
   })
 
   async function createPeer(deviceId: string, name: string) {
@@ -76,7 +108,7 @@ describe("lanSecureServer", () => {
     })
     await server.start()
     servers.push(server)
-    return { credential, devices, dir, identity, server }
+    return { credential, devices, dir, identity, server, trustedDevices }
   }
 
   function deviceFor(peer: Awaited<ReturnType<typeof createPeer>>): LanDevice {

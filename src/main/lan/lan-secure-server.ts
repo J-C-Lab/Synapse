@@ -115,16 +115,64 @@ export class LanSecureServer extends EventEmitter {
     return pairing
   }
 
-  async confirmPairing(id: string): Promise<LanPairing[]> {
-    await this.options.trustedDevices.trust(this.pairing.confirm(id))
+  async confirmPairing(id: string, sas: string): Promise<LanPairing[]> {
+    const trusted = this.pairing.prepareOutgoingConfirmation(id, sas)
+    const device = this.options.resolveDevice(trusted.deviceId)
+    if (!device?.online) throw new Error("Target device is offline.")
+    await this.requestJson(
+      device,
+      "POST",
+      `/v1/pairing/requests/${id}/confirm`,
+      {},
+      {
+        expectedFingerprint: trusted.certificateFingerprint,
+      }
+    )
+    await this.options.trustedDevices.trust(trusted)
+    this.pairing.markConfirmed(id, "outgoing")
+    this.emitTrustedDevicesChanged()
     this.emitPairingsChanged()
     return this.listPairings()
   }
 
-  rejectPairing(id: string): LanPairing[] {
+  async rejectPairing(id: string): Promise<LanPairing[]> {
+    const pairing = this.pairing.get(id)
+    if (!pairing || pairing.state !== "awaiting-confirmation") return this.listPairings()
+    const fingerprint = this.pairing.peerFingerprint(id)
     this.pairing.reject(id)
     this.emitPairingsChanged()
+    const device = this.options.resolveDevice(pairing.deviceId)
+    if (device?.online) {
+      try {
+        await this.requestJson(
+          device,
+          "POST",
+          `/v1/pairing/requests/${id}/reject`,
+          {},
+          {
+            expectedFingerprint: fingerprint,
+          }
+        )
+      } catch (err) {
+        console.warn("[deskit] Failed to notify rejected LAN pairing", err)
+      }
+    }
     return this.listPairings()
+  }
+
+  async disconnect(device: LanDevice): Promise<void> {
+    const trusted = requireTrustedDevice(this.options.trustedDevices, device.deviceId)
+    await this.requestJson(
+      device,
+      "POST",
+      "/v1/trusted-devices/disconnect",
+      {},
+      {
+        expectedFingerprint: trusted.certificateFingerprint,
+      }
+    )
+    await this.options.trustedDevices.remove(device.deviceId)
+    this.emitTrustedDevicesChanged()
   }
 
   async sendFile(device: LanDevice, sourcePath: string): Promise<LanTransfer> {
@@ -155,6 +203,21 @@ export class LanSecureServer extends EventEmitter {
     const transfer = await this.options.incomingTransfers.reject(id)
     this.emitTransfersChanged()
     return transfer
+  }
+
+  async removeTransferHistory(id: string): Promise<LanTransfer[]> {
+    const incoming = this.options.incomingTransfers.get(id)
+    if (incoming) {
+      assertRemovableTransferHistory(incoming)
+      await this.options.incomingTransfers.remove(id)
+    } else {
+      const outgoing = this.options.outgoingTransfers.get(id)
+      if (!outgoing) throw new Error("Transfer was not found.")
+      assertRemovableTransferHistory(outgoing)
+      await this.options.outgoingTransfers.remove(id)
+    }
+    this.emitTransfersChanged()
+    return this.listTransfers()
   }
 
   private async upload(device: LanDevice, id: string): Promise<LanTransfer> {
@@ -241,7 +304,39 @@ export class LanSecureServer extends EventEmitter {
       return
     }
 
+    const confirmMatch = req.url?.match(/^\/v1\/pairing\/requests\/([^/]+)\/confirm$/)
+    if (req.method === "POST" && confirmMatch) {
+      const id = confirmMatch[1]
+      assertFingerprint(peerFingerprint(req), this.pairing.peerFingerprint(id))
+      await readJson(req)
+      await this.options.trustedDevices.trust(this.pairing.prepareIncomingConfirmation(id))
+      this.pairing.markConfirmed(id, "incoming")
+      this.emitTrustedDevicesChanged()
+      this.emitPairingsChanged()
+      sendJson(res, 200, {})
+      return
+    }
+
+    const rejectMatch = req.url?.match(/^\/v1\/pairing\/requests\/([^/]+)\/reject$/)
+    if (req.method === "POST" && rejectMatch) {
+      const id = rejectMatch[1]
+      assertFingerprint(peerFingerprint(req), this.pairing.peerFingerprint(id))
+      await readJson(req)
+      this.pairing.reject(id)
+      this.emitPairingsChanged()
+      sendJson(res, 200, {})
+      return
+    }
+
     const trusted = this.requireTrustedPeer(req)
+    if (req.method === "POST" && req.url === "/v1/trusted-devices/disconnect") {
+      await readJson(req)
+      await this.options.trustedDevices.remove(trusted.deviceId)
+      this.emitTrustedDevicesChanged()
+      sendJson(res, 200, {})
+      return
+    }
+
     if (req.method === "POST" && req.url === "/v1/transfers") {
       const transfer = await readJson<IncomingTransferRequest>(req)
       if (transfer.deviceId !== trusted.deviceId) throw new Error("Sender identity mismatch.")
@@ -330,7 +425,6 @@ export class LanSecureServer extends EventEmitter {
     headers: Record<string, string | undefined> & { expectedFingerprint?: string }
   ): Promise<{ body: Buffer; peerFingerprint: string }> {
     const { expectedFingerprint, ...requestHeaders } = headers
-    const trusted = expectedFingerprint ? this.options.trustedDevices.get(device.deviceId) : null
     return new Promise((resolve, reject) => {
       const client = request(
         {
@@ -340,13 +434,9 @@ export class LanSecureServer extends EventEmitter {
           method,
           key: this.options.credential.privateKeyPem,
           cert: this.options.credential.certificatePem,
-          ...(trusted
-            ? {
-                ca: trusted.certificatePem,
-                rejectUnauthorized: true,
-                checkServerIdentity: () => undefined,
-              }
-            : { rejectUnauthorized: false }),
+          // Peers use self-signed device certificates rather than a CA chain.
+          // Authenticate trusted requests with the SAS-pinned fingerprint below.
+          rejectUnauthorized: false,
           agent: false,
           headers: {
             ...requestHeaders,
@@ -369,7 +459,22 @@ export class LanSecureServer extends EventEmitter {
         }
       )
       client.once("error", reject)
-      client.end(body)
+      if (expectedFingerprint) {
+        client.once("socket", (socket) => {
+          const tlsSocket = socket as TLSSocket
+          tlsSocket.once("secureConnect", () => {
+            try {
+              assertFingerprint(peerFingerprint({ socket }), expectedFingerprint)
+              client.end(body)
+            } catch (err) {
+              client.destroy(asError(err))
+            }
+          })
+        })
+        client.flushHeaders()
+      } else {
+        client.end(body)
+      }
     })
   }
 
@@ -388,6 +493,10 @@ export class LanSecureServer extends EventEmitter {
 
   private emitTransfersChanged(): void {
     this.emit("transfers-changed", this.listTransfers())
+  }
+
+  private emitTrustedDevicesChanged(): void {
+    this.emit("trusted-devices-changed")
   }
 }
 
@@ -415,6 +524,17 @@ function requireTrustedDevice(store: TrustedDeviceStore, deviceId: string) {
   const trusted = store.get(deviceId)
   if (!trusted) throw new Error("Peer device is not trusted.")
   return trusted
+}
+
+function assertRemovableTransferHistory(transfer: LanTransfer): void {
+  if (
+    transfer.state !== "completed" &&
+    transfer.state !== "rejected" &&
+    transfer.state !== "failed" &&
+    transfer.state !== "paused"
+  ) {
+    throw new Error("Only finished transfer history can be deleted.")
+  }
 }
 
 async function readJson<T = unknown>(req: import("node:http").IncomingMessage): Promise<T> {
@@ -451,4 +571,8 @@ function sendJson(res: ServerResponse, statusCode: number, body: unknown): void 
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+function asError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err))
 }

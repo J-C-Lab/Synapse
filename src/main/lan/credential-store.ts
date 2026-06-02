@@ -10,6 +10,13 @@ export interface LanCredential {
   privateKeyPem: string
 }
 
+export class LanCredentialLoadError extends Error {
+  constructor(cause: unknown) {
+    super("Stored LAN credential could not be loaded.", { cause })
+    this.name = "LanCredentialLoadError"
+  }
+}
+
 export interface SecretProtector {
   encrypt: (plainText: string) => string
   decrypt: (encryptedText: string) => string
@@ -63,10 +70,14 @@ export class LanCredentialStore {
   }
 
   private decrypt(stored: StoredCredential): LanCredential {
-    return {
-      certificatePem: stored.certificatePem,
-      certificateFingerprint: certificateFingerprint(stored.certificatePem),
-      privateKeyPem: this.protector.decrypt(stored.encryptedPrivateKey),
+    try {
+      return {
+        certificatePem: stored.certificatePem,
+        certificateFingerprint: certificateFingerprint(stored.certificatePem),
+        privateKeyPem: this.protector.decrypt(stored.encryptedPrivateKey),
+      }
+    } catch (err) {
+      throw new LanCredentialLoadError(err)
     }
   }
 }

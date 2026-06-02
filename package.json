@@ -13,6 +13,8 @@
   "scripts": {
     "prepare": "husky",
     "dev": "electron-vite dev",
+    "dev:lan:a": "cross-env DESKIT_LAN_SIMULATION_PROFILE=a electron-vite dev",
+    "dev:lan:b": "cross-env DESKIT_LAN_SIMULATION_PROFILE=b electron-vite dev",
     "build": "pnpm build:sdk && electron-vite build",
     "build:sdk": "pnpm -F @deskit/plugin-sdk build",
     "preview": "electron-vite preview",

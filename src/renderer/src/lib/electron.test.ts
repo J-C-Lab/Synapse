@@ -1,6 +1,7 @@
 import type { ElectronIpcError } from "./electron"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
+  disconnectLanDevice,
   disposePluginCommand,
   getLanStatus,
   getPlugin,
@@ -31,6 +32,7 @@ import {
   pairLanDevice,
   refreshApps,
   reloadPlugin,
+  removeLanTransferHistory,
   searchApps,
   searchPluginCommands,
   sendLanFile,
@@ -105,11 +107,13 @@ function mockApi() {
     pairLanDevice: vi.fn(),
     confirmLanPairing: vi.fn(),
     rejectLanPairing: vi.fn(),
+    disconnectLanDevice: vi.fn(),
     listLanTransfers: vi.fn().mockResolvedValue([]),
     sendLanFile: vi.fn(),
     resumeLanTransfer: vi.fn(),
     acceptLanTransfer: vi.fn(),
     rejectLanTransfer: vi.fn(),
+    removeLanTransferHistory: vi.fn(),
     onLanDevicesChanged: vi.fn().mockReturnValue(() => {}),
     onLanStatusChanged: vi.fn().mockReturnValue(() => {}),
     onLanPairingsChanged: vi.fn().mockReturnValue(() => {}),
@@ -239,10 +243,22 @@ describe("lib/electron", () => {
       expect(api.pairLanDevice).toHaveBeenCalledWith("peer")
     })
 
+    it("disconnectLanDevice forwards device id", async () => {
+      const api = mockApi()
+      await disconnectLanDevice("peer")
+      expect(api.disconnectLanDevice).toHaveBeenCalledWith("peer")
+    })
+
     it("sendLanFile forwards device id", async () => {
       const api = mockApi()
       await sendLanFile("peer")
       expect(api.sendLanFile).toHaveBeenCalledWith("peer")
+    })
+
+    it("removeLanTransferHistory forwards transfer id", async () => {
+      const api = mockApi()
+      await removeLanTransferHistory("transfer")
+      expect(api.removeLanTransferHistory).toHaveBeenCalledWith("transfer")
     })
 
     it("listPlugins calls listPlugins", async () => {

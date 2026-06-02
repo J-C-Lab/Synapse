@@ -171,11 +171,13 @@
     "actions": {
       "refresh": "刷新",
       "pair": "连接",
+      "disconnect": "断开连接",
       "sendFile": "发送文件",
-      "confirm": "验证码一致，确认",
+      "confirm": "确认连接",
       "reject": "拒绝",
       "accept": "接收并保存",
       "resume": "继续传输",
+      "deleteHistory": "删除记录",
       "dismissGuide": "我知道了",
       "dismissGuideOverlay": "关闭引导蒙版"
     },
@@ -202,9 +204,12 @@
     },
     "pairings": {
       "title": "确认新设备",
-      "subtitle": "请对照两台设备上的六位安全验证码。数字一致时再确认连接。",
+      "subtitle": "被连接的设备会显示一个六位验证码，在此输入即可建立连接。",
       "sas": "安全验证码",
-      "confirmHint": "如果两台设备显示的数字不同，请拒绝连接。",
+      "showCodeHint": "请在发起连接的设备上输入此验证码。",
+      "enterCodeTitle": "输入安全验证码",
+      "enterCodeBody": "请输入 {{name}} 上显示的六位验证码以建立连接。",
+      "invalidCode": "验证码不正确，请核对对方设备后重试。",
       "incoming": "对方希望与你建立连接",
       "outgoing": "正在与该设备建立连接"
     },

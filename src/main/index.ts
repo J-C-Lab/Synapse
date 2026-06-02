@@ -32,6 +32,12 @@ import { registerLanIpc } from "./ipc/lan"
 import { LauncherService } from "./ipc/launcher-service"
 import { registerPluginIpc } from "./ipc/plugins"
 import { BonjourLanDiscoveryAdapter } from "./lan/bonjour-discovery-adapter"
+import { LanCredentialLoadError } from "./lan/credential-store"
+import {
+  LAN_SIMULATION_PROFILE_ENV,
+  resetDevLanSimulationCredentials,
+  resolveDevLanSimulation,
+} from "./lan/dev-simulation"
 import { LanService } from "./lan/lan-service"
 import { defaultNotificationIcon, showStartupNotification } from "./notifications"
 import { PluginHost } from "./plugins/plugin-host"
@@ -50,6 +56,17 @@ import { createTray, defaultTrayIcon, destroyTray, refreshTrayMenu } from "./tra
 import { attachWindowSecurity } from "./window-security"
 
 const isDev = !app.isPackaged
+const lanSimulation = resolveDevLanSimulation({
+  defaultUserDataDir: app.getPath("userData"),
+  isPackaged: app.isPackaged,
+  profile: process.env[LAN_SIMULATION_PROFILE_ENV],
+})
+if (lanSimulation) {
+  app.setPath("userData", lanSimulation.userDataDir)
+  console.warn(
+    `[deskit] LAN simulation profile "${lanSimulation.profile}" uses ${lanSimulation.userDataDir}`
+  )
+}
 // electron-vite injects this in dev (Vite dev server URL). Undefined in prod.
 const rendererDevUrl = process.env.ELECTRON_RENDERER_URL
 
@@ -433,7 +450,7 @@ function createMainWindow(): BrowserWindow {
     height: 720,
     minWidth: 640,
     minHeight: 480,
-    title: "DesKit",
+    title: lanSimulation ? `DesKit - ${lanSimulation.deviceName}` : "DesKit",
     show: false, // launcher app stays in tray; window is shown on demand
     backgroundColor: "#0a0a0a",
     webPreferences: {
@@ -501,6 +518,17 @@ function trayActions() {
   }
 }
 
+async function initLan(enabled: boolean): Promise<void> {
+  try {
+    await lan.init(enabled)
+  } catch (err) {
+    if (!lanSimulation || !(err instanceof LanCredentialLoadError)) throw err
+    console.warn("[deskit] resetting unreadable LAN simulation credentials", err)
+    await resetDevLanSimulationCredentials(lanSimulation)
+    await lan.init(enabled)
+  }
+}
+
 // Single-instance lock: focusing the existing packaged app is friendlier than
 // silently launching a duplicate process that fights for the same resources.
 // In dev, skip the lock so stale Electron processes do not steal restarts and
@@ -533,6 +561,7 @@ if (!gotLock) {
     lan = new LanService({
       userDataDir: app.getPath("userData"),
       adapter: new BonjourLanDiscoveryAdapter(),
+      deviceName: lanSimulation?.deviceName,
       protector: {
         encrypt: (plainText) => {
           if (!safeStorage.isEncryptionAvailable()) {
@@ -551,7 +580,7 @@ if (!gotLock) {
 
     let settings = await launcher.init()
     try {
-      await lan.init(settings.lanEnabled)
+      await initLan(settings.lanEnabled)
     } catch (err) {
       console.error("[deskit] failed to initialize LAN discovery", err)
       settings = await launcher.updateSettings({ lanEnabled: false })
@@ -561,6 +590,7 @@ if (!gotLock) {
     // Pre-warm both the main window (so the first show is instant) and the
     // app cache (so the first launcher query has results).
     mainWindow = createMainWindow()
+    if (lanSimulation) showMainWindow()
     ensureSearchWindow(searchWindowDeps())
     void launcher.refreshApps()
 

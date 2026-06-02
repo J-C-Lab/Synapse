@@ -43,13 +43,17 @@ const electronAPI = {
   listLanDevices: () => ipcRenderer.invoke("lan:devices"),
   listLanPairings: () => ipcRenderer.invoke("lan:pairings"),
   pairLanDevice: (deviceId: string) => ipcRenderer.invoke("lan:pair", deviceId),
-  confirmLanPairing: (pairingId: string) => ipcRenderer.invoke("lan:pairing-confirm", pairingId),
+  confirmLanPairing: (pairingId: string, sas: string) =>
+    ipcRenderer.invoke("lan:pairing-confirm", pairingId, sas),
   rejectLanPairing: (pairingId: string) => ipcRenderer.invoke("lan:pairing-reject", pairingId),
+  disconnectLanDevice: (deviceId: string) => ipcRenderer.invoke("lan:disconnect", deviceId),
   listLanTransfers: () => ipcRenderer.invoke("lan:transfers"),
   sendLanFile: (deviceId: string) => ipcRenderer.invoke("lan:send-file", deviceId),
   resumeLanTransfer: (transferId: string) => ipcRenderer.invoke("lan:transfer-resume", transferId),
   acceptLanTransfer: (transferId: string) => ipcRenderer.invoke("lan:transfer-accept", transferId),
   rejectLanTransfer: (transferId: string) => ipcRenderer.invoke("lan:transfer-reject", transferId),
+  removeLanTransferHistory: (transferId: string) =>
+    ipcRenderer.invoke("lan:transfer-history-remove", transferId),
 
   // ---- Plugins ----
   listPlugins: () => ipcRenderer.invoke("plugin:list"),

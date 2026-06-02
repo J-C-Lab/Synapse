@@ -3,7 +3,11 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { lanCredentialFilePath, LanCredentialStore } from "./credential-store"
+import {
+  lanCredentialFilePath,
+  LanCredentialLoadError,
+  LanCredentialStore,
+} from "./credential-store"
 
 describe("lanCredentialStore", () => {
   let dir: string
@@ -34,5 +38,22 @@ describe("lanCredentialStore", () => {
 
     expect(stored).not.toContain(created.privateKeyPem)
     expect(loaded).toEqual(created)
+  })
+
+  it("identifies a stored private key that can no longer be decrypted", async () => {
+    const filePath = lanCredentialFilePath(dir)
+    await new LanCredentialStore(filePath, {
+      encrypt: (value) => value,
+      decrypt: (value) => value,
+    }).loadOrCreate({ deviceId: "desktop", name: "Desktop" })
+
+    await expect(
+      new LanCredentialStore(filePath, {
+        encrypt: (value) => value,
+        decrypt: () => {
+          throw new Error("unavailable")
+        },
+      }).loadOrCreate({ deviceId: "desktop", name: "Desktop" })
+    ).rejects.toBeInstanceOf(LanCredentialLoadError)
   })
 })

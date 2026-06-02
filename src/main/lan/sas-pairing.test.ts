@@ -25,8 +25,17 @@ describe("sasPairingManager", () => {
 
     expect(outgoing.pairing.sas).toMatch(/^\d{6}$/)
     expect(incoming.sas).toBe(outgoing.pairing.sas)
-    expect(initiator.confirm(challenge.id)).toMatchObject({ deviceId: "bob" })
-    expect(responder.confirm(challenge.id)).toMatchObject({ deviceId: "alice" })
+    expect(() => initiator.prepareOutgoingConfirmation(challenge.id, "000000")).toThrow(
+      "Security code is incorrect."
+    )
+    expect(initiator.prepareOutgoingConfirmation(challenge.id, outgoing.pairing.sas)).toMatchObject(
+      { deviceId: "bob" }
+    )
+    expect(responder.prepareIncomingConfirmation(challenge.id)).toMatchObject({
+      deviceId: "alice",
+    })
+    initiator.markConfirmed(challenge.id, "outgoing")
+    responder.markConfirmed(challenge.id, "incoming")
   })
 
   it("rejects a reveal that does not match the commitment", () => {

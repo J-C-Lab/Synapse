@@ -7,13 +7,15 @@ export interface LanIpcService {
   listDevices: () => LanDevice[]
   listPairings: () => LanPairing[]
   pair: (deviceId: string) => Promise<LanPairing>
-  confirmPairing: (pairingId: string) => Promise<LanPairing[]>
-  rejectPairing: (pairingId: string) => LanPairing[]
+  confirmPairing: (pairingId: string, sas: string) => Promise<LanPairing[]>
+  rejectPairing: (pairingId: string) => Promise<LanPairing[]>
+  disconnect: (deviceId: string) => Promise<void>
   listTransfers: () => LanTransfer[]
   sendFile: (deviceId: string, filePath: string) => Promise<LanTransfer>
   resumeTransfer: (transferId: string) => Promise<LanTransfer>
   acceptTransfer: (transferId: string, destinationPath: string) => Promise<LanTransfer>
   rejectTransfer: (transferId: string) => Promise<LanTransfer>
+  removeTransferHistory: (transferId: string) => Promise<LanTransfer[]>
 }
 
 export interface RegisterLanIpcOptions {
@@ -47,13 +49,17 @@ export function registerLanIpc(
     requireTrustedSender(event, "lan:pair", options.isTrustedSender)
     return service.pair(requireString(deviceId, "deviceId"))
   })
-  ipcMain.handle("lan:pairing-confirm", (event, pairingId: unknown) => {
+  ipcMain.handle("lan:pairing-confirm", (event, pairingId: unknown, sas: unknown) => {
     requireTrustedSender(event, "lan:pairing-confirm", options.isTrustedSender)
-    return service.confirmPairing(requireString(pairingId, "pairingId"))
+    return service.confirmPairing(requireString(pairingId, "pairingId"), requireSas(sas))
   })
   ipcMain.handle("lan:pairing-reject", (event, pairingId: unknown) => {
     requireTrustedSender(event, "lan:pairing-reject", options.isTrustedSender)
     return service.rejectPairing(requireString(pairingId, "pairingId"))
+  })
+  ipcMain.handle("lan:disconnect", (event, deviceId: unknown) => {
+    requireTrustedSender(event, "lan:disconnect", options.isTrustedSender)
+    return service.disconnect(requireString(deviceId, "deviceId"))
   })
   ipcMain.handle("lan:transfers", (event) => {
     requireTrustedSender(event, "lan:transfers", options.isTrustedSender)
@@ -80,6 +86,10 @@ export function registerLanIpc(
     requireTrustedSender(event, "lan:transfer-reject", options.isTrustedSender)
     return service.rejectTransfer(requireString(transferId, "transferId"))
   })
+  ipcMain.handle("lan:transfer-history-remove", (event, transferId: unknown) => {
+    requireTrustedSender(event, "lan:transfer-history-remove", options.isTrustedSender)
+    return service.removeTransferHistory(requireString(transferId, "transferId"))
+  })
   service.on("devices-changed", options.onDevicesChanged)
   service.on("status-changed", options.onStatusChanged)
   service.on("pairings-changed", options.onPairingsChanged)
@@ -89,6 +99,12 @@ export function registerLanIpc(
 function requireString(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${label} must be a string.`)
   return value.trim()
+}
+
+function requireSas(value: unknown): string {
+  const sas = requireString(value, "sas")
+  if (!/^\d{6}$/.test(sas)) throw new Error("sas must contain six digits.")
+  return sas
 }
 
 function requireTrustedSender(

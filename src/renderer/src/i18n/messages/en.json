@@ -171,11 +171,13 @@
     "actions": {
       "refresh": "Refresh",
       "pair": "Connect",
+      "disconnect": "Disconnect",
       "sendFile": "Send file",
-      "confirm": "Codes match, confirm",
+      "confirm": "Confirm connection",
       "reject": "Reject",
       "accept": "Receive and save",
       "resume": "Resume",
+      "deleteHistory": "Delete record",
       "dismissGuide": "Got it",
       "dismissGuideOverlay": "Close guide overlay"
     },
@@ -202,9 +204,12 @@
     },
     "pairings": {
       "title": "Confirm new device",
-      "subtitle": "Compare the six-digit security code on both devices. Connect only when the numbers match.",
+      "subtitle": "The device you are connecting to shows a six-digit code. Enter it here to connect.",
       "sas": "Security code",
-      "confirmHint": "Reject the connection if the two devices show different numbers.",
+      "showCodeHint": "Enter this code on the device that started the connection.",
+      "enterCodeTitle": "Enter security code",
+      "enterCodeBody": "Enter the six-digit code shown on {{name}} to connect.",
+      "invalidCode": "That code is incorrect. Check the other device and try again.",
       "incoming": "This device wants to connect",
       "outgoing": "Connecting to this device"
     },

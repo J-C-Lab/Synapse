@@ -27,11 +27,13 @@ function createHarness(trusted = true) {
     pair: vi.fn(),
     confirmPairing: vi.fn(),
     rejectPairing: vi.fn(),
+    disconnect: vi.fn(),
     listTransfers: vi.fn(() => []),
     sendFile: vi.fn(),
     resumeTransfer: vi.fn(),
     acceptTransfer: vi.fn(),
     rejectTransfer: vi.fn(),
+    removeTransferHistory: vi.fn(),
   })
   const onDevicesChanged = vi.fn()
   const onStatusChanged = vi.fn()
@@ -91,5 +93,21 @@ describe("registerLanIpc", () => {
       handlers.get("lan:send-file")?.({} as IpcMainInvokeEvent, "peer")
     ).resolves.toBeNull()
     expect(service.sendFile).not.toHaveBeenCalled()
+  })
+
+  it("forwards transfer history deletion", async () => {
+    const { handlers, service } = createHarness()
+
+    await handlers.get("lan:transfer-history-remove")?.({} as IpcMainInvokeEvent, "transfer")
+
+    expect(service.removeTransferHistory).toHaveBeenCalledWith("transfer")
+  })
+
+  it("forwards device disconnection", async () => {
+    const { handlers, service } = createHarness()
+
+    await handlers.get("lan:disconnect")?.({} as IpcMainInvokeEvent, "peer")
+
+    expect(service.disconnect).toHaveBeenCalledWith("peer")
   })
 })

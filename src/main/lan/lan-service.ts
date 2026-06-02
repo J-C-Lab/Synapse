@@ -13,6 +13,7 @@ export interface LanServiceOptions {
   userDataDir: string
   adapter: LanDiscoveryAdapter
   protector: SecretProtector
+  deviceName?: string
   now?: () => number
 }
 
@@ -27,7 +28,10 @@ export class LanService extends EventEmitter {
 
   constructor(private readonly options: LanServiceOptions) {
     super()
-    this.identityStore = new LanIdentityStore(lanIdentityFilePath(options.userDataDir))
+    this.identityStore = new LanIdentityStore(
+      lanIdentityFilePath(options.userDataDir),
+      options.deviceName
+    )
     this.credentialStore = new LanCredentialStore(
       lanCredentialFilePath(options.userDataDir),
       options.protector
@@ -69,6 +73,7 @@ export class LanService extends EventEmitter {
     })
     this.secure.on("pairings-changed", (pairings) => this.emit("pairings-changed", pairings))
     this.secure.on("transfers-changed", (transfers) => this.emit("transfers-changed", transfers))
+    this.secure.on("trusted-devices-changed", () => this.discovery.refreshDevices())
     await this.discovery.init(false)
     if (enabled) await this.start()
     return this.getStatus()
@@ -110,14 +115,18 @@ export class LanService extends EventEmitter {
     return this.requireSecure().pair(this.requireOnlineDevice(deviceId))
   }
 
-  async confirmPairing(id: string): Promise<LanPairing[]> {
-    const pairings = await this.requireSecure().confirmPairing(id)
+  async confirmPairing(id: string, sas: string): Promise<LanPairing[]> {
+    const pairings = await this.requireSecure().confirmPairing(id, sas)
     this.discovery.refreshDevices()
     return pairings
   }
 
-  rejectPairing(id: string): LanPairing[] {
+  async rejectPairing(id: string): Promise<LanPairing[]> {
     return this.requireSecure().rejectPairing(id)
+  }
+
+  async disconnect(deviceId: string): Promise<void> {
+    await this.requireSecure().disconnect(this.requireOnlineDevice(deviceId))
   }
 
   async sendFile(deviceId: string, sourcePath: string): Promise<LanTransfer> {
@@ -134,6 +143,10 @@ export class LanService extends EventEmitter {
 
   async rejectTransfer(id: string): Promise<LanTransfer> {
     return this.requireSecure().rejectTransfer(id)
+  }
+
+  async removeTransferHistory(id: string): Promise<LanTransfer[]> {
+    return this.requireSecure().removeTransferHistory(id)
   }
 
   private findDevice(deviceId: string): LanDevice | null {
