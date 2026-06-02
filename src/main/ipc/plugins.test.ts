@@ -111,6 +111,31 @@ describe("plugin ipc handlers", () => {
     expect(host.installPackage).toHaveBeenCalledWith("C:/tmp/plugin.deskit")
   })
 
+  it("imports from a picked file", async () => {
+    const host = fakeHost()
+    const pickPackageFile = vi.fn(async () => "C:/tmp/picked.deskit")
+    const handlers = createPluginIpcHandlers(host, { pickPackageFile })
+
+    await expect(handlers.importFromFile()).resolves.toEqual({
+      pluginId: "com.deskit.package",
+      zipPath: "C:/tmp/picked.deskit",
+    })
+    expect(host.installPackage).toHaveBeenCalledWith("C:/tmp/picked.deskit")
+  })
+
+  it("returns null when the import picker is cancelled", async () => {
+    const host = fakeHost()
+    const handlers = createPluginIpcHandlers(host, { pickPackageFile: vi.fn(async () => null) })
+
+    await expect(handlers.importFromFile()).resolves.toBeNull()
+    expect(host.installPackage).not.toHaveBeenCalled()
+  })
+
+  it("reports not-implemented when no picker is wired", async () => {
+    const handlers = createPluginIpcHandlers(fakeHost())
+    await expect(handlers.importFromFile()).rejects.toBeInstanceOf(PluginHostNotImplementedError)
+  })
+
   it("validates and forwards marketplace install payloads", async () => {
     const host = fakeHost()
     const handlers = createPluginIpcHandlers(host)

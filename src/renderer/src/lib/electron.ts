@@ -132,6 +132,19 @@ export async function installPluginPackage(zipPath: string): Promise<PluginRegis
   return unwrapIpcResult(await api().installPluginPackage(zipPath))
 }
 
+/**
+ * Open the native file picker and install the chosen `.deskit` package.
+ * Resolves to null if the user cancelled the dialog.
+ */
+export async function importPluginFromFile(): Promise<PluginRegistryEntry | null> {
+  return unwrapIpcResult(await api().importPluginFromFile())
+}
+
+/** Resolve the absolute path of a dropped File (Electron 33 removed File.path). */
+export function droppedFilePath(file: File): string {
+  return api().getDroppedFilePath(file)
+}
+
 export async function uninstallPlugin(pluginId: string): Promise<void> {
   unwrapIpcResult(await api().uninstallPlugin(pluginId))
 }

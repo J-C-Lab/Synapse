@@ -119,6 +119,14 @@
       "output": "release",
       "buildResources": "resources"
     },
+    "fileAssociations": [
+      {
+        "ext": "deskit",
+        "name": "DesKit Plugin",
+        "description": "DesKit plugin package",
+        "role": "Viewer"
+      }
+    ],
     "files": [
       "out/**/*",
       "resources/**/*",

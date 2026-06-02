@@ -8,6 +8,7 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  dialog,
   ipcMain,
   Menu,
   nativeImage,
@@ -131,6 +132,11 @@ function registerStaticProtocol(): void {
 const launcher = new LauncherService()
 let plugins: PluginHost
 let mainWindow: BrowserWindow | null = null
+// A `.deskit` path from an OS "open with" before the plugin host finished
+// initializing — replayed once init completes. Also guards against handling
+// the same import twice concurrently.
+let pendingDeskitImport: string | null = null
+let deskitImportInFlight = false
 // Tracks whether quit was explicitly requested through the tray menu, so
 // the main-window close handler can distinguish "user clicked X" (hide)
 // from "user picked Quit" (let the close go through).
@@ -217,7 +223,64 @@ function registerIpc(): void {
   registerPluginIpc(ipcMain, plugins, {
     isTrustedSender: isTrustedIpcSender,
     onRegistryChanged: broadcastPluginRegistryChanged,
+    pickPackageFile: pickDeskitPackageFile,
   })
+}
+
+// Open a native picker filtered to `.deskit` packages. Returns the chosen
+// absolute path, or null when the user cancels.
+async function pickDeskitPackageFile(): Promise<string | null> {
+  const options: Electron.OpenDialogOptions = {
+    title: "Import DesKit Plugin",
+    properties: ["openFile"],
+    filters: [{ name: "DesKit Plugin", extensions: ["deskit"] }],
+  }
+  const parent = BrowserWindow.getFocusedWindow() ?? mainWindow
+  const result =
+    parent && !parent.isDestroyed()
+      ? await dialog.showOpenDialog(parent, options)
+      : await dialog.showOpenDialog(options)
+  if (result.canceled) return null
+  return result.filePaths[0] ?? null
+}
+
+// First `.deskit` path found in a process argv list (OS "open with" passes the
+// file as a launch argument on Windows/Linux). Ignores Electron's own flags.
+function findDeskitArg(argv: string[]): string | null {
+  return argv.find((arg) => !arg.startsWith("-") && arg.toLowerCase().endsWith(".deskit")) ?? null
+}
+
+// Install a `.deskit` opened from the OS (file association / drag-to-icon).
+// Confirms first, then installs through the host and surfaces the result.
+async function importDeskitFromOs(filePath: string): Promise<void> {
+  if (!plugins) {
+    pendingDeskitImport = filePath
+    return
+  }
+  if (deskitImportInFlight) return
+  deskitImportInFlight = true
+  try {
+    showMainWindow()
+    const confirm = await dialog.showMessageBox({
+      type: "question",
+      buttons: ["Install", "Cancel"],
+      defaultId: 0,
+      cancelId: 1,
+      message: "Install this DesKit plugin?",
+      detail: filePath,
+    })
+    if (confirm.response !== 0) return
+    const entry = await plugins.installPackage(filePath)
+    await dialog.showMessageBox({
+      type: "info",
+      message: "Plugin installed",
+      detail: entry.manifest?.name ?? entry.pluginId,
+    })
+  } catch (err) {
+    dialog.showErrorBox("Plugin import failed", err instanceof Error ? err.message : String(err))
+  } finally {
+    deskitImportInFlight = false
+  }
 }
 
 function isTrustedIpcSender(event: IpcMainInvokeEvent): boolean {
@@ -441,10 +504,23 @@ const gotLock = !shouldUseSingleInstanceLock || app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
+  // macOS delivers "open with" through this event, possibly before the app is
+  // ready — importDeskitFromOs queues until the plugin host exists.
+  app.on("open-file", (event, filePath) => {
+    event.preventDefault()
+    if (filePath.toLowerCase().endsWith(".deskit")) void importDeskitFromOs(filePath)
+  })
+
   if (shouldUseSingleInstanceLock) {
-    app.on("second-instance", () => {
-      // Second launch should re-open the launcher rather than steal focus
-      // from whatever the user is doing — matches PowerToys behaviour.
+    app.on("second-instance", (_event, argv) => {
+      // A second launch carrying a .deskit file (Windows/Linux "open with")
+      // routes to import; otherwise re-open the launcher rather than steal
+      // focus from whatever the user is doing — matches PowerToys behaviour.
+      const deskitArg = findDeskitArg(argv)
+      if (deskitArg) {
+        void importDeskitFromOs(deskitArg)
+        return
+      }
       showSearchWindow(searchWindowDeps())
     })
   }
@@ -469,6 +545,12 @@ if (!gotLock) {
 
     const settings = await launcher.init()
     await plugins.init()
+
+    // Replay a queued macOS open-file, or a .deskit passed on first launch
+    // (Windows/Linux "open with"), now that the plugin host is ready.
+    const launchDeskit = pendingDeskitImport ?? findDeskitArg(process.argv.slice(1))
+    pendingDeskitImport = null
+    if (launchDeskit) void importDeskitFromOs(launchDeskit)
 
     // Pre-warm both the main window (so the first show is instant) and the
     // app cache (so the first launcher query has results).

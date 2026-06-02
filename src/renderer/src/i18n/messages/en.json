@@ -101,8 +101,12 @@
       "disable": "Disable",
       "reload": "Reload",
       "uninstall": "Uninstall",
-      "refresh": "Refresh"
+      "refresh": "Refresh",
+      "import": "Import .deskit",
+      "importing": "Importing…"
     },
+    "dropHint": "Drop a .deskit file to import",
+    "importInvalid": "Only .deskit files can be imported.",
     "preferences": {
       "title": "Preferences",
       "body": "Changes are saved to the plugin preference store.",
@@ -113,7 +117,8 @@
       "disabled": "Plugin disabled.",
       "reloaded": "Plugin reloaded.",
       "uninstalled": "Plugin uninstalled.",
-      "preferenceSaved": "Preference saved."
+      "preferenceSaved": "Preference saved.",
+      "imported": "Plugin imported."
     }
   },
   "marketplace": {

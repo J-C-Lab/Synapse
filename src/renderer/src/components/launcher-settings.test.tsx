@@ -36,6 +36,8 @@ function installElectronApi(settings: DeskitUserSettings): TestElectronApi {
     setPluginPreference: vi.fn().mockResolvedValue(ok(undefined)),
     installPluginFolder: vi.fn().mockResolvedValue(ok(null)),
     installPluginPackage: vi.fn().mockResolvedValue(ok(null)),
+    importPluginFromFile: vi.fn().mockResolvedValue(ok(null)),
+    getDroppedFilePath: vi.fn(() => ""),
     uninstallPlugin: vi.fn().mockResolvedValue(ok(undefined)),
     reloadPlugin: vi.fn().mockResolvedValue(ok(undefined)),
     searchPluginCommands: vi.fn().mockResolvedValue(ok([])),

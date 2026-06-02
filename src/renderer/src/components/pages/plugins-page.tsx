@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 import type { PluginRegistryEntry } from "@/lib/electron"
-import { AlertCircle, RefreshCw, Trash2 } from "lucide-react"
+import { AlertCircle, Download, RefreshCw, Trash2 } from "lucide-react"
 import { useCallback, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
@@ -28,7 +28,10 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import {
+  droppedFilePath,
   ElectronIpcError,
+  importPluginFromFile,
+  installPluginPackage,
   isElectron,
   listPlugins,
   onPluginRegistryChanged,
@@ -50,6 +53,8 @@ export function PluginsPage() {
   const [loading, setLoading] = useState(electronReady)
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState<string | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [dragActive, setDragActive] = useState(false)
 
   const load = useCallback(async () => {
     if (!electronReady) return
@@ -69,6 +74,49 @@ export function PluginsPage() {
     void load()
     return onPluginRegistryChanged((nextPlugins) => setPlugins(nextPlugins))
   }, [electronReady, load])
+
+  // The host broadcasts a registry change after every install, so the plugin
+  // list refreshes itself via onPluginRegistryChanged — these handlers only
+  // drive the picker/drop UX and surface success/error.
+  async function runImport(action: () => Promise<void>) {
+    setImporting(true)
+    try {
+      await action()
+      setError(null)
+    } catch (err) {
+      const message = errorMessage(err)
+      setError(message)
+      toast.error(message)
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  async function onImportClick() {
+    await runImport(async () => {
+      const plugin = await importPluginFromFile()
+      // null = user cancelled the picker; nothing to report.
+      if (plugin) toast.success(t("plugins.toasts.imported"))
+    })
+  }
+
+  async function onDrop(event: React.DragEvent) {
+    event.preventDefault()
+    setDragActive(false)
+    if (importing) return
+    const files = Array.from(event.dataTransfer.files)
+    const deskitFiles = files.filter((file) => file.name.toLowerCase().endsWith(".deskit"))
+    if (deskitFiles.length === 0) {
+      if (files.length > 0) toast.error(t("plugins.importInvalid"))
+      return
+    }
+    await runImport(async () => {
+      for (const file of deskitFiles) {
+        await installPluginPackage(droppedFilePath(file))
+      }
+      toast.success(t("plugins.toasts.imported"))
+    })
+  }
 
   async function onToggle(plugin: PluginRegistryEntry, enabled: boolean) {
     await mutate(`toggle:${plugin.pluginId}`, async () => {
@@ -148,61 +196,85 @@ export function PluginsPage() {
   }
 
   return (
-    <PageFrame
-      title={t("plugins.title")}
-      subtitle={t("plugins.subtitle")}
-      action={
-        <Button variant="outline" size="sm" disabled={loading} onClick={() => void load()}>
-          <RefreshCw className={cn("size-4", loading && "animate-spin")} aria-hidden />
-          {t("plugins.actions.refresh")}
-        </Button>
-      }
+    <div
+      className="relative"
+      onDragOver={(event) => {
+        event.preventDefault()
+        if (!dragActive) setDragActive(true)
+      }}
+      onDragLeave={(event) => {
+        // Only clear when the pointer actually leaves the drop region.
+        if (event.currentTarget === event.target) setDragActive(false)
+      }}
+      onDrop={(event) => void onDrop(event)}
     >
-      {!loading && plugins.length > 0 && (
-        <p className="text-sm text-muted-foreground">
-          {t("plugins.installedCount", { count: plugins.length })}
-        </p>
-      )}
-
-      {error && (
-        <Alert variant="destructive">
-          <AlertCircle className="size-4" aria-hidden />
-          <AlertTitle>{t("plugins.errorTitle")}</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-
-      {loading ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("plugins.loading")}</CardTitle>
-            <CardDescription>{t("plugins.loadingHint")}</CardDescription>
-          </CardHeader>
-        </Card>
-      ) : plugins.length === 0 ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("plugins.emptyTitle")}</CardTitle>
-            <CardDescription>{t("plugins.emptyBody")}</CardDescription>
-          </CardHeader>
-        </Card>
-      ) : (
-        <div className="flex flex-col gap-3">
-          {plugins.map((plugin) => (
-            <PluginCard
-              key={`${plugin.pluginId}:${plugin.source.kind}:${plugin.rootDir}`}
-              locale={i18n.language}
-              pending={pending}
-              plugin={plugin}
-              onPreferenceChange={onPreferenceChange}
-              onReload={onReload}
-              onToggle={onToggle}
-              onUninstall={onUninstall}
-            />
-          ))}
+      {dragActive && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-primary bg-background/80">
+          <p className="text-sm font-medium text-primary">{t("plugins.dropHint")}</p>
         </div>
       )}
-    </PageFrame>
+      <PageFrame
+        title={t("plugins.title")}
+        subtitle={t("plugins.subtitle")}
+        action={
+          <div className="flex items-center gap-2">
+            <Button size="sm" disabled={importing} onClick={() => void onImportClick()}>
+              <Download className={cn("size-4", importing && "animate-pulse")} aria-hidden />
+              {t(importing ? "plugins.actions.importing" : "plugins.actions.import")}
+            </Button>
+            <Button variant="outline" size="sm" disabled={loading} onClick={() => void load()}>
+              <RefreshCw className={cn("size-4", loading && "animate-spin")} aria-hidden />
+              {t("plugins.actions.refresh")}
+            </Button>
+          </div>
+        }
+      >
+        {!loading && plugins.length > 0 && (
+          <p className="text-sm text-muted-foreground">
+            {t("plugins.installedCount", { count: plugins.length })}
+          </p>
+        )}
+
+        {error && (
+          <Alert variant="destructive">
+            <AlertCircle className="size-4" aria-hidden />
+            <AlertTitle>{t("plugins.errorTitle")}</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+
+        {loading ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>{t("plugins.loading")}</CardTitle>
+              <CardDescription>{t("plugins.loadingHint")}</CardDescription>
+            </CardHeader>
+          </Card>
+        ) : plugins.length === 0 ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>{t("plugins.emptyTitle")}</CardTitle>
+              <CardDescription>{t("plugins.emptyBody")}</CardDescription>
+            </CardHeader>
+          </Card>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {plugins.map((plugin) => (
+              <PluginCard
+                key={`${plugin.pluginId}:${plugin.source.kind}:${plugin.rootDir}`}
+                locale={i18n.language}
+                pending={pending}
+                plugin={plugin}
+                onPreferenceChange={onPreferenceChange}
+                onReload={onReload}
+                onToggle={onToggle}
+                onUninstall={onUninstall}
+              />
+            ))}
+          </div>
+        )}
+      </PageFrame>
+    </div>
   )
 }
 

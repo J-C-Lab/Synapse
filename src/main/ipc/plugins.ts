@@ -50,6 +50,7 @@ export interface PluginIpcHandlers {
   setPreference: (payload: unknown) => Promise<void>
   installFolder: (folderPath: unknown) => Promise<unknown>
   installPackage: (zipPath: unknown) => Promise<unknown>
+  importFromFile: () => Promise<unknown>
   uninstall: (pluginId: unknown) => Promise<void>
   reload: (pluginId?: unknown) => Promise<unknown>
   searchCommands: (query: unknown) => unknown
@@ -59,12 +60,24 @@ export interface PluginIpcHandlers {
   marketplaceInstall: (payload: unknown) => Promise<unknown>
 }
 
-export interface RegisterPluginIpcOptions {
+export interface PluginIpcDeps {
+  /**
+   * Prompts the user to pick a `.deskit` file (Electron file dialog). Returns
+   * the chosen absolute path, or null if cancelled. Injected so the IPC layer
+   * stays free of Electron's `dialog` and remains unit-testable.
+   */
+  pickPackageFile?: () => Promise<string | null>
+}
+
+export interface RegisterPluginIpcOptions extends PluginIpcDeps {
   isTrustedSender: (event: IpcMainInvokeEvent) => boolean
   onRegistryChanged: (entries: unknown) => void
 }
 
-export function createPluginIpcHandlers(host: PluginHost): PluginIpcHandlers {
+export function createPluginIpcHandlers(
+  host: PluginHost,
+  deps: PluginIpcDeps = {}
+): PluginIpcHandlers {
   return {
     list: () => host.list(),
 
@@ -90,6 +103,16 @@ export function createPluginIpcHandlers(host: PluginHost): PluginIpcHandlers {
     installFolder: (folderPath) => host.installFolder(requireString(folderPath, "folderPath")),
 
     installPackage: (zipPath) => host.installPackage(requireString(zipPath, "zipPath")),
+
+    async importFromFile() {
+      if (!deps.pickPackageFile) {
+        throw new PluginHostNotImplementedError("Plugin file import is not available")
+      }
+      const filePath = await deps.pickPackageFile()
+      // User cancelled the file dialog — null is a valid, non-error result.
+      if (!filePath) return null
+      return host.installPackage(filePath)
+    },
 
     uninstall: (pluginId) => host.uninstall(requireString(pluginId, "pluginId")),
 
@@ -133,7 +156,7 @@ export function registerPluginIpc(
   host: PluginHost,
   options: RegisterPluginIpcOptions
 ): void {
-  const handlers = createPluginIpcHandlers(host)
+  const handlers = createPluginIpcHandlers(host, { pickPackageFile: options.pickPackageFile })
 
   ipcMain.handle("plugin:list", (event) =>
     invokePluginIpcHandler("plugin:list", event, () => handlers.list(), options.isTrustedSender)
@@ -175,6 +198,14 @@ export function registerPluginIpc(
       "plugin:install-package",
       event,
       () => handlers.installPackage(zipPath),
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("plugin:import-from-file", (event) =>
+    invokePluginIpcHandler(
+      "plugin:import-from-file",
+      event,
+      () => handlers.importFromFile(),
       options.isTrustedSender
     )
   )

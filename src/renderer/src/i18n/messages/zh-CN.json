@@ -101,8 +101,12 @@
       "disable": "停用",
       "reload": "重载",
       "uninstall": "卸载",
-      "refresh": "刷新"
+      "refresh": "刷新",
+      "import": "导入 .deskit",
+      "importing": "导入中…"
     },
+    "dropHint": "拖入 .deskit 文件即可导入",
+    "importInvalid": "只能导入 .deskit 文件。",
     "preferences": {
       "title": "偏好设置",
       "body": "修改会保存到插件偏好设置存储中。",
@@ -113,7 +117,8 @@
       "disabled": "插件已停用。",
       "reloaded": "插件已重载。",
       "uninstalled": "插件已卸载。",
-      "preferenceSaved": "偏好设置已保存。"
+      "preferenceSaved": "偏好设置已保存。",
+      "imported": "插件已导入。"
     }
   },
   "marketplace": {

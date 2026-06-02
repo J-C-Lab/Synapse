@@ -1,5 +1,5 @@
 import type { IpcRendererEvent } from "electron"
-import { contextBridge, ipcRenderer } from "electron"
+import { contextBridge, ipcRenderer, webUtils } from "electron"
 
 // Local mirror of the renderer-visible global DeskitUserSettings shape.
 // The global declared in index.d.ts is only loaded into the renderer's
@@ -47,6 +47,9 @@ const electronAPI = {
   installPluginFolder: (folderPath: string) =>
     ipcRenderer.invoke("plugin:install-folder", folderPath),
   installPluginPackage: (zipPath: string) => ipcRenderer.invoke("plugin:install-package", zipPath),
+  importPluginFromFile: () => ipcRenderer.invoke("plugin:import-from-file"),
+  // Electron 33 removed File.path; resolve a dropped File's absolute path here.
+  getDroppedFilePath: (file: File) => webUtils.getPathForFile(file),
   uninstallPlugin: (pluginId: string) => ipcRenderer.invoke("plugin:uninstall", pluginId),
   reloadPlugin: (pluginId?: string) => ipcRenderer.invoke("plugin:reload", pluginId),
   searchPluginCommands: (query: string, locale?: string, limit?: number) =>
