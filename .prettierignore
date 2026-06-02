@@ -10,3 +10,4 @@ docs/.source
 docs/superpowers
 *.min.js
 *.min.css
+packages/create-deskit-plugin/template

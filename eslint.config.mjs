@@ -22,6 +22,9 @@ export default antfu(
       "docs/**",
       // shadcn primitives are vendored from upstream; treat as third-party
       "src/renderer/src/components/ui/**",
+      // Scaffolder payload — shipped verbatim to generated plugin projects,
+      // not part of this repo's source program.
+      "packages/create-deskit-plugin/template/**",
     ],
   },
   // Final layer: silence any ESLint rules that would conflict with Prettier

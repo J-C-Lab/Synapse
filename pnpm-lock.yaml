@@ -230,6 +230,15 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  packages/create-deskit-plugin:
+    devDependencies:
+      '@deskit/plugin-cli':
+        specifier: workspace:*
+        version: link:../plugin-cli
+      '@deskit/plugin-manifest':
+        specifier: workspace:*
+        version: link:../plugin-manifest
+
   packages/plugin-cli:
     dependencies:
       '@deskit/plugin-manifest':

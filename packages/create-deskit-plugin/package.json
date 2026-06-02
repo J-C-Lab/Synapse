@@ -1,0 +1,25 @@
+{
+  "name": "create-deskit-plugin",
+  "version": "0.1.0",
+  "description": "Scaffold a new DesKit plugin project",
+  "license": "MIT",
+  "bin": {
+    "create-deskit-plugin": "./dist/index.js"
+  },
+  "files": [
+    "README.md",
+    "dist",
+    "template"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@deskit/plugin-cli": "workspace:*",
+    "@deskit/plugin-manifest": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

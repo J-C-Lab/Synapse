@@ -1,0 +1,17 @@
+{
+  "name": "hello-world",
+  "version": "0.1.0",
+  "description": "A DesKit plugin",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "build": "deskit-plugin build",
+    "dev": "deskit-plugin dev",
+    "validate": "deskit-plugin validate"
+  },
+  "devDependencies": {
+    "@deskit/plugin-cli": "^0.1.0",
+    "@deskit/plugin-sdk": "^0.3.0",
+    "typescript": "^5.9.0"
+  }
+}
