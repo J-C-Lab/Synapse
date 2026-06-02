@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import * as path from "node:path"
 import process from "node:process"
-import * as readline from "node:readline/promises"
+import { cancel, confirm, intro, isCancel, note, outro, text } from "@clack/prompts"
+import pc from "picocolors"
 import {
   defaultCommandId,
   defaultPluginId,
@@ -24,28 +25,73 @@ async function main(argv: string[]): Promise<void> {
   }
 
   const nonInteractive = Boolean(flags.values.get("yes")) || !process.stdin.isTTY
-  const rl = nonInteractive
-    ? undefined
-    : readline.createInterface({ input: process.stdin, output: process.stdout })
+
+  intro(pc.bgCyan(pc.black(" create-deskit-plugin ")))
+
+  const targetDir =
+    flags.positional[0] ??
+    (await prompt(nonInteractive, "my-deskit-plugin", () =>
+      text({
+        message: "Project directory",
+        placeholder: "my-deskit-plugin",
+        defaultValue: "my-deskit-plugin",
+      })
+    ))
+  const baseName = path.basename(path.resolve(targetDir))
+
+  const pluginId =
+    str(flags.values.get("id")) ??
+    (await prompt(nonInteractive, defaultPluginId(baseName), () =>
+      text({
+        message: `Plugin id ${pc.dim("(reverse-DNS, e.g. com.you.my-plugin)")}`,
+        placeholder: defaultPluginId(baseName),
+        defaultValue: defaultPluginId(baseName),
+        validate: (value) =>
+          !value || PLUGIN_ID_PATTERN.test(value)
+            ? undefined
+            : "Use reverse-DNS like com.example.my-plugin",
+      })
+    ))
+  if (!PLUGIN_ID_PATTERN.test(pluginId)) {
+    fail(`Invalid plugin id "${pluginId}". Use reverse-DNS like com.example.my-plugin.`)
+  }
+
+  const displayName =
+    str(flags.values.get("display")) ??
+    (await prompt(nonInteractive, titleCase(baseName), () =>
+      text({
+        message: `Display name ${pc.dim("(shown in the launcher)")}`,
+        placeholder: titleCase(baseName),
+        defaultValue: titleCase(baseName),
+      })
+    ))
+
+  const description =
+    str(flags.values.get("description")) ??
+    (await prompt(nonInteractive, "A DesKit plugin.", () =>
+      text({
+        message: "Description",
+        placeholder: "A DesKit plugin.",
+        defaultValue: "A DesKit plugin.",
+      })
+    ))
+
+  const author =
+    str(flags.values.get("author")) ??
+    (await prompt(nonInteractive, "", () =>
+      text({ message: "Author", placeholder: pc.dim("(optional)"), defaultValue: "" })
+    ))
+
+  const clipboard = flags.values.has("clipboard")
+    ? Boolean(flags.values.get("clipboard"))
+    : await prompt(nonInteractive, false, () =>
+        confirm({
+          message: `Watch the clipboard? ${pc.dim("(adds clipboard:read permission)")}`,
+          initialValue: false,
+        })
+      )
 
   try {
-    const targetDir = await resolveTargetDir(flags, rl)
-    const baseName = path.basename(path.resolve(targetDir))
-
-    const pluginId = await resolvePluginId(flags, rl, baseName)
-    const displayName = await ask(
-      rl,
-      "Display name",
-      str(flags.values.get("display")) ?? titleCase(baseName)
-    )
-    const description = await ask(
-      rl,
-      "Description",
-      str(flags.values.get("description")) ?? "A DesKit plugin."
-    )
-    const author = await ask(rl, "Author", str(flags.values.get("author")) ?? "")
-    const clipboard = await resolveClipboard(flags, rl)
-
     const result = await scaffoldPlugin({
       targetDir,
       templateDir: path.resolve(__dirname, "..", "template"),
@@ -58,52 +104,45 @@ async function main(argv: string[]): Promise<void> {
       clipboard,
       force: Boolean(flags.values.get("force")),
     })
-
     printNextSteps(result.targetDir)
-  } finally {
-    rl?.close()
+  } catch (err) {
+    if (err instanceof ScaffoldError) fail(err.message)
+    throw err
   }
 }
 
-async function resolveTargetDir(flags: Flags, rl?: readline.Interface): Promise<string> {
-  const fromArg = flags.positional[0]
-  if (fromArg) return fromArg
-  return ask(rl, "Project directory", "my-deskit-plugin")
-}
-
-async function resolvePluginId(
-  flags: Flags,
-  rl: readline.Interface | undefined,
-  baseName: string
-): Promise<string> {
-  const fallback = str(flags.values.get("id")) ?? defaultPluginId(baseName)
-  const value = await ask(rl, "Plugin id (reverse-DNS)", fallback)
-  if (!PLUGIN_ID_PATTERN.test(value)) {
-    throw new ScaffoldError(
-      `Invalid plugin id "${value}". Use reverse-DNS like com.example.my-plugin.`
-    )
+/**
+ * Resolve a value either non-interactively (use the fallback) or by running a
+ * @clack prompt, handling Ctrl+C cancellation uniformly.
+ */
+async function prompt<T>(
+  nonInteractive: boolean,
+  fallback: T,
+  ask: () => Promise<T | symbol>
+): Promise<T> {
+  if (nonInteractive) return fallback
+  const value = await ask()
+  if (isCancel(value)) {
+    cancel("Cancelled.")
+    process.exit(0)
   }
   return value
 }
 
-async function resolveClipboard(flags: Flags, rl?: readline.Interface): Promise<boolean> {
-  if (flags.values.has("clipboard")) return Boolean(flags.values.get("clipboard"))
-  if (!rl) return false
-  const answer = (await rl.question("Watch the clipboard? (adds clipboard permission) [y/N] "))
-    .trim()
-    .toLowerCase()
-  return answer === "y" || answer === "yes"
-}
-
-async function ask(
-  rl: readline.Interface | undefined,
-  label: string,
-  fallback: string
-): Promise<string> {
-  if (!rl) return fallback
-  const suffix = fallback ? ` (${fallback})` : ""
-  const answer = (await rl.question(`${label}${suffix}: `)).trim()
-  return answer || fallback
+function printNextSteps(targetDir: string): void {
+  const rel = path.relative(process.cwd(), targetDir) || "."
+  const pm = detectPackageManager()
+  const run = pm === "npm" ? "npm run" : pm
+  const steps = [
+    rel === "." ? null : `cd ${rel}`,
+    `${pm} install`,
+    `${run} build      ${pc.dim("# produce an installable .deskit")}`,
+    `${run} dev        ${pc.dim("# watch + load into a running DesKit")}`,
+  ]
+    .filter(Boolean)
+    .join("\n")
+  note(steps, "Next steps")
+  outro(pc.green("Plugin created. Happy building!"))
 }
 
 function parseFlags(argv: string[]): Flags {
@@ -132,16 +171,6 @@ function parseFlags(argv: string[]): Flags {
   return { positional, values }
 }
 
-function printNextSteps(targetDir: string): void {
-  const rel = path.relative(process.cwd(), targetDir) || "."
-  const pm = detectPackageManager()
-  process.stdout.write(`\nCreated DesKit plugin in ${rel}\n\nNext steps:\n`)
-  if (rel !== ".") process.stdout.write(`  cd ${rel}\n`)
-  process.stdout.write(`  ${pm} install\n`)
-  process.stdout.write(`  ${pm} run build      # produces an installable .deskit\n`)
-  process.stdout.write(`  ${pm} run dev        # watch + load into a running DesKit\n`)
-}
-
 function detectPackageManager(): string {
   const ua = process.env.npm_config_user_agent ?? ""
   if (ua.startsWith("pnpm")) return "pnpm"
@@ -167,6 +196,11 @@ function str(value: string | boolean | undefined): string | undefined {
   return typeof value === "string" ? value : undefined
 }
 
+function fail(message: string): never {
+  cancel(pc.red(message))
+  process.exit(1)
+}
+
 function usage(): string {
   return `create-deskit-plugin — scaffold a new DesKit plugin
 
@@ -187,10 +221,6 @@ Options:
 }
 
 main(process.argv.slice(2)).catch((err) => {
-  if (err instanceof ScaffoldError) {
-    process.stderr.write(`${err.message}\n`)
-    process.exit(1)
-  }
   process.stderr.write(`${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`)
   process.exit(1)
 })

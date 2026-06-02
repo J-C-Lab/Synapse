@@ -1,6 +1,6 @@
 {
   "name": "create-deskit-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Scaffold a new DesKit plugin project",
   "license": "MIT",
   "bin": {
@@ -14,6 +14,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.8.2",
+    "picocolors": "^1.1.1"
   },
   "devDependencies": {
     "@deskit/plugin-cli": "workspace:*",
