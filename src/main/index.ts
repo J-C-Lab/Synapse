@@ -1,5 +1,6 @@
 import type { ClipboardContent } from "@synapse/plugin-sdk"
 import type { IpcMainInvokeEvent } from "electron"
+import type { SecretProtector } from "./lan/credential-store"
 import type { LanDevice, LanPairing, LanStatus, LanTransfer } from "./lan/types"
 import type { SearchWindowDeps } from "./search-window"
 import { Buffer } from "node:buffer"
@@ -20,6 +21,11 @@ import {
   session,
   shell,
 } from "electron"
+import { AgentService } from "./ai/agent-service"
+import { ConversationStore } from "./ai/conversation-store"
+import { aiCredentialFilePath, AiCredentialStore } from "./ai/credential-store"
+import { AnthropicProvider } from "./ai/providers/anthropic-provider"
+import { AiToolRegistry } from "./ai/tool-registry"
 import {
   destroyFloatingBallWindow,
   hideFloatingBallWindow,
@@ -28,6 +34,7 @@ import {
   syncFloatingBallWindow,
   toggleFloatingBallMenu,
 } from "./floating-ball-window"
+import { registerAiIpc } from "./ipc/ai"
 import { registerLanIpc } from "./ipc/lan"
 import { LauncherService } from "./ipc/launcher-service"
 import { registerPluginIpc } from "./ipc/plugins"
@@ -155,6 +162,7 @@ function registerStaticProtocol(): void {
 const launcher = new LauncherService()
 let plugins: PluginHost
 let lan: LanService
+let agent: AgentService
 let mainWindow: BrowserWindow | null = null
 // A `.syn` path from an OS "open with" before the plugin host finished
 // initializing — replayed once init completes. Also guards against handling
@@ -252,6 +260,7 @@ function registerIpc(): void {
     onRegistryChanged: broadcastPluginRegistryChanged,
     pickPackageFile: pickSynapsePackageFile,
   })
+  registerAiIpc(ipcMain, agent, { isTrustedSender: isTrustedIpcSender })
   registerLanIpc(ipcMain, lan, {
     isTrustedSender: isTrustedIpcSender,
     onDevicesChanged: broadcastLanDevicesChanged,
@@ -409,6 +418,22 @@ function broadcast(channel: string, payload: unknown): void {
   }
 }
 
+function broadcastAiChatEvent(event: unknown): void {
+  broadcast("ai:chat:event", event)
+}
+
+function osSecretProtector(): SecretProtector {
+  return {
+    encrypt: (plainText) => {
+      if (!safeStorage.isEncryptionAvailable()) {
+        throw new Error("OS-backed encryption is unavailable.")
+      }
+      return safeStorage.encryptString(plainText).toString("base64")
+    },
+    decrypt: (encryptedText) => safeStorage.decryptString(Buffer.from(encryptedText, "base64")),
+  }
+}
+
 function coercePatch(value: unknown): Partial<{
   hotkey: string
   themeMode: "light" | "dark" | "system"
@@ -484,6 +509,20 @@ function createPluginHost(): PluginHost {
 
 function pluginResourcesDir(): string {
   return path.join(app.getAppPath(), "resources")
+}
+
+function createAgentService(): AgentService {
+  const userDataDir = app.getPath("userData")
+  return new AgentService({
+    credentials: new AiCredentialStore({
+      filePath: aiCredentialFilePath(userDataDir),
+      protector: osSecretProtector(),
+    }),
+    tools: new AiToolRegistry(plugins),
+    conversations: new ConversationStore(path.join(userDataDir, "ai", "conversations")),
+    createProvider: (apiKey) => new AnthropicProvider({ apiKey }),
+    sendEvent: broadcastAiChatEvent,
+  })
 }
 
 function floatingBallDeps() {
@@ -649,6 +688,7 @@ if (!gotLock) {
         decrypt: (encryptedText) => safeStorage.decryptString(Buffer.from(encryptedText, "base64")),
       },
     })
+    agent = createAgentService()
     registerIpc()
 
     // Remove the default File/Edit/View… menu bar — the app uses a tray icon

@@ -5,6 +5,7 @@
   },
   "nav": {
     "home": "主页",
+    "assistant": "智能助手",
     "settings": "设置",
     "features": "功能",
     "appLauncher": "应用启动器",
@@ -12,6 +13,19 @@
     "plugins": "插件",
     "marketplace": "应用市场",
     "lanTransfer": "局域网传输"
+  },
+  "chat": {
+    "title": "智能助手",
+    "empty": "向助手提问。它可以调用你已启用的插件工具。",
+    "placeholder": "发送消息…",
+    "keyPrompt": "添加你的 Anthropic API Key 即可开始对话。密钥在本机加密存储，永不离开主进程。",
+    "saveKey": "保存密钥",
+    "usage": "输入 {{input}} · 输出 {{output}} · 缓存 {{cached}}",
+    "approvalTitle": "允许运行此工具？",
+    "approvalBody": "助手想用以下入参运行 {{tool}}：",
+    "allow": "允许一次",
+    "allowAlways": "始终允许",
+    "deny": "拒绝"
   },
   "home": {
     "quickActions": "快捷操作",

@@ -73,6 +73,16 @@ function installElectronApi(settings: SynapseUserSettings): TestElectronApi {
     onLanStatusChanged: vi.fn(() => () => undefined),
     onLanPairingsChanged: vi.fn(() => () => undefined),
     onLanTransfersChanged: vi.fn(() => () => undefined),
+    getAiStatus: vi.fn().mockResolvedValue({ hasKey: false, model: "claude-opus-4-8" }),
+    setAiKey: vi.fn().mockResolvedValue(undefined),
+    deleteAiKey: vi.fn().mockResolvedValue(undefined),
+    listAiTools: vi.fn().mockResolvedValue([]),
+    listAiConversations: vi.fn().mockResolvedValue([]),
+    getAiConversation: vi.fn().mockResolvedValue(undefined),
+    sendAiChat: vi.fn().mockResolvedValue({ stopReason: "end_turn", usage: {} }),
+    cancelAiChat: vi.fn().mockResolvedValue(undefined),
+    approveAiTool: vi.fn().mockResolvedValue(undefined),
+    onAiChatEvent: vi.fn(() => () => undefined),
   } satisfies TestElectronApi
 
   window.electronAPI = api

@@ -20,7 +20,7 @@ export interface ToolHostPort {
 }
 
 export class AiToolRegistry {
-  private safeToFq = new Map<string, string>()
+  private safeToDescriptor = new Map<string, RegisteredToolDescriptor>()
 
   constructor(private readonly host: ToolHostPort) {}
 
@@ -29,31 +29,37 @@ export class AiToolRegistry {
     return this.refresh().map(({ schema }) => schema)
   }
 
+  /** The plugin descriptor behind a model-facing name (for approval/annotations). */
+  describe(safeName: string): RegisteredToolDescriptor | undefined {
+    if (!this.safeToDescriptor.has(safeName)) this.refresh()
+    return this.safeToDescriptor.get(safeName)
+  }
+
   /** Invoke a tool by its model-facing (sanitized) name. */
   async invoke(
     safeName: string,
     input: unknown,
     options: ToolInvocationOptions
   ): Promise<ToolResult> {
-    let fqName = this.safeToFq.get(safeName)
-    if (!fqName) {
+    let descriptor = this.safeToDescriptor.get(safeName)
+    if (!descriptor) {
       // The map may be stale (tools changed since the last list); rebuild once.
       this.refresh()
-      fqName = this.safeToFq.get(safeName)
+      descriptor = this.safeToDescriptor.get(safeName)
     }
-    if (!fqName) throw new Error(`Unknown tool: ${safeName}`)
-    return this.host.invokeTool(fqName, input, options)
+    if (!descriptor) throw new Error(`Unknown tool: ${safeName}`)
+    return this.host.invokeTool(descriptor.fqName, input, options)
   }
 
-  private refresh(): { schema: ProviderToolSchema; fqName: string }[] {
-    this.safeToFq.clear()
+  private refresh(): { schema: ProviderToolSchema; descriptor: RegisteredToolDescriptor }[] {
+    this.safeToDescriptor.clear()
     const used = new Set<string>()
     return this.host.listTools().map((descriptor) => {
       const safeName = uniqueName(sanitizeToolName(descriptor.fqName), used)
       used.add(safeName)
-      this.safeToFq.set(safeName, descriptor.fqName)
+      this.safeToDescriptor.set(safeName, descriptor)
       return {
-        fqName: descriptor.fqName,
+        descriptor,
         schema: {
           name: safeName,
           description: descriptor.manifestTool.description,

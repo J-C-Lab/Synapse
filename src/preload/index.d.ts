@@ -133,7 +133,9 @@ declare global {
     details?: Record<string, unknown>
   }
 
-  type SynapsePluginIpcResult<T> = { ok: true; data: T } | { ok: false; error: SynapsePluginIpcError }
+  type SynapsePluginIpcResult<T> =
+    | { ok: true; data: T }
+    | { ok: false; error: SynapsePluginIpcError }
 
   interface SynapsePluginSource {
     kind: SynapsePluginSourceKind
@@ -217,6 +219,64 @@ declare global {
     | { type: "detail"; [key: string]: unknown }
     | { type: "form"; [key: string]: unknown }
     | { type: "toast"; [key: string]: unknown }
+
+  interface SynapseAiStatus {
+    hasKey: boolean
+    model: string
+  }
+
+  interface SynapseAiTool {
+    name: string
+    description: string
+    inputSchema: { type: "object"; [keyword: string]: unknown }
+  }
+
+  interface SynapseAiTokenUsage {
+    inputTokens: number
+    outputTokens: number
+    cacheCreationInputTokens: number
+    cacheReadInputTokens: number
+  }
+
+  type SynapseAiChatContentBlock =
+    | { type: "text"; text: string }
+    | { type: "tool_use"; id: string; name: string; input: unknown }
+    | { type: "tool_result"; toolUseId: string; content: string; isError?: boolean }
+
+  interface SynapseAiChatMessage {
+    role: "user" | "assistant"
+    content: SynapseAiChatContentBlock[]
+  }
+
+  interface SynapseAiConversationSummary {
+    id: string
+    title?: string
+    updatedAt: number
+  }
+
+  interface SynapseAiConversation {
+    id: string
+    title?: string
+    messages: SynapseAiChatMessage[]
+    createdAt: number
+    updatedAt: number
+  }
+
+  type SynapseAiChatEvent =
+    | { type: "text"; conversationId: string; delta: string }
+    | { type: "tool_call"; conversationId: string; id: string; name: string; input: unknown }
+    | { type: "tool_result"; conversationId: string; id: string; isError: boolean }
+    | {
+        type: "approval_request"
+        conversationId: string
+        approvalId: string
+        toolName: string
+        input: unknown
+      }
+    | { type: "done"; conversationId: string; stopReason: string; usage: SynapseAiTokenUsage }
+    | { type: "error"; conversationId: string; message: string }
+
+  type SynapseAiRememberScope = "once" | "conversation" | "always"
 
   interface Window {
     electronAPI?: {
@@ -304,6 +364,23 @@ declare global {
       onLanStatusChanged: (handler: (status: SynapseLanStatus) => void) => () => void
       onLanPairingsChanged: (handler: (pairings: SynapseLanPairing[]) => void) => () => void
       onLanTransfersChanged: (handler: (transfers: SynapseLanTransfer[]) => void) => () => void
+      getAiStatus: () => Promise<SynapseAiStatus>
+      setAiKey: (key: string) => Promise<void>
+      deleteAiKey: () => Promise<void>
+      listAiTools: () => Promise<SynapseAiTool[]>
+      listAiConversations: () => Promise<SynapseAiConversationSummary[]>
+      getAiConversation: (id: string) => Promise<SynapseAiConversation | undefined>
+      sendAiChat: (
+        conversationId: string,
+        text: string
+      ) => Promise<{ stopReason: string; usage: SynapseAiTokenUsage }>
+      cancelAiChat: (conversationId: string) => Promise<void>
+      approveAiTool: (
+        approvalId: string,
+        allow: boolean,
+        remember?: SynapseAiRememberScope
+      ) => Promise<void>
+      onAiChatEvent: (handler: (event: SynapseAiChatEvent) => void) => () => void
     }
   }
 }

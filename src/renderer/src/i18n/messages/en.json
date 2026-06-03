@@ -5,6 +5,7 @@
   },
   "nav": {
     "home": "Home",
+    "assistant": "Assistant",
     "settings": "Settings",
     "features": "Features",
     "appLauncher": "App Launcher",
@@ -12,6 +13,19 @@
     "plugins": "Plugins",
     "marketplace": "Marketplace",
     "lanTransfer": "LAN Transfer"
+  },
+  "chat": {
+    "title": "Assistant",
+    "empty": "Ask the assistant anything. It can call your enabled plugin tools.",
+    "placeholder": "Send a message…",
+    "keyPrompt": "Add your Anthropic API key to start chatting. It is stored encrypted on this device and never leaves the main process.",
+    "saveKey": "Save key",
+    "usage": "{{input}} in · {{output}} out · {{cached}} cached",
+    "approvalTitle": "Allow this tool to run?",
+    "approvalBody": "The assistant wants to run {{tool}} with these inputs:",
+    "allow": "Allow once",
+    "allowAlways": "Always allow",
+    "deny": "Deny"
   },
   "home": {
     "quickActions": "Quick actions",

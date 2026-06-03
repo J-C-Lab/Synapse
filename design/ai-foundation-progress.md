@@ -12,8 +12,8 @@
 | **P0 协议层**                         | 清单 `contributes.tools` + SDK `tools/ToolContext/ToolResult` + schema 校验 + CLI validate | ✅ 已完成(提交 `61d9cf1`) |
 | **P1 本地工具桥 + 沙箱执行**          | `PluginToolBridge` + 沙箱 `invokeTool` + 权限校验 + 单测                                   | ✅ 已完成                 |
 | **P2 AgentRuntime + Claude provider** | 编排循环 + Anthropic 适配(prompt caching)+ key 凭据库                                      | ✅ 已完成                 |
-| **P3 Chat UI + 审批**                 | Chat 页 + 工具卡片 + ApprovalGate + 流式 IPC                                               | ⬜ **下一步**             |
-| **P4 MCP server(对外)**               | 内置 MCP server 暴露插件工具给 Claude Desktop/Code                                         | ⬜                        |
+| **P3 Chat UI + 审批**                 | Chat 页 + 工具卡片 + ApprovalGate + 流式 IPC                                               | ✅ 已完成                 |
+| **P4 MCP server(对外)**               | 内置 MCP server 暴露插件工具给 Claude Desktop/Code                                         | ⬜ **下一步**             |
 | **P5 MCP client + 多 provider**       | 接入外部 MCP server + OpenAI 适配                                                          | ⬜                        |
 | **P6 记忆/RAG(可选)**                 | 长期记忆工具 + 本地向量检索                                                                | ⬜                        |
 
@@ -73,7 +73,7 @@ MVP 目标范围:**P0–P3** 端到端「插件工具被内置智能体调用」
 
 ## 质量基线(当前)
 
-- `pnpm typecheck` ✅ · `pnpm lint` ✅ · `pnpm test` **316 passed**(P0 +6,P1 +23,P2 +22)
+- `pnpm typecheck` ✅ · `pnpm lint` ✅ · `pnpm test` **331 passed**(P0 +6,P1 +23,P2 +22,P3 +15)
 - commitlint 生效:**subject 必须小写开头**(用 `feat(ai): add ...` 不要 `feat(ai): P1 ...`)。
 - husky/lint-staged 在提交时跑 eslint --fix + prettier,可能改动暂存文件(正常)。
 
@@ -102,22 +102,53 @@ MVP 目标范围:**P0–P3** 端到端「插件工具被内置智能体调用」
 
 ---
 
-## 下一步:P3 — Chat UI + 审批 + 流式 IPC
+## P3 成果(已落地)
 
-目标:**用户在 app 内对话并调用工具**。把 P2 的主进程能力接到渲染层。
+**用户可在 app 内对话并调用工具**。P2 的主进程能力已接到渲染层。
+
+| 文件                                                   | 作用                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/main/ai/approval-gate.ts` (新)                    | `decideApproval(annotations, settings)` 纯函数:`readOnlyHint`→自动放行;`destructiveHint`/`requiresConfirmation`/未标注→ask;`alwaysAsk` 覆盖                                                                                                                           |
+| `src/main/ai/agent-service.ts` (新)                    | `AgentService`:装配 credentials+tools+runtime+store+gate。`chat()` 跑一轮并经 `sendEvent` 流式回推;审批往返(`approve` 钩子→发 `approval_request`→`resolveApproval`);`cancel`、记忆放行(本会话/永久);会话持久化(标题取首条用户消息);无 key 抛 `AgentMissingKeyError`   |
+| `src/main/ai/tool-registry.ts`                         | 新增 `describe(safeName)` 供审批查 annotations(map 改存 descriptor)                                                                                                                                                                                                   |
+| `src/main/ipc/ai.ts` (新)                              | `registerAiIpc` + `AiIpcService`:`ai:status`/`set-key`/`delete-key`/`list-tools`/`list-conversations`/`get-conversation`/`chat`/`cancel`/`approve`;trusted-sender 守卫;`coerceChat`/`coerceApprove` 校验。流式事件经 main 的 `broadcastAiChatEvent` → `ai:chat:event` |
+| `src/main/index.ts`                                    | `createAgentService()` 装配(复用 `osSecretProtector()`);`registerAiIpc`;`broadcastAiChatEvent`                                                                                                                                                                        |
+| `src/preload/index.{ts,d.ts}`                          | ai 方法 + `onAiChatEvent` 订阅 + `Synapse Ai*` 全局类型                                                                                                                                                                                                               |
+| `src/renderer/src/lib/electron.ts`                     | ai 包装函数(唯一 IPC 出口);key 永不回渲染层                                                                                                                                                                                                                           |
+| `src/renderer/src/components/pages/chat-page.tsx` (新) | Chat 页:无 key 时录入 key;消息流;**工具卡片**(名称/状态 running/success/error);破坏性工具弹 Dialog 审批(允许一次/始终允许/拒绝);会话级 token 用量展示;Enter 发送                                                                                                      |
+| `app-shell.tsx` + i18n                                 | 侧栏「智能助手」入口 + `chat.*` / `nav.assistant`(en/zh-CN)                                                                                                                                                                                                           |
+
+**关键不变量(P4+ 注意)**
+
+- 流式协议:`ai:chat` invoke 触发一轮并在结束时 resolve;text/tool/approval/done/error 事件经 `ai:chat:event` 广播(带 `conversationId`,渲染层按 id 过滤)。
+- key 只在主进程:`ai:status` 只回 `{hasKey, model}`;`get` 仅 AgentService 内部用。
+- 审批默认:只读自动放行,其余 ask;记忆「always」存进程内存(非持久——重启重置,P5 可考虑持久化)。
+- 当前单会话/单轮 UI(每次开页 `crypto.randomUUID()` 新会话);会话列表 IPC 已就绪但 UI 未做侧栏历史。
+
+### P3 未尽（可选增强，非阻塞）
+
+- 会话历史侧栏(IPC `ai:list-conversations`/`ai:get-conversation` 已就绪,UI 未接)。
+- 设置页的 provider/模型/工具开关(目前 key 录入在 Chat 空状态;模型固定默认)。
+- Markdown 渲染(目前纯文本 `whitespace-pre-wrap`)。
+- 真实 key 的 app 内端到端冒烟(需手动:配置 key → 让模型调用 hello-world 的 `greet`)。
+
+---
+
+## 下一步:P4 — 内置 MCP server(对外)
+
+目标:**把插件工具经 MCP 暴露给 Claude Desktop/Code 等外部智能体**(decision §11.2:仅 stdio 起步)。
 
 ### 落地要点
 
-1. **AgentService(主进程装配层)**:把 `AiCredentialStore` + `AnthropicProvider` + `AiToolRegistry`(包 `pluginHost`)+ `AgentRuntime` + `ConversationStore` 组装起来,提供 `chat(conversationId, userText, { signal, onText, onEvent, approve })`。从凭据库取 key 构造 provider;无 key 时报可恢复错误。
-2. **ApprovalGate**(纯函数 + 主进程绑定):依据工具 `annotations` 决定自动放行 / 弹审批。需要把 `RegisteredToolDescriptor` 传进 `approve`(见上「关键不变量」——扩展 `ApprovalRequest`)。审批结果可「记住本会话/永久允许」。
-3. **IPC(四段式,design §8)**:`ai:listProviders`/`ai:setProviderKey`(key 不回传)、`ai:listTools`、`ai:chat`(流式:主进程 `webContents.send('ai:chat:event', …)` 回推 text/tool 事件)、`ai:approve`(审批回传)、`ai:listConversations`/`ai:getConversation`。纯逻辑放 `src/main/ipc/ai.ts` 配单测。
-4. **Chat 页(渲染层)**:与 launcher/plugins/lan 并列的路由;消息流 Markdown + **工具调用卡片**(名称/入参/状态:待审批/运行中/成功/失败/可展开结果);破坏性工具弹 `alert-dialog` 审批;设置页 provider 选择 + key 录入 + 模型选择 + 工具开关 + **会话级 token 用量展示**(读 `result.usage`,decision §11.4)。i18n en/zh-CN。
-5. 渲染层只经 `lib/electron.ts` 调 IPC(唯一出口),key 永不到渲染层。
+1. **MCP server(stdio)**:主进程内置一个 MCP server,把 `pluginHost.listTools()`/`invokeTool()` 暴露为标准 MCP tools。建议用官方 `@modelcontextprotocol/sdk`(纯 JS)。工具的 inputSchema/annotations 已按 MCP 字段建模,几乎直接映射。
+2. **传输**:stdio。需要一个可执行入口(单独的 Node 进程 / Electron 子命令),让外部客户端用命令行拉起。考虑 `electron … --mcp-stdio` 或独立 bin。
+3. **复用 P1 桥**:工具执行仍走 `PluginToolBridge`(校验+沙箱+权限),caller 标 `{kind:"mcp"}`;外部 MCP 默认按 `requiresConfirmation` 处理(design §5)——但 stdio server 无 UI,需决定:拒绝破坏性工具 / 配置允许清单 / 仅暴露 readOnly。建议先只暴露 readOnly + 非破坏工具,破坏性需显式 opt-in。
+4. **复用 sanitize**:工具名同样要 sanitize(MCP 工具名约束)。可抽出 `tool-registry.ts` 的 sanitize 供 server 复用。
 
-### P3 验收
+### P4 验收
 
-- 主进程:AgentService + ApprovalGate + `ai:*` 纯逻辑单测(fake provider 驱动,审批放行/拒绝路径)。
-- 真实 key 在 app 内对话冒烟:模型调用 hello-world 的 `greet` 工具并把结果讲回来。
+- MCP server 纯逻辑单测:list/call 往返,readOnly 放行、破坏性按策略处理。
+- 手动:在 Claude Desktop 配置该 stdio server,确认能列出并调用 Synapse 插件工具(如 `greet`)。
 
 ---
 

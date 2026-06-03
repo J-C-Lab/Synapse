@@ -84,6 +84,24 @@ const electronAPI = {
   installMarketplacePlugin: (id: string, version?: string) =>
     ipcRenderer.invoke("marketplace:install", { id, version }),
 
+  // ---- AI assistant ----
+  getAiStatus: () => ipcRenderer.invoke("ai:status"),
+  setAiKey: (key: string) => ipcRenderer.invoke("ai:set-key", key),
+  deleteAiKey: () => ipcRenderer.invoke("ai:delete-key"),
+  listAiTools: () => ipcRenderer.invoke("ai:list-tools"),
+  listAiConversations: () => ipcRenderer.invoke("ai:list-conversations"),
+  getAiConversation: (id: string) => ipcRenderer.invoke("ai:get-conversation", id),
+  sendAiChat: (conversationId: string, text: string) =>
+    ipcRenderer.invoke("ai:chat", { conversationId, text }),
+  cancelAiChat: (conversationId: string) => ipcRenderer.invoke("ai:cancel", conversationId),
+  approveAiTool: (approvalId: string, allow: boolean, remember?: string) =>
+    ipcRenderer.invoke("ai:approve", { approvalId, allow, remember }),
+  onAiChatEvent: (handler: (event: unknown) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
+    ipcRenderer.on("ai:chat:event", listener)
+    return () => ipcRenderer.removeListener("ai:chat:event", listener)
+  },
+
   // Subscribe to the "search window just gained focus" pulse so the
   // renderer can reset its input + selection without polling.
   onLauncherFocus: (handler: () => void): (() => void) => {

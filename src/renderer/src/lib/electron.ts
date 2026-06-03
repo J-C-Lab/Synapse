@@ -280,3 +280,59 @@ export function onLanPairingsChanged(handler: (pairings: LanPairing[]) => void):
 export function onLanTransfersChanged(handler: (transfers: LanTransfer[]) => void): () => void {
   return api().onLanTransfersChanged(handler)
 }
+
+export type AiStatus = SynapseAiStatus
+export type AiTool = SynapseAiTool
+export type AiConversationSummary = SynapseAiConversationSummary
+export type AiConversation = SynapseAiConversation
+export type AiChatMessage = SynapseAiChatMessage
+export type AiChatEvent = SynapseAiChatEvent
+export type AiTokenUsage = SynapseAiTokenUsage
+export type AiRememberScope = SynapseAiRememberScope
+
+export async function getAiStatus(): Promise<AiStatus> {
+  return api().getAiStatus()
+}
+
+export async function setAiKey(key: string): Promise<void> {
+  await api().setAiKey(key)
+}
+
+export async function deleteAiKey(): Promise<void> {
+  await api().deleteAiKey()
+}
+
+export async function listAiTools(): Promise<AiTool[]> {
+  return api().listAiTools()
+}
+
+export async function listAiConversations(): Promise<AiConversationSummary[]> {
+  return api().listAiConversations()
+}
+
+export async function getAiConversation(id: string): Promise<AiConversation | undefined> {
+  return api().getAiConversation(id)
+}
+
+export async function sendAiChat(
+  conversationId: string,
+  text: string
+): Promise<{ stopReason: string; usage: AiTokenUsage }> {
+  return api().sendAiChat(conversationId, text)
+}
+
+export async function cancelAiChat(conversationId: string): Promise<void> {
+  await api().cancelAiChat(conversationId)
+}
+
+export async function approveAiTool(
+  approvalId: string,
+  allow: boolean,
+  remember?: AiRememberScope
+): Promise<void> {
+  await api().approveAiTool(approvalId, allow, remember)
+}
+
+export function onAiChatEvent(handler: (event: AiChatEvent) => void): () => void {
+  return api().onAiChatEvent(handler)
+}

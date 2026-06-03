@@ -1,4 +1,5 @@
 import {
+  Bot,
   CircleDot,
   House,
   Puzzle,
@@ -11,6 +12,7 @@ import { useState } from "react"
 import { useTranslation } from "react-i18next"
 import logoUrl from "@/assets/logo.svg"
 import { AppLauncherPage } from "@/components/pages/app-launcher-page"
+import { ChatPage } from "@/components/pages/chat-page"
 import { FloatingBallPage } from "@/components/pages/floating-ball-page"
 import { HomePage } from "@/components/pages/home-page"
 import { LanTransferPage } from "@/components/pages/lan-transfer-page"
@@ -36,6 +38,7 @@ import { cn } from "@/lib/utils"
 
 export type NavId =
   | "home"
+  | "assistant"
   | "settings"
   | "app-launcher"
   | "floating-ball"
@@ -71,6 +74,16 @@ export function AppShell() {
                   >
                     <House />
                     <span>{t("nav.home")}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    isActive={nav === "assistant"}
+                    onClick={() => setNav("assistant")}
+                    tooltip={t("nav.assistant")}
+                  >
+                    <Bot />
+                    <span>{t("nav.assistant")}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
                 <SidebarMenuItem>
@@ -162,12 +175,16 @@ export function AppShell() {
           <div
             className={cn(
               "mx-auto w-full",
-              nav === "plugins" || nav === "marketplace" || nav === "lan-transfer"
+              nav === "plugins" ||
+                nav === "marketplace" ||
+                nav === "lan-transfer" ||
+                nav === "assistant"
                 ? "max-w-5xl"
                 : "max-w-3xl"
             )}
           >
             {nav === "home" && <HomePage onNavigate={setNav} />}
+            {nav === "assistant" && <ChatPage />}
             {nav === "settings" && <SettingsPage />}
             {nav === "app-launcher" && <AppLauncherPage onNavigate={setNav} />}
             {nav === "floating-ball" && <FloatingBallPage onNavigate={setNav} />}
@@ -185,6 +202,8 @@ function navKey(id: NavId): string {
   switch (id) {
     case "home":
       return "home"
+    case "assistant":
+      return "assistant"
     case "settings":
       return "settings"
     case "app-launcher":
