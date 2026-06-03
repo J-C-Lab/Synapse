@@ -39,6 +39,7 @@
     "docs:start": "pnpm -F docs start"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.100.1",
     "@base-ui/react": "^1.0.0",
     "@radix-ui/react-slot": "^1.2.4",
     "@synapse/plugin-manifest": "workspace:*",

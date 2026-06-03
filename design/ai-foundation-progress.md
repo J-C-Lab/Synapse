@@ -11,8 +11,8 @@
 | ------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------- |
 | **P0 协议层**                         | 清单 `contributes.tools` + SDK `tools/ToolContext/ToolResult` + schema 校验 + CLI validate | ✅ 已完成(提交 `61d9cf1`) |
 | **P1 本地工具桥 + 沙箱执行**          | `PluginToolBridge` + 沙箱 `invokeTool` + 权限校验 + 单测                                   | ✅ 已完成                 |
-| **P2 AgentRuntime + Claude provider** | 编排循环 + Anthropic 适配(prompt caching)+ key 凭据库                                      | ⬜ **下一步**             |
-| **P3 Chat UI + 审批**                 | Chat 页 + 工具卡片 + ApprovalGate + 流式 IPC                                               | ⬜                        |
+| **P2 AgentRuntime + Claude provider** | 编排循环 + Anthropic 适配(prompt caching)+ key 凭据库                                      | ✅ 已完成                 |
+| **P3 Chat UI + 审批**                 | Chat 页 + 工具卡片 + ApprovalGate + 流式 IPC                                               | ⬜ **下一步**             |
 | **P4 MCP server(对外)**               | 内置 MCP server 暴露插件工具给 Claude Desktop/Code                                         | ⬜                        |
 | **P5 MCP client + 多 provider**       | 接入外部 MCP server + OpenAI 适配                                                          | ⬜                        |
 | **P6 记忆/RAG(可选)**                 | 长期记忆工具 + 本地向量检索                                                                | ⬜                        |
@@ -73,47 +73,51 @@ MVP 目标范围:**P0–P3** 端到端「插件工具被内置智能体调用」
 
 ## 质量基线(当前)
 
-- `pnpm typecheck` ✅ · `pnpm lint` ✅ · `pnpm test` **294 passed**(P0 +6,P1 +23)
+- `pnpm typecheck` ✅ · `pnpm lint` ✅ · `pnpm test` **316 passed**(P0 +6,P1 +23,P2 +22)
 - commitlint 生效:**subject 必须小写开头**(用 `feat(ai): add ...` 不要 `feat(ai): P1 ...`)。
 - husky/lint-staged 在提交时跑 eslint --fix + prettier,可能改动暂存文件(正常)。
 
 ---
 
-## 下一步:P2 详细落地建议
+## P2 成果(已落地)
 
-目标:**内置智能体能用插件工具完成任务**(先 CLI/测试驱动,UI 是 P3)。
+**内置智能体能用插件工具完成任务**(主进程 + 测试驱动,UI 是 P3)。全部在 `src/main/ai/`,与 Electron 解耦、纯逻辑配单测。依赖新增 `@anthropic-ai/sdk`(纯 JS,由 `externalizeDepsPlugin` 外置)。
 
-### 建议新增结构(`src/main/ai/`,纯逻辑配单测,与 Electron 解耦)
+| 文件                              | 作用                                                                                                                                                                                                                                                              |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `providers/types.ts`              | provider 中立 IR:`ChatMessage`(text/tool_use/tool_result 块)、`ChatProvider.stream()`、`ProviderRequest`、`ProviderStreamEvent`、`TokenUsage`(含 cache 命中字段)、`addUsage`/`emptyUsage`                                                                         |
+| `providers/anthropic-provider.ts` | Anthropic 适配:`stream()` 转发 text delta + 终结 message;**prompt caching**(system 块打 1 个 breakpoint 同时缓存 tools+system;最后一条消息打 breakpoint 缓存会话前缀);IR↔Messages API 互转;`AnthropicMessagesClient` 端口便于注入测试。默认模型 `claude-opus-4-8` |
+| `tool-registry.ts`                | `AiToolRegistry`:`host.listTools()` → provider schema,**工具名 sanitize**(`com.x/foo`→`com_x_foo`,charset `^[\w-]{1,128}$`,冲突加 `_2`)+ sanitized↔fqName 反查表;`invoke()` 路由回 `host.invokeTool`;`renderToolResultText()` 把 ToolResult 扁平成文本            |
+| `agent-runtime.ts`                | `AgentRuntime.run()`:tool-use 循环(流式→tool_use→执行→tool_result 回灌→重复);`maxSteps`/`maxTokens` 防失控;`AbortSignal` 取消;`approve?` 钩子(P2 默认放行,**P3 ApprovalGate 接这里**);`onText`/`onEvent` 回调供 UI                                                |
+| `credential-store.ts`             | `AiCredentialStore`:provider key 经 `SecretProtector`(safeStorage)加密落盘,**仅主进程**,renderer 永不接触;`get/set/has/delete/list`                                                                                                                               |
+| `conversation-store.ts`           | `ConversationStore`:纯 JSON,每会话一文件,复用 LAN `atomic-json-store`;`get/save/list/delete`;`safeId` 拒绝路径穿越                                                                                                                                                |
 
-```
-src/main/ai/
-├─ providers/
-│  ├─ types.ts            # ChatProvider / ProviderRequest / ProviderEvent / ModelInfo
-│  └─ anthropic.ts        # Anthropic 适配器:@anthropic-ai/sdk,stream(),工具格式翻译,prompt caching
-├─ tool-registry.ts       # ToolRegistry:把 host.listTools() 的工具翻译成 provider tool schema(name sanitize + 反查)
-├─ agent-runtime.ts       # 标准 tool-use 循环(流式、maxSteps、超时、AbortSignal、可取消)
-├─ credential-store.ts    # key 存 OS 凭据库(复用 src/main/lan/credential-store.ts 思路);renderer 永不接触 key
-└─ conversation-store.ts  # 纯 JSON 会话存储(复用 LAN 的 atomic-json-store)
-```
+**关键不变量(P3 必须遵守)**
 
-### P2 落地要点
+- AgentRuntime 入口:`runtime.run({ conversationId, messages, system?, signal?, onText?, onEvent?, approve? })` → `{ messages, stopReason, usage }`。
+- 审批:P3 的 ApprovalGate 实现 `approve(request) => boolean`,按工具 `annotations`(`readOnlyHint` 自动放行 / `destructiveHint`/`requiresConfirmation` 强制人审)决定。注意 `approve` 当前只收到 `{ toolName(sanitized), input }`——P3 若需 annotations,扩展 `AgentRunOptions`/`ApprovalRequest` 把 descriptor 带进来。
+- 流式:`onText` 是增量文本,`onEvent` 是工具生命周期(`tool_call`/`tool_result`);P3 经 `webContents.send('ai:chat:event', …)` 推到渲染层。
+- IR `ChatMessage` 是 provider 中立的;assistant 轮含 text+tool_use,user 轮含 text/tool_result。P2 未启用 extended thinking(保持简单)。
+- 装配:`new AiToolRegistry(pluginHost)`(host 满足 `ToolHostPort`)+ `new AnthropicProvider({ apiKey })` + `new AgentRuntime({ provider, tools })`。
 
-1. **ChatProvider 抽象**(design §4):`stream(req): AsyncIterable<ProviderEvent>`,事件含 text delta / tool_use / usage / done。
-2. **Anthropic 适配器**:默认模型 `claude-opus-4-8`(或当时最新);**system + 工具定义打 prompt cache**;用 `@anthropic-ai/sdk`(新依赖,纯 JS,符合无 native toolchain)。**建议用 `claude-api` skill** 辅助,确保带 prompt caching。
-3. **工具命名 sanitize**:fqName `com.x/foo` 含 `.`和`/`,不满足 Anthropic 工具名 `^[a-zA-Z0-9_-]{1,64}$`。在 ToolRegistry 层把 `.`/`/` 替换为 `_`,维护 sanitized↔fqName 反查表,调用时映射回去走 `host.invokeTool(fqName, ...)`。
-4. **AgentRuntime 循环**(design §3):组装 system+历史+工具 → `provider.stream()` → 模型 `tool_use` → **(P2 先全部直接执行,审批 ApprovalGate 留 P3)** → `host.invokeTool` → `tool_result` 回灌 → 重复至最终回答或 `maxSteps`。单会话串行;每步超时 + maxSteps 防失控。
-5. **key 凭据库**:参考 `src/main/lan/credential-store.ts`,key 进 OS keychain,绝不回传 renderer。
-6. **会话存储**:纯 JSON,参考 LAN 的 `atomic-json-store`。
+---
 
-### P2 验收(无 UI,测试驱动)
+## 下一步:P3 — Chat UI + 审批 + 流式 IPC
 
-- 单测:给一个 fake provider(脚本化 tool_use → tool_result → text),驱动 AgentRuntime 跑完整循环,断言它调用了 `host.invokeTool` 并把结果回灌、最终产出文本。
-- 单测:工具名 sanitize 往返、maxSteps 截断、AbortSignal 取消。
-- Anthropic 适配器:用录制/mock 的 SSE 验证流式解析与 usage 提取;真实 key 跑一次冒烟(手动)。
+目标:**用户在 app 内对话并调用工具**。把 P2 的主进程能力接到渲染层。
 
-### IPC(P2 可先不做,P3 需要)
+### 落地要点
 
-design §8 的 `ai:*` 通道(`ai:chat` 流式、`ai:listTools`、`ai:setProviderKey`、`ai:approve`、`ai:mcp:*`)按现有四段式加。P2 可纯主进程 + 测试,P3 接 UI 时再落 IPC。
+1. **AgentService(主进程装配层)**:把 `AiCredentialStore` + `AnthropicProvider` + `AiToolRegistry`(包 `pluginHost`)+ `AgentRuntime` + `ConversationStore` 组装起来,提供 `chat(conversationId, userText, { signal, onText, onEvent, approve })`。从凭据库取 key 构造 provider;无 key 时报可恢复错误。
+2. **ApprovalGate**(纯函数 + 主进程绑定):依据工具 `annotations` 决定自动放行 / 弹审批。需要把 `RegisteredToolDescriptor` 传进 `approve`(见上「关键不变量」——扩展 `ApprovalRequest`)。审批结果可「记住本会话/永久允许」。
+3. **IPC(四段式,design §8)**:`ai:listProviders`/`ai:setProviderKey`(key 不回传)、`ai:listTools`、`ai:chat`(流式:主进程 `webContents.send('ai:chat:event', …)` 回推 text/tool 事件)、`ai:approve`(审批回传)、`ai:listConversations`/`ai:getConversation`。纯逻辑放 `src/main/ipc/ai.ts` 配单测。
+4. **Chat 页(渲染层)**:与 launcher/plugins/lan 并列的路由;消息流 Markdown + **工具调用卡片**(名称/入参/状态:待审批/运行中/成功/失败/可展开结果);破坏性工具弹 `alert-dialog` 审批;设置页 provider 选择 + key 录入 + 模型选择 + 工具开关 + **会话级 token 用量展示**(读 `result.usage`,decision §11.4)。i18n en/zh-CN。
+5. 渲染层只经 `lib/electron.ts` 调 IPC(唯一出口),key 永不到渲染层。
+
+### P3 验收
+
+- 主进程:AgentService + ApprovalGate + `ai:*` 纯逻辑单测(fake provider 驱动,审批放行/拒绝路径)。
+- 真实 key 在 app 内对话冒烟:模型调用 hello-world 的 `greet` 工具并把结果讲回来。
 
 ---
 
