@@ -7,8 +7,8 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "paths": {
-      "@deskit/plugin-sdk": ["./packages/plugin-sdk/src/index.ts"],
-      "@deskit/plugin-manifest": ["./packages/plugin-manifest/src/index.ts"],
+      "@synapse/plugin-sdk": ["./packages/plugin-sdk/src/index.ts"],
+      "@synapse/plugin-manifest": ["./packages/plugin-manifest/src/index.ts"],
       "@main/*": ["./src/main/*"],
       "@preload/*": ["./src/preload/*"]
     },

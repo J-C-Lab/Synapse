@@ -21,7 +21,7 @@ export class LanIdentityStore {
 
     const created = {
       deviceId: randomUUID(),
-      name: this.defaultName.trim() || "DesKit device",
+      name: this.defaultName.trim() || "Synapse device",
     }
     await this.save(created)
     return created

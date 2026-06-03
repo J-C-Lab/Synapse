@@ -8,14 +8,14 @@ import { createPluginIpcHandlers, invokePluginIpcHandler } from "./plugins"
 
 function fakeHost(): PluginHost {
   return {
-    list: vi.fn(() => [{ pluginId: "com.deskit.test" }]),
+    list: vi.fn(() => [{ pluginId: "com.synapse.test" }]),
     get: vi.fn((pluginId: string) => ({ pluginId })),
     setEnabled: vi.fn(async (pluginId: string, enabled: boolean) => ({ pluginId, enabled })),
     setPreference: vi.fn(async () => {}),
     installFolder: vi.fn(async () => {
       throw new PluginHostNotImplementedError("Folder plugin installation is planned later")
     }),
-    installPackage: vi.fn(async (zipPath: string) => ({ pluginId: "com.deskit.package", zipPath })),
+    installPackage: vi.fn(async (zipPath: string) => ({ pluginId: "com.synapse.package", zipPath })),
     uninstall: vi.fn(async () => {
       throw new PluginHostNotImplementedError("Plugin uninstall is planned later")
     }),
@@ -23,7 +23,7 @@ function fakeHost(): PluginHost {
     searchCommands: vi.fn((query: string) => [{ commandId: "test.run", query }]),
     invoke: vi.fn(async (payload: unknown) => ({ type: "toast", payload })),
     disposeCommand: vi.fn(async () => {}),
-    listMarketplacePlugins: vi.fn(async () => [{ id: "com.deskit.marketplace" }]),
+    listMarketplacePlugins: vi.fn(async () => [{ id: "com.synapse.marketplace" }]),
     installMarketplacePlugin: vi.fn(async (id: string, version?: string) => ({ id, version })),
     registry: { on: vi.fn() },
   } as unknown as PluginHost
@@ -34,7 +34,7 @@ describe("plugin ipc handlers", () => {
     const host = fakeHost()
     const handlers = createPluginIpcHandlers(host)
 
-    expect(handlers.list()).toEqual([{ pluginId: "com.deskit.test" }])
+    expect(handlers.list()).toEqual([{ pluginId: "com.synapse.test" }])
     expect(host.list).toHaveBeenCalledOnce()
   })
 
@@ -43,15 +43,15 @@ describe("plugin ipc handlers", () => {
     const handlers = createPluginIpcHandlers(host)
 
     await expect(
-      handlers.setEnabled({ pluginId: "com.deskit.test", enabled: false })
-    ).resolves.toEqual({ pluginId: "com.deskit.test", enabled: false })
-    expect(host.setEnabled).toHaveBeenCalledWith("com.deskit.test", false)
+      handlers.setEnabled({ pluginId: "com.synapse.test", enabled: false })
+    ).resolves.toEqual({ pluginId: "com.synapse.test", enabled: false })
+    expect(host.setEnabled).toHaveBeenCalledWith("com.synapse.test", false)
   })
 
   it("rejects malformed set-enabled payloads", async () => {
     const handlers = createPluginIpcHandlers(fakeHost())
 
-    expect(() => handlers.setEnabled({ pluginId: "com.deskit.test" })).toThrow(
+    expect(() => handlers.setEnabled({ pluginId: "com.synapse.test" })).toThrow(
       "enabled must be a boolean"
     )
   })
@@ -60,9 +60,9 @@ describe("plugin ipc handlers", () => {
     const host = fakeHost()
     const handlers = createPluginIpcHandlers(host)
 
-    await handlers.setPreference({ pluginId: "com.deskit.test", key: "unit", value: "ms" })
+    await handlers.setPreference({ pluginId: "com.synapse.test", key: "unit", value: "ms" })
 
-    expect(host.setPreference).toHaveBeenCalledWith("com.deskit.test", "unit", "ms")
+    expect(host.setPreference).toHaveBeenCalledWith("com.synapse.test", "unit", "ms")
   })
 
   it("parses plugin invoke payloads", async () => {
@@ -70,14 +70,14 @@ describe("plugin ipc handlers", () => {
     const handlers = createPluginIpcHandlers(host)
 
     await handlers.invoke({
-      pluginId: "com.deskit.test",
+      pluginId: "com.synapse.test",
       commandId: "test.run",
       phase: "run",
       payload: { initialQuery: "42" },
     })
 
     expect(host.invoke).toHaveBeenCalledWith({
-      pluginId: "com.deskit.test",
+      pluginId: "com.synapse.test",
       commandId: "test.run",
       phase: "run",
       payload: { initialQuery: "42" },
@@ -88,7 +88,7 @@ describe("plugin ipc handlers", () => {
     const handlers = createPluginIpcHandlers(fakeHost())
 
     expect(() =>
-      handlers.invoke({ pluginId: "com.deskit.test", commandId: "test.run", phase: "bad" })
+      handlers.invoke({ pluginId: "com.synapse.test", commandId: "test.run", phase: "bad" })
     ).toThrow("phase must be run, onSearchChange, or onAction")
   })
 
@@ -96,7 +96,7 @@ describe("plugin ipc handlers", () => {
     const host = fakeHost()
     const handlers = createPluginIpcHandlers(host)
 
-    await expect(handlers.marketplaceList()).resolves.toEqual([{ id: "com.deskit.marketplace" }])
+    await expect(handlers.marketplaceList()).resolves.toEqual([{ id: "com.synapse.marketplace" }])
     expect(host.listMarketplacePlugins).toHaveBeenCalledOnce()
   })
 
@@ -104,23 +104,23 @@ describe("plugin ipc handlers", () => {
     const host = fakeHost()
     const handlers = createPluginIpcHandlers(host)
 
-    await expect(handlers.installPackage("C:/tmp/plugin.deskit")).resolves.toEqual({
-      pluginId: "com.deskit.package",
-      zipPath: "C:/tmp/plugin.deskit",
+    await expect(handlers.installPackage("C:/tmp/plugin.syn")).resolves.toEqual({
+      pluginId: "com.synapse.package",
+      zipPath: "C:/tmp/plugin.syn",
     })
-    expect(host.installPackage).toHaveBeenCalledWith("C:/tmp/plugin.deskit")
+    expect(host.installPackage).toHaveBeenCalledWith("C:/tmp/plugin.syn")
   })
 
   it("imports from a picked file", async () => {
     const host = fakeHost()
-    const pickPackageFile = vi.fn(async () => "C:/tmp/picked.deskit")
+    const pickPackageFile = vi.fn(async () => "C:/tmp/picked.syn")
     const handlers = createPluginIpcHandlers(host, { pickPackageFile })
 
     await expect(handlers.importFromFile()).resolves.toEqual({
-      pluginId: "com.deskit.package",
-      zipPath: "C:/tmp/picked.deskit",
+      pluginId: "com.synapse.package",
+      zipPath: "C:/tmp/picked.syn",
     })
-    expect(host.installPackage).toHaveBeenCalledWith("C:/tmp/picked.deskit")
+    expect(host.installPackage).toHaveBeenCalledWith("C:/tmp/picked.syn")
   })
 
   it("returns null when the import picker is cancelled", async () => {
@@ -141,20 +141,20 @@ describe("plugin ipc handlers", () => {
     const handlers = createPluginIpcHandlers(host)
 
     await expect(
-      handlers.marketplaceInstall({ id: "com.deskit.marketplace", version: "1.0.0" })
-    ).resolves.toEqual({ id: "com.deskit.marketplace", version: "1.0.0" })
-    expect(host.installMarketplacePlugin).toHaveBeenCalledWith("com.deskit.marketplace", "1.0.0")
+      handlers.marketplaceInstall({ id: "com.synapse.marketplace", version: "1.0.0" })
+    ).resolves.toEqual({ id: "com.synapse.marketplace", version: "1.0.0" })
+    expect(host.installMarketplacePlugin).toHaveBeenCalledWith("com.synapse.marketplace", "1.0.0")
   })
 
   it("wraps successful ipc calls in IpcResult", async () => {
     const result = await invokePluginIpcHandler(
       "plugin:list",
       fakeEvent("app://app/index.html"),
-      () => [{ pluginId: "com.deskit.test" }],
+      () => [{ pluginId: "com.synapse.test" }],
       () => true
     )
 
-    expect(result).toEqual({ ok: true, data: [{ pluginId: "com.deskit.test" }] })
+    expect(result).toEqual({ ok: true, data: [{ pluginId: "com.synapse.test" }] })
   })
 
   it("maps malformed payloads to IPC_INVALID_PAYLOAD", async () => {
@@ -162,7 +162,7 @@ describe("plugin ipc handlers", () => {
     const result = await invokePluginIpcHandler(
       "plugin:set-enabled",
       fakeEvent("app://app/index.html"),
-      () => handlers.setEnabled({ pluginId: "com.deskit.test" }),
+      () => handlers.setEnabled({ pluginId: "com.synapse.test" }),
       () => true
     )
 
@@ -199,7 +199,7 @@ describe("plugin ipc handlers", () => {
       fakeEvent("app://app/index.html"),
       () => {
         throw new PluginInstallError("Checksum mismatch.", {
-          pluginId: "com.deskit.test",
+          pluginId: "com.synapse.test",
           expectedSha256: "a",
           actualSha256: "b",
         })
@@ -213,7 +213,7 @@ describe("plugin ipc handlers", () => {
         code: "PLUGIN_INSTALL_ERROR",
         message: "Checksum mismatch.",
         details: {
-          pluginId: "com.deskit.test",
+          pluginId: "com.synapse.test",
           expectedSha256: "a",
           actualSha256: "b",
         },
@@ -270,7 +270,7 @@ describe("plugin ipc handlers", () => {
       "plugin:invoke",
       fakeEvent("app://app/index.html"),
       () => {
-        throw new PluginCrashedError("com.deskit.test", new TypeError("plugin code blew up"))
+        throw new PluginCrashedError("com.synapse.test", new TypeError("plugin code blew up"))
       },
       () => true
     )
@@ -280,7 +280,7 @@ describe("plugin ipc handlers", () => {
       error: {
         code: "PLUGIN_CRASHED",
         message: "Plugin crashed.",
-        details: { pluginId: "com.deskit.test" },
+        details: { pluginId: "com.synapse.test" },
       },
     })
   })
@@ -290,7 +290,7 @@ describe("plugin ipc handlers", () => {
       "plugin:invoke",
       fakeEvent("app://app/index.html"),
       () => {
-        throw new PermissionDenied("com.deskit.test", "clipboard:write")
+        throw new PermissionDenied("com.synapse.test", "clipboard:write")
       },
       () => true
     )
@@ -300,7 +300,7 @@ describe("plugin ipc handlers", () => {
       error: {
         code: "PLUGIN_PERMISSION_DENIED",
         message: "Plugin permission denied.",
-        details: { pluginId: "com.deskit.test", permission: "clipboard:write" },
+        details: { pluginId: "com.synapse.test", permission: "clipboard:write" },
       },
     })
   })
@@ -314,7 +314,7 @@ describe("plugin ipc handlers", () => {
       fakeEvent("app://app/index.html"),
       () => {
         throw new PluginCrashedError(
-          "com.deskit.test",
+          "com.synapse.test",
           new TypeError("plugin called undefined.foo")
         )
       },

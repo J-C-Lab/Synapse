@@ -105,13 +105,13 @@ export function PluginsPage() {
     setDragActive(false)
     if (importing) return
     const files = Array.from(event.dataTransfer.files)
-    const deskitFiles = files.filter((file) => file.name.toLowerCase().endsWith(".deskit"))
-    if (deskitFiles.length === 0) {
+    const synapseFiles = files.filter((file) => file.name.toLowerCase().endsWith(".syn"))
+    if (synapseFiles.length === 0) {
       if (files.length > 0) toast.error(t("plugins.importInvalid"))
       return
     }
     await runImport(async () => {
-      for (const file of deskitFiles) {
+      for (const file of synapseFiles) {
         await installPluginPackage(droppedFilePath(file))
       }
       toast.success(t("plugins.toasts.imported"))

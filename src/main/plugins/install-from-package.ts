@@ -3,7 +3,7 @@ import * as path from "node:path"
 import { pipeline } from "node:stream/promises"
 import * as yauzl from "yauzl"
 
-export async function extractDeskitPackage(
+export async function extractSynapsePackage(
   packagePath: string,
   destinationDir: string
 ): Promise<void> {

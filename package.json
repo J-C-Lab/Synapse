@@ -1,10 +1,10 @@
 {
-  "name": "deskit",
+  "name": "synapse",
   "version": "0.3.0",
   "private": true,
   "packageManager": "pnpm@11.0.8",
-  "description": "DesKit — desktop productivity toolbox (Electron + React + electron-vite)",
-  "author": "DesKit Team <1397784681@qq.com>",
+  "description": "Synapse — desktop productivity toolbox (Electron + React + electron-vite)",
+  "author": "Synapse Team <1397784681@qq.com>",
   "license": "MIT",
   "main": "out/main/index.js",
   "engines": {
@@ -13,15 +13,15 @@
   "scripts": {
     "prepare": "husky",
     "dev": "electron-vite dev",
-    "dev:lan:a": "cross-env DESKIT_LAN_SIMULATION_PROFILE=a electron-vite dev",
-    "dev:lan:b": "cross-env DESKIT_LAN_SIMULATION_PROFILE=b electron-vite dev",
+    "dev:lan:a": "cross-env SYNAPSE_LAN_SIMULATION_PROFILE=a electron-vite dev",
+    "dev:lan:b": "cross-env SYNAPSE_LAN_SIMULATION_PROFILE=b electron-vite dev",
     "build": "pnpm build:packages && electron-vite build",
-    "build:sdk": "pnpm -F @deskit/plugin-sdk build",
-    "build:manifest": "pnpm -F @deskit/plugin-manifest build",
+    "build:sdk": "pnpm -F @synapse/plugin-sdk build",
+    "build:manifest": "pnpm -F @synapse/plugin-manifest build",
     "build:packages": "pnpm build:sdk && pnpm build:manifest",
     "preview": "electron-vite preview",
     "start": "electron-vite preview",
-    "typecheck": "pnpm -F @deskit/plugin-sdk typecheck && pnpm -F @deskit/plugin-manifest typecheck && pnpm -F @deskit/plugin-cli typecheck && pnpm -F create-deskit-plugin typecheck && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "typecheck": "pnpm -F @synapse/plugin-sdk typecheck && pnpm -F @synapse/plugin-manifest typecheck && pnpm -F @synapse/plugin-cli typecheck && pnpm -F create-synapse-plugin typecheck && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "typecheck:native": "tsgo -p tsconfig.node.json --noEmit && tsgo -p tsconfig.web.json --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -40,8 +40,8 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.0.0",
-    "@deskit/plugin-manifest": "workspace:*",
     "@radix-ui/react-slot": "^1.2.4",
+    "@synapse/plugin-manifest": "workspace:*",
     "bonjour-service": "1.3.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -113,8 +113,8 @@
     ]
   },
   "build": {
-    "appId": "com.deskit.desktop",
-    "productName": "DesKit",
+    "appId": "com.synapse.desktop",
+    "productName": "Synapse",
     "asar": true,
     "npmRebuild": false,
     "buildDependenciesFromSource": false,
@@ -125,9 +125,9 @@
     },
     "fileAssociations": [
       {
-        "ext": "deskit",
-        "name": "DesKit Plugin",
-        "description": "DesKit plugin package",
+        "ext": "syn",
+        "name": "Synapse Plugin",
+        "description": "Synapse plugin package",
         "role": "Viewer"
       }
     ],

@@ -11,9 +11,9 @@ export default defineConfig({
       "@preload": resolve(__dirname, "src/preload"),
       // Resolve the workspace SDK from source so tests do not require a prior
       // `pnpm build:sdk` and stay in sync with tsconfig.node.json paths.
-      "@deskit/plugin-sdk": resolve(__dirname, "packages/plugin-sdk/src/index.ts"),
-      "@deskit/plugin-manifest": resolve(__dirname, "packages/plugin-manifest/src/index.ts"),
-      "@deskit/plugin-cli": resolve(__dirname, "packages/plugin-cli/src/index.ts"),
+      "@synapse/plugin-sdk": resolve(__dirname, "packages/plugin-sdk/src/index.ts"),
+      "@synapse/plugin-manifest": resolve(__dirname, "packages/plugin-manifest/src/index.ts"),
+      "@synapse/plugin-cli": resolve(__dirname, "packages/plugin-cli/src/index.ts"),
       // Stub Electron when running unit tests outside of Electron runtime.
       electron: resolve(__dirname, "__mocks__/electron.ts"),
     },

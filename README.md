@@ -1,9 +1,9 @@
 <p align="center">
-  <img src="resources/logo.svg" alt="DesKit Logo" width="120" />
+  <img src="resources/logo.svg" alt="Synapse Logo" width="120" />
 </p>
-<h1 align="center">DesKit</h1>
+<h1 align="center">Synapse</h1>
 
-DesKit is an extensible desktop productivity toolbox built with Electron, React, and electron-vite.
+Synapse is an extensible desktop productivity toolbox built with Electron, React, and electron-vite.
 
 It provides a secure desktop shell for command launching, lightweight utilities, floating interactions, and plugin-driven workflows.
 
@@ -91,7 +91,7 @@ pnpm dev:lan:a
 pnpm dev:lan:b
 ```
 
-The instances appear as `DesKit Sim A` and `DesKit Sim B`. Each uses a separate development-only
+The instances appear as `Synapse Sim A` and `Synapse Sim B`. Each uses a separate development-only
 profile for its device identity, certificate, trusted devices, settings, and transfers. Enable
 nearby device discovery in both windows, then connect the devices and compare the security codes.
 

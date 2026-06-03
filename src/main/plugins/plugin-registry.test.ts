@@ -1,4 +1,4 @@
-import type { PluginModule, View } from "@deskit/plugin-sdk"
+import type { PluginModule, View } from "@synapse/plugin-sdk"
 import type {
   DiscoveredPlugin,
   PluginInvokeRequest,
@@ -19,7 +19,7 @@ describe("pluginRegistry", () => {
 
     await registry.load([discovered()])
 
-    expect(registry.get("com.deskit.test")?.status).toBe("active")
+    expect(registry.get("com.synapse.test")?.status).toBe("active")
     expect(registry.searchCommands("run")).toHaveLength(1)
     expect(changed).toHaveBeenCalledOnce()
   })
@@ -29,13 +29,13 @@ describe("pluginRegistry", () => {
     const registry = new PluginRegistry({ sandbox, now: () => 1 })
 
     await registry.load([
-      discovered({ id: "com.deskit.one", commandId: "shared.run" }),
-      discovered({ id: "com.deskit.two", commandId: "shared.run" }),
+      discovered({ id: "com.synapse.one", commandId: "shared.run" }),
+      discovered({ id: "com.synapse.two", commandId: "shared.run" }),
     ])
 
     expect(registry.searchCommands("run").map((result) => result.pluginId)).toEqual([
-      "com.deskit.one",
-      "com.deskit.two",
+      "com.synapse.one",
+      "com.synapse.two",
     ])
   })
 
@@ -43,19 +43,19 @@ describe("pluginRegistry", () => {
     const sandbox = fakeSandbox()
     const registry = new PluginRegistry({ sandbox, now: () => 1 })
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-    await registry.load([discovered({ id: "com.deskit.old" })])
+    await registry.load([discovered({ id: "com.synapse.old" })])
     sandbox.unloadPlugin = vi.fn(async () => {
       throw new Error("stuck")
     })
 
     try {
-      await registry.load([discovered({ id: "com.deskit.new" })])
+      await registry.load([discovered({ id: "com.synapse.new" })])
     } finally {
       warn.mockRestore()
     }
 
-    expect(registry.get("com.deskit.old")).toBeUndefined()
-    expect(registry.get("com.deskit.new")?.status).toBe("active")
+    expect(registry.get("com.synapse.old")).toBeUndefined()
+    expect(registry.get("com.synapse.new")?.status).toBe("active")
   })
 
   it("disables and re-enables plugins", async () => {
@@ -63,13 +63,13 @@ describe("pluginRegistry", () => {
     const registry = new PluginRegistry({ sandbox, now: () => 1 })
     await registry.load([discovered()])
 
-    await registry.setEnabled("com.deskit.test", false)
-    expect(registry.get("com.deskit.test")?.status).toBe("disabled")
+    await registry.setEnabled("com.synapse.test", false)
+    expect(registry.get("com.synapse.test")?.status).toBe("disabled")
     expect(registry.searchCommands("run")).toHaveLength(0)
-    expect(sandbox.unloadPlugin).toHaveBeenCalledWith("com.deskit.test")
+    expect(sandbox.unloadPlugin).toHaveBeenCalledWith("com.synapse.test")
 
-    await registry.setEnabled("com.deskit.test", true)
-    expect(registry.get("com.deskit.test")?.status).toBe("active")
+    await registry.setEnabled("com.synapse.test", true)
+    expect(registry.get("com.synapse.test")?.status).toBe("active")
     expect(registry.searchCommands("run")).toHaveLength(1)
   })
 
@@ -79,9 +79,9 @@ describe("pluginRegistry", () => {
 
     await registry.load([discovered()])
 
-    expect(registry.get("com.deskit.test")?.status).toBe("crashed")
+    expect(registry.get("com.synapse.test")?.status).toBe("crashed")
     expect(registry.searchCommands("run")).toHaveLength(0)
-    expect(sandbox.unloadPlugin).toHaveBeenCalledWith("com.deskit.test")
+    expect(sandbox.unloadPlugin).toHaveBeenCalledWith("com.synapse.test")
   })
 
   it("marks plugins crashed and rethrows a typed sentinel when command invocation throws", async () => {
@@ -93,27 +93,27 @@ describe("pluginRegistry", () => {
     await registry.load([discovered()])
 
     await expect(
-      registry.invoke({ pluginId: "com.deskit.test", commandId: "test.run", phase: "run" })
+      registry.invoke({ pluginId: "com.synapse.test", commandId: "test.run", phase: "run" })
     ).rejects.toMatchObject({
       name: "PluginCrashedError",
-      pluginId: "com.deskit.test",
+      pluginId: "com.synapse.test",
     })
-    expect(registry.get("com.deskit.test")?.status).toBe("crashed")
+    expect(registry.get("com.synapse.test")?.status).toBe("crashed")
   })
 
   it("passes PermissionDenied through invoke without crashing the plugin", async () => {
     const sandbox = fakeSandbox()
     sandbox.invokeCommand = vi.fn<PluginSandboxRuntime["invokeCommand"]>(() => {
-      throw new PermissionDenied("com.deskit.test", "clipboard:write")
+      throw new PermissionDenied("com.synapse.test", "clipboard:write")
     })
     const registry = new PluginRegistry({ sandbox })
     await registry.load([discovered()])
 
     await expect(
-      registry.invoke({ pluginId: "com.deskit.test", commandId: "test.run", phase: "run" })
+      registry.invoke({ pluginId: "com.synapse.test", commandId: "test.run", phase: "run" })
     ).rejects.toBeInstanceOf(PermissionDenied)
     // Permission denials are policy decisions — the plugin must stay active.
-    expect(registry.get("com.deskit.test")?.status).toBe("active")
+    expect(registry.get("com.synapse.test")?.status).toBe("active")
   })
 
   it("dispatches clipboard changes to active listeners", async () => {
@@ -130,7 +130,7 @@ describe("pluginRegistry", () => {
     const registry = new PluginRegistry({ sandbox })
     await registry.load([
       discovered({
-        id: "com.deskit.clipboard",
+        id: "com.synapse.clipboard",
         commandId: "clipboard.history",
         activationEvents: ["clipboard:change"],
       }),
@@ -140,7 +140,7 @@ describe("pluginRegistry", () => {
     await registry.dispatchClipboardChange({ type: "text", text: "hello" })
 
     expect(sandbox.dispatchEvent).toHaveBeenCalledWith({
-      pluginId: "com.deskit.clipboard",
+      pluginId: "com.synapse.clipboard",
       event: "clipboard:change",
       payload: { content: { type: "text", text: "hello" } },
     })
@@ -161,16 +161,16 @@ describe("pluginRegistry", () => {
 
     await registry.load([
       discovered({
-        id: "com.deskit.clipboard",
+        id: "com.synapse.clipboard",
         commandId: "clipboard.history",
         activationEvents: ["clipboard:change"],
         permissions: [],
       }),
     ])
 
-    expect(registry.get("com.deskit.clipboard")?.status).toBe("crashed")
+    expect(registry.get("com.synapse.clipboard")?.status).toBe("crashed")
     expect(registry.hasClipboardChangeListeners()).toBe(false)
-    expect(sandbox.unloadPlugin).toHaveBeenCalledWith("com.deskit.clipboard")
+    expect(sandbox.unloadPlugin).toHaveBeenCalledWith("com.synapse.clipboard")
   })
 
   it("marks clipboard listeners crashed when handler is not exported", async () => {
@@ -187,15 +187,15 @@ describe("pluginRegistry", () => {
 
     await registry.load([
       discovered({
-        id: "com.deskit.clipboard",
+        id: "com.synapse.clipboard",
         commandId: "clipboard.history",
         activationEvents: ["clipboard:change"],
       }),
     ])
 
-    expect(registry.get("com.deskit.clipboard")?.status).toBe("crashed")
+    expect(registry.get("com.synapse.clipboard")?.status).toBe("crashed")
     expect(registry.hasClipboardChangeListeners()).toBe(false)
-    expect(sandbox.unloadPlugin).toHaveBeenCalledWith("com.deskit.clipboard")
+    expect(sandbox.unloadPlugin).toHaveBeenCalledWith("com.synapse.clipboard")
   })
 })
 
@@ -260,7 +260,7 @@ function manifest(
     permissions?: string[]
   } = {}
 ): PluginManifest {
-  const id = overrides.id ?? "com.deskit.test"
+  const id = overrides.id ?? "com.synapse.test"
   const commandId = overrides.commandId ?? "test.run"
   const title = overrides.title ?? "Run Test"
   return {
@@ -269,8 +269,8 @@ function manifest(
     displayName: "Test",
     description: "test",
     version: "0.1.0",
-    author: "DesKit",
-    engines: { deskit: "^0.1.0" },
+    author: "Synapse",
+    engines: { synapse: "^0.1.0" },
     main: "dist/index.js",
     contributes: {
       activationEvents: overrides.activationEvents,

@@ -67,7 +67,7 @@ export const manifestSchema = z
     version: semverSchema,
     author: z.string().min(1),
     icon: relativePathSchema.optional(),
-    engines: z.object({ deskit: z.string().min(1) }).strict(),
+    engines: z.object({ synapse: z.string().min(1) }).strict(),
     main: relativePathSchema,
     contributes: z
       .object({
@@ -106,7 +106,7 @@ export class ManifestValidationError extends Error {
  * Validate the structural shape of a plugin manifest. Engine compatibility is
  * intentionally NOT checked here — that depends on the consuming host's
  * version, so callers compose this with {@link isEngineCompatible} as needed
- * (the DesKit host does; the CLI's structural validation does not require it).
+ * (the Synapse host does; the CLI's structural validation does not require it).
  */
 export function parseManifest(raw: unknown): PluginManifest {
   const parsed = manifestSchema.safeParse(raw)

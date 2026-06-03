@@ -24,7 +24,7 @@ export interface UserSettings {
   floatingBallEnabled: boolean
   /** Features shown in the floating ball radial menu. */
   floatingBallFeatures: FloatingBallFeature[]
-  /** Whether DesKit advertises and browses devices on the local network. */
+  /** Whether Synapse advertises and browses devices on the local network. */
   lanEnabled: boolean
 }
 

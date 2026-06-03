@@ -5,11 +5,11 @@ import { getSettings, isElectron, onSettingsChanged, updateSettings } from "@/li
 type ResolvedScheme = "light" | "dark"
 
 interface ThemeContextValue {
-  themeMode: DeskitThemeMode
-  accent: DeskitThemeAccent
+  themeMode: SynapseThemeMode
+  accent: SynapseThemeAccent
   resolvedScheme: ResolvedScheme
-  setThemeMode: (mode: DeskitThemeMode) => void
-  setAccent: (accent: DeskitThemeAccent) => void
+  setThemeMode: (mode: SynapseThemeMode) => void
+  setAccent: (accent: SynapseThemeAccent) => void
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null)
@@ -21,11 +21,11 @@ function detectSystemScheme(): ResolvedScheme {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
 }
 
-function resolveScheme(mode: DeskitThemeMode): ResolvedScheme {
+function resolveScheme(mode: SynapseThemeMode): ResolvedScheme {
   return mode === "system" ? detectSystemScheme() : mode
 }
 
-function applyToDom(scheme: ResolvedScheme, accent: DeskitThemeAccent): void {
+function applyToDom(scheme: ResolvedScheme, accent: SynapseThemeAccent): void {
   if (typeof document === "undefined") return
   const root = document.documentElement
   root.classList.toggle("dark", scheme === "dark")
@@ -36,8 +36,8 @@ function applyToDom(scheme: ResolvedScheme, accent: DeskitThemeAccent): void {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [themeMode, setThemeMode] = useState<DeskitThemeMode>("system")
-  const [accent, setAccent] = useState<DeskitThemeAccent>("neutral")
+  const [themeMode, setThemeMode] = useState<SynapseThemeMode>("system")
+  const [accent, setAccent] = useState<SynapseThemeAccent>("neutral")
   const [loaded, setLoaded] = useState(() => !isElectron())
 
   // First paint — apply the OS preference immediately so the very first
@@ -61,7 +61,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       })
       .catch((err: unknown) => {
         if (cancelled) return
-        console.warn("[deskit] failed to load settings; using defaults", err)
+        console.warn("[synapse] failed to load settings; using defaults", err)
         setLoaded(true)
       })
     return () => {
@@ -94,12 +94,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return () => mql.removeEventListener("change", onChange)
   }, [themeMode, accent])
 
-  const updateThemeMode = useCallback((mode: DeskitThemeMode) => {
+  const updateThemeMode = useCallback((mode: SynapseThemeMode) => {
     setThemeMode(mode)
     if (isElectron()) void updateSettings({ themeMode: mode })
   }, [])
 
-  const updateAccent = useCallback((next: DeskitThemeAccent) => {
+  const updateAccent = useCallback((next: SynapseThemeAccent) => {
     setAccent(next)
     if (isElectron()) void updateSettings({ accent: next })
   }, [])

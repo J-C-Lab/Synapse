@@ -268,7 +268,7 @@ function MarketplaceCard({
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span>{entry.author}</span>
           <span>·</span>
-          <span>{entry.deskitEngine}</span>
+          <span>{entry.synapseEngine}</span>
           {entry.categories?.slice(0, 2).map((category) => (
             <Badge key={category} variant="secondary" className="font-normal">
               {t(`marketplace.category.${category}`, { defaultValue: category })}

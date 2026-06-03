@@ -3,25 +3,25 @@ import * as path from "node:path"
 import process from "node:process"
 
 /**
- * DesKit's Electron `productName`. Electron prefers `productName` over `name`
+ * Synapse's Electron `productName`. Electron prefers `productName` over `name`
  * for `app.getName()`, so the per-user data directory is keyed on this.
  */
-const DESKIT_APP_NAME = "DesKit"
+const SYNAPSE_APP_NAME = "Synapse"
 
 export const DEV_PLUGINS_FILENAME = "dev-plugins.json"
 
 /**
- * Best-effort reconstruction of DesKit's Electron `userData` directory without
+ * Best-effort reconstruction of Synapse's Electron `userData` directory without
  * loading Electron. Mirrors `app.getPath("userData")` per platform. Callers
  * can override via an explicit directory (the CLI's `--data-dir`).
  */
-export function resolveDeskitDataDir(override?: string): string {
+export function resolveSynapseDataDir(override?: string): string {
   if (override) return path.resolve(override)
-  return path.join(appDataRoot(), DESKIT_APP_NAME)
+  return path.join(appDataRoot(), SYNAPSE_APP_NAME)
 }
 
 export function devPluginsFilePath(override?: string): string {
-  return path.join(resolveDeskitDataDir(override), DEV_PLUGINS_FILENAME)
+  return path.join(resolveSynapseDataDir(override), DEV_PLUGINS_FILENAME)
 }
 
 function appDataRoot(): string {

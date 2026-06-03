@@ -1,4 +1,4 @@
-import type { ClipboardContent } from "@deskit/plugin-sdk"
+import type { ClipboardContent } from "@synapse/plugin-sdk"
 import type { IpcMainInvokeEvent } from "electron"
 import type { LanDevice, LanPairing, LanStatus, LanTransfer } from "./lan/types"
 import type { SearchWindowDeps } from "./search-window"
@@ -64,7 +64,7 @@ const lanSimulation = resolveDevLanSimulation({
 if (lanSimulation) {
   app.setPath("userData", lanSimulation.userDataDir)
   console.warn(
-    `[deskit] LAN simulation profile "${lanSimulation.profile}" uses ${lanSimulation.userDataDir}`
+    `[synapse] LAN simulation profile "${lanSimulation.profile}" uses ${lanSimulation.userDataDir}`
   )
 }
 // electron-vite injects this in dev (Vite dev server URL). Undefined in prod.
@@ -156,11 +156,11 @@ const launcher = new LauncherService()
 let plugins: PluginHost
 let lan: LanService
 let mainWindow: BrowserWindow | null = null
-// A `.deskit` path from an OS "open with" before the plugin host finished
+// A `.syn` path from an OS "open with" before the plugin host finished
 // initializing — replayed once init completes. Also guards against handling
 // the same import twice concurrently.
-let pendingDeskitImport: string | null = null
-let deskitImportInFlight = false
+let pendingSynapseImport: string | null = null
+let synapseImportInFlight = false
 // Tracks whether quit was explicitly requested through the tray menu, so
 // the main-window close handler can distinguish "user clicked X" (hide)
 // from "user picked Quit" (let the close go through).
@@ -250,7 +250,7 @@ function registerIpc(): void {
   registerPluginIpc(ipcMain, plugins, {
     isTrustedSender: isTrustedIpcSender,
     onRegistryChanged: broadcastPluginRegistryChanged,
-    pickPackageFile: pickDeskitPackageFile,
+    pickPackageFile: pickSynapsePackageFile,
   })
   registerLanIpc(ipcMain, lan, {
     isTrustedSender: isTrustedIpcSender,
@@ -269,13 +269,13 @@ function registerIpc(): void {
   })
 }
 
-// Open a native picker filtered to `.deskit` packages. Returns the chosen
+// Open a native picker filtered to `.syn` packages. Returns the chosen
 // absolute path, or null when the user cancels.
-async function pickDeskitPackageFile(): Promise<string | null> {
+async function pickSynapsePackageFile(): Promise<string | null> {
   const options: Electron.OpenDialogOptions = {
-    title: "Import DesKit Plugin",
+    title: "Import Synapse Plugin",
     properties: ["openFile"],
-    filters: [{ name: "DesKit Plugin", extensions: ["deskit"] }],
+    filters: [{ name: "Synapse Plugin", extensions: ["syn"] }],
   }
   const parent = BrowserWindow.getFocusedWindow() ?? mainWindow
   const result =
@@ -286,21 +286,21 @@ async function pickDeskitPackageFile(): Promise<string | null> {
   return result.filePaths[0] ?? null
 }
 
-// First `.deskit` path found in a process argv list (OS "open with" passes the
+// First `.syn` path found in a process argv list (OS "open with" passes the
 // file as a launch argument on Windows/Linux). Ignores Electron's own flags.
-function findDeskitArg(argv: string[]): string | null {
-  return argv.find((arg) => !arg.startsWith("-") && arg.toLowerCase().endsWith(".deskit")) ?? null
+function findSynapseArg(argv: string[]): string | null {
+  return argv.find((arg) => !arg.startsWith("-") && arg.toLowerCase().endsWith(".syn")) ?? null
 }
 
-// Install a `.deskit` opened from the OS (file association / drag-to-icon).
+// Install a `.syn` opened from the OS (file association / drag-to-icon).
 // Confirms first, then installs through the host and surfaces the result.
-async function importDeskitFromOs(filePath: string): Promise<void> {
+async function importSynapseFromOs(filePath: string): Promise<void> {
   if (!plugins) {
-    pendingDeskitImport = filePath
+    pendingSynapseImport = filePath
     return
   }
-  if (deskitImportInFlight) return
-  deskitImportInFlight = true
+  if (synapseImportInFlight) return
+  synapseImportInFlight = true
   try {
     showMainWindow()
     const confirm = await dialog.showMessageBox({
@@ -308,7 +308,7 @@ async function importDeskitFromOs(filePath: string): Promise<void> {
       buttons: ["Install", "Cancel"],
       defaultId: 0,
       cancelId: 1,
-      message: "Install this DesKit plugin?",
+      message: "Install this Synapse plugin?",
       detail: filePath,
     })
     if (confirm.response !== 0) return
@@ -321,7 +321,7 @@ async function importDeskitFromOs(filePath: string): Promise<void> {
   } catch (err) {
     dialog.showErrorBox("Plugin import failed", err instanceof Error ? err.message : String(err))
   } finally {
-    deskitImportInFlight = false
+    synapseImportInFlight = false
   }
 }
 
@@ -455,7 +455,7 @@ async function syncLanEnabled(
     }
     return next
   } catch (err) {
-    console.error("[deskit] failed to update LAN discovery state", err)
+    console.error("[synapse] failed to update LAN discovery state", err)
     return launcher.updateSettings({ lanEnabled: previous.lanEnabled })
   }
 }
@@ -514,7 +514,7 @@ function createMainWindow(): BrowserWindow {
     height: 720,
     minWidth: 640,
     minHeight: 480,
-    title: lanSimulation ? `DesKit - ${lanSimulation.deviceName}` : "DesKit",
+    title: lanSimulation ? `Synapse - ${lanSimulation.deviceName}` : "Synapse",
     show: false, // launcher app stays in tray; window is shown on demand
     backgroundColor: "#0a0a0a",
     webPreferences: {
@@ -559,7 +559,7 @@ function showMainWindow(): void {
 function rebindHotkey(accelerator: string): boolean {
   const ok = bindGlobalShortcut(accelerator, () => toggleSearchWindow(searchWindowDeps()))
   if (!ok) {
-    console.warn(`[deskit] failed to register global shortcut: ${accelerator}`)
+    console.warn(`[synapse] failed to register global shortcut: ${accelerator}`)
   }
   return ok
 }
@@ -587,7 +587,7 @@ async function initLan(enabled: boolean): Promise<void> {
     await lan.init(enabled)
   } catch (err) {
     if (!lanSimulation || !(err instanceof LanCredentialLoadError)) throw err
-    console.warn("[deskit] resetting unreadable LAN simulation credentials", err)
+    console.warn("[synapse] resetting unreadable LAN simulation credentials", err)
     await resetDevLanSimulationCredentials(lanSimulation)
     await lan.init(enabled)
   }
@@ -603,20 +603,20 @@ if (!gotLock) {
   app.quit()
 } else {
   // macOS delivers "open with" through this event, possibly before the app is
-  // ready — importDeskitFromOs queues until the plugin host exists.
+  // ready — importSynapseFromOs queues until the plugin host exists.
   app.on("open-file", (event, filePath) => {
     event.preventDefault()
-    if (filePath.toLowerCase().endsWith(".deskit")) void importDeskitFromOs(filePath)
+    if (filePath.toLowerCase().endsWith(".syn")) void importSynapseFromOs(filePath)
   })
 
   if (shouldUseSingleInstanceLock) {
     app.on("second-instance", (_event, argv) => {
-      // A second launch carrying a .deskit file (Windows/Linux "open with")
+      // A second launch carrying a .syn file (Windows/Linux "open with")
       // routes to import; otherwise re-open the launcher rather than steal
       // focus from whatever the user is doing — matches PowerToys behaviour.
-      const deskitArg = findDeskitArg(argv)
-      if (deskitArg) {
-        void importDeskitFromOs(deskitArg)
+      const synapseArg = findSynapseArg(argv)
+      if (synapseArg) {
+        void importSynapseFromOs(synapseArg)
         return
       }
       showSearchWindow(searchWindowDeps())
@@ -629,7 +629,7 @@ if (!gotLock) {
     // through to toast notifications. Without this the OS treats us
     // as "electron.app.Electron" and shows Electron's default logo.
     if (process.platform === "win32") {
-      app.setAppUserModelId("com.deskit.desktop")
+      app.setAppUserModelId("com.synapse.desktop")
     }
 
     applyCsp()
@@ -659,16 +659,16 @@ if (!gotLock) {
     try {
       await initLan(settings.lanEnabled)
     } catch (err) {
-      console.error("[deskit] failed to initialize LAN discovery", err)
+      console.error("[synapse] failed to initialize LAN discovery", err)
       settings = await launcher.updateSettings({ lanEnabled: false })
     }
     await plugins.init()
 
-    // Replay a queued macOS open-file, or a .deskit passed on first launch
+    // Replay a queued macOS open-file, or a .syn passed on first launch
     // (Windows/Linux "open with"), now that the plugin host is ready.
-    const launchDeskit = pendingDeskitImport ?? findDeskitArg(process.argv.slice(1))
-    pendingDeskitImport = null
-    if (launchDeskit) void importDeskitFromOs(launchDeskit)
+    const launchSynapse = pendingSynapseImport ?? findSynapseArg(process.argv.slice(1))
+    pendingSynapseImport = null
+    if (launchSynapse) void importSynapseFromOs(launchSynapse)
 
     // Pre-warm both the main window (so the first show is instant) and the
     // app cache (so the first launcher query has results).
@@ -697,7 +697,7 @@ if (!gotLock) {
   app.on("will-quit", () => {
     setSearchWindowQuitting(true)
     destroyFloatingBallWindow()
-    void lan?.stop().catch((err) => console.error("[deskit] failed to stop LAN discovery", err))
+    void lan?.stop().catch((err) => console.error("[synapse] failed to stop LAN discovery", err))
     unbindGlobalShortcut()
     destroyTray()
     plugins?.dispose()
@@ -716,7 +716,7 @@ if (!gotLock) {
     event.preventDefault()
     void plugins
       .flush()
-      .catch((err) => console.error("[deskit] plugin flush failed during shutdown", err))
+      .catch((err) => console.error("[synapse] plugin flush failed during shutdown", err))
       .finally(() => {
         pluginsFlushed = true
         app.quit()

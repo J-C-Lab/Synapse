@@ -1,5 +1,5 @@
 /**
- * Clipboard payloads supported by the DesKit host.
+ * Clipboard payloads supported by the Synapse host.
  *
  * The shape is intentionally JSON-serialisable so clipboard-history plugins
  * can persist entries in `StorageAPI` without special codecs. Host

@@ -1,7 +1,7 @@
 {
-  "name": "@deskit/plugin-manifest",
+  "name": "@synapse/plugin-manifest",
   "version": "0.2.0",
-  "description": "DesKit plugin manifest schema, validation, and engine-compatibility helpers — shared by the DesKit host and the plugin CLI",
+  "description": "Synapse plugin manifest schema, validation, and engine-compatibility helpers — shared by the Synapse host and the plugin CLI",
   "license": "MIT",
   "sideEffects": false,
   "exports": {
@@ -23,7 +23,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@deskit/plugin-sdk": "workspace:*",
+    "@synapse/plugin-sdk": "workspace:*",
     "zod": "^4.4.3"
   },
   "publishConfig": {

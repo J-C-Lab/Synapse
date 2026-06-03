@@ -10,7 +10,7 @@ const plugin: PluginModule = {
         const { path } = await ctx.system.captureScreen()
         await ctx.clipboard.writeText(path)
         await ctx.notifications.show({
-          title: "DesKit",
+          title: "Synapse",
           body: `Saved to ${path}`,
         })
         return view(path)

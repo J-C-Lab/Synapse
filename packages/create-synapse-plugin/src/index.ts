@@ -26,15 +26,15 @@ async function main(argv: string[]): Promise<void> {
 
   const nonInteractive = Boolean(flags.values.get("yes")) || !process.stdin.isTTY
 
-  intro(pc.bgCyan(pc.black(" create-deskit-plugin ")))
+  intro(pc.bgCyan(pc.black(" create-synapse-plugin ")))
 
   const targetDir =
     flags.positional[0] ??
-    (await prompt(nonInteractive, "my-deskit-plugin", () =>
+    (await prompt(nonInteractive, "my-synapse-plugin", () =>
       text({
         message: "Project directory",
-        placeholder: "my-deskit-plugin",
-        defaultValue: "my-deskit-plugin",
+        placeholder: "my-synapse-plugin",
+        defaultValue: "my-synapse-plugin",
       })
     ))
   const baseName = path.basename(path.resolve(targetDir))
@@ -68,11 +68,11 @@ async function main(argv: string[]): Promise<void> {
 
   const description =
     str(flags.values.get("description")) ??
-    (await prompt(nonInteractive, "A DesKit plugin.", () =>
+    (await prompt(nonInteractive, "A Synapse plugin.", () =>
       text({
         message: "Description",
-        placeholder: "A DesKit plugin.",
-        defaultValue: "A DesKit plugin.",
+        placeholder: "A Synapse plugin.",
+        defaultValue: "A Synapse plugin.",
       })
     ))
 
@@ -136,8 +136,8 @@ function printNextSteps(targetDir: string): void {
   const steps = [
     rel === "." ? null : `cd ${rel}`,
     `${pm} install`,
-    `${run} build      ${pc.dim("# produce an installable .deskit")}`,
-    `${run} dev        ${pc.dim("# watch + load into a running DesKit")}`,
+    `${run} build      ${pc.dim("# produce an installable .syn")}`,
+    `${run} dev        ${pc.dim("# watch + load into a running Synapse")}`,
   ]
     .filter(Boolean)
     .join("\n")
@@ -202,11 +202,11 @@ function fail(message: string): never {
 }
 
 function usage(): string {
-  return `create-deskit-plugin — scaffold a new DesKit plugin
+  return `create-synapse-plugin — scaffold a new Synapse plugin
 
 Usage:
-  npm create deskit-plugin [dir] [options]
-  pnpm create deskit-plugin [dir] [options]
+  npm create synapse-plugin [dir] [options]
+  pnpm create synapse-plugin [dir] [options]
 
 Options:
   --id <reverse-dns>     Plugin id (default com.example.<dir>)

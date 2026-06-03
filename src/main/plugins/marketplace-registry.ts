@@ -1,11 +1,11 @@
-import type { LocalizedString } from "@deskit/plugin-sdk"
+import type { LocalizedString } from "@synapse/plugin-sdk"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import { z } from "zod"
 import { PLUGIN_HOST_VERSION } from "./types"
 
 export const DEFAULT_MARKETPLACE_REGISTRY_URL =
-  "https://raw.githubusercontent.com/WiIIiamWei/DesKit-Marketplace/main/registry.json"
+  "https://raw.githubusercontent.com/WiIIiamWei/Synapse-Marketplace/main/registry.json"
 
 export interface MarketplaceEntry {
   id: string
@@ -17,7 +17,7 @@ export interface MarketplaceEntry {
   version: string
   downloadUrl: string
   sha256: string
-  deskitEngine: string
+  synapseEngine: string
   icon?: string
   categories?: string[]
 }
@@ -44,7 +44,7 @@ const marketplaceEntrySchema = z
     version: z.string().regex(/^\d+\.\d+\.\d+(?:[-+][0-9A-Z.-]+)?$/i),
     downloadUrl: z.string().url().startsWith("https://"),
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
-    deskitEngine: z.string().min(1),
+    synapseEngine: z.string().min(1),
     icon: z.string().optional(),
     categories: z.array(z.string().min(1)).optional(),
   })
@@ -126,7 +126,7 @@ function parseMarketplaceRegistryDocument(raw: string): {
 
   return {
     entries: registry.data.plugins.filter((entry) =>
-      isMarketplaceEngineCompatible(entry.deskitEngine, PLUGIN_HOST_VERSION)
+      isMarketplaceEngineCompatible(entry.synapseEngine, PLUGIN_HOST_VERSION)
     ),
     totalEntries: registry.data.plugins.length,
   }

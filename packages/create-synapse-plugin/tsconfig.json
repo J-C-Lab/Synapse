@@ -5,8 +5,8 @@
     "module": "CommonJS",
     "moduleResolution": "node",
     "paths": {
-      "@deskit/plugin-manifest": ["../plugin-manifest/src/index.ts"],
-      "@deskit/plugin-cli": ["../plugin-cli/src/index.ts"]
+      "@synapse/plugin-manifest": ["../plugin-manifest/src/index.ts"],
+      "@synapse/plugin-cli": ["../plugin-cli/src/index.ts"]
     },
     "resolveJsonModule": true,
     "types": ["node"],

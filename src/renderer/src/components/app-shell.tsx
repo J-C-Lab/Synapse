@@ -148,7 +148,7 @@ export function AppShell() {
 
         <SidebarFooter>
           <span className="px-2 py-1 text-[10px] text-muted-foreground group-data-[collapsible=icon]:hidden">
-            DesKit
+            Synapse
           </span>
         </SidebarFooter>
       </Sidebar>

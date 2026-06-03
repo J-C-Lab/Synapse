@@ -1,14 +1,14 @@
-# @deskit/plugin-sdk
+# @synapse/plugin-sdk
 
-TypeScript types and runtime contract for [DesKit](../../README.md) plugins.
+TypeScript types and runtime contract for [Synapse](../../README.md) plugins.
 
-A DesKit plugin is a CommonJS module that registers commands and returns
+A Synapse plugin is a CommonJS module that registers commands and returns
 declarative view descriptions. The host renders those descriptions with a
 unified shadcn-based UI — plugin code never touches the DOM, never embeds
 an iframe, and never imports React.
 
 ```ts
-import type { PluginModule } from "@deskit/plugin-sdk"
+import type { PluginModule } from "@synapse/plugin-sdk"
 
 const plugin: PluginModule = {
   commands: {

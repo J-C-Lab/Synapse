@@ -14,7 +14,7 @@ import {
 } from "@/lib/electron"
 import { cn } from "@/lib/utils"
 
-const FEATURE_ICONS: Record<DeskitFloatingBallFeature, typeof Search> = {
+const FEATURE_ICONS: Record<SynapseFloatingBallFeature, typeof Search> = {
   appLauncher: Search,
 }
 const MENU_SLOT_ANGLES = [30, 90, 150, 210, 270, 330] as const
@@ -23,7 +23,7 @@ const DRAG_THRESHOLD = 4
 export function FloatingBallPanel() {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
-  const [features, setFeatures] = useState<DeskitFloatingBallFeature[]>(["appLauncher"])
+  const [features, setFeatures] = useState<SynapseFloatingBallFeature[]>(["appLauncher"])
   const dragRef = useRef<{
     pointerId: number
     startX: number
@@ -62,7 +62,7 @@ export function FloatingBallPanel() {
 
   const menuItems = useMemo(() => features.slice(0, 6), [features])
 
-  async function onFeatureClick(feature: DeskitFloatingBallFeature) {
+  async function onFeatureClick(feature: SynapseFloatingBallFeature) {
     await openFloatingBallFeature(feature)
     setExpanded(false)
   }

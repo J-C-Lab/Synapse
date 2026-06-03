@@ -37,7 +37,7 @@ pnpm dev:lan:a
 pnpm dev:lan:b
 ```
 
-The windows are labeled `DesKit Sim A` and `DesKit Sim B`. Their development-only profiles are
+The windows are labeled `Synapse Sim A` and `Synapse Sim B`. Their development-only profiles are
 stored separately under the app `userData/dev-lan-simulator/` directory, so each instance has its
 own device identity, certificate, trusted devices, settings, and transfer records.
 

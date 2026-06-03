@@ -1,4 +1,4 @@
-import type { ClipboardContent } from "@deskit/plugin-sdk"
+import type { ClipboardContent } from "@synapse/plugin-sdk"
 import type { PluginCommandResult, PluginManifest, PluginRegistryEntry } from "./types"
 import { createHash } from "node:crypto"
 import { promises as fs } from "node:fs"
@@ -15,7 +15,7 @@ import {
 let dir: string
 
 beforeEach(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), "deskit-host-"))
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-host-"))
 })
 
 afterEach(async () => {
@@ -72,11 +72,11 @@ async function writeHostPlugin(
     permissions?: string[]
   } = {}
 ): Promise<string> {
-  const pluginId = options.id ?? "com.deskit.clipboard"
+  const pluginId = options.id ?? "com.synapse.clipboard"
   const pluginDir = path.join(dir, "plugins", pluginId)
   await fs.mkdir(path.join(pluginDir, "dist"), { recursive: true })
   await fs.writeFile(
-    path.join(pluginDir, "deskit.json"),
+    path.join(pluginDir, "synapse.json"),
     `${JSON.stringify(
       {
         id: pluginId,
@@ -84,8 +84,8 @@ async function writeHostPlugin(
         displayName: "Clipboard Plugin",
         description: "Test clipboard plugin",
         version: "0.1.0",
-        author: "DesKit",
-        engines: { deskit: "^0.2.0" },
+        author: "Synapse",
+        engines: { synapse: "^0.2.0" },
         main: "dist/index.js",
         contributes: {
           activationEvents: options.activationEvents,
@@ -124,18 +124,18 @@ module.exports = {
 }
 
 const baseEntry: PluginRegistryEntry = {
-  pluginId: "com.deskit.test",
+  pluginId: "com.synapse.test",
   rootDir: path.join("dir", "test"),
   source: { kind: "builtin", priority: 3 },
   status: "active",
   manifest: {
-    id: "com.deskit.test",
+    id: "com.synapse.test",
     name: "test",
     displayName: "Test",
     description: "test",
     version: "0.1.0",
-    author: "DesKit",
-    engines: { deskit: "^0.1.0" },
+    author: "Synapse",
+    engines: { synapse: "^0.1.0" },
     main: "dist/index.js",
     contributes: {
       commands: [{ id: "test.run", title: "Run", mode: "view" }],
@@ -166,18 +166,18 @@ function marketplaceEntry(
   }> = {}
 ) {
   return {
-    id: "com.deskit.timestamp",
+    id: "com.synapse.timestamp",
     name: "timestamp",
     displayName: "Timestamp Converter",
     description: "Convert timestamps.",
-    author: "DesKit",
-    homepage: "https://github.com/WiIIiamWei/DesKit",
+    author: "Synapse",
+    homepage: "https://github.com/WiIIiamWei/Synapse",
     version: "0.3.0",
     downloadUrl:
       overrides.downloadUrl ??
-      "https://github.com/WiIIiamWei/deskit-plugin-timestamp/releases/download/v0.3.0/com.deskit.timestamp-0.3.0.deskit",
+      "https://github.com/WiIIiamWei/synapse-plugin-timestamp/releases/download/v0.3.0/com.synapse.timestamp-0.3.0.syn",
     sha256: overrides.sha256 ?? "0".repeat(64),
-    deskitEngine: "^0.2.0",
+    synapseEngine: "^0.2.0",
     categories: ["utilities"],
   }
 }
@@ -188,10 +188,10 @@ describe("pluginHost.setPreference value validation", () => {
     await host.preferences.load()
     vi.spyOn(host.registry, "get").mockReturnValue(baseEntry)
 
-    await expect(host.setPreference("com.deskit.test", "label", "hello")).resolves.toBeUndefined()
-    await expect(host.setPreference("com.deskit.test", "limit", 42)).resolves.toBeUndefined()
-    await expect(host.setPreference("com.deskit.test", "enabled", false)).resolves.toBeUndefined()
-    await expect(host.setPreference("com.deskit.test", "unit", "s")).resolves.toBeUndefined()
+    await expect(host.setPreference("com.synapse.test", "label", "hello")).resolves.toBeUndefined()
+    await expect(host.setPreference("com.synapse.test", "limit", 42)).resolves.toBeUndefined()
+    await expect(host.setPreference("com.synapse.test", "enabled", false)).resolves.toBeUndefined()
+    await expect(host.setPreference("com.synapse.test", "unit", "s")).resolves.toBeUndefined()
   })
 
   it("rejects mistyped text values", async () => {
@@ -199,7 +199,7 @@ describe("pluginHost.setPreference value validation", () => {
     await host.preferences.load()
     vi.spyOn(host.registry, "get").mockReturnValue(baseEntry)
 
-    await expect(host.setPreference("com.deskit.test", "label", 42)).rejects.toBeInstanceOf(
+    await expect(host.setPreference("com.synapse.test", "label", 42)).rejects.toBeInstanceOf(
       PluginPreferenceTypeError
     )
   })
@@ -210,9 +210,9 @@ describe("pluginHost.setPreference value validation", () => {
     vi.spyOn(host.registry, "get").mockReturnValue(baseEntry)
 
     await expect(
-      host.setPreference("com.deskit.test", "limit", Number.POSITIVE_INFINITY)
+      host.setPreference("com.synapse.test", "limit", Number.POSITIVE_INFINITY)
     ).rejects.toBeInstanceOf(PluginPreferenceTypeError)
-    await expect(host.setPreference("com.deskit.test", "limit", "10")).rejects.toBeInstanceOf(
+    await expect(host.setPreference("com.synapse.test", "limit", "10")).rejects.toBeInstanceOf(
       PluginPreferenceTypeError
     )
   })
@@ -222,7 +222,7 @@ describe("pluginHost.setPreference value validation", () => {
     await host.preferences.load()
     vi.spyOn(host.registry, "get").mockReturnValue(baseEntry)
 
-    await expect(host.setPreference("com.deskit.test", "enabled", 1)).rejects.toBeInstanceOf(
+    await expect(host.setPreference("com.synapse.test", "enabled", 1)).rejects.toBeInstanceOf(
       PluginPreferenceTypeError
     )
   })
@@ -232,7 +232,7 @@ describe("pluginHost.setPreference value validation", () => {
     await host.preferences.load()
     vi.spyOn(host.registry, "get").mockReturnValue(baseEntry)
 
-    await expect(host.setPreference("com.deskit.test", "unit", "us")).rejects.toBeInstanceOf(
+    await expect(host.setPreference("com.synapse.test", "unit", "us")).rejects.toBeInstanceOf(
       PluginPreferenceTypeError
     )
   })
@@ -242,9 +242,9 @@ describe("pluginHost.setPreference value validation", () => {
     await host.preferences.load()
     vi.spyOn(host.registry, "get").mockReturnValue(baseEntry)
 
-    await host.setPreference("com.deskit.test", "label", "custom")
-    await host.setPreference("com.deskit.test", "label", undefined)
-    expect(host.preferences.get("com.deskit.test")).toEqual({})
+    await host.setPreference("com.synapse.test", "label", "custom")
+    await host.setPreference("com.synapse.test", "label", undefined)
+    expect(host.preferences.get("com.synapse.test")).toEqual({})
   })
 
   it("rejects undeclared preference keys with a plain Error", async () => {
@@ -252,7 +252,7 @@ describe("pluginHost.setPreference value validation", () => {
     await host.preferences.load()
     vi.spyOn(host.registry, "get").mockReturnValue(baseEntry)
 
-    await expect(host.setPreference("com.deskit.test", "unknownKey", "x")).rejects.toThrow(
+    await expect(host.setPreference("com.synapse.test", "unknownKey", "x")).rejects.toThrow(
       /Unknown plugin preference/
     )
   })
@@ -270,30 +270,30 @@ describe("pluginHost unsupported operations", () => {
     const host = makeHost()
     vi.spyOn(host.registry, "get").mockReturnValue(baseEntry)
 
-    await expect(host.uninstall("com.deskit.test")).rejects.toBeInstanceOf(
+    await expect(host.uninstall("com.synapse.test")).rejects.toBeInstanceOf(
       PluginHostNotImplementedError
     )
   })
 })
 
 describe("pluginHost package installation", () => {
-  it("installs a .deskit package into user plugins", async () => {
+  it("installs a .syn package into user plugins", async () => {
     const host = makeHost()
     await host.init()
     const packagePath = path.resolve(
       "resources",
       "mock-marketplace",
       "packages",
-      "com.deskit.timestamp-0.3.0.deskit"
+      "com.synapse.timestamp-0.3.0.syn"
     )
 
     const entry = await host.installPackage(packagePath)
 
-    expect(entry.pluginId).toBe("com.deskit.timestamp")
+    expect(entry.pluginId).toBe("com.synapse.timestamp")
     expect(entry.source.kind).toBe("user")
     expect(entry.status).toBe("active")
     await expect(
-      fs.stat(path.join(dir, "plugins", "com.deskit.timestamp", "deskit.json"))
+      fs.stat(path.join(dir, "plugins", "com.synapse.timestamp", "synapse.json"))
     ).resolves.toBeTruthy()
   })
 
@@ -302,7 +302,7 @@ describe("pluginHost package installation", () => {
       "resources",
       "mock-marketplace",
       "packages",
-      "com.deskit.timestamp-0.3.0.deskit"
+      "com.synapse.timestamp-0.3.0.syn"
     )
     const packageBuffer = await fs.readFile(packagePath)
     const sha256 = createHash("sha256").update(packageBuffer).digest("hex")
@@ -314,9 +314,9 @@ describe("pluginHost package installation", () => {
     })
     await host.init()
 
-    const entry = await host.installMarketplacePlugin("com.deskit.timestamp")
+    const entry = await host.installMarketplacePlugin("com.synapse.timestamp")
 
-    expect(entry.pluginId).toBe("com.deskit.timestamp")
+    expect(entry.pluginId).toBe("com.synapse.timestamp")
     expect(entry.source.kind).toBe("user")
     expect(entry.status).toBe("active")
   })
@@ -326,7 +326,7 @@ describe("pluginHost package installation", () => {
       "resources",
       "mock-marketplace",
       "packages",
-      "com.deskit.timestamp-0.3.0.deskit"
+      "com.synapse.timestamp-0.3.0.syn"
     )
     const packageBuffer = await fs.readFile(packagePath)
     const host = makeHostWithFetch(async (url) => {
@@ -340,7 +340,7 @@ describe("pluginHost package installation", () => {
     })
     await host.init()
 
-    await expect(host.installMarketplacePlugin("com.deskit.timestamp")).rejects.toBeInstanceOf(
+    await expect(host.installMarketplacePlugin("com.synapse.timestamp")).rejects.toBeInstanceOf(
       PluginInstallError
     )
   })
@@ -352,7 +352,7 @@ describe("pluginHost facade forwards to registry", () => {
     await host.preferences.load()
     vi.spyOn(host.registry, "list").mockReturnValue([baseEntry])
 
-    await host.preferences.set("com.deskit.test", "label", "custom")
+    await host.preferences.set("com.synapse.test", "label", "custom")
 
     expect(host.list()[0]?.preferences).toEqual({
       label: "custom",
@@ -385,7 +385,7 @@ describe("pluginHost clipboard watcher", () => {
 
       expect(read).toHaveBeenCalled()
       const raw = await fs.readFile(
-        path.join(dir, "plugin-data", "com.deskit.clipboard.json"),
+        path.join(dir, "plugin-data", "com.synapse.clipboard.json"),
         "utf-8"
       )
       expect(JSON.parse(raw)).toEqual({ entries: ["hello"] })
@@ -408,7 +408,7 @@ describe("pluginHost clipboard watcher", () => {
       await host.init()
       await vi.advanceTimersByTimeAsync(20)
 
-      expect(host.get("invalid:user:com.deskit.clipboard")?.status).toBe("invalid")
+      expect(host.get("invalid:user:com.synapse.clipboard")?.status).toBe("invalid")
       expect(read).not.toHaveBeenCalled()
     } finally {
       host.dispose()

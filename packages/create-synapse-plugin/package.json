@@ -1,10 +1,10 @@
 {
-  "name": "create-deskit-plugin",
+  "name": "create-synapse-plugin",
   "version": "0.3.0",
-  "description": "Scaffold a new DesKit plugin project",
+  "description": "Scaffold a new Synapse plugin project",
   "license": "MIT",
   "bin": {
-    "create-deskit-plugin": "./dist/index.js"
+    "create-synapse-plugin": "./dist/index.js"
   },
   "files": [
     "README.md",
@@ -20,8 +20,8 @@
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
-    "@deskit/plugin-cli": "workspace:*",
-    "@deskit/plugin-manifest": "workspace:*"
+    "@synapse/plugin-cli": "workspace:*",
+    "@synapse/plugin-manifest": "workspace:*"
   },
   "publishConfig": {
     "access": "public"

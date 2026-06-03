@@ -1,4 +1,4 @@
-import type { LocalizedString } from "@deskit/plugin-sdk"
+import type { LocalizedString } from "@synapse/plugin-sdk"
 
 export type CommandMode = "view" | "no-view"
 
@@ -37,7 +37,7 @@ export interface PluginManifest {
   version: string
   author: string
   icon?: string
-  engines: { deskit: string }
+  engines: { synapse: string }
   main: string
   contributes: {
     activationEvents?: PluginActivationEvent[]

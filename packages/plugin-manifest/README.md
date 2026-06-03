@@ -1,9 +1,9 @@
-# @deskit/plugin-manifest
+# @synapse/plugin-manifest
 
-Shared manifest contract for [DesKit](../../README.md) plugins.
+Shared manifest contract for [Synapse](../../README.md) plugins.
 
-This package owns the `deskit.json` schema and validation so that both the
-DesKit host (main process) and the [`@deskit/plugin-cli`](../plugin-cli) build
+This package owns the `synapse.json` schema and validation so that both the
+Synapse host (main process) and the [`@synapse/plugin-cli`](../plugin-cli) build
 tool validate manifests against a single source of truth — no schema drift
 between "what the CLI accepts" and "what the app loads".
 
@@ -12,7 +12,7 @@ between "what the CLI accepts" and "what the app loads".
 - `parseManifest(raw): PluginManifest` — structural validation (throws
   `ManifestValidationError` with a list of human-readable issues).
 - `manifestSchema` — the underlying zod schema.
-- `isEngineCompatible(range, hostVersion)` — `engines.deskit` range check
+- `isEngineCompatible(range, hostVersion)` — `engines.synapse` range check
   (`"*"`, exact `x.y.z`, caret `^x.y.z`).
 - `ManifestValidationError` — error type carrying `issues: string[]`.
 - Manifest TypeScript types (`PluginManifest`, `ManifestCommand`, …).

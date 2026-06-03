@@ -1,4 +1,4 @@
-import type { ClipboardActionValue, ClipboardContent } from "@deskit/plugin-sdk"
+import type { ClipboardActionValue, ClipboardContent } from "@synapse/plugin-sdk"
 import type { LocalizedString, PluginToastView } from "@/components/plugins/view-types"
 import { toast } from "sonner"
 

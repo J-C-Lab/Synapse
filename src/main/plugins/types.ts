@@ -1,5 +1,5 @@
-// Manifest types live in the shared @deskit/plugin-manifest package so the
-// host and the plugin CLI validate `deskit.json` against one source of truth.
+// Manifest types live in the shared @synapse/plugin-manifest package so the
+// host and the plugin CLI validate `synapse.json` against one source of truth.
 // Imported for local use below and re-exported so existing `./types` imports
 // across the main process keep working unchanged.
 import type {
@@ -10,7 +10,7 @@ import type {
   ManifestPreferenceType,
   PluginActivationEvent,
   PluginManifest,
-} from "@deskit/plugin-manifest"
+} from "@synapse/plugin-manifest"
 
 import type {
   ClipboardContent,
@@ -18,7 +18,7 @@ import type {
   LocalizedString,
   PluginModule,
   View,
-} from "@deskit/plugin-sdk"
+} from "@synapse/plugin-sdk"
 
 export type {
   CommandMode,

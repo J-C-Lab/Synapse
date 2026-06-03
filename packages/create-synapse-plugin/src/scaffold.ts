@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 
-/** Manifest plugin-id shape, mirrored from @deskit/plugin-manifest. */
+/** Manifest plugin-id shape, mirrored from @synapse/plugin-manifest. */
 export const PLUGIN_ID_PATTERN = /^[a-z0-9][a-z0-9-]*(?:\.[a-z0-9][a-z0-9-]*)+$/
 
 const DEFAULT_COMMAND_ID = "hello.world"
@@ -24,7 +24,7 @@ export interface ScaffoldOptions {
   displayName: string
   description: string
   author: string
-  /** Command id wired into deskit.json + src/index.ts. */
+  /** Command id wired into synapse.json + src/index.ts. */
   commandId: string
   /** Add clipboard:change activation + clipboard:read permission. */
   clipboard: boolean
@@ -120,7 +120,7 @@ async function copyDir(srcDir: string, destDir: string, files: string[]): Promis
 }
 
 async function patchManifest(targetDir: string, options: ScaffoldOptions): Promise<void> {
-  const manifestPath = path.join(targetDir, "deskit.json")
+  const manifestPath = path.join(targetDir, "synapse.json")
   const manifest = JSON.parse(await fs.readFile(manifestPath, "utf-8")) as Record<string, unknown>
 
   manifest.id = options.pluginId

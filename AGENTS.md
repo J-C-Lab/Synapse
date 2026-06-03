@@ -10,7 +10,7 @@ This is a pnpm workspace with the Electron desktop app at the repository root an
 - `src/renderer/src/components/ui/` vendored shadcn/ui components. Do not add tests here.
 - `resources/` electron-builder icons and build resources.
 - `docs/` separate Next.js/Fumadocs documentation site.
-- `DesKit/` project research and design documents.
+- `Synapse/` project research and design documents.
 
 ## Commands
 

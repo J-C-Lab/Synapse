@@ -50,7 +50,7 @@ export function ensureSearchWindow(deps: SearchWindowDeps): BrowserWindow {
     fullscreenable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
-    title: "DesKit Launcher",
+    title: "Synapse Launcher",
     backgroundColor: "#00000000",
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
@@ -85,7 +85,7 @@ export function ensureSearchWindow(deps: SearchWindowDeps): BrowserWindow {
   // Auto-hide when the user clicks elsewhere — same behaviour as
   // Spotlight / PowerToys Run.
   searchWindow.on("blur", () => {
-    if (process.env.DESKIT_KEEP_SEARCH_OPEN) return
+    if (process.env.SYNAPSE_KEEP_SEARCH_OPEN) return
     suppressImmediateTrayOpen()
     hideSearchWindow()
   })

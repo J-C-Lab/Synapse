@@ -5,16 +5,16 @@ import { ZipFile } from "yazl"
 export interface PackageFile {
   /** Absolute path on disk. */
   absPath: string
-  /** Forward-slash path inside the `.deskit` archive. */
+  /** Forward-slash path inside the `.syn` archive. */
   archivePath: string
 }
 
 /**
- * Write the given files into a `.deskit` ZIP at `outPath`. Archive paths are
+ * Write the given files into a `.syn` ZIP at `outPath`. Archive paths are
  * normalized to forward slashes so the package extracts identically on every
  * OS — the host's extractor validates entry paths and rejects backslashes.
  */
-export function createDeskitPackage(files: PackageFile[], outPath: string): Promise<void> {
+export function createSynapsePackage(files: PackageFile[], outPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const zip = new ZipFile()
     const output = createWriteStream(outPath)

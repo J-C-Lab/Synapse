@@ -24,7 +24,7 @@ export default antfu(
       "src/renderer/src/components/ui/**",
       // Scaffolder payload — shipped verbatim to generated plugin projects,
       // not part of this repo's source program.
-      "packages/create-deskit-plugin/template/**",
+      "packages/create-synapse-plugin/template/**",
     ],
   },
   // Final layer: silence any ESLint rules that would conflict with Prettier

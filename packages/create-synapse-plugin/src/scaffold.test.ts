@@ -1,22 +1,22 @@
 // @vitest-environment node
-// Builds the scaffolded project with esbuild (via @deskit/plugin-cli), which
+// Builds the scaffolded project with esbuild (via @synapse/plugin-cli), which
 // fails under jsdom's TextEncoder — so this suite runs in the node env.
 import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import process from "node:process"
-import { buildPlugin } from "@deskit/plugin-cli"
-import { parseManifest } from "@deskit/plugin-manifest"
+import { buildPlugin } from "@synapse/plugin-cli"
+import { parseManifest } from "@synapse/plugin-manifest"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { defaultCommandId, ScaffoldError, scaffoldPlugin } from "./scaffold"
 
 // vitest runs from the repo root, so the template payload is at a stable path.
-const TEMPLATE_DIR = path.resolve(process.cwd(), "packages/create-deskit-plugin/template")
+const TEMPLATE_DIR = path.resolve(process.cwd(), "packages/create-synapse-plugin/template")
 
 let workDir: string
 
 beforeEach(async () => {
-  workDir = await fs.mkdtemp(path.join(os.tmpdir(), "create-deskit-"))
+  workDir = await fs.mkdtemp(path.join(os.tmpdir(), "create-synapse-"))
 })
 
 afterEach(async () => {
@@ -38,7 +38,7 @@ describe("scaffoldPlugin", () => {
       clipboard: false,
     })
 
-    expect(await exists(path.join(targetDir, "deskit.json"))).toBe(true)
+    expect(await exists(path.join(targetDir, "synapse.json"))).toBe(true)
     expect(await exists(path.join(targetDir, "package.json"))).toBe(true)
     expect(await exists(path.join(targetDir, "src", "index.ts"))).toBe(true)
     // _gitignore / _github must land as their dotfile names
@@ -48,7 +48,7 @@ describe("scaffoldPlugin", () => {
     expect(await exists(path.join(targetDir, "_github"))).toBe(false)
 
     const manifest = parseManifest(
-      JSON.parse(await fs.readFile(path.join(targetDir, "deskit.json"), "utf-8"))
+      JSON.parse(await fs.readFile(path.join(targetDir, "synapse.json"), "utf-8"))
     )
     expect(manifest.id).toBe("com.alice.timer")
     expect(manifest.author).toBe("Alice")
@@ -59,7 +59,7 @@ describe("scaffoldPlugin", () => {
     // Hard constraint: the template must use published versions, never workspace:*
     const deps = JSON.stringify(pkg.devDependencies)
     expect(deps).not.toContain("workspace:")
-    expect(deps).toContain("@deskit/plugin-cli")
+    expect(deps).toContain("@synapse/plugin-cli")
 
     // The patched entry references the new command id.
     const entry = await fs.readFile(path.join(targetDir, "src", "index.ts"), "utf-8")
@@ -81,7 +81,7 @@ describe("scaffoldPlugin", () => {
       clipboard: true,
     })
     const manifest = parseManifest(
-      JSON.parse(await fs.readFile(path.join(targetDir, "deskit.json"), "utf-8"))
+      JSON.parse(await fs.readFile(path.join(targetDir, "synapse.json"), "utf-8"))
     )
     expect(manifest.contributes.activationEvents).toEqual(["clipboard:change"])
     expect(manifest.permissions).toContain("clipboard:read")
@@ -102,7 +102,7 @@ describe("scaffoldPlugin", () => {
     })
 
     const result = await buildPlugin({ projectDir: targetDir })
-    expect(path.basename(result.packagePath)).toBe("com.alice.buildable-0.1.0.deskit")
+    expect(path.basename(result.packagePath)).toBe("com.alice.buildable-0.1.0.syn")
     expect(await exists(result.packagePath)).toBe(true)
   })
 

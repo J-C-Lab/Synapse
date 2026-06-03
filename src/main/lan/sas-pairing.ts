@@ -247,7 +247,7 @@ interface SasInput extends PairingReveal {
 
 export function deriveSas(input: SasInput): string {
   const transcript = [
-    "deskit-lan-pairing-v1",
+    "synapse-lan-pairing-v1",
     input.initiatorPublicKey,
     input.initiatorNonce,
     input.responderPublicKey,

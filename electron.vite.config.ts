@@ -15,15 +15,15 @@ import { defineConfig, externalizeDepsPlugin } from "electron-vite"
 
 export default defineConfig({
   main: {
-    // @deskit/plugin-manifest is a workspace package with runtime code (zod
+    // @synapse/plugin-manifest is a workspace package with runtime code (zod
     // schema). Bundle it from source instead of externalizing it so the app
     // needs no prior `pnpm build:manifest` in dev/build — mirrors how the SDK
     // is aliased to source for tsc/vitest. zod stays externalized (real dep).
-    plugins: [externalizeDepsPlugin({ exclude: ["@deskit/plugin-manifest"] })],
+    plugins: [externalizeDepsPlugin({ exclude: ["@synapse/plugin-manifest"] })],
     resolve: {
       alias: {
-        "@deskit/plugin-manifest": resolve(__dirname, "packages/plugin-manifest/src/index.ts"),
-        "@deskit/plugin-sdk": resolve(__dirname, "packages/plugin-sdk/src/index.ts"),
+        "@synapse/plugin-manifest": resolve(__dirname, "packages/plugin-manifest/src/index.ts"),
+        "@synapse/plugin-sdk": resolve(__dirname, "packages/plugin-sdk/src/index.ts"),
       },
     },
     build: {
@@ -45,7 +45,7 @@ export default defineConfig({
     resolve: {
       alias: {
         "@": resolve(__dirname, "src/renderer/src"),
-        "@deskit/plugin-sdk": resolve(__dirname, "packages/plugin-sdk/src/index.ts"),
+        "@synapse/plugin-sdk": resolve(__dirname, "packages/plugin-sdk/src/index.ts"),
       },
     },
     plugins: [react(), tailwindcss()],

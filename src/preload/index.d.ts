@@ -6,7 +6,7 @@ export {}
 
 declare global {
   type LauncherAppKind = "win32" | "uwp" | "url" | "macos"
-  type DeskitFloatingBallFeature = "appLauncher"
+  type SynapseFloatingBallFeature = "appLauncher"
 
   interface LauncherAppEntry {
     id: string
@@ -24,34 +24,34 @@ declare global {
     matches: number[]
   }
 
-  type DeskitThemeMode = "light" | "dark" | "system"
-  type DeskitThemeAccent = "neutral" | "blue" | "green" | "rose" | "violet"
+  type SynapseThemeMode = "light" | "dark" | "system"
+  type SynapseThemeAccent = "neutral" | "blue" | "green" | "rose" | "violet"
 
-  interface DeskitUserSettings {
+  interface SynapseUserSettings {
     hotkey: string
-    themeMode: DeskitThemeMode
-    accent: DeskitThemeAccent
+    themeMode: SynapseThemeMode
+    accent: SynapseThemeAccent
     floatingBallEnabled: boolean
-    floatingBallFeatures: DeskitFloatingBallFeature[]
+    floatingBallFeatures: SynapseFloatingBallFeature[]
     lanEnabled: boolean
   }
 
-  type DeskitLanPlatform = "win32" | "darwin" | "linux" | "unknown"
+  type SynapseLanPlatform = "win32" | "darwin" | "linux" | "unknown"
 
-  interface DeskitLanDevice {
+  interface SynapseLanDevice {
     deviceId: string
     name: string
     host: string
     addresses: string[]
     port: number
-    platform: DeskitLanPlatform
+    platform: SynapseLanPlatform
     capabilities: string[]
     lastSeenAt: number
     online: boolean
     paired: boolean
   }
 
-  interface DeskitLanStatus {
+  interface SynapseLanStatus {
     enabled: boolean
     discovering: boolean
     localDeviceId: string
@@ -59,21 +59,21 @@ declare global {
     deviceCount: number
   }
 
-  type DeskitLanPairingDirection = "incoming" | "outgoing"
-  type DeskitLanPairingState = "awaiting-confirmation" | "confirmed" | "rejected"
+  type SynapseLanPairingDirection = "incoming" | "outgoing"
+  type SynapseLanPairingState = "awaiting-confirmation" | "confirmed" | "rejected"
 
-  interface DeskitLanPairing {
+  interface SynapseLanPairing {
     id: string
-    direction: DeskitLanPairingDirection
+    direction: SynapseLanPairingDirection
     deviceId: string
     deviceName: string
     sas: string
-    state: DeskitLanPairingState
+    state: SynapseLanPairingState
     createdAt: number
   }
 
-  type DeskitLanTransferDirection = "incoming" | "outgoing"
-  type DeskitLanTransferState =
+  type SynapseLanTransferDirection = "incoming" | "outgoing"
+  type SynapseLanTransferState =
     | "preparing"
     | "transferring"
     | "paused"
@@ -82,9 +82,9 @@ declare global {
     | "rejected"
     | "failed"
 
-  interface DeskitLanTransfer {
+  interface SynapseLanTransfer {
     id: string
-    direction: DeskitLanTransferDirection
+    direction: SynapseLanTransferDirection
     deviceId: string
     deviceName: string
     fileName: string
@@ -94,12 +94,12 @@ declare global {
     completedChunks: number
     totalChunks: number
     transferredBytes: number
-    state: DeskitLanTransferState
+    state: SynapseLanTransferState
     error?: string
   }
 
-  type DeskitLocalizedString = string | Record<string, string>
-  type DeskitClipboardContent =
+  type SynapseLocalizedString = string | Record<string, string>
+  type SynapseClipboardContent =
     | { type: "text"; text: string }
     | {
         type: "image"
@@ -110,12 +110,12 @@ declare global {
         name?: string
       }
     | { type: "file"; paths: string[] }
-  type DeskitPluginSourceKind = "builtin" | "user" | "dev"
-  type DeskitPluginRuntimeStatus = "active" | "disabled" | "invalid" | "crashed" | "shadowed"
-  type DeskitPluginCommandMode = "view" | "no-view"
-  type DeskitPluginActivationEvent = "clipboard:change"
-  type DeskitPluginInvokePhase = "run" | "onSearchChange" | "onAction"
-  type DeskitPluginIpcErrorCode =
+  type SynapsePluginSourceKind = "builtin" | "user" | "dev"
+  type SynapsePluginRuntimeStatus = "active" | "disabled" | "invalid" | "crashed" | "shadowed"
+  type SynapsePluginCommandMode = "view" | "no-view"
+  type SynapsePluginActivationEvent = "clipboard:change"
+  type SynapsePluginInvokePhase = "run" | "onSearchChange" | "onAction"
+  type SynapsePluginIpcErrorCode =
     | "IPC_FORBIDDEN"
     | "IPC_INVALID_PAYLOAD"
     | "PLUGIN_NOT_FOUND"
@@ -127,92 +127,92 @@ declare global {
     | "PLUGIN_IO_ERROR"
     | "UNKNOWN_ERROR"
 
-  interface DeskitPluginIpcError {
-    code: DeskitPluginIpcErrorCode
+  interface SynapsePluginIpcError {
+    code: SynapsePluginIpcErrorCode
     message: string
     details?: Record<string, unknown>
   }
 
-  type DeskitPluginIpcResult<T> = { ok: true; data: T } | { ok: false; error: DeskitPluginIpcError }
+  type SynapsePluginIpcResult<T> = { ok: true; data: T } | { ok: false; error: SynapsePluginIpcError }
 
-  interface DeskitPluginSource {
-    kind: DeskitPluginSourceKind
+  interface SynapsePluginSource {
+    kind: SynapsePluginSourceKind
     priority: number
   }
 
-  interface DeskitManifestCommand {
+  interface SynapseManifestCommand {
     id: string
-    title: DeskitLocalizedString
-    subtitle?: DeskitLocalizedString
+    title: SynapseLocalizedString
+    subtitle?: SynapseLocalizedString
     keywords?: string[]
-    mode: DeskitPluginCommandMode
+    mode: SynapsePluginCommandMode
     icon?: string
   }
 
-  interface DeskitPluginManifest {
+  interface SynapsePluginManifest {
     id: string
     name: string
-    displayName: DeskitLocalizedString
-    description: DeskitLocalizedString
+    displayName: SynapseLocalizedString
+    description: SynapseLocalizedString
     version: string
     author: string
     icon?: string
-    engines: { deskit: string }
+    engines: { synapse: string }
     main: string
     contributes: {
-      activationEvents?: DeskitPluginActivationEvent[]
-      commands: DeskitManifestCommand[]
+      activationEvents?: SynapsePluginActivationEvent[]
+      commands: SynapseManifestCommand[]
       preferences?: Array<{
         id: string
         type: "text" | "number" | "checkbox" | "select"
-        label: DeskitLocalizedString
+        label: SynapseLocalizedString
         default?: unknown
-        options?: Array<{ value: string; label: DeskitLocalizedString }>
+        options?: Array<{ value: string; label: SynapseLocalizedString }>
       }>
     }
     permissions: string[]
   }
 
-  interface DeskitPluginRegistryEntry {
+  interface SynapsePluginRegistryEntry {
     pluginId: string
     rootDir: string
-    source: DeskitPluginSource
-    status: DeskitPluginRuntimeStatus
-    manifest?: DeskitPluginManifest
+    source: SynapsePluginSource
+    status: SynapsePluginRuntimeStatus
+    manifest?: SynapsePluginManifest
     preferences?: Record<string, unknown>
     error?: string
-    shadowedBy?: DeskitPluginSourceKind
+    shadowedBy?: SynapsePluginSourceKind
     loadedAt?: number
   }
 
-  interface DeskitMarketplaceEntry {
+  interface SynapseMarketplaceEntry {
     id: string
     name: string
-    displayName: DeskitLocalizedString
-    description: DeskitLocalizedString
+    displayName: SynapseLocalizedString
+    description: SynapseLocalizedString
     author: string
     homepage: string
     version: string
     downloadUrl: string
     sha256: string
-    deskitEngine: string
+    synapseEngine: string
     icon?: string
     categories?: string[]
   }
 
-  interface DeskitPluginCommandResult {
+  interface SynapsePluginCommandResult {
     kind: "plugin-command"
     pluginId: string
     commandId: string
-    title: DeskitLocalizedString
-    subtitle?: DeskitLocalizedString
+    title: SynapseLocalizedString
+    subtitle?: SynapseLocalizedString
     icon?: string
-    mode: DeskitPluginCommandMode
+    mode: SynapsePluginCommandMode
     score: number
     matches: number[]
   }
 
-  type DeskitPluginView =
+  type SynapsePluginView =
     | { type: "list"; [key: string]: unknown }
     | { type: "detail"; [key: string]: unknown }
     | { type: "form"; [key: string]: unknown }
@@ -225,85 +225,85 @@ declare global {
       refreshApps: () => Promise<LauncherAppEntry[]>
       hideLauncher: () => Promise<void>
       openExternalUrl: (url: string) => Promise<boolean>
-      writeClipboardContent: (content: DeskitClipboardContent) => Promise<boolean>
+      writeClipboardContent: (content: SynapseClipboardContent) => Promise<boolean>
       notifyLauncherReady: () => void
-      openFloatingBallFeature: (feature: DeskitFloatingBallFeature) => Promise<void>
+      openFloatingBallFeature: (feature: SynapseFloatingBallFeature) => Promise<void>
       toggleFloatingBallMenu: () => Promise<void>
       moveFloatingBallBy: (delta: { x: number; y: number }) => Promise<void>
       hideFloatingBall: () => Promise<void>
-      getSettings: () => Promise<DeskitUserSettings>
-      updateSettings: (patch: Partial<DeskitUserSettings>) => Promise<DeskitUserSettings>
-      getLanStatus: () => Promise<DeskitLanStatus>
-      listLanDevices: () => Promise<DeskitLanDevice[]>
-      listLanPairings: () => Promise<DeskitLanPairing[]>
-      pairLanDevice: (deviceId: string) => Promise<DeskitLanPairing>
-      confirmLanPairing: (pairingId: string, sas: string) => Promise<DeskitLanPairing[]>
-      rejectLanPairing: (pairingId: string) => Promise<DeskitLanPairing[]>
+      getSettings: () => Promise<SynapseUserSettings>
+      updateSettings: (patch: Partial<SynapseUserSettings>) => Promise<SynapseUserSettings>
+      getLanStatus: () => Promise<SynapseLanStatus>
+      listLanDevices: () => Promise<SynapseLanDevice[]>
+      listLanPairings: () => Promise<SynapseLanPairing[]>
+      pairLanDevice: (deviceId: string) => Promise<SynapseLanPairing>
+      confirmLanPairing: (pairingId: string, sas: string) => Promise<SynapseLanPairing[]>
+      rejectLanPairing: (pairingId: string) => Promise<SynapseLanPairing[]>
       disconnectLanDevice: (deviceId: string) => Promise<void>
-      listLanTransfers: () => Promise<DeskitLanTransfer[]>
-      sendLanFile: (deviceId: string) => Promise<DeskitLanTransfer | null>
-      resumeLanTransfer: (transferId: string) => Promise<DeskitLanTransfer>
-      acceptLanTransfer: (transferId: string) => Promise<DeskitLanTransfer | null>
-      rejectLanTransfer: (transferId: string) => Promise<DeskitLanTransfer>
-      removeLanTransferHistory: (transferId: string) => Promise<DeskitLanTransfer[]>
-      listPlugins: () => Promise<DeskitPluginIpcResult<DeskitPluginRegistryEntry[]>>
+      listLanTransfers: () => Promise<SynapseLanTransfer[]>
+      sendLanFile: (deviceId: string) => Promise<SynapseLanTransfer | null>
+      resumeLanTransfer: (transferId: string) => Promise<SynapseLanTransfer>
+      acceptLanTransfer: (transferId: string) => Promise<SynapseLanTransfer | null>
+      rejectLanTransfer: (transferId: string) => Promise<SynapseLanTransfer>
+      removeLanTransferHistory: (transferId: string) => Promise<SynapseLanTransfer[]>
+      listPlugins: () => Promise<SynapsePluginIpcResult<SynapsePluginRegistryEntry[]>>
       getPlugin: (
         pluginId: string
-      ) => Promise<DeskitPluginIpcResult<DeskitPluginRegistryEntry | null>>
+      ) => Promise<SynapsePluginIpcResult<SynapsePluginRegistryEntry | null>>
       setPluginEnabled: (
         pluginId: string,
         enabled: boolean
-      ) => Promise<DeskitPluginIpcResult<DeskitPluginRegistryEntry>>
+      ) => Promise<SynapsePluginIpcResult<SynapsePluginRegistryEntry>>
       setPluginPreference: (
         pluginId: string,
         key: string,
         value: unknown
-      ) => Promise<DeskitPluginIpcResult<void>>
+      ) => Promise<SynapsePluginIpcResult<void>>
       installPluginFolder: (
         folderPath: string
-      ) => Promise<DeskitPluginIpcResult<DeskitPluginRegistryEntry>>
+      ) => Promise<SynapsePluginIpcResult<SynapsePluginRegistryEntry>>
       installPluginPackage: (
         zipPath: string
-      ) => Promise<DeskitPluginIpcResult<DeskitPluginRegistryEntry>>
-      importPluginFromFile: () => Promise<DeskitPluginIpcResult<DeskitPluginRegistryEntry | null>>
+      ) => Promise<SynapsePluginIpcResult<SynapsePluginRegistryEntry>>
+      importPluginFromFile: () => Promise<SynapsePluginIpcResult<SynapsePluginRegistryEntry | null>>
       getDroppedFilePath: (file: File) => string
-      uninstallPlugin: (pluginId: string) => Promise<DeskitPluginIpcResult<void>>
+      uninstallPlugin: (pluginId: string) => Promise<SynapsePluginIpcResult<void>>
       reloadPlugin: (
         pluginId?: string
-      ) => Promise<DeskitPluginIpcResult<DeskitPluginRegistryEntry | undefined>>
+      ) => Promise<SynapsePluginIpcResult<SynapsePluginRegistryEntry | undefined>>
       searchPluginCommands: (
         query: string,
         locale?: string,
         limit?: number
-      ) => Promise<DeskitPluginIpcResult<DeskitPluginCommandResult[]>>
+      ) => Promise<SynapsePluginIpcResult<SynapsePluginCommandResult[]>>
       invokePluginCommand: (
         pluginId: string,
         commandId: string,
-        phase: DeskitPluginInvokePhase,
+        phase: SynapsePluginInvokePhase,
         payload?: unknown
-      ) => Promise<DeskitPluginIpcResult<DeskitPluginView | void>>
+      ) => Promise<SynapsePluginIpcResult<SynapsePluginView | void>>
       disposePluginCommand: (
         pluginId: string,
         commandId: string
-      ) => Promise<DeskitPluginIpcResult<void>>
-      listMarketplacePlugins: () => Promise<DeskitPluginIpcResult<DeskitMarketplaceEntry[]>>
+      ) => Promise<SynapsePluginIpcResult<void>>
+      listMarketplacePlugins: () => Promise<SynapsePluginIpcResult<SynapseMarketplaceEntry[]>>
       installMarketplacePlugin: (
         id: string,
         version?: string
-      ) => Promise<DeskitPluginIpcResult<DeskitPluginRegistryEntry>>
+      ) => Promise<SynapsePluginIpcResult<SynapsePluginRegistryEntry>>
       onLauncherFocus: (handler: () => void) => () => void
       onFloatingBallMenuState: (handler: (expanded: boolean) => void) => () => void
       onFloatingBallFeatures: (
-        handler: (features: DeskitFloatingBallFeature[]) => void
+        handler: (features: SynapseFloatingBallFeature[]) => void
       ) => () => void
       onPluginRegistryChanged: (
-        handler: (plugins: DeskitPluginRegistryEntry[]) => void
+        handler: (plugins: SynapsePluginRegistryEntry[]) => void
       ) => () => void
-      onSettingsChanged: (handler: (settings: DeskitUserSettings) => void) => () => void
-      onLanDevicesChanged: (handler: (devices: DeskitLanDevice[]) => void) => () => void
-      onLanStatusChanged: (handler: (status: DeskitLanStatus) => void) => () => void
-      onLanPairingsChanged: (handler: (pairings: DeskitLanPairing[]) => void) => () => void
-      onLanTransfersChanged: (handler: (transfers: DeskitLanTransfer[]) => void) => () => void
+      onSettingsChanged: (handler: (settings: SynapseUserSettings) => void) => () => void
+      onLanDevicesChanged: (handler: (devices: SynapseLanDevice[]) => void) => () => void
+      onLanStatusChanged: (handler: (status: SynapseLanStatus) => void) => () => void
+      onLanPairingsChanged: (handler: (pairings: SynapseLanPairing[]) => void) => () => void
+      onLanTransfersChanged: (handler: (transfers: SynapseLanTransfer[]) => void) => () => void
     }
   }
 }

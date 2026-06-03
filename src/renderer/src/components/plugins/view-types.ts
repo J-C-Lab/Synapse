@@ -7,9 +7,9 @@ import type {
   ListView,
   ToastOnly,
   View,
-} from "@deskit/plugin-sdk"
+} from "@synapse/plugin-sdk"
 
-export type { LocalizedString } from "@deskit/plugin-sdk"
+export type { LocalizedString } from "@synapse/plugin-sdk"
 
 export type PluginAction = Action
 export type PluginListItem = ListItem

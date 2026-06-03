@@ -3,13 +3,13 @@ import { isEngineCompatible, ManifestValidationError, parseManifest } from "./in
 
 function manifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    id: "com.deskit.test",
+    id: "com.synapse.test",
     name: "Test",
     displayName: { en: "Test", "zh-CN": "测试" },
     description: "A test plugin",
     version: "0.3.0",
-    author: "DesKit",
-    engines: { deskit: "^0.2.0" },
+    author: "Synapse",
+    engines: { synapse: "^0.2.0" },
     main: "dist/index.js",
     contributes: {
       commands: [{ id: "test.run", title: "Run", mode: "view" }],
@@ -24,15 +24,15 @@ describe("parseManifest", () => {
     const raw = manifest()
     delete raw.permissions
     const parsed = parseManifest(raw)
-    expect(parsed.id).toBe("com.deskit.test")
+    expect(parsed.id).toBe("com.synapse.test")
     expect(parsed.permissions).toEqual([])
     expect(parsed.contributes.commands[0]?.mode).toBe("view")
   })
 
   it("does not enforce engine compatibility (structural only)", () => {
     // engines range is host-specific; parseManifest must stay agnostic.
-    const parsed = parseManifest(manifest({ engines: { deskit: "^99.0.0" } }))
-    expect(parsed.engines.deskit).toBe("^99.0.0")
+    const parsed = parseManifest(manifest({ engines: { synapse: "^99.0.0" } }))
+    expect(parsed.engines.synapse).toBe("^99.0.0")
   })
 
   it("collects human-readable issues on failure", () => {

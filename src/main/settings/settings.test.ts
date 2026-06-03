@@ -81,7 +81,7 @@ describe("loadSettings / saveSettings", () => {
   let dir: string
 
   beforeEach(async () => {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), "deskit-settings-"))
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-settings-"))
   })
 
   afterEach(async () => {

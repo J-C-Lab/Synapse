@@ -40,7 +40,7 @@ import {
 interface ActiveCommand {
   pluginId: string
   commandId: string
-  title: DeskitLocalizedString
+  title: SynapseLocalizedString
 }
 
 export function LauncherPanel() {
@@ -213,7 +213,7 @@ export function LauncherPanel() {
   }, [activeCommand, invokeActiveCommand, mode, pluginSearchText])
 
   const runPluginCommand = useCallback(
-    async (command: DeskitPluginCommandResult) => {
+    async (command: SynapsePluginCommandResult) => {
       try {
         ++pluginSearchSeqRef.current
         const view = await invokePluginCommand(command.pluginId, command.commandId, "run", {
@@ -430,7 +430,7 @@ function isPluginToastView(value: unknown): value is PluginToastView {
   )
 }
 
-function LauncherPluginItem({ item, locale }: { item: DeskitPluginCommandResult; locale: string }) {
+function LauncherPluginItem({ item, locale }: { item: SynapsePluginCommandResult; locale: string }) {
   return (
     <>
       <div className="flex flex-1 flex-col">

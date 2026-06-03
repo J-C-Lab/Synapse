@@ -1,9 +1,9 @@
 <p align="center">
-  <img src="resources/logo.svg" alt="DesKit Logo" width="120" />
+  <img src="resources/logo.svg" alt="Synapse Logo" width="120" />
 </p>
-<h1 align="center">DesKit</h1>
+<h1 align="center">Synapse</h1>
 
-DesKit 是一个基于 Electron、React 和 electron-vite 构建的可扩展桌面端提效工具箱。
+Synapse 是一个基于 Electron、React 和 electron-vite 构建的可扩展桌面端提效工具箱。
 
 它提供安全的桌面应用底座，用于承载命令启动、轻量工具、桌面悬浮交互和插件化工作流。
 

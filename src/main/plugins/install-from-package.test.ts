@@ -3,12 +3,12 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { extractDeskitPackage } from "./install-from-package"
+import { extractSynapsePackage } from "./install-from-package"
 
 let dir: string
 
 beforeEach(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), "deskit-package-"))
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-package-"))
 })
 
 afterEach(async () => {
@@ -16,30 +16,30 @@ afterEach(async () => {
 })
 
 describe("install-from-package", () => {
-  it("extracts a valid .deskit package into a destination directory", async () => {
+  it("extracts a valid .syn package into a destination directory", async () => {
     const packagePath = path.resolve(
       "resources",
       "mock-marketplace",
       "packages",
-      "com.deskit.timestamp-0.3.0.deskit"
+      "com.synapse.timestamp-0.3.0.syn"
     )
     const destination = path.join(dir, "extracted")
 
-    await extractDeskitPackage(packagePath, destination)
+    await extractSynapsePackage(packagePath, destination)
 
-    await expect(fs.readFile(path.join(destination, "deskit.json"), "utf-8")).resolves.toContain(
-      '"com.deskit.timestamp"'
+    await expect(fs.readFile(path.join(destination, "synapse.json"), "utf-8")).resolves.toContain(
+      '"com.synapse.timestamp"'
     )
     await expect(fs.stat(path.join(destination, "dist", "index.js"))).resolves.toBeTruthy()
   })
 
   it("rejects entries that escape the destination directory", async () => {
-    const packagePath = path.join(dir, "escape.deskit")
+    const packagePath = path.join(dir, "escape.syn")
     await createZipPackage(packagePath, {
       "../escape.txt": "boom",
     })
 
-    await expect(extractDeskitPackage(packagePath, path.join(dir, "out"))).rejects.toThrow(
+    await expect(extractSynapsePackage(packagePath, path.join(dir, "out"))).rejects.toThrow(
       /Unsafe package entry path|invalid relative path/
     )
   })

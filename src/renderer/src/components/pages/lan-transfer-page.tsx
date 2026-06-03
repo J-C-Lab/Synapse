@@ -69,7 +69,7 @@ import {
 } from "@/lib/electron"
 import { cn } from "@/lib/utils"
 
-const LAN_SECURITY_GUIDE_SEEN_KEY = "deskit:lan-security-guide-seen"
+const LAN_SECURITY_GUIDE_SEEN_KEY = "synapse:lan-security-guide-seen"
 
 export function LanTransferPage() {
   const { t } = useTranslation()

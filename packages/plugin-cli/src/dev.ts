@@ -43,7 +43,7 @@ export async function watchPlugin(options: WatchOptions = {}): Promise<PluginWat
     plugins: options.onRebuild
       ? [
           {
-            name: "deskit-dev-notify",
+            name: "synapse-dev-notify",
             setup(build) {
               build.onEnd((result) => {
                 options.onRebuild?.(result.errors.map((e) => e.text))

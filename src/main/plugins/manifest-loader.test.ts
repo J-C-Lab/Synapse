@@ -3,13 +3,13 @@ import { ManifestValidationError, parsePluginManifest } from "./manifest-loader"
 
 function manifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    id: "com.deskit.test",
+    id: "com.synapse.test",
     name: "Test",
     displayName: { en: "Test", "zh-CN": "测试" },
     description: "A test plugin",
     version: "0.3.0",
-    author: "DesKit",
-    engines: { deskit: "^0.2.0" },
+    author: "Synapse",
+    engines: { synapse: "^0.2.0" },
     main: "dist/index.js",
     contributes: {
       commands: [
@@ -28,7 +28,7 @@ function manifest(overrides: Record<string, unknown> = {}): Record<string, unkno
 describe("parsePluginManifest", () => {
   it("accepts a valid manifest", () => {
     const parsed = parsePluginManifest(manifest())
-    expect(parsed.id).toBe("com.deskit.test")
+    expect(parsed.id).toBe("com.synapse.test")
     expect(parsed.contributes.commands[0]?.mode).toBe("view")
   })
 
@@ -93,9 +93,9 @@ describe("parsePluginManifest", () => {
     )
   })
 
-  it("rejects incompatible DesKit engine ranges", () => {
+  it("rejects incompatible Synapse engine ranges", () => {
     expect(() =>
-      parsePluginManifest(manifest({ engines: { deskit: "^2.0.0" } }), {
+      parsePluginManifest(manifest({ engines: { synapse: "^2.0.0" } }), {
         hostVersion: "0.1.0",
       })
     ).toThrow(ManifestValidationError)

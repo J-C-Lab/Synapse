@@ -1,8 +1,8 @@
-// @deskit/plugin-cli
+// @synapse/plugin-cli
 //
-// Programmatic API behind the `deskit-plugin` command. Bundles a plugin
-// project into an installable `.deskit` package and manages dev-mode links
-// into a running DesKit install.
+// Programmatic API behind the `synapse-plugin` command. Bundles a plugin
+// project into an installable `.syn` package and manages dev-mode links
+// into a running Synapse install.
 
 export { buildPlugin, PluginBuildError } from "./build"
 export type { BuildOptions, BuildResult } from "./build"
@@ -13,6 +13,6 @@ export { type DevLinkOptions, linkDevPlugin, listDevPlugins, unlinkDevPlugin } f
 
 export { type LoadedManifest, MANIFEST_FILENAME, readManifest } from "./manifest-io"
 
-export { DEV_PLUGINS_FILENAME, devPluginsFilePath, resolveDeskitDataDir } from "./userdata"
+export { DEV_PLUGINS_FILENAME, devPluginsFilePath, resolveSynapseDataDir } from "./userdata"
 
-export { createDeskitPackage, type PackageFile } from "./zip"
+export { createSynapsePackage, type PackageFile } from "./zip"

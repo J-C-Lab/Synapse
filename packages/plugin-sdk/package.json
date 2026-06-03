@@ -1,7 +1,7 @@
 {
-  "name": "@deskit/plugin-sdk",
+  "name": "@synapse/plugin-sdk",
   "version": "0.3.0",
-  "description": "DesKit plugin SDK — declarative command + view contract for plugin authors",
+  "description": "Synapse plugin SDK — declarative command + view contract for plugin authors",
   "license": "MIT",
   "sideEffects": false,
   "exports": {

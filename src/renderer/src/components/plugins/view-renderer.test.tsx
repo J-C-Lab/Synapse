@@ -54,11 +54,11 @@ describe("viewRenderer", () => {
 
     render(<ViewRenderer view={view} onAction={onAction} />)
     await user.clear(screen.getByLabelText("Name"))
-    await user.type(screen.getByLabelText("Name"), "DesKit")
+    await user.type(screen.getByLabelText("Name"), "Synapse")
     await user.click(screen.getByRole("button", { name: /save/i }))
 
     expect(onAction).toHaveBeenCalledWith(view.actions?.[0], {
-      values: { name: "DesKit" },
+      values: { name: "Synapse" },
     })
   })
 })

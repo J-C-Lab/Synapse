@@ -1,5 +1,5 @@
 /**
- * Whether a manifest's `engines.deskit` range is satisfied by `hostVersion`.
+ * Whether a manifest's `engines.synapse` range is satisfied by `hostVersion`.
  *
  * Supports `"*"` (any), an exact `x.y.z`, and caret `^x.y.z` ranges using
  * npm-style caret semantics (0.x and 0.0.x lock more tightly).

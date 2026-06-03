@@ -2,7 +2,7 @@
   "version": 1,
   "plugins": [
     {
-      "id": "com.deskit.timestamp",
+      "id": "com.synapse.timestamp",
       "name": "timestamp",
       "displayName": {
         "en": "Timestamp Converter",
@@ -12,12 +12,12 @@
         "en": "Convert between Unix timestamps and readable dates from the launcher.",
         "zh-CN": "在启动器里转换 Unix 时间戳和可读日期。"
       },
-      "author": "DesKit",
-      "homepage": "https://github.com/WiIIiamWei/deskit-plugin-timestamp",
+      "author": "Synapse",
+      "homepage": "https://github.com/WiIIiamWei/synapse-plugin-timestamp",
       "version": "0.3.0",
-      "downloadUrl": "https://github.com/WiIIiamWei/deskit-plugin-timestamp/releases/download/v0.3.0/com.deskit.timestamp-0.3.0.deskit",
-      "sha256": "737a03f20e50df4c9c36063f76e29f0b39abdd44e6f32c2049476768bb497b90",
-      "deskitEngine": "^0.2.0",
+      "downloadUrl": "https://github.com/WiIIiamWei/synapse-plugin-timestamp/releases/download/v0.3.0/com.synapse.timestamp-0.3.0.syn",
+      "sha256": "b4cb35a4793e712218bca64bf2c0b39888a55ff96684573999311dc154f0dd9a",
+      "synapseEngine": "^0.2.0",
       "icon": "lucide:clock",
       "categories": ["utilities"]
     }

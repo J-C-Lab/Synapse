@@ -10,7 +10,7 @@ describe("launcher results", () => {
     )
 
     expect(results.map((item) => item.value)).toEqual([
-      "plugin:com.deskit.timestamp:timestamp.convert",
+      "plugin:com.synapse.timestamp:timestamp.convert",
       "app:calendar",
     ])
   })
@@ -24,7 +24,7 @@ describe("launcher results", () => {
 
     expect(results.map((item) => item.value)).toEqual([
       "app:calculator",
-      "plugin:com.deskit.timestamp:timestamp.convert",
+      "plugin:com.synapse.timestamp:timestamp.convert",
     ])
   })
 
@@ -36,7 +36,7 @@ describe("launcher results", () => {
     )
 
     expect(results.map((item) => item.value)).toEqual([
-      "plugin:com.deskit.timestamp:timestamp.convert",
+      "plugin:com.synapse.timestamp:timestamp.convert",
       "app:calculator",
     ])
   })
@@ -58,12 +58,12 @@ function appResult(id: string, name: string, score: number): LauncherSearchResul
 
 function commandResult(
   commandId: string,
-  title: DeskitLocalizedString,
+  title: SynapseLocalizedString,
   score: number
-): DeskitPluginCommandResult {
+): SynapsePluginCommandResult {
   return {
     kind: "plugin-command",
-    pluginId: "com.deskit.timestamp",
+    pluginId: "com.synapse.timestamp",
     commandId,
     title,
     mode: "view",

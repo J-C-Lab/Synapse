@@ -9,7 +9,7 @@
     "moduleResolution": "bundler",
     "paths": {
       "@/*": ["./src/renderer/src/*"],
-      "@deskit/plugin-sdk": ["./packages/plugin-sdk/src/index.ts"]
+      "@synapse/plugin-sdk": ["./packages/plugin-sdk/src/index.ts"]
     },
     "resolveJsonModule": true,
     "types": ["vite/client", "@testing-library/jest-dom"],

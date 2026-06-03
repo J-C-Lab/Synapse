@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 
-export const LAN_SIMULATION_PROFILE_ENV = "DESKIT_LAN_SIMULATION_PROFILE"
+export const LAN_SIMULATION_PROFILE_ENV = "SYNAPSE_LAN_SIMULATION_PROFILE"
 
 export interface DevLanSimulation {
   deviceName: string
@@ -22,7 +22,7 @@ export function resolveDevLanSimulation(
 
   const profile = normalizeProfile(options.profile)
   return {
-    deviceName: `DesKit Sim ${profile.toUpperCase()}`,
+    deviceName: `Synapse Sim ${profile.toUpperCase()}`,
     profile,
     userDataDir: path.join(options.defaultUserDataDir, "dev-lan-simulator", profile),
   }

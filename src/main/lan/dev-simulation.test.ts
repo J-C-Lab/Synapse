@@ -23,7 +23,7 @@ describe("resolveDevLanSimulation", () => {
         profile: " A ",
       })
     ).toEqual({
-      deviceName: "DesKit Sim A",
+      deviceName: "Synapse Sim A",
       profile: "a",
       userDataDir: path.join("/userData", "dev-lan-simulator", "a"),
     })
@@ -50,7 +50,7 @@ describe("resolveDevLanSimulation", () => {
   })
 
   it("resets only recoverable LAN files inside a simulation profile", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "deskit-dev-lan-"))
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-dev-lan-"))
     dirs.push(dir)
     const simulation = resolveDevLanSimulation({
       defaultUserDataDir: dir,

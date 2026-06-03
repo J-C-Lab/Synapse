@@ -12,7 +12,7 @@ import {
 let dir: string
 
 beforeEach(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), "deskit-marketplace-"))
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-marketplace-"))
 })
 
 afterEach(async () => {
@@ -23,18 +23,18 @@ describe("marketplace registry", () => {
   it("parses valid entries and filters incompatible engines", () => {
     const entries = parseMarketplaceRegistry(
       registryJson([
-        registryEntry({ id: "com.deskit.ok" }),
-        registryEntry({ id: "com.deskit.future", deskitEngine: "^999.0.0" }),
+        registryEntry({ id: "com.synapse.ok" }),
+        registryEntry({ id: "com.synapse.future", synapseEngine: "^999.0.0" }),
       ])
     )
 
-    expect(entries.map((entry) => entry.id)).toEqual(["com.deskit.ok"])
+    expect(entries.map((entry) => entry.id)).toEqual(["com.synapse.ok"])
   })
 
   it("rejects entries that do not use HTTPS download URLs", () => {
     expect(() =>
       parseMarketplaceRegistry(
-        registryJson([registryEntry({ downloadUrl: "http://example.com/plugin.deskit" })])
+        registryJson([registryEntry({ downloadUrl: "http://example.com/plugin.syn" })])
       )
     ).toThrow(MarketplaceRegistryError)
   })
@@ -42,46 +42,46 @@ describe("marketplace registry", () => {
   it("finds entries by id and optional version", () => {
     const entries = parseMarketplaceRegistry(
       registryJson([
-        registryEntry({ id: "com.deskit.one", version: "1.0.0" }),
-        registryEntry({ id: "com.deskit.one", version: "2.0.0" }),
+        registryEntry({ id: "com.synapse.one", version: "1.0.0" }),
+        registryEntry({ id: "com.synapse.one", version: "2.0.0" }),
       ])
     )
 
-    expect(findMarketplaceEntry(entries, "com.deskit.one", "2.0.0")?.version).toBe("2.0.0")
-    expect(findMarketplaceEntry(entries, "com.deskit.missing")).toBeUndefined()
+    expect(findMarketplaceEntry(entries, "com.synapse.one", "2.0.0")?.version).toBe("2.0.0")
+    expect(findMarketplaceEntry(entries, "com.synapse.missing")).toBeUndefined()
   })
 
   it("falls back to the bundled registry when fetch fails", async () => {
-    await writeBundledRegistry(registryJson([registryEntry({ id: "com.deskit.fallback" })]))
+    await writeBundledRegistry(registryJson([registryEntry({ id: "com.synapse.fallback" })]))
     const fetch = vi.fn(async () => {
       throw new TypeError("fetch failed")
     })
 
     await expect(fetchMarketplaceRegistry({ fetch, resourcesDir: dir })).resolves.toMatchObject([
-      { id: "com.deskit.fallback" },
+      { id: "com.synapse.fallback" },
     ])
   })
 
   it("falls back to the bundled registry on non-OK responses", async () => {
-    await writeBundledRegistry(registryJson([registryEntry({ id: "com.deskit.offline" })]))
+    await writeBundledRegistry(registryJson([registryEntry({ id: "com.synapse.offline" })]))
     const fetch = vi.fn(async () => new Response("unavailable", { status: 503 }))
 
     await expect(fetchMarketplaceRegistry({ fetch, resourcesDir: dir })).resolves.toMatchObject([
-      { id: "com.deskit.offline" },
+      { id: "com.synapse.offline" },
     ])
   })
 
   it("falls back to the bundled registry when the default registry is empty", async () => {
-    await writeBundledRegistry(registryJson([registryEntry({ id: "com.deskit.demo" })]))
+    await writeBundledRegistry(registryJson([registryEntry({ id: "com.synapse.demo" })]))
     const fetch = vi.fn(async () => Response.json({ version: 1, plugins: [] }))
 
     await expect(fetchMarketplaceRegistry({ fetch, resourcesDir: dir })).resolves.toMatchObject([
-      { id: "com.deskit.demo" },
+      { id: "com.synapse.demo" },
     ])
   })
 
   it("honors empty custom registries", async () => {
-    await writeBundledRegistry(registryJson([registryEntry({ id: "com.deskit.demo" })]))
+    await writeBundledRegistry(registryJson([registryEntry({ id: "com.synapse.demo" })]))
     const fetch = vi.fn(async () => Response.json({ version: 1, plugins: [] }))
 
     await expect(
@@ -94,16 +94,16 @@ describe("marketplace registry", () => {
   })
 
   it("does not fall back when the default registry has incompatible entries", async () => {
-    await writeBundledRegistry(registryJson([registryEntry({ id: "com.deskit.demo" })]))
+    await writeBundledRegistry(registryJson([registryEntry({ id: "com.synapse.demo" })]))
     const fetch = vi.fn(async () =>
-      Response.json({ version: 1, plugins: [registryEntry({ deskitEngine: "^999.0.0" })] })
+      Response.json({ version: 1, plugins: [registryEntry({ synapseEngine: "^999.0.0" })] })
     )
 
     await expect(fetchMarketplaceRegistry({ fetch, resourcesDir: dir })).resolves.toEqual([])
   })
 
   it("does not hide malformed fetched registries behind bundled data", async () => {
-    await writeBundledRegistry(registryJson([registryEntry({ id: "com.deskit.fallback" })]))
+    await writeBundledRegistry(registryJson([registryEntry({ id: "com.synapse.fallback" })]))
     const fetch = vi.fn(async () => new Response("{}"))
 
     await expect(fetchMarketplaceRegistry({ fetch, resourcesDir: dir })).rejects.toBeInstanceOf(
@@ -127,22 +127,22 @@ function registryEntry(
     id: string
     version: string
     downloadUrl: string
-    deskitEngine: string
+    synapseEngine: string
   }> = {}
 ) {
   return {
-    id: overrides.id ?? "com.deskit.test",
+    id: overrides.id ?? "com.synapse.test",
     name: "test",
     displayName: "Test",
     description: "Test plugin.",
-    author: "DesKit",
-    homepage: "https://github.com/WiIIiamWei/DesKit",
+    author: "Synapse",
+    homepage: "https://github.com/WiIIiamWei/Synapse",
     version: overrides.version ?? "0.3.0",
     downloadUrl:
       overrides.downloadUrl ??
-      "https://github.com/WiIIiamWei/DesKit/releases/download/v0.3.0/test-0.3.0.deskit",
+      "https://github.com/WiIIiamWei/Synapse/releases/download/v0.3.0/test-0.3.0.syn",
     sha256: "a".repeat(64),
-    deskitEngine: overrides.deskitEngine ?? "^0.2.0",
+    synapseEngine: overrides.synapseEngine ?? "^0.2.0",
     categories: ["utilities"],
   }
 }

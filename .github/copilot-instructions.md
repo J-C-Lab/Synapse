@@ -1,6 +1,6 @@
 # Copilot Instructions
 
-DesKit is an Electron desktop app built with electron-vite, React 19, TypeScript, Tailwind CSS v4, shadcn/ui, Zustand, i18next, and Vitest.
+Synapse is an Electron desktop app built with electron-vite, React 19, TypeScript, Tailwind CSS v4, shadcn/ui, Zustand, i18next, and Vitest.
 
 ## Structure
 

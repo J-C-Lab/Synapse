@@ -1,5 +1,5 @@
 /* eslint-disable react/naming-convention-context-name */
-import type { ClipboardContent } from "@deskit/plugin-sdk"
+import type { ClipboardContent } from "@synapse/plugin-sdk"
 import type { PluginBridgeAdapters } from "./plugin-bridge"
 import type { PluginManifest } from "./types"
 import { promises as fs } from "node:fs"
@@ -12,7 +12,7 @@ import { PluginBridge } from "./plugin-bridge"
 let dir: string
 
 beforeEach(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), "deskit-bridge-"))
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-bridge-"))
 })
 
 afterEach(async () => {
@@ -26,7 +26,7 @@ describe("pluginBridge", () => {
       adapters: adapters(),
       storageFlushMs: 0,
     })
-    const pluginCtx = bridge.createContext("com.deskit.test", manifest({ permissions: [] }))
+    const pluginCtx = bridge.createContext("com.synapse.test", manifest({ permissions: [] }))
 
     await expect(pluginCtx.storage.set("key", "value")).rejects.toBeInstanceOf(PermissionDenied)
   })
@@ -38,17 +38,17 @@ describe("pluginBridge", () => {
       storageFlushMs: 0,
     })
     const pluginCtx = bridge.createContext(
-      "com.deskit.test",
+      "com.synapse.test",
       manifest({ permissions: ["storage:plugin"] })
     )
 
-    await pluginCtx.storage.set("name", "DesKit")
+    await pluginCtx.storage.set("name", "Synapse")
     await pluginCtx.storage.set("count", 2)
-    expect(await pluginCtx.storage.get("name")).toBe("DesKit")
+    expect(await pluginCtx.storage.get("name")).toBe("Synapse")
     expect(await pluginCtx.storage.list()).toEqual(expect.arrayContaining(["name", "count"]))
 
-    const raw = await fs.readFile(bridge.storageFilePath("com.deskit.test"), "utf-8")
-    expect(JSON.parse(raw)).toEqual({ name: "DesKit", count: 2 })
+    const raw = await fs.readFile(bridge.storageFilePath("com.synapse.test"), "utf-8")
+    expect(JSON.parse(raw)).toEqual({ name: "Synapse", count: 2 })
   })
 
   it("routes clipboard helpers through the adapter", async () => {
@@ -62,7 +62,7 @@ describe("pluginBridge", () => {
       storageFlushMs: 0,
     })
     const pluginCtx = bridge.createContext(
-      "com.deskit.test",
+      "com.synapse.test",
       manifest({ permissions: ["clipboard:read", "clipboard:write"] })
     )
 
@@ -88,7 +88,7 @@ describe("pluginBridge", () => {
       clipboardPollMs: 10,
     })
     const pluginCtx = bridge.createContext(
-      "com.deskit.test",
+      "com.synapse.test",
       manifest({ permissions: ["clipboard:read"] })
     )
 
@@ -108,13 +108,13 @@ describe("pluginBridge", () => {
 
 function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
   return {
-    id: "com.deskit.test",
+    id: "com.synapse.test",
     name: "Test",
     displayName: "Test",
     description: "test",
     version: "0.1.0",
-    author: "DesKit",
-    engines: { deskit: "^0.1.0" },
+    author: "Synapse",
+    engines: { synapse: "^0.1.0" },
     main: "dist/index.js",
     contributes: { commands: [{ id: "test.run", title: "Run", mode: "view" }] },
     permissions: ["storage:plugin"],

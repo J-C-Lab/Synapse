@@ -1,11 +1,11 @@
-import type { PluginManifest } from "@deskit/plugin-manifest"
+import type { PluginManifest } from "@synapse/plugin-manifest"
 import type { PackageFile } from "./zip"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import process from "node:process"
 import { build as esbuild } from "esbuild"
 import { readManifest } from "./manifest-io"
-import { createDeskitPackage } from "./zip"
+import { createSynapsePackage } from "./zip"
 
 export class PluginBuildError extends Error {
   readonly issues: string[]
@@ -18,11 +18,11 @@ export class PluginBuildError extends Error {
 }
 
 export interface BuildOptions {
-  /** Plugin project root (contains deskit.json). Defaults to cwd. */
+  /** Plugin project root (contains synapse.json). Defaults to cwd. */
   projectDir?: string
   /** Source entry to bundle. Defaults to "src/index.ts". */
   entry?: string
-  /** Directory the `.deskit` package is written to. Defaults to projectDir. */
+  /** Directory the `.syn` package is written to. Defaults to projectDir. */
   outDir?: string
   /** Minify the bundle. Defaults to false. */
   minify?: boolean
@@ -32,19 +32,19 @@ export interface BuildResult {
   manifest: PluginManifest
   /** Absolute path of the bundled CJS entry (manifest.main). */
   outFile: string
-  /** Absolute path of the produced `.deskit` package. */
+  /** Absolute path of the produced `.syn` package. */
   packagePath: string
   /** Files included in the package. */
   files: PackageFile[]
 }
 
 /**
- * Bundle a plugin project into an installable `.deskit` package:
- *   1. read + structurally validate `deskit.json`
+ * Bundle a plugin project into an installable `.syn` package:
+ *   1. read + structurally validate `synapse.json`
  *   2. esbuild-bundle the source entry into a self-contained CJS file at
- *      `manifest.main` (the DesKit sandbox has no `require`, so the output
+ *      `manifest.main` (the Synapse sandbox has no `require`, so the output
  *      must inline its dependencies)
- *   3. zip `deskit.json` + bundle + declared assets into `<id>-<version>.deskit`
+ *   3. zip `synapse.json` + bundle + declared assets into `<id>-<version>.syn`
  */
 export async function buildPlugin(options: BuildOptions = {}): Promise<BuildResult> {
   const projectDir = path.resolve(options.projectDir ?? process.cwd())
@@ -67,9 +67,9 @@ export async function buildPlugin(options: BuildOptions = {}): Promise<BuildResu
   await fs.mkdir(outDir, { recursive: true })
   const packagePath = path.join(
     outDir,
-    `${safePluginFileName(manifest.id)}-${manifest.version}.deskit`
+    `${safePluginFileName(manifest.id)}-${manifest.version}.syn`
   )
-  await createDeskitPackage(files, packagePath)
+  await createSynapsePackage(files, packagePath)
 
   return { manifest, outFile, packagePath, files }
 }
@@ -84,7 +84,7 @@ async function bundle(entryAbs: string, outFile: string, minify: boolean): Promi
     target: "node18",
     minify,
     logLevel: "silent",
-    // The sandbox injects the `deskit` runtime as a global and the @deskit/*
+    // The sandbox injects the `synapse` runtime as a global and the @synapse/*
     // packages are type-only, so nothing should be marked external; everything
     // a plugin actually pulls in at runtime must be inlined.
   })
@@ -104,7 +104,7 @@ async function collectPackageFiles(
 ): Promise<PackageFile[]> {
   const files = new Map<string, PackageFile>()
 
-  files.set("deskit.json", { absPath: manifestPath, archivePath: "deskit.json" })
+  files.set("synapse.json", { absPath: manifestPath, archivePath: "synapse.json" })
   files.set(toArchiveKey(manifest.main), {
     absPath: outFile,
     archivePath: manifest.main,

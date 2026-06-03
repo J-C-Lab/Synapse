@@ -1,7 +1,7 @@
 name: Release
 
 # Tag a version (e.g. `git tag v0.1.0 && git push --tags`) to build the plugin
-# and publish the installable .deskit (plus its SHA-256) to a GitHub Release.
+# and publish the installable .syn (plus its SHA-256) to a GitHub Release.
 on:
   push:
     tags:
@@ -22,13 +22,13 @@ jobs:
 
       - run: npm install --no-audit --no-fund
 
-      # `deskit-plugin build` validates deskit.json, bundles the entry, and
-      # packs <id>-<version>.deskit into the project root.
+      # `synapse-plugin build` validates synapse.json, bundles the entry, and
+      # packs <id>-<version>.syn into the project root.
       - run: npm run build
 
       - name: Compute SHA-256
         run: |
-          for f in *.deskit; do
+          for f in *.syn; do
             sha256sum "$f" | tee "$f.sha256"
           done
 
@@ -36,5 +36,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            *.deskit
-            *.deskit.sha256
+            *.syn
+            *.synapse.sha256

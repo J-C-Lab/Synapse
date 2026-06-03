@@ -51,7 +51,7 @@ skills-lock.json
 /docs/next-env.d.ts
 
 # docs
-DesKit/
+Synapse/
 /.idea
 /.codex
 /.pnpm-store

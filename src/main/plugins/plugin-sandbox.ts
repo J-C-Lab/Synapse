@@ -1,5 +1,5 @@
 /* eslint-disable react/naming-convention-context-name */
-import type { PluginModule, View } from "@deskit/plugin-sdk"
+import type { PluginModule, View } from "@synapse/plugin-sdk"
 import type { PluginBridge } from "./plugin-bridge"
 import type {
   DiscoveredPlugin,
@@ -53,8 +53,8 @@ interface SandboxEventHookRequest {
   eventPayload?: unknown
 }
 
-const invokeRequestKey = "__deskitInvokeRequest"
-const invokeContextKey = "__deskitInvokeContext"
+const invokeRequestKey = "__synapseInvokeRequest"
+const invokeContextKey = "__synapseInvokeContext"
 const invokeHookScript = `
 (() => {
   const request = globalThis.${invokeRequestKey}
@@ -67,8 +67,8 @@ const invokeHookScript = `
 })()
 `
 
-const eventRequestKey = "__deskitEventRequest"
-const eventContextKey = "__deskitEventContext"
+const eventRequestKey = "__synapseEventRequest"
+const eventContextKey = "__synapseEventContext"
 const eventHookScript = `
 (() => {
   const request = globalThis.${eventRequestKey}
@@ -87,11 +87,11 @@ const eventHookScript = `
 // every invoke. onSearchChange fires on every keystroke, so avoiding a
 // recompile per call is a real saving.
 const compiledInvokeHookScript = new vm.Script(invokeHookScript, {
-  filename: "deskit-plugin:invoke-hook",
+  filename: "synapse-plugin:invoke-hook",
 })
 
 const compiledEventHookScript = new vm.Script(eventHookScript, {
-  filename: "deskit-plugin:event-hook",
+  filename: "synapse-plugin:event-hook",
 })
 
 // P0 isolation is a lightweight compatibility boundary. node:vm lets the host
@@ -124,14 +124,14 @@ export class PluginSandbox {
         ...createSandboxGlobals(entry.pluginId, timers, intervals),
         module: moduleObject,
         exports: moduleObject.exports,
-        deskit: runtime,
+        synapse: runtime,
       },
       {
-        name: `deskit-plugin:${entry.pluginId}`,
+        name: `synapse-plugin:${entry.pluginId}`,
       }
     )
     const script = new vm.Script(
-      `(function (module, exports, deskit) {\n${code}\n})(module, exports, deskit)`,
+      `(function (module, exports, synapse) {\n${code}\n})(module, exports, synapse)`,
       {
         filename: mainPath,
       }

@@ -4,7 +4,7 @@ import type {
   PluginContext,
   StorageAPI,
   SystemAPI,
-} from "@deskit/plugin-sdk"
+} from "@synapse/plugin-sdk"
 import type { PluginManifest } from "./types"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"

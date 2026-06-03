@@ -9,7 +9,7 @@ import { PluginSandbox, PluginSandboxError } from "./plugin-sandbox"
 let dir: string
 
 beforeEach(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), "deskit-sandbox-"))
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-sandbox-"))
 })
 
 afterEach(async () => {
@@ -157,7 +157,7 @@ module.exports = {
       payload: { content: { type: "text", text: "hello" } },
     })
 
-    const raw = await fs.readFile(path.join(dir, "plugin-data", "com.deskit.test.json"), "utf-8")
+    const raw = await fs.readFile(path.join(dir, "plugin-data", "com.synapse.test.json"), "utf-8")
     const stored = JSON.parse(raw) as unknown
     expect(stored).toEqual({ entries: ["hello"] })
   })
@@ -185,7 +185,7 @@ async function writePlugin(code: string): Promise<DiscoveredPlugin> {
   await fs.mkdir(path.join(rootDir, "dist"), { recursive: true })
   await fs.writeFile(path.join(rootDir, "dist", "index.js"), code, "utf-8")
   return {
-    pluginId: "com.deskit.test",
+    pluginId: "com.synapse.test",
     rootDir,
     source: { kind: "dev", priority: 1 },
     status: "valid",
@@ -195,13 +195,13 @@ async function writePlugin(code: string): Promise<DiscoveredPlugin> {
 
 function manifest(): PluginManifest {
   return {
-    id: "com.deskit.test",
+    id: "com.synapse.test",
     name: "Test",
     displayName: "Test",
     description: "test",
     version: "0.1.0",
-    author: "DesKit",
-    engines: { deskit: "^0.1.0" },
+    author: "Synapse",
+    engines: { synapse: "^0.1.0" },
     main: "dist/index.js",
     contributes: { commands: [{ id: "test.run", title: "Run", mode: "view" }] },
     permissions: [],

@@ -25,18 +25,18 @@ function trayStrings(locale: string): TrayStrings {
   if (locale.toLowerCase().startsWith("zh")) {
     return {
       openLauncher: (hotkey) => `打开启动器 (${hotkey})`,
-      showMainWindow: "显示 DesKit 主窗口",
+      showMainWindow: "显示 Synapse 主窗口",
       reloadApps: "重新扫描已安装应用",
       version: (v) => `版本 ${v}`,
-      quit: "退出 DesKit",
+      quit: "退出 Synapse",
     }
   }
   return {
     openLauncher: (hotkey) => `Open launcher (${hotkey})`,
-    showMainWindow: "Show DesKit window",
+    showMainWindow: "Show Synapse window",
     reloadApps: "Reload installed apps",
     version: (v) => `Version ${v}`,
-    quit: "Quit DesKit",
+    quit: "Quit Synapse",
   }
 }
 
@@ -48,7 +48,7 @@ export function createTray(iconPath: string, actions: TrayActions): Tray {
   // so we hand it the 16x16 base path and let it scale.
   const icon = nativeImage.createFromPath(iconPath)
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon)
-  tray.setToolTip("DesKit")
+  tray.setToolTip("Synapse")
   refreshTrayMenu(actions)
   tray.on("click", () => {
     if (actions.shouldIgnoreOpenSearch?.()) return

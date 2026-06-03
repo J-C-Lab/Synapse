@@ -8,7 +8,7 @@ describe("lanIdentityStore", () => {
   let dir: string
 
   beforeEach(async () => {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), "deskit-lan-identity-"))
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-lan-identity-"))
   })
 
   afterEach(async () => {

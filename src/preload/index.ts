@@ -1,7 +1,7 @@
 import type { IpcRendererEvent } from "electron"
 import { contextBridge, ipcRenderer, webUtils } from "electron"
 
-// Local mirror of the renderer-visible global DeskitUserSettings shape.
+// Local mirror of the renderer-visible global SynapseUserSettings shape.
 // The global declared in index.d.ts is only loaded into the renderer's
 // compilation; the preload tsconfig doesn't pick up that .d.ts, so we
 // keep a structurally identical type here for type-only use.

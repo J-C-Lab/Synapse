@@ -1,7 +1,7 @@
 {
-  "name": "@deskit/plugin-cli",
+  "name": "@synapse/plugin-cli",
   "version": "0.1.0",
-  "description": "DesKit plugin build tool — bundles a plugin project into an installable .deskit package",
+  "description": "Synapse plugin build tool — bundles a plugin project into an installable .syn package",
   "license": "MIT",
   "exports": {
     ".": {
@@ -12,7 +12,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "deskit-plugin": "./dist/cli.js"
+    "synapse-plugin": "./dist/cli.js"
   },
   "files": [
     "README.md",
@@ -23,7 +23,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@deskit/plugin-manifest": "workspace:*",
+    "@synapse/plugin-manifest": "workspace:*",
     "esbuild": "^0.25.0",
     "yazl": "^3.3.1"
   },

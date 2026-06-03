@@ -39,7 +39,7 @@ export function ensureFloatingBallWindow(deps: FloatingBallWindowDeps): BrowserW
     fullscreenable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
-    title: "DesKit Floating Ball",
+    title: "Synapse Floating Ball",
     backgroundColor: "#00000000",
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),

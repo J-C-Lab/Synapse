@@ -9,7 +9,7 @@ describe("incomingTransferStore", () => {
   let dir: string
 
   beforeEach(async () => {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), "deskit-lan-transfer-"))
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-lan-transfer-"))
   })
 
   afterEach(async () => {

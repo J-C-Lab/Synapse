@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import * as path from "node:path"
 import process from "node:process"
-import { ManifestValidationError } from "@deskit/plugin-manifest"
+import { ManifestValidationError } from "@synapse/plugin-manifest"
 import { buildPlugin, PluginBuildError } from "./build"
 import { watchPlugin } from "./dev"
 import { linkDevPlugin, unlinkDevPlugin } from "./dev-links"
@@ -13,21 +13,21 @@ interface ParsedArgs {
   flags: Map<string, string | boolean>
 }
 
-const USAGE = `deskit-plugin — build and develop DesKit plugins
+const USAGE = `synapse-plugin — build and develop Synapse plugins
 
 Usage:
-  deskit-plugin build    [dir] [--entry src/index.ts] [--out <dir>] [--minify]
-  deskit-plugin validate [dir]
-  deskit-plugin dev      [dir] [--entry src/index.ts] [--data-dir <dir>] [--no-link]
-  deskit-plugin link     [dir] [--data-dir <dir>]
-  deskit-plugin unlink   [dir] [--data-dir <dir>]
+  synapse-plugin build    [dir] [--entry src/index.ts] [--out <dir>] [--minify]
+  synapse-plugin validate [dir]
+  synapse-plugin dev      [dir] [--entry src/index.ts] [--data-dir <dir>] [--no-link]
+  synapse-plugin link     [dir] [--data-dir <dir>]
+  synapse-plugin unlink   [dir] [--data-dir <dir>]
 
 Commands:
-  build      Bundle the plugin and write an installable <id>-<version>.deskit
-  validate   Structurally validate deskit.json
-  dev        Watch + rebuild and register the project for DesKit dev loading
-  link       Register the project in DesKit's dev-plugins.json
-  unlink     Remove the project from DesKit's dev-plugins.json
+  build      Bundle the plugin and write an installable <id>-<version>.syn
+  validate   Structurally validate synapse.json
+  dev        Watch + rebuild and register the project for Synapse dev loading
+  link       Register the project in Synapse's dev-plugins.json
+  unlink     Remove the project from Synapse's dev-plugins.json
 `
 
 async function main(argv: string[]): Promise<void> {
@@ -54,7 +54,7 @@ async function main(argv: string[]): Promise<void> {
     case "link": {
       const linked = await linkDevPlugin(projectDir, { dataDir })
       info(`Linked dev plugin: ${linked}`)
-      info(`Reload plugins in DesKit to pick it up.`)
+      info(`Reload plugins in Synapse to pick it up.`)
       return
     }
     case "unlink": {
@@ -82,7 +82,7 @@ async function runBuild(projectDir: string, args: ParsedArgs): Promise<void> {
 
 async function runValidate(projectDir: string): Promise<void> {
   const { manifest } = await readManifest(projectDir)
-  info(`deskit.json is valid: ${manifest.id}@${manifest.version}`)
+  info(`synapse.json is valid: ${manifest.id}@${manifest.version}`)
   info(`  commands: ${manifest.contributes.commands.map((c) => c.id).join(", ")}`)
 }
 
@@ -104,13 +104,13 @@ async function runDev(
     entry: str(args.flags.get("entry")),
     onRebuild(errors) {
       if (errors.length > 0) {
-        process.stderr.write(`[deskit-plugin] rebuild failed:\n  ${errors.join("\n  ")}\n`)
+        process.stderr.write(`[synapse-plugin] rebuild failed:\n  ${errors.join("\n  ")}\n`)
       } else {
         info(`rebuilt ${manifest.id} → ${outRel}`)
       }
     },
   })
-  info(`Watching ${manifest.id}. Reload plugins in DesKit after edits. Ctrl+C to stop.`)
+  info(`Watching ${manifest.id}. Reload plugins in Synapse after edits. Ctrl+C to stop.`)
 
   await new Promise<void>((resolve) => {
     const stop = (): void => {

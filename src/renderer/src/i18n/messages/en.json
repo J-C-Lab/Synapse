@@ -1,6 +1,6 @@
 {
   "app": {
-    "title": "DesKit",
+    "title": "Synapse",
     "subtitle": "Desktop productivity toolbox"
   },
   "nav": {
@@ -47,7 +47,7 @@
     }
   },
   "floatingBall": {
-    "title": "DesKit Floating Ball",
+    "title": "Synapse Floating Ball",
     "features": {
       "appLauncher": "App Launcher"
     },
@@ -103,11 +103,11 @@
       "reload": "Reload",
       "uninstall": "Uninstall",
       "refresh": "Refresh",
-      "import": "Import .deskit",
+      "import": "Import .syn",
       "importing": "Importing…"
     },
-    "dropHint": "Drop a .deskit file to import",
-    "importInvalid": "Only .deskit files can be imported.",
+    "dropHint": "Drop a .syn file to import",
+    "importInvalid": "Only .syn files can be imported.",
     "preferences": {
       "title": "Preferences",
       "body": "Changes are saved to the plugin preference store.",
@@ -124,7 +124,7 @@
   },
   "marketplace": {
     "title": "Marketplace",
-    "subtitle": "Discover and install DesKit plugins.",
+    "subtitle": "Discover and install Synapse plugins.",
     "unavailableTitle": "Electron bridge unavailable",
     "unavailableBody": "The marketplace is only available inside the desktop app.",
     "errorTitle": "Marketplace operation failed",
@@ -164,10 +164,10 @@
   "lan": {
     "title": "LAN Transfer",
     "subtitle": "Find nearby devices on the same network and send files quickly.",
-    "unavailableTitle": "Use the DesKit desktop app",
-    "unavailableBody": "LAN transfer is available in the DesKit desktop app.",
+    "unavailableTitle": "Use the Synapse desktop app",
+    "unavailableBody": "LAN transfer is available in the Synapse desktop app.",
     "errorTitle": "LAN transfer is temporarily unavailable",
-    "restartRequired": "Restart DesKit to use LAN transfer. Close the app and open it again.",
+    "restartRequired": "Restart Synapse to use LAN transfer. Close the app and open it again.",
     "securityTitle": "Confirm new devices before connecting",
     "securityBody": "When connecting to a new device for the first time, both devices show a security code. Confirm that the numbers match before sending files. You can choose whether to save received files.",
     "securityHelp": "About secure connections",
@@ -188,7 +188,7 @@
     },
     "discovery": {
       "title": "Find nearby devices",
-      "subtitle": "When enabled, other DesKit devices on the same network can find this device, and you can see them here.",
+      "subtitle": "When enabled, other Synapse devices on the same network can find this device, and you can see them here.",
       "enable": "Allow nearby device discovery"
     },
     "devices": {
@@ -196,7 +196,7 @@
       "subtitle": "Before sending files to a new device, confirm a security code once.",
       "online": "{{count}} online",
       "emptyTitle": "No nearby devices found",
-      "emptyBody": "Make sure the other device is on the same network and has “Find nearby devices” enabled in DesKit.",
+      "emptyBody": "Make sure the other device is on the same network and has “Find nearby devices” enabled in Synapse.",
       "platform": "Platform: {{platform}}"
     },
     "status": {

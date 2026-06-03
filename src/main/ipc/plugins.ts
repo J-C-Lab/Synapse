@@ -62,7 +62,7 @@ export interface PluginIpcHandlers {
 
 export interface PluginIpcDeps {
   /**
-   * Prompts the user to pick a `.deskit` file (Electron file dialog). Returns
+   * Prompts the user to pick a `.syn` file (Electron file dialog). Returns
    * the chosen absolute path, or null if cancelled. Injected so the IPC layer
    * stays free of Electron's `dialog` and remains unit-testable.
    */

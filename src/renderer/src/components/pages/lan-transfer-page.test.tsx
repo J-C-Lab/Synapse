@@ -39,7 +39,7 @@ vi.mock("react-i18next", () => {
   return { useTranslation: () => ({ t }) }
 })
 
-const securityGuideSeenKey = "deskit:lan-security-guide-seen"
+const securityGuideSeenKey = "synapse:lan-security-guide-seen"
 
 function renderPage() {
   return render(

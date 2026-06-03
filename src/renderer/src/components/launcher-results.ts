@@ -2,11 +2,11 @@ import { localize } from "@/components/plugins/view-utils"
 
 export type LauncherItem =
   | { kind: "app"; value: string; result: LauncherSearchResult }
-  | { kind: "plugin"; value: string; result: DeskitPluginCommandResult }
+  | { kind: "plugin"; value: string; result: SynapsePluginCommandResult }
 
 export function mergeLauncherResults(
   apps: LauncherSearchResult[],
-  commands: DeskitPluginCommandResult[],
+  commands: SynapsePluginCommandResult[],
   locale: string
 ): LauncherItem[] {
   return [

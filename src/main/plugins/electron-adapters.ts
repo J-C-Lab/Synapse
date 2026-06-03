@@ -1,4 +1,4 @@
-import type { ClipboardContent } from "@deskit/plugin-sdk"
+import type { ClipboardContent } from "@synapse/plugin-sdk"
 import type { CaptureScreenOptions, PluginBridgeAdapters } from "./plugin-bridge"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"

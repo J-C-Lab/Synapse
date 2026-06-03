@@ -10,7 +10,7 @@ export interface StartupNotificationOptions {
 }
 
 /**
- * Show the "DesKit is running" toast on launch. Tells the user where the
+ * Show the "Synapse is running" toast on launch. Tells the user where the
  * app went (it's in the tray) and what shortcut summons the launcher.
  */
 export function showStartupNotification(options: StartupNotificationOptions): void {
@@ -43,12 +43,12 @@ interface StartupStrings {
 function startupStrings(locale: string, hotkey: string): StartupStrings {
   if (isChinese(locale)) {
     return {
-      title: "DesKit 已启动",
+      title: "Synapse 已启动",
       body: `按 ${hotkey} 打开命令启动器。`,
     }
   }
   return {
-    title: "DesKit is running",
+    title: "Synapse is running",
     body: `Press ${hotkey} to open the command launcher.`,
   }
 }

@@ -11,11 +11,11 @@ vi.mock("react-i18next", () => ({
 
 type TestElectronApi = NonNullable<Window["electronAPI"]>
 
-function ok<T>(data: T): DeskitPluginIpcResult<T> {
+function ok<T>(data: T): SynapsePluginIpcResult<T> {
   return { ok: true, data }
 }
 
-function installElectronApi(settings: DeskitUserSettings): TestElectronApi {
+function installElectronApi(settings: SynapseUserSettings): TestElectronApi {
   const api = {
     getSettings: vi.fn().mockResolvedValue(settings),
     updateSettings: vi.fn().mockResolvedValue(settings),

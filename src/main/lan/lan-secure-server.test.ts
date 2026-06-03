@@ -88,7 +88,7 @@ describe("lanSecureServer", () => {
   }, 30_000)
 
   async function createPeer(deviceId: string, name: string) {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), `deskit-lan-${deviceId}-`))
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), `synapse-lan-${deviceId}-`))
     dirs.push(dir)
     const identity: StoredLanIdentity = { deviceId, name }
     const credential = await new LanCredentialStore(

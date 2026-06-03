@@ -59,7 +59,7 @@ export interface PluginEventHandlers {
  *
  * @example
  * ```ts
- * import type { PluginModule } from "@deskit/plugin-sdk"
+ * import type { PluginModule } from "@synapse/plugin-sdk"
  *
  * const plugin: PluginModule = {
  *   commands: {

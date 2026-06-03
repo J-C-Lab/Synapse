@@ -3,12 +3,12 @@ import * as path from "node:path"
 import { devPluginsFilePath } from "./userdata"
 
 export interface DevLinkOptions {
-  /** Override DesKit's userData directory (otherwise auto-detected). */
+  /** Override Synapse's userData directory (otherwise auto-detected). */
   dataDir?: string
 }
 
 /**
- * Register a plugin project directory in DesKit's `dev-plugins.json` so the
+ * Register a plugin project directory in Synapse's `dev-plugins.json` so the
  * host discovers it as a `dev`-source plugin (hot-reloadable, lowest priority).
  * Returns the absolute project path that was linked.
  */

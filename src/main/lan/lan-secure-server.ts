@@ -58,7 +58,7 @@ export class LanSecureServer extends EventEmitter {
       },
       (req, res) => {
         void this.handleRequest(req, res).catch((err) => {
-          console.warn("[deskit] LAN HTTPS request failed", err)
+          console.warn("[synapse] LAN HTTPS request failed", err)
           sendJson(res, 400, { error: errorMessage(err) })
         })
       }
@@ -154,7 +154,7 @@ export class LanSecureServer extends EventEmitter {
           }
         )
       } catch (err) {
-        console.warn("[deskit] Failed to notify rejected LAN pairing", err)
+        console.warn("[synapse] Failed to notify rejected LAN pairing", err)
       }
     }
     return this.listPairings()
@@ -354,7 +354,7 @@ export class LanSecureServer extends EventEmitter {
         chunkMatch[1],
         Number(chunkMatch[2]),
         chunk,
-        requiredHeader(req.headers, "x-deskit-chunk-sha256")
+        requiredHeader(req.headers, "x-synapse-chunk-sha256")
       )
       this.emitTransfersChanged()
       sendJson(res, 200, transfer)
@@ -375,7 +375,7 @@ export class LanSecureServer extends EventEmitter {
   }
 
   private requireTrustedPeer(req: import("node:http").IncomingMessage) {
-    const deviceId = requiredHeader(req.headers, "x-deskit-device-id")
+    const deviceId = requiredHeader(req.headers, "x-synapse-device-id")
     const trusted = requireTrustedDevice(this.options.trustedDevices, deviceId)
     assertFingerprint(peerFingerprint(req), trusted.certificateFingerprint)
     return trusted
@@ -412,7 +412,7 @@ export class LanSecureServer extends EventEmitter {
   ): Promise<{ body: Buffer; peerFingerprint: string }> {
     return this.request(device, method, requestPath, body, {
       "content-type": "application/octet-stream",
-      "x-deskit-chunk-sha256": sha256,
+      "x-synapse-chunk-sha256": sha256,
       expectedFingerprint,
     })
   }
@@ -441,7 +441,7 @@ export class LanSecureServer extends EventEmitter {
           headers: {
             ...requestHeaders,
             "content-length": body.length,
-            "x-deskit-device-id": this.options.identity.deviceId,
+            "x-synapse-device-id": this.options.identity.deviceId,
           },
         },
         async (response) => {

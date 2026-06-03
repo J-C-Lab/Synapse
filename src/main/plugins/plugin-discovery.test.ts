@@ -7,7 +7,7 @@ import { discoverPlugins } from "./plugin-discovery"
 let dir: string
 
 beforeEach(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), "deskit-plugins-"))
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-plugins-"))
 })
 
 afterEach(async () => {
@@ -21,28 +21,28 @@ describe("discoverPlugins", () => {
     const devPlugin = path.join(dir, "dev-plugin")
     const devFilePath = path.join(dir, "dev-plugins.json")
 
-    await writePlugin(path.join(builtinDir, "timestamp"), "com.deskit.timestamp")
-    await writePlugin(path.join(userDir, "notes"), "com.deskit.notes")
-    await writePlugin(devPlugin, "com.deskit.dev")
+    await writePlugin(path.join(builtinDir, "timestamp"), "com.synapse.timestamp")
+    await writePlugin(path.join(userDir, "notes"), "com.synapse.notes")
+    await writePlugin(devPlugin, "com.synapse.dev")
     await fs.writeFile(devFilePath, JSON.stringify([{ path: devPlugin }]), "utf-8")
 
     const entries = await discoverPlugins({ builtinDir, userDir, devFilePath })
     expect(entries.map((entry) => [entry.pluginId, entry.source.kind, entry.status])).toEqual([
-      ["com.deskit.timestamp", "builtin", "valid"],
-      ["com.deskit.notes", "user", "valid"],
-      ["com.deskit.dev", "dev", "valid"],
+      ["com.synapse.timestamp", "builtin", "valid"],
+      ["com.synapse.notes", "user", "valid"],
+      ["com.synapse.dev", "dev", "valid"],
     ])
   })
 
   it("marks malformed plugin directories invalid without stopping discovery", async () => {
     const builtinDir = path.join(dir, "builtin")
-    await writePlugin(path.join(builtinDir, "good"), "com.deskit.good")
+    await writePlugin(path.join(builtinDir, "good"), "com.synapse.good")
     await fs.mkdir(path.join(builtinDir, "bad"), { recursive: true })
-    await fs.writeFile(path.join(builtinDir, "bad", "deskit.json"), "{bad-json", "utf-8")
+    await fs.writeFile(path.join(builtinDir, "bad", "synapse.json"), "{bad-json", "utf-8")
 
     const entries = await discoverPlugins({ builtinDir })
     expect(entries).toHaveLength(2)
-    expect(entries.find((entry) => entry.pluginId === "com.deskit.good")?.status).toBe("valid")
+    expect(entries.find((entry) => entry.pluginId === "com.synapse.good")?.status).toBe("valid")
     expect(entries.find((entry) => entry.status === "invalid")?.error).toContain("valid JSON")
   })
 
@@ -50,12 +50,12 @@ describe("discoverPlugins", () => {
     const builtinDir = path.join(dir, "builtin")
     const devFilePath = path.join(dir, "dev-plugins.json")
 
-    await writePlugin(path.join(builtinDir, "good"), "com.deskit.good")
+    await writePlugin(path.join(builtinDir, "good"), "com.synapse.good")
     await fs.writeFile(devFilePath, "{bad-json", "utf-8")
 
     const entries = await discoverPlugins({ builtinDir, devFilePath })
     expect(entries.map((entry) => [entry.pluginId, entry.source.kind, entry.status])).toEqual([
-      ["com.deskit.good", "builtin", "valid"],
+      ["com.synapse.good", "builtin", "valid"],
     ])
   })
 
@@ -65,9 +65,9 @@ describe("discoverPlugins", () => {
     const devPlugin = path.join(dir, "dev-plugin")
     const devFilePath = path.join(dir, "dev-plugins.json")
 
-    await writePlugin(path.join(builtinDir, "shared"), "com.deskit.shared")
-    await writePlugin(path.join(userDir, "shared"), "com.deskit.shared")
-    await writePlugin(devPlugin, "com.deskit.shared")
+    await writePlugin(path.join(builtinDir, "shared"), "com.synapse.shared")
+    await writePlugin(path.join(userDir, "shared"), "com.synapse.shared")
+    await writePlugin(devPlugin, "com.synapse.shared")
     await fs.writeFile(devFilePath, JSON.stringify([devPlugin]), "utf-8")
 
     const entries = await discoverPlugins({ builtinDir, userDir, devFilePath })
@@ -82,7 +82,7 @@ describe("discoverPlugins", () => {
 async function writePlugin(pluginDir: string, id: string): Promise<void> {
   await fs.mkdir(path.join(pluginDir, "dist"), { recursive: true })
   await fs.writeFile(
-    path.join(pluginDir, "deskit.json"),
+    path.join(pluginDir, "synapse.json"),
     JSON.stringify(
       {
         id,
@@ -90,8 +90,8 @@ async function writePlugin(pluginDir: string, id: string): Promise<void> {
         displayName: id,
         description: "test",
         version: "0.3.0",
-        author: "DesKit",
-        engines: { deskit: "^0.2.0" },
+        author: "Synapse",
+        engines: { synapse: "^0.2.0" },
         main: "dist/index.js",
         contributes: { commands: [{ id: `${id.split(".").at(-1)}.run`, title: "Run" }] },
         permissions: [],

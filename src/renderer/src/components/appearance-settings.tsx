@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useTheme } from "@/hooks/use-theme"
 import { cn } from "@/lib/utils"
 
-const ACCENTS: { id: DeskitThemeAccent; swatchClass: string }[] = [
+const ACCENTS: { id: SynapseThemeAccent; swatchClass: string }[] = [
   // Hard-coded swatches so the picker always shows the palette options
   // regardless of which accent is currently active on :root.
   { id: "neutral", swatchClass: "bg-zinc-900 dark:bg-zinc-100" },
@@ -16,7 +16,7 @@ const ACCENTS: { id: DeskitThemeAccent; swatchClass: string }[] = [
   { id: "violet", swatchClass: "bg-[oklch(0.55_0.24_295)] dark:bg-[oklch(0.72_0.21_295)]" },
 ]
 
-const MODE_ICONS: Record<DeskitThemeMode, typeof Sun> = {
+const MODE_ICONS: Record<SynapseThemeMode, typeof Sun> = {
   light: Sun,
   dark: Moon,
   system: Monitor,
@@ -26,7 +26,7 @@ export function AppearanceSettings() {
   const { t } = useTranslation()
   const { themeMode, accent, setThemeMode, setAccent } = useTheme()
 
-  const modes: DeskitThemeMode[] = ["light", "dark", "system"]
+  const modes: SynapseThemeMode[] = ["light", "dark", "system"]
 
   return (
     <Card className="w-full">

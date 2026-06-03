@@ -6,16 +6,16 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Switch } from "@/components/ui/switch"
 import { getSettings, isElectron, onSettingsChanged, updateSettings } from "@/lib/electron"
 
-const AVAILABLE_FLOATING_BALL_FEATURES: DeskitFloatingBallFeature[] = ["appLauncher"]
+const AVAILABLE_FLOATING_BALL_FEATURES: SynapseFloatingBallFeature[] = ["appLauncher"]
 
-const FEATURE_ICONS: Record<DeskitFloatingBallFeature, typeof Search> = {
+const FEATURE_ICONS: Record<SynapseFloatingBallFeature, typeof Search> = {
   appLauncher: Search,
 }
 
 export function FloatingBallSettings() {
   const { t } = useTranslation()
   const [enabled, setEnabled] = useState(false)
-  const [features, setFeatures] = useState<DeskitFloatingBallFeature[]>(["appLauncher"])
+  const [features, setFeatures] = useState<SynapseFloatingBallFeature[]>(["appLauncher"])
 
   useEffect(() => {
     if (!isElectron()) return
@@ -38,7 +38,7 @@ export function FloatingBallSettings() {
     }
   }
 
-  async function toggleFeature(feature: DeskitFloatingBallFeature, checked: boolean) {
+  async function toggleFeature(feature: SynapseFloatingBallFeature, checked: boolean) {
     const next = checked
       ? [...features, feature]
       : features.filter((existing) => existing !== feature)

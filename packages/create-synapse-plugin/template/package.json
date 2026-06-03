@@ -1,0 +1,17 @@
+{
+  "name": "hello-world",
+  "version": "0.1.0",
+  "description": "A Synapse plugin",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "build": "synapse-plugin build",
+    "dev": "synapse-plugin dev",
+    "validate": "synapse-plugin validate"
+  },
+  "devDependencies": {
+    "@synapse/plugin-cli": "^0.1.0",
+    "@synapse/plugin-sdk": "^0.3.0",
+    "typescript": "^5.9.0"
+  }
+}

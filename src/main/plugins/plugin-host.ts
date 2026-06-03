@@ -1,4 +1,4 @@
-import type { ClipboardContent } from "@deskit/plugin-sdk"
+import type { ClipboardContent } from "@synapse/plugin-sdk"
 import type { MarketplaceEntry } from "./marketplace-registry"
 import type { PluginBridgeAdapters, PluginRuntimeSnapshot } from "./plugin-bridge"
 import type {
@@ -12,7 +12,7 @@ import { createHash } from "node:crypto"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import { createElectronPluginAdapters } from "./electron-adapters"
-import { extractDeskitPackage } from "./install-from-package"
+import { extractSynapsePackage } from "./install-from-package"
 import { loadPluginManifest } from "./manifest-loader"
 import {
   DEFAULT_MARKETPLACE_REGISTRY_URL,
@@ -320,7 +320,7 @@ export class PluginHost {
     await fs.mkdir(tempDir, { recursive: true })
     const packagePath = path.join(
       tempDir,
-      `${safePluginFileName(entry.id)}-${entry.version}.deskit`
+      `${safePluginFileName(entry.id)}-${entry.version}.syn`
     )
     await fs.writeFile(packagePath, buffer)
     return packagePath
@@ -352,7 +352,7 @@ export class PluginHost {
     )
 
     try {
-      await extractDeskitPackage(packagePath, stagingDir)
+      await extractSynapsePackage(packagePath, stagingDir)
       return await this.installDirectory(stagingDir, options)
     } finally {
       await removeDirectoryIfExists(stagingDir)
@@ -546,8 +546,8 @@ async function readBundledMarketplacePackage(
 
 function bundledMarketplacePackageNames(entry: MarketplaceEntry): string[] {
   const names = [
-    `${safePluginFileName(entry.name)}-${entry.version}.deskit`,
-    `${safePluginFileName(entry.id)}-${entry.version}.deskit`,
+    `${safePluginFileName(entry.name)}-${entry.version}.syn`,
+    `${safePluginFileName(entry.id)}-${entry.version}.syn`,
   ]
   try {
     names.unshift(path.basename(new URL(entry.downloadUrl).pathname))

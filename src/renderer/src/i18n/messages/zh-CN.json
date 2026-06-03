@@ -1,6 +1,6 @@
 {
   "app": {
-    "title": "DesKit",
+    "title": "Synapse",
     "subtitle": "桌面端提效工具箱"
   },
   "nav": {
@@ -47,7 +47,7 @@
     }
   },
   "floatingBall": {
-    "title": "DesKit 桌面悬浮球",
+    "title": "Synapse 桌面悬浮球",
     "features": {
       "appLauncher": "应用启动器"
     },
@@ -103,11 +103,11 @@
       "reload": "重载",
       "uninstall": "卸载",
       "refresh": "刷新",
-      "import": "导入 .deskit",
+      "import": "导入 .syn",
       "importing": "导入中…"
     },
-    "dropHint": "拖入 .deskit 文件即可导入",
-    "importInvalid": "只能导入 .deskit 文件。",
+    "dropHint": "拖入 .syn 文件即可导入",
+    "importInvalid": "只能导入 .syn 文件。",
     "preferences": {
       "title": "偏好设置",
       "body": "修改会保存到插件偏好设置存储中。",
@@ -124,7 +124,7 @@
   },
   "marketplace": {
     "title": "应用市场",
-    "subtitle": "发现并安装 DesKit 插件。",
+    "subtitle": "发现并安装 Synapse 插件。",
     "unavailableTitle": "Electron 桥不可用",
     "unavailableBody": "应用市场仅在桌面应用内可用。",
     "errorTitle": "应用市场操作失败",
@@ -164,10 +164,10 @@
   "lan": {
     "title": "局域网传输",
     "subtitle": "在同一网络下，快速发现附近设备并发送文件。",
-    "unavailableTitle": "请在 DesKit 桌面端使用",
-    "unavailableBody": "局域网传输仅支持在 DesKit 桌面应用中使用。",
+    "unavailableTitle": "请在 Synapse 桌面端使用",
+    "unavailableBody": "局域网传输仅支持在 Synapse 桌面应用中使用。",
     "errorTitle": "局域网传输暂时不可用",
-    "restartRequired": "DesKit 需要重新启动后才能使用局域网传输。请关闭应用并重新打开。",
+    "restartRequired": "Synapse 需要重新启动后才能使用局域网传输。请关闭应用并重新打开。",
     "securityTitle": "首次连接需要确认",
     "securityBody": "首次连接新设备时，两台设备会显示一组安全验证码。确认数字一致后，即可放心发送文件。收到文件后，你可以选择是否保存。",
     "securityHelp": "了解安全连接",
@@ -188,7 +188,7 @@
     },
     "discovery": {
       "title": "发现附近设备",
-      "subtitle": "开启后，其他同一网络下的 DesKit 设备可以发现本机，你也可以看到它们。",
+      "subtitle": "开启后，其他同一网络下的 Synapse 设备可以发现本机，你也可以看到它们。",
       "enable": "允许发现附近设备"
     },
     "devices": {
@@ -196,7 +196,7 @@
       "subtitle": "首次向新设备发送文件前，需要先确认一次安全验证码。",
       "online": "{{count}} 台在线",
       "emptyTitle": "暂未发现附近设备",
-      "emptyBody": "请确保其他设备已连接同一网络，并在 DesKit 中开启“发现附近设备”。",
+      "emptyBody": "请确保其他设备已连接同一网络，并在 Synapse 中开启“发现附近设备”。",
       "platform": "平台：{{platform}}"
     },
     "status": {

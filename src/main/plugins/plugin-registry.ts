@@ -1,4 +1,4 @@
-import type { ClipboardContent, LocalizedString, PluginModule, View } from "@deskit/plugin-sdk"
+import type { ClipboardContent, LocalizedString, PluginModule, View } from "@synapse/plugin-sdk"
 import type {
   DiscoveredPlugin,
   ManifestCommand,

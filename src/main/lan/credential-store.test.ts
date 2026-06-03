@@ -13,7 +13,7 @@ describe("lanCredentialStore", () => {
   let dir: string
 
   beforeEach(async () => {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), "deskit-lan-credential-"))
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-lan-credential-"))
   })
 
   afterEach(async () => {

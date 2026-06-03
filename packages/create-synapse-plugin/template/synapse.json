@@ -1,15 +1,15 @@
 {
-  "$schema": "https://unpkg.com/@deskit/plugin-manifest/schema/deskit-manifest.schema.json",
+  "$schema": "https://unpkg.com/@synapse/plugin-manifest/schema/synapse-manifest.schema.json",
   "id": "com.example.hello-world",
   "name": "hello-world",
   "displayName": { "en": "Hello World", "zh-CN": "你好世界" },
   "description": {
-    "en": "A starter DesKit plugin.",
-    "zh-CN": "一个 DesKit 插件起步模板。"
+    "en": "A starter Synapse plugin.",
+    "zh-CN": "一个 Synapse 插件起步模板。"
   },
   "version": "0.1.0",
   "author": "Your Name",
-  "engines": { "deskit": "^0.2.0" },
+  "engines": { "synapse": "^0.2.0" },
   "main": "dist/index.js",
   "contributes": {
     "commands": [

@@ -1,6 +1,6 @@
 # Contributing Guide
 
-This document defines how the DesKit team works in this repository. It is written for contributors with different Git and GitHub experience levels, so please follow it even when a shortcut looks faster.
+This document defines how the Synapse team works in this repository. It is written for contributors with different Git and GitHub experience levels, so please follow it even when a shortcut looks faster.
 
 ## Core Rules
 
@@ -22,8 +22,8 @@ Install the required tools:
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/WiIIiamWei/DesKit.git
-cd DesKit
+git clone https://github.com/WiIIiamWei/Synapse.git
+cd Synapse
 pnpm install
 ```
 
@@ -96,7 +96,7 @@ Never commit:
 - `node_modules/`
 - `out/`, `release/`, `.next/`, coverage output, or build artifacts
 - personal editor or agent state
-- files under `DesKit/`
+- files under `Synapse/`
 
 ## Pull Request Rules
 
@@ -204,7 +204,7 @@ Public project documentation belongs in tracked files such as:
 - `CONTRIBUTING.md`
 - `docs/`
 
-The `DesKit/` directory is for local planning and development discussion. It is ignored by Git and should not be linked as required public documentation.
+The `Synapse/` directory is for local planning and development discussion. It is ignored by Git and should not be linked as required public documentation.
 
 ## When You Are Unsure
 

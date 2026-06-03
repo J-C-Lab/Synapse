@@ -12,13 +12,13 @@ import { buildPlugin, PluginBuildError } from "./build"
 let projectDir: string
 
 const MANIFEST = {
-  id: "com.deskit.fixture",
+  id: "com.synapse.fixture",
   name: "fixture",
   displayName: { en: "Fixture", "zh-CN": "夹具" },
   description: "Build-loop fixture plugin",
   version: "1.2.3",
-  author: "DesKit",
-  engines: { deskit: "^0.2.0" },
+  author: "Synapse",
+  engines: { synapse: "^0.2.0" },
   main: "dist/index.js",
   contributes: {
     commands: [{ id: "fixture.run", title: "Run", mode: "view" }],
@@ -41,9 +41,9 @@ export = plugin
 `
 
 beforeEach(async () => {
-  projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "deskit-cli-"))
+  projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-cli-"))
   await fs.mkdir(path.join(projectDir, "src"), { recursive: true })
-  await fs.writeFile(path.join(projectDir, "deskit.json"), JSON.stringify(MANIFEST, null, 2))
+  await fs.writeFile(path.join(projectDir, "synapse.json"), JSON.stringify(MANIFEST, null, 2))
   await fs.writeFile(path.join(projectDir, "src", "index.ts"), ENTRY_SOURCE)
   // A relative import proves esbuild bundles the project into a single file —
   // the sandbox has no `require`, so multi-file plugins must be inlined.
@@ -58,15 +58,15 @@ afterEach(async () => {
 })
 
 describe("buildPlugin", () => {
-  it("produces a .deskit package with the host-expected layout", async () => {
+  it("produces a .syn package with the host-expected layout", async () => {
     const result = await buildPlugin({ projectDir })
 
-    expect(path.basename(result.packagePath)).toBe("com.deskit.fixture-1.2.3.deskit")
+    expect(path.basename(result.packagePath)).toBe("com.synapse.fixture-1.2.3.syn")
     expect(await fileExists(result.packagePath)).toBe(true)
     expect(await fileExists(result.outFile)).toBe(true)
 
     const entries = await listZipEntries(result.packagePath)
-    expect(entries).toContain("deskit.json")
+    expect(entries).toContain("synapse.json")
     expect(entries).toContain("dist/index.js")
   })
 
@@ -95,7 +95,7 @@ describe("buildPlugin", () => {
   })
 
   it("rejects an invalid manifest before bundling", async () => {
-    await fs.writeFile(path.join(projectDir, "deskit.json"), JSON.stringify({ id: "x" }))
+    await fs.writeFile(path.join(projectDir, "synapse.json"), JSON.stringify({ id: "x" }))
     await expect(buildPlugin({ projectDir })).rejects.toThrow()
   })
 

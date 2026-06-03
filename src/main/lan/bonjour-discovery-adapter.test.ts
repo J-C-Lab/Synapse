@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import { BonjourLanDiscoveryAdapter, parseBonjourService } from "./bonjour-discovery-adapter"
 
 describe("parseBonjourService", () => {
-  it("parses a compatible DesKit TXT record", () => {
+  it("parses a compatible Synapse TXT record", () => {
     expect(
       parseBonjourService({
         host: "laptop.local",

@@ -16,20 +16,20 @@ function api(): NonNullable<Window["electronAPI"]> {
 
 export type AppEntry = LauncherAppEntry
 export type SearchResult = LauncherSearchResult
-export type UserSettings = DeskitUserSettings
-export type FloatingBallFeature = DeskitFloatingBallFeature
-export type LanDevice = DeskitLanDevice
-export type LanStatus = DeskitLanStatus
-export type LanPairing = DeskitLanPairing
-export type LanTransfer = DeskitLanTransfer
-export type PluginRegistryEntry = DeskitPluginRegistryEntry
-export type MarketplaceEntry = DeskitMarketplaceEntry
-export type PluginCommandResult = DeskitPluginCommandResult
-export type PluginInvokePhase = DeskitPluginInvokePhase
-export type PluginView = DeskitPluginView
-export type PluginIpcError = DeskitPluginIpcError
-export type PluginIpcErrorCode = DeskitPluginIpcErrorCode
-type PluginIpcResult<T> = DeskitPluginIpcResult<T>
+export type UserSettings = SynapseUserSettings
+export type FloatingBallFeature = SynapseFloatingBallFeature
+export type LanDevice = SynapseLanDevice
+export type LanStatus = SynapseLanStatus
+export type LanPairing = SynapseLanPairing
+export type LanTransfer = SynapseLanTransfer
+export type PluginRegistryEntry = SynapsePluginRegistryEntry
+export type MarketplaceEntry = SynapseMarketplaceEntry
+export type PluginCommandResult = SynapsePluginCommandResult
+export type PluginInvokePhase = SynapsePluginInvokePhase
+export type PluginView = SynapsePluginView
+export type PluginIpcError = SynapsePluginIpcError
+export type PluginIpcErrorCode = SynapsePluginIpcErrorCode
+type PluginIpcResult<T> = SynapsePluginIpcResult<T>
 
 export class ElectronIpcError extends Error {
   readonly code: PluginIpcErrorCode
@@ -73,7 +73,7 @@ export async function openExternalUrl(url: string): Promise<boolean> {
   return api().openExternalUrl(url)
 }
 
-export async function writeClipboardContent(content: DeskitClipboardContent): Promise<boolean> {
+export async function writeClipboardContent(content: SynapseClipboardContent): Promise<boolean> {
   return api().writeClipboardContent(content)
 }
 
@@ -189,7 +189,7 @@ export async function installPluginPackage(zipPath: string): Promise<PluginRegis
 }
 
 /**
- * Open the native file picker and install the chosen `.deskit` package.
+ * Open the native file picker and install the chosen `.syn` package.
  * Resolves to null if the user cancelled the dialog.
  */
 export async function importPluginFromFile(): Promise<PluginRegistryEntry | null> {

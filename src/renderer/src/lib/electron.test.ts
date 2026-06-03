@@ -44,7 +44,7 @@ import {
   writeClipboardContent,
 } from "./electron"
 
-function ok<T>(data: T): DeskitPluginIpcResult<T> {
+function ok<T>(data: T): SynapsePluginIpcResult<T> {
   return { ok: true, data }
 }
 
@@ -274,7 +274,7 @@ describe("lib/electron", () => {
         error: {
           code: "PLUGIN_NOT_ACTIVE",
           message: "Plugin is not active.",
-          details: { pluginId: "com.deskit.test" },
+          details: { pluginId: "com.synapse.test" },
         },
       })
 
@@ -282,26 +282,26 @@ describe("lib/electron", () => {
         name: "ElectronIpcError",
         code: "PLUGIN_NOT_ACTIVE",
         message: "Plugin is not active.",
-        details: { pluginId: "com.deskit.test" },
+        details: { pluginId: "com.synapse.test" },
       } satisfies Partial<ElectronIpcError>)
     })
 
     it("getPlugin forwards plugin id", async () => {
       const api = mockApi()
-      await getPlugin("com.deskit.test")
-      expect(api.getPlugin).toHaveBeenCalledWith("com.deskit.test")
+      await getPlugin("com.synapse.test")
+      expect(api.getPlugin).toHaveBeenCalledWith("com.synapse.test")
     })
 
     it("setPluginEnabled forwards plugin id and enabled state", async () => {
       const api = mockApi()
-      await setPluginEnabled("com.deskit.test", false)
-      expect(api.setPluginEnabled).toHaveBeenCalledWith("com.deskit.test", false)
+      await setPluginEnabled("com.synapse.test", false)
+      expect(api.setPluginEnabled).toHaveBeenCalledWith("com.synapse.test", false)
     })
 
     it("setPluginPreference forwards preference patch", async () => {
       const api = mockApi()
-      await setPluginPreference("com.deskit.test", "unit", "ms")
-      expect(api.setPluginPreference).toHaveBeenCalledWith("com.deskit.test", "unit", "ms")
+      await setPluginPreference("com.synapse.test", "unit", "ms")
+      expect(api.setPluginPreference).toHaveBeenCalledWith("com.synapse.test", "unit", "ms")
     })
 
     it("installPluginFolder forwards folder path", async () => {
@@ -312,20 +312,20 @@ describe("lib/electron", () => {
 
     it("installPluginPackage forwards zip path", async () => {
       const api = mockApi()
-      await installPluginPackage("/tmp/plugin.deskit")
-      expect(api.installPluginPackage).toHaveBeenCalledWith("/tmp/plugin.deskit")
+      await installPluginPackage("/tmp/plugin.syn")
+      expect(api.installPluginPackage).toHaveBeenCalledWith("/tmp/plugin.syn")
     })
 
     it("uninstallPlugin forwards plugin id", async () => {
       const api = mockApi()
-      await uninstallPlugin("com.deskit.test")
-      expect(api.uninstallPlugin).toHaveBeenCalledWith("com.deskit.test")
+      await uninstallPlugin("com.synapse.test")
+      expect(api.uninstallPlugin).toHaveBeenCalledWith("com.synapse.test")
     })
 
     it("reloadPlugin forwards optional plugin id", async () => {
       const api = mockApi()
-      await reloadPlugin("com.deskit.test")
-      expect(api.reloadPlugin).toHaveBeenCalledWith("com.deskit.test")
+      await reloadPlugin("com.synapse.test")
+      expect(api.reloadPlugin).toHaveBeenCalledWith("com.synapse.test")
     })
 
     it("searchPluginCommands forwards query options", async () => {
@@ -336,16 +336,16 @@ describe("lib/electron", () => {
 
     it("invokePluginCommand forwards invocation payload", async () => {
       const api = mockApi()
-      await invokePluginCommand("com.deskit.test", "test.run", "run", { initialQuery: "1" })
-      expect(api.invokePluginCommand).toHaveBeenCalledWith("com.deskit.test", "test.run", "run", {
+      await invokePluginCommand("com.synapse.test", "test.run", "run", { initialQuery: "1" })
+      expect(api.invokePluginCommand).toHaveBeenCalledWith("com.synapse.test", "test.run", "run", {
         initialQuery: "1",
       })
     })
 
     it("disposePluginCommand forwards command identity", async () => {
       const api = mockApi()
-      await disposePluginCommand("com.deskit.test", "test.run")
-      expect(api.disposePluginCommand).toHaveBeenCalledWith("com.deskit.test", "test.run")
+      await disposePluginCommand("com.synapse.test", "test.run")
+      expect(api.disposePluginCommand).toHaveBeenCalledWith("com.synapse.test", "test.run")
     })
 
     it("listMarketplacePlugins calls listMarketplacePlugins", async () => {
@@ -356,8 +356,8 @@ describe("lib/electron", () => {
 
     it("installMarketplacePlugin forwards id and version", async () => {
       const api = mockApi()
-      await installMarketplacePlugin("com.deskit.test", "0.1.0")
-      expect(api.installMarketplacePlugin).toHaveBeenCalledWith("com.deskit.test", "0.1.0")
+      await installMarketplacePlugin("com.synapse.test", "0.1.0")
+      expect(api.installMarketplacePlugin).toHaveBeenCalledWith("com.synapse.test", "0.1.0")
     })
 
     it("onLauncherFocus forwards handler and returns unsubscribe", () => {

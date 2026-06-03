@@ -1,9 +1,9 @@
-import type { PluginManifest } from "@deskit/plugin-manifest"
+import type { PluginManifest } from "@synapse/plugin-manifest"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
-import { ManifestValidationError, parseManifest } from "@deskit/plugin-manifest"
+import { ManifestValidationError, parseManifest } from "@synapse/plugin-manifest"
 
-export const MANIFEST_FILENAME = "deskit.json"
+export const MANIFEST_FILENAME = "synapse.json"
 
 export interface LoadedManifest {
   manifest: PluginManifest
@@ -13,7 +13,7 @@ export interface LoadedManifest {
 }
 
 /**
- * Read and structurally validate `<projectDir>/deskit.json`. Engine
+ * Read and structurally validate `<projectDir>/synapse.json`. Engine
  * compatibility is intentionally not checked here — that is the host's
  * concern at install time, not the build tool's.
  */

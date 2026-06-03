@@ -47,7 +47,7 @@ export class LanCredentialStore {
   }
 
   private async create(identity: StoredLanIdentity): Promise<LanCredential> {
-    const generated = generate([{ name: "commonName", value: `DesKit ${identity.deviceId}` }], {
+    const generated = generate([{ name: "commonName", value: `Synapse ${identity.deviceId}` }], {
       algorithm: "sha256",
       days: 3650,
       keySize: 2048,
