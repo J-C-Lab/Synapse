@@ -1,8 +1,9 @@
 import type { ListView, PluginModule } from "@synapse/plugin-sdk"
 
 // A Synapse plugin is a CommonJS module that registers commands returning
-// declarative views. The host renders them with its own UI — plugin code
-// never touches the DOM and never imports React. See @synapse/plugin-sdk.
+// declarative views, and/or headless tools that AI agents can call. The host
+// renders views with its own UI — plugin code never touches the DOM and never
+// imports React. See @synapse/plugin-sdk.
 const plugin: PluginModule = {
   commands: {
     "hello.world": {
@@ -22,6 +23,18 @@ const plugin: PluginModule = {
           ],
         }
       },
+    },
+  },
+  // Tools are headless: structured input → structured result, no UI. The host
+  // validates `input` against the `inputSchema` declared in synapse.json before
+  // calling, so it is safe to trust its shape here.
+  tools: {
+    greet(input: { name: string }) {
+      const greeting = `Hello, ${input.name}!`
+      return {
+        content: [{ type: "text", text: greeting }],
+        structured: { greeting },
+      }
     },
   },
 }

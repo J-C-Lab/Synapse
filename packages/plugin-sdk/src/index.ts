@@ -40,6 +40,8 @@ export type { ClipboardAPI, NotificationAPI, PluginContext, StorageAPI, SystemAP
 
 export type { LocalizedString } from "./locales"
 
+export type { ToolCaller, ToolContentBlock, ToolContext, ToolHandler, ToolResult } from "./tools"
+
 export type {
   CheckboxField,
   DetailView,

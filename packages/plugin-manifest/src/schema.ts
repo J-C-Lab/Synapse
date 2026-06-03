@@ -57,6 +57,44 @@ const preferenceSchema = z
     }
   })
 
+// LLM-visible tool name, unique within a plugin. The model-visible name is
+// `${pluginId}/${name}`; keep `name` a clean identifier so provider adapters
+// can map it without collisions.
+const toolNameSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z][\w-]*$/i)
+
+// A JSON Schema for a tool's input/output. We require an object schema at the
+// top level (MCP convention) but allow any nested JSON Schema keywords.
+const jsonSchemaSchema = z.looseObject({
+  type: z.literal("object"),
+  properties: z.record(z.string(), z.unknown()).optional(),
+  required: z.array(z.string()).optional(),
+})
+
+const toolAnnotationsSchema = z
+  .object({
+    readOnlyHint: z.boolean().optional(),
+    destructiveHint: z.boolean().optional(),
+    idempotentHint: z.boolean().optional(),
+    requiresConfirmation: z.boolean().optional(),
+  })
+  .strict()
+
+const toolSchema = z
+  .object({
+    name: toolNameSchema,
+    title: localizedStringSchema.optional(),
+    description: z.string().min(1),
+    inputSchema: jsonSchemaSchema,
+    outputSchema: jsonSchemaSchema.optional(),
+    annotations: toolAnnotationsSchema.optional(),
+    permissions: z.array(z.string().min(1)).optional(),
+  })
+  .strict()
+
 export const manifestSchema = z
   .object({
     $schema: z.string().optional(),
@@ -74,6 +112,7 @@ export const manifestSchema = z
         activationEvents: z.array(z.enum(["clipboard:change"])).optional(),
         commands: z.array(commandSchema).min(1),
         preferences: z.array(preferenceSchema).optional(),
+        tools: z.array(toolSchema).optional(),
       })
       .strict(),
     permissions: z.array(z.string().min(1)).default([]),
@@ -90,6 +129,30 @@ export const manifestSchema = z
         path: ["permissions"],
       })
     }
+
+    const tools = value.contributes.tools ?? []
+    const granted = new Set(value.permissions)
+    const seen = new Set<string>()
+    tools.forEach((tool, index) => {
+      if (seen.has(tool.name)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `Duplicate tool name "${tool.name}" — tool names must be unique within a plugin`,
+          path: ["contributes", "tools", index, "name"],
+        })
+      }
+      seen.add(tool.name)
+
+      for (const perm of tool.permissions ?? []) {
+        if (!granted.has(perm)) {
+          ctx.addIssue({
+            code: "custom",
+            message: `Tool "${tool.name}" requests permission "${perm}" not declared in the plugin's top-level permissions`,
+            path: ["contributes", "tools", index, "permissions"],
+          })
+        }
+      }
+    })
   })
 
 export class ManifestValidationError extends Error {

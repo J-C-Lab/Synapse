@@ -1,5 +1,6 @@
 import type { ClipboardContent } from "./clipboard"
 import type { PluginContext } from "./context"
+import type { ToolHandler } from "./tools"
 import type { View } from "./views"
 
 /**
@@ -79,4 +80,10 @@ export interface PluginEventHandlers {
 export interface PluginModule {
   commands: Record<string, CommandHandler>
   events?: PluginEventHandlers
+  /**
+   * Headless tools the plugin exposes to AI agents (and external MCP clients).
+   * Each key must match a `contributes.tools[].name` in the manifest. Tools
+   * are independent of `commands` — a plugin may ship either or both.
+   */
+  tools?: Record<string, ToolHandler>
 }

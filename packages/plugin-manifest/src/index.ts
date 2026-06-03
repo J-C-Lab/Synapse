@@ -11,10 +11,13 @@ export { manifestSchema, ManifestValidationError, parseManifest } from "./schema
 
 export type {
   CommandMode,
+  JsonSchema,
   ManifestCommand,
   ManifestPreference,
   ManifestPreferenceOption,
   ManifestPreferenceType,
+  ManifestTool,
   PluginActivationEvent,
   PluginManifest,
+  ToolAnnotations,
 } from "./types"

@@ -19,6 +19,31 @@
         "subtitle": { "en": "A starter command", "zh-CN": "起步命令" },
         "mode": "view"
       }
+    ],
+    "tools": [
+      {
+        "name": "greet",
+        "title": { "en": "Greet", "zh-CN": "问候" },
+        "description": "Return a friendly greeting for the given name. Read-only; safe to call without confirmation.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "The name to greet."
+            }
+          },
+          "required": ["name"]
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "greeting": { "type": "string" }
+          },
+          "required": ["greeting"]
+        },
+        "annotations": { "readOnlyHint": true }
+      }
     ]
   },
   "permissions": []

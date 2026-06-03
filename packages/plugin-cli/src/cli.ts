@@ -84,6 +84,10 @@ async function runValidate(projectDir: string): Promise<void> {
   const { manifest } = await readManifest(projectDir)
   info(`synapse.json is valid: ${manifest.id}@${manifest.version}`)
   info(`  commands: ${manifest.contributes.commands.map((c) => c.id).join(", ")}`)
+  const tools = manifest.contributes.tools ?? []
+  if (tools.length > 0) {
+    info(`  tools:    ${tools.map((t) => `${manifest.id}/${t.name}`).join(", ")}`)
+  }
 }
 
 async function runDev(
