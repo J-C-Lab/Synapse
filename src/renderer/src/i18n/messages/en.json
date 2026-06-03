@@ -10,7 +10,8 @@
     "appLauncher": "App Launcher",
     "floatingBall": "Floating Ball",
     "plugins": "Plugins",
-    "marketplace": "Marketplace"
+    "marketplace": "Marketplace",
+    "lanTransfer": "LAN Transfer"
   },
   "home": {
     "quickActions": "Quick actions",
@@ -159,6 +160,82 @@
     "comingSoonTitle": "Marketplace UI is coming soon",
     "comingSoonBody": "The sidebar entry is ready; Git registry browsing and install flows will land in the marketplace PR.",
     "gitIntegrationHint": "P0 marketplace installation will use HTTPS registry fetches and package hash verification instead of a local git dependency."
+  },
+  "lan": {
+    "title": "LAN Transfer",
+    "subtitle": "Find nearby devices on the same network and send files quickly.",
+    "unavailableTitle": "Use the DesKit desktop app",
+    "unavailableBody": "LAN transfer is available in the DesKit desktop app.",
+    "errorTitle": "LAN transfer is temporarily unavailable",
+    "restartRequired": "Restart DesKit to use LAN transfer. Close the app and open it again.",
+    "securityTitle": "Confirm new devices before connecting",
+    "securityBody": "When connecting to a new device for the first time, both devices show a security code. Confirm that the numbers match before sending files. You can choose whether to save received files.",
+    "securityHelp": "About secure connections",
+    "loading": "Looking for nearby devices…",
+    "localDevice": "This device: {{name}}",
+    "actions": {
+      "refresh": "Refresh",
+      "pair": "Connect",
+      "disconnect": "Disconnect",
+      "sendFile": "Send file",
+      "confirm": "Confirm connection",
+      "reject": "Reject",
+      "accept": "Receive and save",
+      "resume": "Resume",
+      "deleteHistory": "Delete record",
+      "dismissGuide": "Got it",
+      "dismissGuideOverlay": "Close guide overlay"
+    },
+    "discovery": {
+      "title": "Find nearby devices",
+      "subtitle": "When enabled, other DesKit devices on the same network can find this device, and you can see them here.",
+      "enable": "Allow nearby device discovery"
+    },
+    "devices": {
+      "title": "Nearby devices",
+      "subtitle": "Before sending files to a new device, confirm a security code once.",
+      "online": "{{count}} online",
+      "emptyTitle": "No nearby devices found",
+      "emptyBody": "Make sure the other device is on the same network and has “Find nearby devices” enabled in DesKit.",
+      "platform": "Platform: {{platform}}"
+    },
+    "status": {
+      "browsing": "Looking for nearby devices",
+      "stopped": "Nearby device discovery is off",
+      "online": "Online",
+      "offline": "Offline",
+      "paired": "Connected securely",
+      "unpaired": "Confirmation needed"
+    },
+    "pairings": {
+      "title": "Confirm new device",
+      "subtitle": "The device you are connecting to shows a six-digit code. Enter it here to connect.",
+      "sas": "Security code",
+      "showCodeHint": "Enter this code on the device that started the connection.",
+      "enterCodeTitle": "Enter security code",
+      "enterCodeBody": "Enter the six-digit code shown on {{name}} to connect.",
+      "invalidCode": "That code is incorrect. Check the other device and try again.",
+      "incoming": "This device wants to connect",
+      "outgoing": "Connecting to this device"
+    },
+    "transfers": {
+      "title": "File transfers",
+      "subtitle": "Track sent and received files here. Interrupted transfers can resume.",
+      "emptyTitle": "No file transfers yet",
+      "emptyBody": "Connect to a nearby device, then choose a file to send.",
+      "incoming": "From {{name}}",
+      "outgoing": "To {{name}}",
+      "progress": "{{current}} / {{total}}",
+      "state": {
+        "preparing": "Preparing",
+        "transferring": "Transferring",
+        "paused": "Paused",
+        "awaiting-confirmation": "Waiting for receiver to save",
+        "completed": "Completed",
+        "rejected": "Rejected",
+        "failed": "Failed"
+      }
+    }
   },
   "launcher": {
     "placeholder": "Search apps and commands…",

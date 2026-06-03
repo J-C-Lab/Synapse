@@ -33,6 +33,69 @@ declare global {
     accent: DeskitThemeAccent
     floatingBallEnabled: boolean
     floatingBallFeatures: DeskitFloatingBallFeature[]
+    lanEnabled: boolean
+  }
+
+  type DeskitLanPlatform = "win32" | "darwin" | "linux" | "unknown"
+
+  interface DeskitLanDevice {
+    deviceId: string
+    name: string
+    host: string
+    addresses: string[]
+    port: number
+    platform: DeskitLanPlatform
+    capabilities: string[]
+    lastSeenAt: number
+    online: boolean
+    paired: boolean
+  }
+
+  interface DeskitLanStatus {
+    enabled: boolean
+    discovering: boolean
+    localDeviceId: string
+    localDeviceName: string
+    deviceCount: number
+  }
+
+  type DeskitLanPairingDirection = "incoming" | "outgoing"
+  type DeskitLanPairingState = "awaiting-confirmation" | "confirmed" | "rejected"
+
+  interface DeskitLanPairing {
+    id: string
+    direction: DeskitLanPairingDirection
+    deviceId: string
+    deviceName: string
+    sas: string
+    state: DeskitLanPairingState
+    createdAt: number
+  }
+
+  type DeskitLanTransferDirection = "incoming" | "outgoing"
+  type DeskitLanTransferState =
+    | "preparing"
+    | "transferring"
+    | "paused"
+    | "awaiting-confirmation"
+    | "completed"
+    | "rejected"
+    | "failed"
+
+  interface DeskitLanTransfer {
+    id: string
+    direction: DeskitLanTransferDirection
+    deviceId: string
+    deviceName: string
+    fileName: string
+    size: number
+    sha256: string
+    chunkSize: number
+    completedChunks: number
+    totalChunks: number
+    transferredBytes: number
+    state: DeskitLanTransferState
+    error?: string
   }
 
   type DeskitLocalizedString = string | Record<string, string>
@@ -170,6 +233,19 @@ declare global {
       hideFloatingBall: () => Promise<void>
       getSettings: () => Promise<DeskitUserSettings>
       updateSettings: (patch: Partial<DeskitUserSettings>) => Promise<DeskitUserSettings>
+      getLanStatus: () => Promise<DeskitLanStatus>
+      listLanDevices: () => Promise<DeskitLanDevice[]>
+      listLanPairings: () => Promise<DeskitLanPairing[]>
+      pairLanDevice: (deviceId: string) => Promise<DeskitLanPairing>
+      confirmLanPairing: (pairingId: string, sas: string) => Promise<DeskitLanPairing[]>
+      rejectLanPairing: (pairingId: string) => Promise<DeskitLanPairing[]>
+      disconnectLanDevice: (deviceId: string) => Promise<void>
+      listLanTransfers: () => Promise<DeskitLanTransfer[]>
+      sendLanFile: (deviceId: string) => Promise<DeskitLanTransfer | null>
+      resumeLanTransfer: (transferId: string) => Promise<DeskitLanTransfer>
+      acceptLanTransfer: (transferId: string) => Promise<DeskitLanTransfer | null>
+      rejectLanTransfer: (transferId: string) => Promise<DeskitLanTransfer>
+      removeLanTransferHistory: (transferId: string) => Promise<DeskitLanTransfer[]>
       listPlugins: () => Promise<DeskitPluginIpcResult<DeskitPluginRegistryEntry[]>>
       getPlugin: (
         pluginId: string
@@ -224,6 +300,10 @@ declare global {
         handler: (plugins: DeskitPluginRegistryEntry[]) => void
       ) => () => void
       onSettingsChanged: (handler: (settings: DeskitUserSettings) => void) => () => void
+      onLanDevicesChanged: (handler: (devices: DeskitLanDevice[]) => void) => () => void
+      onLanStatusChanged: (handler: (status: DeskitLanStatus) => void) => () => void
+      onLanPairingsChanged: (handler: (pairings: DeskitLanPairing[]) => void) => () => void
+      onLanTransfersChanged: (handler: (transfers: DeskitLanTransfer[]) => void) => () => void
     }
   }
 }

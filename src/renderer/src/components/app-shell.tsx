@@ -1,10 +1,19 @@
-import { CircleDot, House, Puzzle, Search, Settings as SettingsIcon, Store } from "lucide-react"
+import {
+  CircleDot,
+  House,
+  Puzzle,
+  Search,
+  Settings as SettingsIcon,
+  Store,
+  Wifi,
+} from "lucide-react"
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
 import logoUrl from "@/assets/logo.svg"
 import { AppLauncherPage } from "@/components/pages/app-launcher-page"
 import { FloatingBallPage } from "@/components/pages/floating-ball-page"
 import { HomePage } from "@/components/pages/home-page"
+import { LanTransferPage } from "@/components/pages/lan-transfer-page"
 import { MarketplacePage } from "@/components/pages/marketplace-page"
 import { PluginsPage } from "@/components/pages/plugins-page"
 import { SettingsPage } from "@/components/pages/settings-page"
@@ -32,6 +41,7 @@ export type NavId =
   | "floating-ball"
   | "plugins"
   | "marketplace"
+  | "lan-transfer"
 
 export function AppShell() {
   const { t } = useTranslation()
@@ -61,6 +71,16 @@ export function AppShell() {
                   >
                     <House />
                     <span>{t("nav.home")}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    isActive={nav === "lan-transfer"}
+                    onClick={() => setNav("lan-transfer")}
+                    tooltip={t("nav.lanTransfer")}
+                  >
+                    <Wifi />
+                    <span>{t("nav.lanTransfer")}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
                 <SidebarMenuItem>
@@ -142,7 +162,9 @@ export function AppShell() {
           <div
             className={cn(
               "mx-auto w-full",
-              nav === "plugins" || nav === "marketplace" ? "max-w-5xl" : "max-w-3xl"
+              nav === "plugins" || nav === "marketplace" || nav === "lan-transfer"
+                ? "max-w-5xl"
+                : "max-w-3xl"
             )}
           >
             {nav === "home" && <HomePage onNavigate={setNav} />}
@@ -151,6 +173,7 @@ export function AppShell() {
             {nav === "floating-ball" && <FloatingBallPage onNavigate={setNav} />}
             {nav === "plugins" && <PluginsPage />}
             {nav === "marketplace" && <MarketplacePage />}
+            {nav === "lan-transfer" && <LanTransferPage />}
           </div>
         </main>
       </SidebarInset>
@@ -172,5 +195,7 @@ function navKey(id: NavId): string {
       return "plugins"
     case "marketplace":
       return "marketplace"
+    case "lan-transfer":
+      return "lanTransfer"
   }
 }

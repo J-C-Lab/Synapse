@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer"
 import { vi } from "vitest"
 
 type Listener = (...args: unknown[]) => void
@@ -109,6 +110,15 @@ export const shell = {
   openExternal: vi.fn(() => Promise.resolve()),
   openPath: vi.fn(() => Promise.resolve("")),
 }
+export const dialog = {
+  showOpenDialog: vi.fn(() => Promise.resolve({ canceled: true, filePaths: [] })),
+  showSaveDialog: vi.fn(() => Promise.resolve({ canceled: true })),
+}
+export const safeStorage = {
+  isEncryptionAvailable: vi.fn(() => true),
+  encryptString: vi.fn((value: string) => Buffer.from(value)),
+  decryptString: vi.fn((value: Buffer) => value.toString("utf-8")),
+}
 export const clipboard = {
   readText: vi.fn(() => ""),
   writeText: vi.fn(),
@@ -138,6 +148,8 @@ export default {
   protocol,
   net,
   shell,
+  dialog,
+  safeStorage,
   clipboard,
   desktopCapturer,
 }

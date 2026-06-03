@@ -10,7 +10,8 @@
     "appLauncher": "应用启动器",
     "floatingBall": "桌面悬浮球",
     "plugins": "插件",
-    "marketplace": "应用市场"
+    "marketplace": "应用市场",
+    "lanTransfer": "局域网传输"
   },
   "home": {
     "quickActions": "快捷操作",
@@ -159,6 +160,82 @@
     "comingSoonTitle": "应用市场 UI 即将完善",
     "comingSoonBody": "侧边栏入口已就绪；Git registry 浏览与安装流程会在 marketplace PR 中落地。",
     "gitIntegrationHint": "P0 市场安装会使用 HTTPS registry 拉取与包哈希校验，不依赖本地 git。"
+  },
+  "lan": {
+    "title": "局域网传输",
+    "subtitle": "在同一网络下，快速发现附近设备并发送文件。",
+    "unavailableTitle": "请在 DesKit 桌面端使用",
+    "unavailableBody": "局域网传输仅支持在 DesKit 桌面应用中使用。",
+    "errorTitle": "局域网传输暂时不可用",
+    "restartRequired": "DesKit 需要重新启动后才能使用局域网传输。请关闭应用并重新打开。",
+    "securityTitle": "首次连接需要确认",
+    "securityBody": "首次连接新设备时，两台设备会显示一组安全验证码。确认数字一致后，即可放心发送文件。收到文件后，你可以选择是否保存。",
+    "securityHelp": "了解安全连接",
+    "loading": "正在查找附近设备…",
+    "localDevice": "本机：{{name}}",
+    "actions": {
+      "refresh": "刷新",
+      "pair": "连接",
+      "disconnect": "断开连接",
+      "sendFile": "发送文件",
+      "confirm": "确认连接",
+      "reject": "拒绝",
+      "accept": "接收并保存",
+      "resume": "继续传输",
+      "deleteHistory": "删除记录",
+      "dismissGuide": "我知道了",
+      "dismissGuideOverlay": "关闭引导蒙版"
+    },
+    "discovery": {
+      "title": "发现附近设备",
+      "subtitle": "开启后，其他同一网络下的 DesKit 设备可以发现本机，你也可以看到它们。",
+      "enable": "允许发现附近设备"
+    },
+    "devices": {
+      "title": "附近设备",
+      "subtitle": "首次向新设备发送文件前，需要先确认一次安全验证码。",
+      "online": "{{count}} 台在线",
+      "emptyTitle": "暂未发现附近设备",
+      "emptyBody": "请确保其他设备已连接同一网络，并在 DesKit 中开启“发现附近设备”。",
+      "platform": "平台：{{platform}}"
+    },
+    "status": {
+      "browsing": "正在查找附近设备",
+      "stopped": "附近设备发现已关闭",
+      "online": "在线",
+      "offline": "离线",
+      "paired": "已安全连接",
+      "unpaired": "待确认"
+    },
+    "pairings": {
+      "title": "确认新设备",
+      "subtitle": "被连接的设备会显示一个六位验证码，在此输入即可建立连接。",
+      "sas": "安全验证码",
+      "showCodeHint": "请在发起连接的设备上输入此验证码。",
+      "enterCodeTitle": "输入安全验证码",
+      "enterCodeBody": "请输入 {{name}} 上显示的六位验证码以建立连接。",
+      "invalidCode": "验证码不正确，请核对对方设备后重试。",
+      "incoming": "对方希望与你建立连接",
+      "outgoing": "正在与该设备建立连接"
+    },
+    "transfers": {
+      "title": "文件传输",
+      "subtitle": "在这里查看发送和接收进度。传输中断后可以继续。",
+      "emptyTitle": "暂无文件传输",
+      "emptyBody": "与附近设备建立连接后，可以选择文件发送。",
+      "incoming": "来自 {{name}}",
+      "outgoing": "发送至 {{name}}",
+      "progress": "{{current}} / {{total}}",
+      "state": {
+        "preparing": "准备中",
+        "transferring": "传输中",
+        "paused": "已暂停",
+        "awaiting-confirmation": "等待接收方保存",
+        "completed": "已完成",
+        "rejected": "已拒绝",
+        "failed": "失败"
+      }
+    }
   },
   "launcher": {
     "placeholder": "搜索应用与命令…",

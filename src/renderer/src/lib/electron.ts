@@ -18,6 +18,10 @@ export type AppEntry = LauncherAppEntry
 export type SearchResult = LauncherSearchResult
 export type UserSettings = DeskitUserSettings
 export type FloatingBallFeature = DeskitFloatingBallFeature
+export type LanDevice = DeskitLanDevice
+export type LanStatus = DeskitLanStatus
+export type LanPairing = DeskitLanPairing
+export type LanTransfer = DeskitLanTransfer
 export type PluginRegistryEntry = DeskitPluginRegistryEntry
 export type MarketplaceEntry = DeskitMarketplaceEntry
 export type PluginCommandResult = DeskitPluginCommandResult
@@ -99,6 +103,58 @@ export async function getSettings(): Promise<UserSettings> {
 
 export async function updateSettings(patch: Partial<UserSettings>): Promise<UserSettings> {
   return api().updateSettings(patch)
+}
+
+export async function getLanStatus(): Promise<LanStatus> {
+  return api().getLanStatus()
+}
+
+export async function listLanDevices(): Promise<LanDevice[]> {
+  return api().listLanDevices()
+}
+
+export async function listLanPairings(): Promise<LanPairing[]> {
+  return api().listLanPairings()
+}
+
+export async function pairLanDevice(deviceId: string): Promise<LanPairing> {
+  return api().pairLanDevice(deviceId)
+}
+
+export async function confirmLanPairing(pairingId: string, sas: string): Promise<LanPairing[]> {
+  return api().confirmLanPairing(pairingId, sas)
+}
+
+export async function rejectLanPairing(pairingId: string): Promise<LanPairing[]> {
+  return api().rejectLanPairing(pairingId)
+}
+
+export async function disconnectLanDevice(deviceId: string): Promise<void> {
+  await api().disconnectLanDevice(deviceId)
+}
+
+export async function listLanTransfers(): Promise<LanTransfer[]> {
+  return api().listLanTransfers()
+}
+
+export async function sendLanFile(deviceId: string): Promise<LanTransfer | null> {
+  return api().sendLanFile(deviceId)
+}
+
+export async function resumeLanTransfer(transferId: string): Promise<LanTransfer> {
+  return api().resumeLanTransfer(transferId)
+}
+
+export async function acceptLanTransfer(transferId: string): Promise<LanTransfer | null> {
+  return api().acceptLanTransfer(transferId)
+}
+
+export async function rejectLanTransfer(transferId: string): Promise<LanTransfer> {
+  return api().rejectLanTransfer(transferId)
+}
+
+export async function removeLanTransferHistory(transferId: string): Promise<LanTransfer[]> {
+  return api().removeLanTransferHistory(transferId)
 }
 
 export async function listPlugins(): Promise<PluginRegistryEntry[]> {
@@ -207,4 +263,20 @@ export function onPluginRegistryChanged(
 
 export function onSettingsChanged(handler: (settings: UserSettings) => void): () => void {
   return api().onSettingsChanged(handler)
+}
+
+export function onLanDevicesChanged(handler: (devices: LanDevice[]) => void): () => void {
+  return api().onLanDevicesChanged(handler)
+}
+
+export function onLanStatusChanged(handler: (status: LanStatus) => void): () => void {
+  return api().onLanStatusChanged(handler)
+}
+
+export function onLanPairingsChanged(handler: (pairings: LanPairing[]) => void): () => void {
+  return api().onLanPairingsChanged(handler)
+}
+
+export function onLanTransfersChanged(handler: (transfers: LanTransfer[]) => void): () => void {
+  return api().onLanTransfersChanged(handler)
 }

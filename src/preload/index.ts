@@ -11,6 +11,7 @@ interface SettingsPatch {
   accent?: "neutral" | "blue" | "green" | "rose" | "violet"
   floatingBallEnabled?: boolean
   floatingBallFeatures?: "appLauncher"[]
+  lanEnabled?: boolean
 }
 type Settings = Required<SettingsPatch>
 
@@ -36,6 +37,23 @@ const electronAPI = {
   // ---- Settings ----
   getSettings: () => ipcRenderer.invoke("settings:get"),
   updateSettings: (patch: SettingsPatch) => ipcRenderer.invoke("settings:update", patch),
+
+  // ---- LAN Discovery ----
+  getLanStatus: () => ipcRenderer.invoke("lan:status"),
+  listLanDevices: () => ipcRenderer.invoke("lan:devices"),
+  listLanPairings: () => ipcRenderer.invoke("lan:pairings"),
+  pairLanDevice: (deviceId: string) => ipcRenderer.invoke("lan:pair", deviceId),
+  confirmLanPairing: (pairingId: string, sas: string) =>
+    ipcRenderer.invoke("lan:pairing-confirm", pairingId, sas),
+  rejectLanPairing: (pairingId: string) => ipcRenderer.invoke("lan:pairing-reject", pairingId),
+  disconnectLanDevice: (deviceId: string) => ipcRenderer.invoke("lan:disconnect", deviceId),
+  listLanTransfers: () => ipcRenderer.invoke("lan:transfers"),
+  sendLanFile: (deviceId: string) => ipcRenderer.invoke("lan:send-file", deviceId),
+  resumeLanTransfer: (transferId: string) => ipcRenderer.invoke("lan:transfer-resume", transferId),
+  acceptLanTransfer: (transferId: string) => ipcRenderer.invoke("lan:transfer-accept", transferId),
+  rejectLanTransfer: (transferId: string) => ipcRenderer.invoke("lan:transfer-reject", transferId),
+  removeLanTransferHistory: (transferId: string) =>
+    ipcRenderer.invoke("lan:transfer-history-remove", transferId),
 
   // ---- Plugins ----
   listPlugins: () => ipcRenderer.invoke("plugin:list"),
@@ -100,6 +118,30 @@ const electronAPI = {
     const listener = (_event: IpcRendererEvent, settings: Settings): void => handler(settings)
     ipcRenderer.on("settings:changed", listener)
     return () => ipcRenderer.removeListener("settings:changed", listener)
+  },
+
+  onLanDevicesChanged: (handler: (devices: unknown[]) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, devices: unknown[]): void => handler(devices)
+    ipcRenderer.on("lan:devices-changed", listener)
+    return () => ipcRenderer.removeListener("lan:devices-changed", listener)
+  },
+
+  onLanStatusChanged: (handler: (status: unknown) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, status: unknown): void => handler(status)
+    ipcRenderer.on("lan:status-changed", listener)
+    return () => ipcRenderer.removeListener("lan:status-changed", listener)
+  },
+
+  onLanPairingsChanged: (handler: (pairings: unknown[]) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, pairings: unknown[]): void => handler(pairings)
+    ipcRenderer.on("lan:pairings-changed", listener)
+    return () => ipcRenderer.removeListener("lan:pairings-changed", listener)
+  },
+
+  onLanTransfersChanged: (handler: (transfers: unknown[]) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, transfers: unknown[]): void => handler(transfers)
+    ipcRenderer.on("lan:transfers-changed", listener)
+    return () => ipcRenderer.removeListener("lan:transfers-changed", listener)
   },
 } as const
 

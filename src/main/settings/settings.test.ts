@@ -64,6 +64,14 @@ describe("normalizeSettings", () => {
     })
   })
 
+  it("normalizes the LAN discovery switch", () => {
+    expect(normalizeSettings({ lanEnabled: true })).toEqual({
+      ...defaultSettings,
+      lanEnabled: true,
+    })
+    expect(normalizeSettings({ lanEnabled: "yes" })).toEqual(defaultSettings)
+  })
+
   it("keeps a default floating ball feature when the configured list is empty", () => {
     expect(normalizeSettings({ floatingBallFeatures: ["floatingBall"] })).toEqual(defaultSettings)
   })
