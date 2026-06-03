@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { PermissionDenied } from "./permissions"
 import { PluginBridge } from "./plugin-bridge"
 import { PluginSandbox, PluginSandboxError } from "./plugin-sandbox"
 
@@ -161,9 +162,148 @@ module.exports = {
     const stored = JSON.parse(raw) as unknown
     expect(stored).toEqual({ entries: ["hello"] })
   })
+
+  it("invokes a tool and returns its result, exposing the caller in ctx", async () => {
+    const entry = await writePlugin(`
+module.exports = {
+  commands: { "test.run": { run() { return { type: "toast", level: "info", message: "x" } } } },
+  tools: {
+    echo(input, ctx) {
+      return { content: [{ type: "json", json: { input, caller: ctx.caller.kind } }] }
+    }
+  }
+}
+`)
+    const sandbox = sandboxForTest()
+    await sandbox.loadPlugin(entry)
+
+    const result = await sandbox.invokeTool({
+      pluginId: entry.pluginId,
+      toolName: "echo",
+      input: { value: 1 },
+      options: { caller: { kind: "agent", conversationId: "c1" } },
+    })
+
+    expect(result).toEqual({
+      content: [{ type: "json", json: { input: { value: 1 }, caller: "agent" } }],
+    })
+  })
+
+  it("surfaces a thrown handler error as an error result", async () => {
+    const entry = await writePlugin(`
+module.exports = {
+  commands: { "test.run": { run() { return { type: "toast", level: "info", message: "x" } } } },
+  tools: { boom() { throw new Error("nope") } }
+}
+`)
+    const sandbox = sandboxForTest()
+    await sandbox.loadPlugin(entry)
+
+    const result = await sandbox.invokeTool({
+      pluginId: entry.pluginId,
+      toolName: "boom",
+      input: {},
+      options: { caller: { kind: "agent" } },
+    })
+
+    expect(result.isError).toBe(true)
+    expect(result.content[0]).toMatchObject({ type: "text", text: "nope" })
+  })
+
+  it("times out a tool that never resolves", async () => {
+    const entry = await writePlugin(`
+module.exports = {
+  commands: { "test.run": { run() { return { type: "toast", level: "info", message: "x" } } } },
+  tools: { hang() { return new Promise(() => {}) } }
+}
+`)
+    const sandbox = sandboxForTest(100, 100, 5)
+    await sandbox.loadPlugin(entry)
+
+    await expect(
+      sandbox.invokeTool({
+        pluginId: entry.pluginId,
+        toolName: "hang",
+        input: {},
+        options: { caller: { kind: "agent" } },
+      })
+    ).rejects.toBeInstanceOf(PluginSandboxError)
+  })
+
+  it("honours an already-aborted caller signal", async () => {
+    const entry = await writePlugin(`
+module.exports = {
+  commands: { "test.run": { run() { return { type: "toast", level: "info", message: "x" } } } },
+  tools: { hang() { return new Promise(() => {}) } }
+}
+`)
+    const sandbox = sandboxForTest()
+    await sandbox.loadPlugin(entry)
+
+    await expect(
+      sandbox.invokeTool({
+        pluginId: entry.pluginId,
+        toolName: "hang",
+        input: {},
+        options: { caller: { kind: "agent" }, signal: AbortSignal.abort() },
+      })
+    ).rejects.toBeTruthy()
+  })
+
+  it("rejects when the tool is not exported", async () => {
+    const entry = await writePlugin(`
+module.exports = {
+  commands: { "test.run": { run() { return { type: "toast", level: "info", message: "x" } } } }
+}
+`)
+    const sandbox = sandboxForTest()
+    await sandbox.loadPlugin(entry)
+
+    await expect(
+      sandbox.invokeTool({
+        pluginId: entry.pluginId,
+        toolName: "missing",
+        input: {},
+        options: { caller: { kind: "agent" } },
+      })
+    ).rejects.toBeInstanceOf(PluginSandboxError)
+  })
+
+  it("gates the tool context to the tool's declared permissions", async () => {
+    const entry = await writePlugin(`
+module.exports = {
+  commands: { "test.run": { run() { return { type: "toast", level: "info", message: "x" } } } },
+  tools: {
+    async write(_input, ctx) {
+      await ctx.clipboard.writeText("hi")
+      return { content: [{ type: "text", text: "wrote" }] }
+    }
+  }
+}
+`)
+    // Plugin is granted clipboard:write, but the tool declares no permissions,
+    // so its context must be gated down and deny the write.
+    entry.manifest!.permissions = ["clipboard:write"]
+    const sandbox = sandboxForTest()
+    await sandbox.loadPlugin(entry)
+
+    await expect(
+      sandbox.invokeTool({
+        pluginId: entry.pluginId,
+        toolName: "write",
+        input: {},
+        permissions: [],
+        options: { caller: { kind: "agent" } },
+      })
+    ).rejects.toBeInstanceOf(PermissionDenied)
+  })
 })
 
-function sandboxForTest(invokeTimeoutMs = 100, loadTimeoutMs = 100): PluginSandbox {
+function sandboxForTest(
+  invokeTimeoutMs = 100,
+  loadTimeoutMs = 100,
+  toolInvokeTimeoutMs = 100
+): PluginSandbox {
   const bridge = new PluginBridge({
     userDataDir: dir,
     adapters: {
@@ -177,7 +317,7 @@ function sandboxForTest(invokeTimeoutMs = 100, loadTimeoutMs = 100): PluginSandb
     },
     storageFlushMs: 0,
   })
-  return new PluginSandbox({ bridge, invokeTimeoutMs, loadTimeoutMs })
+  return new PluginSandbox({ bridge, invokeTimeoutMs, loadTimeoutMs, toolInvokeTimeoutMs })
 }
 
 async function writePlugin(code: string): Promise<DiscoveredPlugin> {

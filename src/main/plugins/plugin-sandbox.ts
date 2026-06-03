@@ -1,15 +1,17 @@
 /* eslint-disable react/naming-convention-context-name */
-import type { PluginModule, View } from "@synapse/plugin-sdk"
+import type { PluginModule, ToolResult, View } from "@synapse/plugin-sdk"
 import type { PluginBridge } from "./plugin-bridge"
 import type {
   DiscoveredPlugin,
   PluginEventRequest,
   PluginInvokeRequest,
   PluginSandboxModule,
+  PluginToolInvokeRequest,
 } from "./types"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import vm from "node:vm"
+import { PermissionDenied } from "./permissions"
 import { commandInvocation } from "./types"
 
 type TimerCallback = (...args: unknown[]) => void
@@ -27,6 +29,8 @@ export interface PluginSandboxOptions {
   bridge: PluginBridge
   loadTimeoutMs?: number
   invokeTimeoutMs?: number
+  /** Tools may run longer than UI command hooks; defaults to 30s. */
+  toolInvokeTimeoutMs?: number
 }
 
 interface LoadedPlugin extends PluginSandboxModule {
@@ -82,6 +86,17 @@ const eventHookScript = `
 })()
 `
 
+const toolRequestKey = "__synapseToolRequest"
+const toolContextKey = "__synapseToolContext"
+const toolHookScript = `
+(() => {
+  const request = globalThis.${toolRequestKey}
+  const ctx = globalThis.${toolContextKey}
+  const handler = module.exports.tools[request.toolName]
+  return handler(request.input, ctx)
+})()
+`
+
 // Compiled once: the hook body has no per-call literals (it reads the
 // request/ctx from injected globals), so the same Script is reused across
 // every invoke. onSearchChange fires on every keystroke, so avoiding a
@@ -94,16 +109,22 @@ const compiledEventHookScript = new vm.Script(eventHookScript, {
   filename: "synapse-plugin:event-hook",
 })
 
+const compiledToolHookScript = new vm.Script(toolHookScript, {
+  filename: "synapse-plugin:tool-hook",
+})
+
 // P0 isolation is a lightweight compatibility boundary. node:vm lets the host
 // curate globals and enforce timeouts, but it is not a strong security sandbox.
 export class PluginSandbox {
   private readonly loaded = new Map<string, LoadedPlugin>()
   private readonly loadTimeoutMs: number
   private readonly invokeTimeoutMs: number
+  private readonly toolInvokeTimeoutMs: number
 
   constructor(private readonly options: PluginSandboxOptions) {
     this.loadTimeoutMs = options.loadTimeoutMs ?? 5_000
     this.invokeTimeoutMs = options.invokeTimeoutMs ?? 5_000
+    this.toolInvokeTimeoutMs = options.toolInvokeTimeoutMs ?? 30_000
   }
 
   async loadPlugin(entry: DiscoveredPlugin): Promise<PluginSandboxModule> {
@@ -219,6 +240,56 @@ export class PluginSandbox {
     )
   }
 
+  async invokeTool(request: PluginToolInvokeRequest): Promise<ToolResult> {
+    const plugin = this.loaded.get(request.pluginId)
+    if (!plugin) throw new PluginSandboxError(`Plugin is not loaded: ${request.pluginId}`)
+
+    const handler = plugin.module.tools?.[request.toolName]
+    if (typeof handler !== "function") {
+      throw new PluginSandboxError(`Plugin tool is not exported: ${request.toolName}`)
+    }
+
+    // A per-call controller fires on timeout; it is linked with the caller's
+    // signal so either source cancels the running tool.
+    const controller = new AbortController()
+    const signal = linkAbortSignals(controller.signal, request.options.signal)
+    const timer = setTimeout(() => {
+      controller.abort(new PluginSandboxError(`Plugin tool exceeded ${this.toolInvokeTimeoutMs}ms`))
+    }, this.toolInvokeTimeoutMs)
+
+    const toolCtx = this.options.bridge.createToolContext(request.pluginId, plugin.manifest, {
+      caller: request.options.caller,
+      signal,
+      progress: request.options.progress,
+      permissions: request.permissions,
+    })
+
+    try {
+      const result = await Promise.race([
+        Promise.resolve(
+          this.runToolHookInContext(
+            plugin,
+            { toolName: request.toolName, input: request.input },
+            toolCtx
+          )
+        ),
+        rejectWhenAborted(signal),
+      ])
+      return normalizeToolResult(result)
+    } catch (err) {
+      // Infrastructure (timeout/cancel/bad-shape) and policy (permission)
+      // errors propagate; a fault inside the handler is surfaced to the model
+      // as an error result rather than throwing — see ToolHandler docs.
+      if (err instanceof PluginSandboxError || err instanceof PermissionDenied) throw err
+      return {
+        content: [{ type: "text", text: errorMessage(err) }],
+        isError: true,
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   async disposeCommand(pluginId: string, commandId: string): Promise<void> {
     const plugin = this.loaded.get(pluginId)
     const handler = plugin?.module.commands[commandId]
@@ -315,6 +386,31 @@ export class PluginSandbox {
       delete sandboxGlobals[eventContextKey]
     }
   }
+
+  private runToolHookInContext(
+    plugin: LoadedPlugin,
+    request: { toolName: string; input: unknown },
+    toolCtx: unknown
+  ): Promise<ToolResult> | ToolResult {
+    const sandboxGlobals = plugin.sandboxVm as Record<string, unknown>
+    sandboxGlobals[toolRequestKey] = request
+    sandboxGlobals[toolContextKey] = toolCtx
+    try {
+      // The vm timeout only bounds synchronous execution; the async portion is
+      // bounded by the AbortController/timeout in invokeTool.
+      return compiledToolHookScript.runInContext(plugin.sandboxVm, {
+        timeout: this.toolInvokeTimeoutMs,
+      }) as Promise<ToolResult> | ToolResult
+    } catch (err) {
+      if (isVmTimeout(err)) {
+        throw new PluginSandboxError(`Plugin tool exceeded ${this.toolInvokeTimeoutMs}ms`)
+      }
+      throw err
+    } finally {
+      delete sandboxGlobals[toolRequestKey]
+      delete sandboxGlobals[toolContextKey]
+    }
+  }
 }
 
 function createSandboxGlobals(
@@ -376,7 +472,82 @@ function normalizePluginModule(value: unknown): PluginModule {
       throw new PluginSandboxError(`Plugin command ${commandId} must export a run function`)
     }
   }
+  const tools = (value as { tools?: unknown }).tools
+  if (tools !== undefined) {
+    if (!tools || typeof tools !== "object" || Array.isArray(tools)) {
+      throw new PluginSandboxError("Plugin entry tools must be an object")
+    }
+    for (const [toolName, handler] of Object.entries(tools)) {
+      if (typeof handler !== "function") {
+        throw new PluginSandboxError(`Plugin tool ${toolName} must be a function`)
+      }
+    }
+  }
   return value as PluginModule
+}
+
+/**
+ * Combine the per-call timeout signal with an optional caller signal so either
+ * source can cancel the tool. Prefers the native `AbortSignal.any` and falls
+ * back to manual wiring on older runtimes.
+ */
+function linkAbortSignals(primary: AbortSignal, secondary?: AbortSignal): AbortSignal {
+  if (!secondary) return primary
+  if (typeof AbortSignal.any === "function") return AbortSignal.any([primary, secondary])
+
+  const controller = new AbortController()
+  if (primary.aborted) controller.abort(primary.reason)
+  else if (secondary.aborted) controller.abort(secondary.reason)
+  else {
+    primary.addEventListener("abort", () => controller.abort(primary.reason), { once: true })
+    secondary.addEventListener("abort", () => controller.abort(secondary.reason), { once: true })
+  }
+  return controller.signal
+}
+
+function rejectWhenAborted(signal: AbortSignal): Promise<never> {
+  return new Promise((_, reject) => {
+    const fail = (): void => {
+      const reason = signal.reason
+      reject(reason instanceof Error ? reason : new PluginSandboxError("Plugin tool was cancelled"))
+    }
+    if (signal.aborted) fail()
+    else signal.addEventListener("abort", fail, { once: true })
+  })
+}
+
+// Errors thrown inside the vm belong to a different realm, so `instanceof
+// Error` is unreliable here. Duck-type the message instead so the model sees
+// "nope" rather than "Error: nope".
+function errorMessage(err: unknown): string {
+  if (
+    err &&
+    typeof err === "object" &&
+    typeof (err as { message?: unknown }).message === "string"
+  ) {
+    return (err as { message: string }).message
+  }
+  return String(err)
+}
+
+function normalizeToolResult(value: unknown): ToolResult {
+  if (!value || typeof value !== "object") {
+    throw new PluginSandboxError("Plugin tool must return a ToolResult object")
+  }
+  const content = (value as { content?: unknown }).content
+  if (!Array.isArray(content)) {
+    throw new PluginSandboxError("Plugin tool result must include a content array")
+  }
+  for (const block of content) {
+    if (
+      !block ||
+      typeof block !== "object" ||
+      typeof (block as { type?: unknown }).type !== "string"
+    ) {
+      throw new PluginSandboxError("Plugin tool result content blocks must have a string type")
+    }
+  }
+  return value as ToolResult
 }
 
 function normalizeActionPayload(payload: unknown): { actionId: string; payload: unknown } {

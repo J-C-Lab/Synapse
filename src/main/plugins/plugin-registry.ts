@@ -1,17 +1,27 @@
-import type { ClipboardContent, LocalizedString, PluginModule, View } from "@synapse/plugin-sdk"
+import type {
+  ClipboardContent,
+  LocalizedString,
+  PluginModule,
+  ToolResult,
+  View,
+} from "@synapse/plugin-sdk"
 import type {
   DiscoveredPlugin,
   ManifestCommand,
+  ManifestTool,
   PluginCommandResult,
   PluginEventRequest,
   PluginInvokeRequest,
   PluginManifest,
   PluginRegistryEntry,
   PluginSandboxRuntime,
+  RegisteredToolDescriptor,
+  ToolInvocationOptions,
 } from "./types"
 import { EventEmitter } from "node:events"
 import { fuzzyMatch } from "../launcher/search"
 import { PermissionDenied } from "./permissions"
+import { toolFqName } from "./types"
 
 /**
  * Thrown after the registry has marked a plugin crashed and recovered
@@ -45,9 +55,15 @@ interface CommandIndexEntry {
   command: ManifestCommand
 }
 
+interface ToolIndexEntry {
+  pluginId: string
+  tool: ManifestTool
+}
+
 export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
   private readonly entries = new Map<string, PluginRegistryEntry>()
   private readonly commandIndex = new Map<string, CommandIndexEntry>()
+  private readonly toolIndex = new Map<string, ToolIndexEntry>()
   private readonly clipboardChangeListeners = new Set<string>()
   private readonly now: () => number
 
@@ -67,6 +83,7 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     }
     this.entries.clear()
     this.commandIndex.clear()
+    this.toolIndex.clear()
     this.clipboardChangeListeners.clear()
 
     for (const plugin of discovered) {
@@ -92,6 +109,7 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     if (!enabled) {
       await this.options.sandbox.unloadPlugin(pluginId)
       this.removeCommands(pluginId)
+      this.removeTools(pluginId)
       this.clipboardChangeListeners.delete(pluginId)
       const next = { ...entry, status: "disabled" as const }
       this.entries.set(pluginId, next)
@@ -108,11 +126,13 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
         manifest: entry.manifest,
       })
       validateManifestCommands(entry.manifest.contributes.commands, loaded.module.commands)
+      validateManifestTools(entry.manifest.contributes.tools, loaded.module.tools)
       validateActivationEvents(entry.manifest, loaded.module)
       this.indexActivationEvents(entry.manifest, loaded.module)
       const next = { ...entry, status: "active" as const, error: undefined, loadedAt: this.now() }
       this.entries.set(pluginId, next)
       this.indexCommands(next)
+      this.indexTools(next)
       this.emitChanged()
       return next
     } catch (err) {
@@ -159,6 +179,43 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
       this.markCrashed(request.pluginId, err)
       throw new PluginCrashedError(request.pluginId, err)
     }
+  }
+
+  /** Tools contributed by all currently active plugins. */
+  listTools(): RegisteredToolDescriptor[] {
+    return [...this.toolIndex.entries()].map(([fqName, { pluginId, tool }]) => ({
+      fqName,
+      pluginId,
+      manifestTool: tool,
+    }))
+  }
+
+  /**
+   * Execute a tool on an active plugin. Unlike `invoke`, a fault inside the
+   * tool does NOT crash the plugin — the sandbox surfaces it as an error
+   * result so the agent can recover. Only `PermissionDenied` and sandbox-level
+   * (timeout/cancel) failures propagate.
+   */
+  async invokeTool(
+    pluginId: string,
+    toolName: string,
+    input: unknown,
+    options: ToolInvocationOptions
+  ): Promise<ToolResult> {
+    const entry = this.entries.get(pluginId)
+    if (!entry || entry.status !== "active") {
+      throw new Error(`Plugin is not active: ${pluginId}`)
+    }
+    const indexed = this.toolIndex.get(toolFqName(pluginId, toolName))
+    if (!indexed) throw new Error(`Plugin tool not found: ${toolFqName(pluginId, toolName)}`)
+
+    return this.options.sandbox.invokeTool({
+      pluginId,
+      toolName,
+      input,
+      permissions: indexed.tool.permissions,
+      options,
+    })
   }
 
   async disposeCommand(pluginId: string, commandId: string): Promise<void> {
@@ -225,6 +282,7 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     try {
       const loaded = await this.options.sandbox.loadPlugin(plugin)
       validateManifestCommands(plugin.manifest.contributes.commands, loaded.module.commands)
+      validateManifestTools(plugin.manifest.contributes.tools, loaded.module.tools)
       validateActivationEvents(plugin.manifest, loaded.module)
       this.indexActivationEvents(plugin.manifest, loaded.module)
       const entry: PluginRegistryEntry = {
@@ -237,6 +295,7 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
       }
       this.entries.set(plugin.pluginId, entry)
       this.indexCommands(entry)
+      this.indexTools(entry)
     } catch (err) {
       await this.unloadAfterLoadFailure(plugin.pluginId)
       this.entries.set(plugin.pluginId, {
@@ -266,10 +325,27 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     }
   }
 
+  private indexTools(entry: PluginRegistryEntry): void {
+    if (!entry.manifest || entry.status !== "active") return
+    for (const tool of entry.manifest.contributes.tools ?? []) {
+      this.toolIndex.set(toolFqName(entry.pluginId, tool.name), {
+        pluginId: entry.pluginId,
+        tool,
+      })
+    }
+  }
+
+  private removeTools(pluginId: string): void {
+    for (const [fqName, indexed] of this.toolIndex) {
+      if (indexed.pluginId === pluginId) this.toolIndex.delete(fqName)
+    }
+  }
+
   private markCrashed(pluginId: string, err: unknown): void {
     const entry = this.entries.get(pluginId)
     if (!entry) return
     this.removeCommands(pluginId)
+    this.removeTools(pluginId)
     this.clipboardChangeListeners.delete(pluginId)
     this.entries.set(pluginId, {
       ...entry,
@@ -316,6 +392,19 @@ function validateManifestCommands(
   for (const command of commands) {
     if (!exported[command.id]) {
       throw new Error(`Manifest command is not exported by plugin module: ${command.id}`)
+    }
+  }
+}
+
+function validateManifestTools(
+  tools: ManifestTool[] | undefined,
+  exported: Record<string, unknown> | undefined
+): void {
+  // The sandbox already guarantees any exported tool is a function; here we
+  // only confirm every manifest-declared tool is present in the module.
+  for (const tool of tools ?? []) {
+    if (!exported?.[tool.name]) {
+      throw new Error(`Manifest tool is not exported by plugin module: ${tool.name}`)
     }
   }
 }

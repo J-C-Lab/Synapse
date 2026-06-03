@@ -1,10 +1,11 @@
-import type { PluginModule, View } from "@synapse/plugin-sdk"
+import type { PluginModule, ToolResult, View } from "@synapse/plugin-sdk"
 import type {
   DiscoveredPlugin,
   PluginInvokeRequest,
   PluginManifest,
   PluginSandboxModule,
   PluginSandboxRuntime,
+  PluginToolInvokeRequest,
 } from "./types"
 import { describe, expect, it, vi } from "vitest"
 import { PermissionDenied } from "./permissions"
@@ -197,7 +198,91 @@ describe("pluginRegistry", () => {
     expect(registry.hasClipboardChangeListeners()).toBe(false)
     expect(sandbox.unloadPlugin).toHaveBeenCalledWith("com.synapse.clipboard")
   })
+
+  it("indexes manifest tools and delegates invocation to the sandbox", async () => {
+    const sandbox = fakeSandbox()
+    const registry = new PluginRegistry({ sandbox })
+    await registry.load([discovered({ tools: [toolDef("greet")] })])
+
+    expect(registry.listTools()).toEqual([
+      {
+        fqName: "com.synapse.test/greet",
+        pluginId: "com.synapse.test",
+        manifestTool: toolDef("greet"),
+      },
+    ])
+
+    const result = await registry.invokeTool("com.synapse.test", "greet", { name: "x" }, options())
+    expect(result).toEqual({ content: [{ type: "text", text: "ok:greet" }] })
+    expect(sandbox.invokeTool).toHaveBeenCalledWith(
+      expect.objectContaining({ pluginId: "com.synapse.test", toolName: "greet" })
+    )
+  })
+
+  it("passes a tool's declared permissions through to the sandbox", async () => {
+    const sandbox = fakeSandbox()
+    const registry = new PluginRegistry({ sandbox })
+    const tool = { ...toolDef("greet"), permissions: ["storage:plugin"] }
+    await registry.load([discovered({ tools: [tool], permissions: ["storage:plugin"] })])
+
+    await registry.invokeTool("com.synapse.test", "greet", {}, options())
+    expect(sandbox.invokeTool).toHaveBeenCalledWith(
+      expect.objectContaining({ permissions: ["storage:plugin"] })
+    )
+  })
+
+  it("removes tools from the index when a plugin is disabled", async () => {
+    const sandbox = fakeSandbox()
+    const registry = new PluginRegistry({ sandbox })
+    await registry.load([discovered({ tools: [toolDef("greet")] })])
+
+    await registry.setEnabled("com.synapse.test", false)
+    expect(registry.listTools()).toHaveLength(0)
+  })
+
+  it("throws for an unknown tool or inactive plugin", async () => {
+    const sandbox = fakeSandbox()
+    const registry = new PluginRegistry({ sandbox })
+    await registry.load([discovered({ tools: [toolDef("greet")] })])
+
+    await expect(registry.invokeTool("com.synapse.test", "missing", {}, options())).rejects.toThrow(
+      /not found/
+    )
+    await expect(registry.invokeTool("com.synapse.ghost", "greet", {}, options())).rejects.toThrow(
+      /not active/
+    )
+  })
+
+  it("crashes a plugin whose manifest tool is not exported", async () => {
+    const sandbox = fakeSandbox({
+      commands: {
+        "test.run": {
+          run() {
+            return { type: "toast", level: "success", message: "ok" }
+          },
+        },
+      },
+      // tools intentionally omitted despite the manifest declaring "greet"
+    })
+    const registry = new PluginRegistry({ sandbox })
+    await registry.load([discovered({ tools: [toolDef("greet")] })])
+
+    expect(registry.get("com.synapse.test")?.status).toBe("crashed")
+    expect(registry.listTools()).toHaveLength(0)
+  })
 })
+
+function toolDef(name: string): NonNullable<PluginManifest["contributes"]["tools"]>[number] {
+  return {
+    name,
+    description: `Tool ${name}`,
+    inputSchema: { type: "object", properties: { name: { type: "string" } } },
+  }
+}
+
+function options(): Parameters<PluginRegistry["invokeTool"]>[3] {
+  return { caller: { kind: "agent" } }
+}
 
 function fakeSandbox(pluginModule?: PluginModule): PluginSandboxRuntime {
   return {
@@ -212,12 +297,16 @@ function fakeSandbox(pluginModule?: PluginModule): PluginSandboxRuntime {
     invokeCommand: vi.fn(async (_request: PluginInvokeRequest): Promise<View> => {
       return { type: "toast", level: "success", message: "ok" }
     }),
+    invokeTool: vi.fn(async (request: PluginToolInvokeRequest): Promise<ToolResult> => {
+      return { content: [{ type: "text", text: `ok:${request.toolName}` }] }
+    }),
     disposeCommand: vi.fn(async () => {}),
     dispatchEvent: vi.fn<PluginSandboxRuntime["dispatchEvent"]>(async () => {}),
   }
 }
 
 function moduleFromManifest(pluginManifest: PluginManifest): PluginModule {
+  const tools = pluginManifest.contributes.tools
   return {
     commands: Object.fromEntries(
       pluginManifest.contributes.commands.map((command) => [
@@ -229,6 +318,14 @@ function moduleFromManifest(pluginManifest: PluginManifest): PluginModule {
         },
       ])
     ),
+    tools: tools
+      ? Object.fromEntries(
+          tools.map((tool) => [
+            tool.name,
+            () => ({ content: [{ type: "text", text: tool.name }] }) as ToolResult,
+          ])
+        )
+      : undefined,
   }
 }
 
@@ -239,6 +336,7 @@ function discovered(
     title?: string
     activationEvents?: PluginManifest["contributes"]["activationEvents"]
     permissions?: string[]
+    tools?: PluginManifest["contributes"]["tools"]
   } = {}
 ): DiscoveredPlugin {
   const pluginManifest = manifest(overrides)
@@ -258,6 +356,7 @@ function manifest(
     title?: string
     activationEvents?: PluginManifest["contributes"]["activationEvents"]
     permissions?: string[]
+    tools?: PluginManifest["contributes"]["tools"]
   } = {}
 ): PluginManifest {
   const id = overrides.id ?? "com.synapse.test"
@@ -282,6 +381,7 @@ function manifest(
           keywords: ["run"],
         },
       ],
+      tools: overrides.tools,
     },
     permissions:
       overrides.permissions ??

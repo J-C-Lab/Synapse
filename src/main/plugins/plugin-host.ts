@@ -1,4 +1,4 @@
-import type { ClipboardContent } from "@synapse/plugin-sdk"
+import type { ClipboardContent, ToolResult } from "@synapse/plugin-sdk"
 import type { MarketplaceEntry } from "./marketplace-registry"
 import type { PluginBridgeAdapters, PluginRuntimeSnapshot } from "./plugin-bridge"
 import type {
@@ -6,6 +6,8 @@ import type {
   PluginInvokeRequest,
   PluginManifest,
   PluginRegistryEntry,
+  RegisteredToolDescriptor,
+  ToolInvocationOptions,
 } from "./types"
 import { Buffer as NodeBuffer } from "node:buffer"
 import { createHash } from "node:crypto"
@@ -24,6 +26,7 @@ import { discoverPlugins } from "./plugin-discovery"
 import { pluginPreferenceFilePath, PluginPreferenceStore } from "./plugin-preferences"
 import { PluginRegistry } from "./plugin-registry"
 import { PluginSandbox } from "./plugin-sandbox"
+import { PluginToolBridge } from "./plugin-tool-bridge"
 
 export interface PluginHostOptions {
   userDataDir: string
@@ -83,6 +86,7 @@ export class PluginHost {
   readonly bridge: PluginBridge
   readonly sandbox: PluginSandbox
   readonly registry: PluginRegistry
+  readonly tools: PluginToolBridge
   readonly preferences: PluginPreferenceStore
   private readonly builtinDir: string
   private readonly userDir: string
@@ -106,6 +110,7 @@ export class PluginHost {
     })
     this.sandbox = new PluginSandbox({ bridge: this.bridge })
     this.registry = new PluginRegistry({ sandbox: this.sandbox })
+    this.tools = new PluginToolBridge({ registry: this.registry })
     this.registry.on("changed", this.handleRegistryChanged)
   }
 
@@ -138,6 +143,16 @@ export class PluginHost {
 
   invoke(request: PluginInvokeRequest): Promise<unknown> {
     return this.registry.invoke(request)
+  }
+
+  /** AI-callable tools contributed by active plugins (serialisable descriptors). */
+  listTools(): RegisteredToolDescriptor[] {
+    return this.registry.listTools()
+  }
+
+  /** Invoke a plugin tool by its `${pluginId}/${name}` after input validation. */
+  invokeTool(fqName: string, input: unknown, options: ToolInvocationOptions): Promise<ToolResult> {
+    return this.tools.invoke(fqName, input, options)
   }
 
   disposeCommand(pluginId: string, commandId: string): Promise<void> {
@@ -318,10 +333,7 @@ export class PluginHost {
         .slice(2)}`
     )
     await fs.mkdir(tempDir, { recursive: true })
-    const packagePath = path.join(
-      tempDir,
-      `${safePluginFileName(entry.id)}-${entry.version}.syn`
-    )
+    const packagePath = path.join(tempDir, `${safePluginFileName(entry.id)}-${entry.version}.syn`)
     await fs.writeFile(packagePath, buffer)
     return packagePath
   }

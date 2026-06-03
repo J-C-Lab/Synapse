@@ -4,7 +4,10 @@ import type {
   PluginContext,
   StorageAPI,
   SystemAPI,
+  ToolCaller,
+  ToolContext,
 } from "@synapse/plugin-sdk"
+import type { PermissionGate } from "./permissions"
 import type { PluginManifest } from "./types"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
@@ -50,6 +53,21 @@ export interface PluginBridgeOptions {
   clipboardPollMs?: number
 }
 
+/** Inputs the host supplies when building a `ToolContext` for one tool call. */
+export interface ToolContextOptions {
+  caller: ToolCaller
+  signal: AbortSignal
+  progress?: (pct: number, message?: string) => void
+  /** Tool-declared permissions; gates the context to this subset when present. */
+  permissions?: string[]
+}
+
+/** The capability slice shared by command and tool contexts. */
+type PluginCapabilities = Pick<
+  PluginContext,
+  "storage" | "clipboard" | "notifications" | "system" | "log"
+>
+
 interface StorageState {
   loaded: boolean
   data: Record<string, unknown>
@@ -80,10 +98,46 @@ export class PluginBridge {
       pluginId,
       locale: runtime.locale,
       theme: runtime.theme,
-      preferences: {
-        ...preferencesFromManifest(manifest),
-        ...(this.options.preferences?.(pluginId, manifest) ?? {}),
-      },
+      preferences: this.resolvePreferences(pluginId, manifest),
+      ...this.createCapabilities(pluginId, gate),
+    }
+  }
+
+  /**
+   * Build a headless `ToolContext` for one tool invocation. Reuses the same
+   * permission-gated capabilities as commands, drops `locale`/`theme` (tools
+   * have no UI), and adds `caller`/`signal`/`progress`. When the tool declares
+   * its own `permissions`, the gate is restricted to that subset.
+   */
+  createToolContext(
+    pluginId: string,
+    manifest: PluginManifest,
+    options: ToolContextOptions
+  ): ToolContext {
+    const effective = options.permissions
+      ? { ...manifest, permissions: options.permissions }
+      : manifest
+    const gate = createPermissionGate(effective)
+
+    return {
+      pluginId,
+      preferences: this.resolvePreferences(pluginId, manifest),
+      ...this.createCapabilities(pluginId, gate),
+      caller: options.caller,
+      signal: options.signal,
+      progress: options.progress,
+    }
+  }
+
+  private resolvePreferences(pluginId: string, manifest: PluginManifest): Record<string, unknown> {
+    return {
+      ...preferencesFromManifest(manifest),
+      ...(this.options.preferences?.(pluginId, manifest) ?? {}),
+    }
+  }
+
+  private createCapabilities(pluginId: string, gate: PermissionGate): PluginCapabilities {
+    return {
       storage: this.createStorageAPI(pluginId, gate),
       clipboard: {
         read: async () => {

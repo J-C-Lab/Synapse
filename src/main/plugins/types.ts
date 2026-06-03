@@ -8,6 +8,7 @@ import type {
   ManifestPreference,
   ManifestPreferenceOption,
   ManifestPreferenceType,
+  ManifestTool,
   PluginActivationEvent,
   PluginManifest,
 } from "@synapse/plugin-manifest"
@@ -17,6 +18,8 @@ import type {
   CommandInvocation,
   LocalizedString,
   PluginModule,
+  ToolCaller,
+  ToolResult,
   View,
 } from "@synapse/plugin-sdk"
 
@@ -26,6 +29,7 @@ export type {
   ManifestPreference,
   ManifestPreferenceOption,
   ManifestPreferenceType,
+  ManifestTool,
   PluginActivationEvent,
   PluginManifest,
 }
@@ -104,12 +108,54 @@ export interface PluginSandboxModule {
   module: PluginModule
 }
 
+/** Options every tool invocation carries through host → sandbox. */
+export interface ToolInvocationOptions {
+  /** Where the call came from (built-in agent / external MCP / user). */
+  caller: ToolCaller
+  /** Caller-supplied cancellation. The sandbox links it with its own timeout. */
+  signal?: AbortSignal
+  /** Progress sink forwarded to the tool's `ctx.progress`. */
+  progress?: (pct: number, message?: string) => void
+}
+
+/** What the sandbox needs to execute one tool handler. */
+export interface PluginToolInvokeRequest {
+  pluginId: string
+  toolName: string
+  input: unknown
+  /**
+   * Tool-declared permissions. When set, the tool's `ToolContext` is gated to
+   * this subset (least privilege); when omitted it inherits the plugin's full
+   * permission set.
+   */
+  permissions?: string[]
+  options: ToolInvocationOptions
+}
+
+/** A manifest tool of an active plugin, addressable by its `${pluginId}/${name}`. */
+export interface RegisteredToolDescriptor {
+  fqName: string
+  pluginId: string
+  manifestTool: ManifestTool
+}
+
+/** A registered tool plus a bound runner — the public shape AI callers consume. */
+export interface RegisteredTool extends RegisteredToolDescriptor {
+  run: (input: unknown, options: ToolInvocationOptions) => Promise<ToolResult>
+}
+
 export interface PluginSandboxRuntime {
   loadPlugin: (entry: DiscoveredPlugin) => Promise<PluginSandboxModule>
   unloadPlugin: (pluginId: string) => Promise<void>
   invokeCommand: (request: PluginInvokeRequest) => Promise<View | void>
+  invokeTool: (request: PluginToolInvokeRequest) => Promise<ToolResult>
   disposeCommand: (pluginId: string, commandId: string) => Promise<void>
   dispatchEvent: (request: PluginEventRequest) => Promise<void>
+}
+
+/** The canonical model-visible name for a plugin tool. */
+export function toolFqName(pluginId: string, toolName: string): string {
+  return `${pluginId}/${toolName}`
 }
 
 export interface RunPayload {
