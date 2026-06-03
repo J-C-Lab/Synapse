@@ -1,7 +1,11 @@
 import type { PluginManifest } from "./types"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
-import { isEngineCompatible, ManifestValidationError, parseManifest } from "@synapse/plugin-manifest"
+import {
+  isEngineCompatible,
+  ManifestValidationError,
+  parseManifest,
+} from "@synapse/plugin-manifest"
 import { PLUGIN_HOST_VERSION } from "./types"
 
 // The manifest schema and engine-compatibility logic live in the shared

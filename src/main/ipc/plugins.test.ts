@@ -15,7 +15,10 @@ function fakeHost(): PluginHost {
     installFolder: vi.fn(async () => {
       throw new PluginHostNotImplementedError("Folder plugin installation is planned later")
     }),
-    installPackage: vi.fn(async (zipPath: string) => ({ pluginId: "com.synapse.package", zipPath })),
+    installPackage: vi.fn(async (zipPath: string) => ({
+      pluginId: "com.synapse.package",
+      zipPath,
+    })),
     uninstall: vi.fn(async () => {
       throw new PluginHostNotImplementedError("Plugin uninstall is planned later")
     }),

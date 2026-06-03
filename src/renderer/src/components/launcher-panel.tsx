@@ -430,7 +430,13 @@ function isPluginToastView(value: unknown): value is PluginToastView {
   )
 }
 
-function LauncherPluginItem({ item, locale }: { item: SynapsePluginCommandResult; locale: string }) {
+function LauncherPluginItem({
+  item,
+  locale,
+}: {
+  item: SynapsePluginCommandResult
+  locale: string
+}) {
   return (
     <>
       <div className="flex flex-1 flex-col">
