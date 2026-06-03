@@ -384,6 +384,11 @@ describe("pluginHost clipboard watcher", () => {
       await vi.runOnlyPendingTimersAsync()
 
       expect(read).toHaveBeenCalled()
+      // Storage writes sit behind a flush timer that is scheduled *during* the
+      // async dispatch chain, so `runOnlyPendingTimersAsync` above doesn't catch
+      // it. Force the pending write so the read below is deterministic (this was
+      // a CI flake otherwise).
+      await host.flush()
       const raw = await fs.readFile(
         path.join(dir, "plugin-data", "com.synapse.clipboard.json"),
         "utf-8"
