@@ -352,6 +352,14 @@ export function onAiChatEvent(handler: (event: AiChatEvent) => void): () => void
   return api().onAiChatEvent(handler)
 }
 
+export async function listAiAllowedTools(): Promise<string[]> {
+  return api().listAiAllowedTools()
+}
+
+export async function revokeAiTool(fqName: string): Promise<void> {
+  await api().revokeAiTool(fqName)
+}
+
 export async function listAiMcpServers(): Promise<McpServerConfig[]> {
   return api().listAiMcpServers()
 }

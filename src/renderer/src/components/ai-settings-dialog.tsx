@@ -1,6 +1,6 @@
 import type { AiStatus } from "@/lib/electron"
-import { Check, KeyRound, Loader2 } from "lucide-react"
-import { useState } from "react"
+import { Check, KeyRound, Loader2, ShieldOff } from "lucide-react"
+import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Button } from "@/components/ui/button"
 import {
@@ -17,6 +17,8 @@ import {
   deleteAiKey,
   getAiStatus,
   isElectron,
+  listAiAllowedTools,
+  revokeAiTool,
   setAiKey,
   setAiModel,
   setAiProvider,
@@ -36,11 +38,21 @@ export function AiSettingsDialog({
   const { t } = useTranslation()
   const [keyDraft, setKeyDraft] = useState("")
   const [busy, setBusy] = useState(false)
+  const [allowed, setAllowed] = useState<string[]>([])
 
   const active = status?.providers.find((provider) => provider.id === status.provider)
 
+  useEffect(() => {
+    if (open && isElectron()) void listAiAllowedTools().then(setAllowed)
+  }, [open])
+
   async function refresh() {
     onStatusChange(await getAiStatus())
+  }
+
+  async function revoke(fqName: string) {
+    await revokeAiTool(fqName)
+    setAllowed(await listAiAllowedTools())
   }
 
   async function mutate(action: () => Promise<void>) {
@@ -156,6 +168,36 @@ export function AiSettingsDialog({
             </div>
           </>
         )}
+
+        <div className="space-y-1 border-t pt-3">
+          <Label className="flex items-center gap-1.5 text-xs">
+            <ShieldOff className="size-3.5" />
+            {t("providers.allowedTools")}
+          </Label>
+          {allowed.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground">{t("providers.allowedEmpty")}</p>
+          ) : (
+            <div className="space-y-1">
+              {allowed.map((fqName) => (
+                <div
+                  key={fqName}
+                  className="flex items-center gap-2 rounded-md border px-2 py-1 text-xs"
+                >
+                  <span className="min-w-0 flex-1 truncate font-mono">{fqName}</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6"
+                    disabled={busy}
+                    onClick={() => void revoke(fqName)}
+                  >
+                    {t("providers.revoke")}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   )

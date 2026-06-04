@@ -1,5 +1,6 @@
 import type { AgentEvent } from "./agent-runtime"
 import type { AiSettingsStore } from "./ai-settings-store"
+import type { ApprovalStore } from "./approval-store"
 import type {
   ConversationStore,
   ConversationSummary,
@@ -49,6 +50,8 @@ export interface AgentServiceOptions {
   settings?: AiSettingsStore
   /** Override how a provider is built from a key. Injectable for tests. */
   createProvider?: (providerId: string, apiKey: string) => ChatProvider
+  /** Persists "always allow" tool decisions across restarts. Optional in tests. */
+  approvals?: ApprovalStore
   now?: () => number
   /** External MCP servers (P5). Omitted in tests that don't exercise MCP. */
   mcp?: {
@@ -93,9 +96,18 @@ export class AgentService {
   private readonly pendingApprovals = new Map<string, PendingApproval>()
   private readonly conversationAllow = new Map<string, Set<string>>()
   private readonly permanentAllow = new Set<string>()
+  private permanentAllowLoaded = false
   private approvalCounter = 0
 
   constructor(private readonly options: AgentServiceOptions) {}
+
+  /** Seed permanentAllow from the persisted store once (lazy). */
+  private async ensurePermanentAllowLoaded(): Promise<void> {
+    if (this.permanentAllowLoaded) return
+    this.permanentAllowLoaded = true
+    if (!this.options.approvals) return
+    for (const fqName of await this.options.approvals.list()) this.permanentAllow.add(fqName)
+  }
 
   private get now(): () => number {
     return this.options.now ?? Date.now
@@ -275,11 +287,29 @@ export class AgentService {
     const pending = this.pendingApprovals.get(approvalId)
     if (!pending) return
     this.pendingApprovals.delete(approvalId)
-    if (allow && remember === "always") this.permanentAllow.add(pending.fqName)
+    if (allow && remember === "always") {
+      this.permanentAllow.add(pending.fqName)
+      void this.options.approvals
+        ?.add(pending.fqName)
+        .catch((err) => console.error("[ai] failed to persist always-allow", err))
+    }
     if (allow && remember === "conversation") {
       this.allowSet(pending.conversationId).add(pending.fqName)
     }
     pending.resolve(allow)
+  }
+
+  /** Tools the user has permanently allowed (persisted "always" decisions). */
+  async listAllowedTools(): Promise<string[]> {
+    await this.ensurePermanentAllowLoaded()
+    return [...this.permanentAllow].sort()
+  }
+
+  /** Revoke a permanent allow: the tool will require approval again. */
+  async revokeTool(fqName: string): Promise<void> {
+    await this.ensurePermanentAllowLoaded()
+    this.permanentAllow.delete(fqName)
+    await this.options.approvals?.remove(fqName)
   }
 
   private async approve(
@@ -287,6 +317,7 @@ export class AgentService {
     safeName: string,
     input: unknown
   ): Promise<boolean> {
+    await this.ensurePermanentAllowLoaded()
     const descriptor = this.options.tools.describe(safeName)
     const fqName = descriptor?.fqName ?? safeName
 

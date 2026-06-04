@@ -1,6 +1,7 @@
 import type { RegisteredToolDescriptor } from "../plugins/types"
 import type { AiChatEvent } from "./agent-service"
 import type { AiSettingsStore } from "./ai-settings-store"
+import type { ApprovalStore } from "./approval-store"
 import type { ConversationStore, StoredConversation } from "./conversation-store"
 import type { AiCredentialStore } from "./credential-store"
 import type { ProviderDescriptor } from "./providers/catalog"
@@ -238,6 +239,63 @@ describe("agentService", () => {
     expect(status.model).toBe("gpt-4.1")
     expect(status.providers.find((provider) => provider.id === "openai")?.hasKey).toBe(true)
     expect(status.providers.find((provider) => provider.id === "anthropic")?.hasKey).toBe(false)
+  })
+
+  it("seeds permanent allow from the approval store so a seeded tool runs unasked", async () => {
+    const approvals = {
+      list: async () => ["com.x.demo/act"],
+      add: async () => {},
+      remove: async () => {},
+    } as unknown as ApprovalStore
+    const host = fakeHost() // unannotated → would normally ask
+    const convo = conversations()
+    const events: AiChatEvent[] = []
+    const svc = new AgentService({
+      credentials: credentials("sk-test"),
+      tools: new AiToolRegistry(host),
+      conversations: convo.store,
+      createProvider: () =>
+        fakeProvider([
+          { toolUses: [{ id: "t1", name: "com_x_demo_act", input: {} }] },
+          { text: "done" },
+        ]),
+      approvals,
+      sendEvent: (event) => events.push(event),
+      now: () => 1000,
+    })
+
+    await svc.chat("c1", "go")
+    expect(host.invokeTool).toHaveBeenCalledOnce()
+    expect(events.some((event) => event.type === "approval_request")).toBe(false)
+  })
+
+  it("persists an always-allow decision and can revoke it", async () => {
+    const added: string[] = []
+    const removed: string[] = []
+    const approvals = {
+      list: async () => ["x/y"],
+      add: async (fqName: string) => {
+        added.push(fqName)
+      },
+      remove: async (fqName: string) => {
+        removed.push(fqName)
+      },
+    } as unknown as ApprovalStore
+    const svc = new AgentService({
+      credentials: credentials("sk-test"),
+      tools: new AiToolRegistry(fakeHost()),
+      conversations: conversations().store,
+      createProvider: () => fakeProvider([{ text: "hi" }]),
+      approvals,
+      sendEvent: () => {},
+      now: () => 1000,
+    })
+
+    expect(await svc.listAllowedTools()).toEqual(["x/y"])
+    await svc.revokeTool("x/y")
+    expect(removed).toEqual(["x/y"])
+    expect(await svc.listAllowedTools()).toEqual([])
+    expect(added).toEqual([])
   })
 
   it("remembers an always-allow decision for the rest of the run", async () => {

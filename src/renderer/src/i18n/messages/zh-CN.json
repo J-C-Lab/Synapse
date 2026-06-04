@@ -41,7 +41,10 @@
     "keySet": "已配置密钥",
     "saveKey": "保存",
     "clearKey": "移除",
-    "keyHint": "每个服务商各存各的密钥;切换服务商不会清除它。"
+    "keyHint": "每个服务商各存各的密钥;切换服务商不会清除它。",
+    "allowedTools": "始终允许的工具",
+    "allowedEmpty": "没有永久允许的工具。",
+    "revoke": "撤销"
   },
   "mcp": {
     "title": "MCP 服务器",

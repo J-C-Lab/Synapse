@@ -23,6 +23,7 @@ import {
 } from "electron"
 import { AgentService } from "./ai/agent-service"
 import { aiSettingsFilePath, AiSettingsStore } from "./ai/ai-settings-store"
+import { aiApprovalsFilePath, ApprovalStore } from "./ai/approval-store"
 import { asFallbackSource, CompositeToolHost } from "./ai/composite-tool-host"
 import { ConversationStore } from "./ai/conversation-store"
 import { aiCredentialFilePath, AiCredentialStore } from "./ai/credential-store"
@@ -542,6 +543,7 @@ function createAgentService(): AgentService {
     conversations: new ConversationStore(path.join(userDataDir, "ai", "conversations")),
     providers: defaultProviderCatalog(),
     settings: new AiSettingsStore(aiSettingsFilePath(userDataDir), DEFAULT_PROVIDER_ID),
+    approvals: new ApprovalStore(aiApprovalsFilePath(userDataDir)),
     sendEvent: broadcastAiChatEvent,
     mcp: {
       configs: new McpServerConfigStore(aiMcpServersFilePath(userDataDir)),

@@ -74,8 +74,8 @@ MVP 目标范围:**P0–P3** 端到端「插件工具被内置智能体调用」
 
 ## 质量基线(当前)
 
-- `pnpm typecheck` ✅ · `pnpm lint` ✅ · `pnpm test` **368 passed**(P0 +6,P1 +23,P2 +22,P3 +15,P4 +5,P5a +18,P5b +7,增强-Markdown +4,增强-会话侧栏 +3)
-- 增强项设计交接单见 [ai-enhancements.md](ai-enhancements.md)(Markdown、会话侧栏 已完成;审批持久化/HTTP MCP/记忆 待做)。
+- `pnpm typecheck` ✅ · `pnpm lint` ✅ · `pnpm test` **373 passed**(P0 +6,P1 +23,P2 +22,P3 +15,P4 +5,P5a +18,P5b +7,增强-Markdown +4,增强-会话侧栏 +3,增强-审批持久化 +5)
+- 增强项设计交接单见 [ai-enhancements.md](ai-enhancements.md)(Markdown、会话侧栏、审批持久化 已完成;HTTP MCP/记忆 待做)。
 - commitlint 生效:**subject 必须小写开头**(用 `feat(ai): add ...` 不要 `feat(ai): P1 ...`)。
 - husky/lint-staged 在提交时跑 eslint --fix + prettier,可能改动暂存文件(正常)。
 

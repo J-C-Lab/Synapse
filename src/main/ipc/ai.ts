@@ -23,6 +23,8 @@ export interface AiIpcService {
   chat: (conversationId: string, text: string) => Promise<{ stopReason: string; usage: TokenUsage }>
   cancel: (conversationId: string) => void
   resolveApproval: (approvalId: string, allow: boolean, remember?: RememberScope) => void
+  listAllowedTools: () => Promise<string[]>
+  revokeTool: (fqName: string) => Promise<void>
   listMcpServers: () => Promise<McpServerConfig[]>
   mcpServerStatus: () => McpServerStatus[]
   saveMcpServer: (config: McpServerConfig) => Promise<McpServerStatus[]>
@@ -95,6 +97,14 @@ export function registerAiIpc(
     guard(event, "ai:approve")
     const { approvalId, allow, remember } = coerceApprove(payload)
     service.resolveApproval(approvalId, allow, remember)
+  })
+  ipcMain.handle("ai:list-allowed-tools", (event) => {
+    guard(event, "ai:list-allowed-tools")
+    return service.listAllowedTools()
+  })
+  ipcMain.handle("ai:revoke-tool", (event, fqName: unknown) => {
+    guard(event, "ai:revoke-tool")
+    return service.revokeTool(requireString(fqName, "fqName"))
   })
   ipcMain.handle("ai:mcp:list", (event) => {
     guard(event, "ai:mcp:list")

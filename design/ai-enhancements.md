@@ -23,13 +23,13 @@
 
 ## 推荐落地顺序
 
-| 顺序 | 项                              | 工作量 | 理由                        |
-| ---- | ------------------------------- | ------ | --------------------------- |
-| 1    | **Markdown 渲染** ✅ 已完成     | 小     | 日用价值最高、零回归        |
-| 2    | **会话历史侧栏** ✅ 已完成      | 中     | IPC 基本就绪、自包含        |
-| 3    | **审批 always 持久化** ⬅ 下一项 | 小     | 补已知安全缺口、带撤销出口  |
-| 4    | **HTTP/SSE MCP 传输**           | 中     | 干净扩展 P5a                |
-| 5    | **长期记忆 / RAG**              | 中→大  | 最开放;先 P6a 词法,RAG 选做 |
+| 顺序 | 项                               | 工作量 | 理由                        |
+| ---- | -------------------------------- | ------ | --------------------------- |
+| 1    | **Markdown 渲染** ✅ 已完成      | 小     | 日用价值最高、零回归        |
+| 2    | **会话历史侧栏** ✅ 已完成       | 中     | IPC 基本就绪、自包含        |
+| 3    | **审批 always 持久化** ✅ 已完成 | 小     | 补已知安全缺口、带撤销出口  |
+| 4    | **HTTP/SSE MCP 传输** ⬅ 下一项   | 中     | 干净扩展 P5a                |
+| 5    | **长期记忆 / RAG**               | 中→大  | 最开放;先 P6a 词法,RAG 选做 |
 
 ### 待你拍板的决策
 
@@ -70,18 +70,19 @@
 
 ---
 
-## 3. 审批「always」持久化
+## 3. 审批「always」持久化 ✅ 已完成
 
-**目标**:`resolveApproval(..., "always")` 重启后仍生效(现 `permanentAllow` 内存 Set,重启丢失——见 P3 不变量)。
+**目标**:`resolveApproval(..., "always")` 重启后仍生效(原 `permanentAllow` 内存 Set,重启丢失——见 P3 不变量)。
 
-**方案**:
+**落地**:
 
-- 新 `src/main/ai/approval-store.ts`:`{ alwaysAllow: string[] }` 经 atomic-json-store 持久化。
-- `AgentService`:惰性 `ensureLoaded()` 把持久集合灌入 `permanentAllow`;`resolveApproval(...,"always")` 同时落盘。`"conversation"` 维持内存。
-- **撤销入口**(建议一并做):`ai:list-allowed-tools` / `ai:revoke-tool`,在「AI 设置」弹窗加「始终允许的工具」列表 + 移除——因为 always 允许破坏性工具是实打实授权,需反悔出口。
-- 键用 fqName(外部 MCP 含 serverId);删 server/插件留下的孤儿项可在列表中手动清。
-
-**触点**:新 `approval-store.ts`、`agent-service.ts`、`ipc/ai.ts`(+撤销通道)、preload、`lib/electron.ts`、`ai-settings-dialog.tsx`、测试。
+- 新 [approval-store.ts](../src/main/ai/approval-store.ts):`{ alwaysAllow: string[] }` 经 atomic-json-store 持久化;`list/add/remove`。
+- `AgentService`:`ensurePermanentAllowLoaded()` 惰性把持久集合灌入 `permanentAllow`(在 `approve()` 入口 await);`resolveApproval(...,"always")` 同步加内存 + `void approvals.add()` 落盘;新增 `listAllowedTools()` / `revokeTool(fqName)`。`"conversation"` 维持内存。
+- IPC `ai:list-allowed-tools` / `ai:revoke-tool` + preload/wrapper(`listAiAllowedTools`/`revokeAiTool`)。
+- index.ts 装配 `new ApprovalStore(aiApprovalsFilePath(userDataDir))`。
+- 「AI 设置」弹窗底部加「始终允许的工具」列表(fqName + 撤销),open 时加载;`providers.allowedTools/allowedEmpty/revoke` i18n(en/zh-CN)。
+- 测试:`approval-store.test.ts`(3:跨实例持久、删除、丢弃损坏数据)+ agent-service(2:store 种子→工具免审运行、持久+撤销)。
+- 键用 fqName(外部 MCP 含 serverId);删 server/插件留下的孤儿项可在列表手动撤销。
 
 ---
 

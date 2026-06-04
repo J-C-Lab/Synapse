@@ -41,7 +41,10 @@
     "keySet": "Key configured",
     "saveKey": "Save",
     "clearKey": "Remove",
-    "keyHint": "Each provider keeps its own key; switching providers does not clear it."
+    "keyHint": "Each provider keeps its own key; switching providers does not clear it.",
+    "allowedTools": "Always-allowed tools",
+    "allowedEmpty": "No tools are permanently allowed.",
+    "revoke": "Revoke"
   },
   "mcp": {
     "title": "MCP servers",

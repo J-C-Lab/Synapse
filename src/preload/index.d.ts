@@ -414,6 +414,8 @@ declare global {
         allow: boolean,
         remember?: SynapseAiRememberScope
       ) => Promise<void>
+      listAiAllowedTools: () => Promise<string[]>
+      revokeAiTool: (fqName: string) => Promise<void>
       listAiMcpServers: () => Promise<SynapseMcpServerConfig[]>
       getAiMcpServerStatus: () => Promise<SynapseMcpServerStatus[]>
       saveAiMcpServer: (config: SynapseMcpServerConfig) => Promise<SynapseMcpServerStatus[]>
