@@ -203,18 +203,18 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 
 > 命名 **M(arketplace)** 阶段,与 AI 基座的 P 阶段区分。每阶段独立可验收。
 
-| 阶段                        | 内容                                                                                                  | 产出 / 验收                                                                                                      |
-| --------------------------- | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **M0 数据模型 + 协议**      | 定义 User/Plugin/Version/Download/Rating 的 schema(zod 共享包 `@synapse/marketplace-types`)、API 契约 | ✅ **已完成**(见 §11)——类型 + 契约,无运行时,前后端共用                                                           |
-| **M1 后端骨架 + 鉴权**      | `marketplace-server` 起服务、Postgres + 对象存储接线、GitHub OAuth、JWT、用户表                       | ✅ **已完成**(见 §12)——Fastify+Drizzle 骨架、全量 schema、device-flow 鉴权、pglite 集成测试                      |
-| **M2 发布闭环(CLI)**        | `publish`(鉴权+上传+注册版本)+ owner/semver/sha256 校验;CLI `login/whoami`                            | 🟡 **进行中**(见 §13)——后端 publish/browse/download 端点 + 测试已落地(凭据无关段);CLI 命令与真实 R2/OAuth 待后续 |
-| **M3 桌面端市场(读)**       | 市场浏览/搜索/详情页 + 安装前权限展示;公开走**快照**,登录态拉私人;复用现有 install                    | 用户能在 app 内浏览并安装公开/自己的私人插件                                                                     |
-| **M4 下载量 + 评分 + 评级** | 下载计数(防刷)、评分写入与聚合、排行算法(Wilson+衰减)、排行榜/精选位                                  | 公开插件有真实下载量与星级,首页有排行                                                                            |
-| **M5 私人/公开治理**        | app 内可见性切换、yank、举报、admin 下架;可信源开关                                                   | owner 自助管理可见性;基础治理可用                                                                                |
-| **M6 Web 门户**             | 浏览器端市场门户(复用现有 Fumadocs/Next 工作流)、SEO、可分享插件详情链接、Web 端浏览/搜索/详情        | 非桌面用户也能逛市场;插件有公开可索引页面                                                                        |
-| **M7 审核流水线**           | 上传自动扫描 + 人工审核队列、敏感权限分级、审核状态机(pending/approved/rejected)、admin 控制台        | 公开插件经审核后上架;治理可规模化                                                                                |
-| **M8 组织 / 协作者**        | Organization 实体、团队命名空间、Collaborator 角色与权限、转移所有权                                  | 多人共同维护一个插件 / 组织发布                                                                                  |
-| **M9 付费 / 分成(可选)**    | 付费插件、结算(Stripe 等)、开发者收入分成、发票                                                       | 形态 C 完整体;插件可商业化                                                                                       |
+| 阶段                        | 内容                                                                                                  | 产出 / 验收                                                                                                                               |
+| --------------------------- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| **M0 数据模型 + 协议**      | 定义 User/Plugin/Version/Download/Rating 的 schema(zod 共享包 `@synapse/marketplace-types`)、API 契约 | ✅ **已完成**(见 §11)——类型 + 契约,无运行时,前后端共用                                                                                    |
+| **M1 后端骨架 + 鉴权**      | `marketplace-server` 起服务、Postgres + 对象存储接线、GitHub OAuth、JWT、用户表                       | ✅ **已完成**(见 §12)——Fastify+Drizzle 骨架、全量 schema、device-flow 鉴权、pglite 集成测试                                               |
+| **M2 发布闭环(CLI)**        | `publish`(鉴权+上传+注册版本)+ owner/semver/sha256 校验;CLI `login/whoami`                            | ✅ **已完成**(见 §13)——CLI login/whoami/publish + GitHub 浏览器登录腿;**真实端到端冒烟通过**(登录→发布→搜索→详情→签名下载,Neon+R2+GitHub) |
+| **M3 桌面端市场(读)**       | 市场浏览/搜索/详情页 + 安装前权限展示;公开走**快照**,登录态拉私人;复用现有 install                    | 用户能在 app 内浏览并安装公开/自己的私人插件                                                                                              |
+| **M4 下载量 + 评分 + 评级** | 下载计数(防刷)、评分写入与聚合、排行算法(Wilson+衰减)、排行榜/精选位                                  | 公开插件有真实下载量与星级,首页有排行                                                                                                     |
+| **M5 私人/公开治理**        | app 内可见性切换、yank、举报、admin 下架;可信源开关                                                   | owner 自助管理可见性;基础治理可用                                                                                                         |
+| **M6 Web 门户**             | 浏览器端市场门户(复用现有 Fumadocs/Next 工作流)、SEO、可分享插件详情链接、Web 端浏览/搜索/详情        | 非桌面用户也能逛市场;插件有公开可索引页面                                                                                                 |
+| **M7 审核流水线**           | 上传自动扫描 + 人工审核队列、敏感权限分级、审核状态机(pending/approved/rejected)、admin 控制台        | 公开插件经审核后上架;治理可规模化                                                                                                         |
+| **M8 组织 / 协作者**        | Organization 实体、团队命名空间、Collaborator 角色与权限、转移所有权                                  | 多人共同维护一个插件 / 组织发布                                                                                                           |
+| **M9 付费 / 分成(可选)**    | 付费插件、结算(Stripe 等)、开发者收入分成、发票                                                       | 形态 C 完整体;插件可商业化                                                                                                                |
 
 **实现优先级(C 平台分波次上线)**:
 
@@ -378,7 +378,7 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 - ✅ **Neon 接通**:`db:migrate` 已对真实 Neon 建好 9 张表;真实 `.env` 启动服务 `/health` 返回 ok(对 Neon 跑通 `select 1`)。
 - ✅ **CLI**(`@synapse/plugin-cli`):`login`(device-flow:开浏览器→轮询→token 存 `~/.synapse/credentials.json` mode 0600)/ `logout` / `whoami` / `publish`(复用 `buildPlugin` → 算 sha256 → multipart 调 `POST /plugins`)。`MarketplaceClient`(可注入 fetch)+ 命令逻辑全部依赖注入,**12 条单测**(mock client + 临时目录 store)。
 - ✅ **GitHub 浏览器登录腿**:`/auth/device/start` 的 `verificationUri` 改为 GitHub 授权 URL(userCode 走 `state`);新增 `GET /auth/github/callback`(换 token→upsert 用户→approve 设备授权→返回成功 HTML)。
-- ⏳ **唯一剩余**:真实 GitHub OAuth 浏览器授权的人工端到端冒烟(需在浏览器点一次授权;CLI/服务代码均已就绪)。
+- ✅ **真实端到端冒烟通过**(2026-06-05):`login`(浏览器 GitHub 授权,登录为 `sunzrnobug`)→ `publish --public`(样例 `com.synapsetest.hello@1.0.0`)→ `GET /plugins` 列出 → 详情含版本 + R2 packageUrl → `whoami` 角色升为 `developer` → 解析签名下载 URL → 从 R2 取回 689 字节,**sha256 与发布时一致**。**M2 完成。**
 
 **质量基线**
 
