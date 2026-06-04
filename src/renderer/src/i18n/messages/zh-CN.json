@@ -27,6 +27,34 @@
     "allowAlways": "始终允许",
     "deny": "拒绝"
   },
+  "mcp": {
+    "title": "MCP 服务器",
+    "manage": "MCP 服务器",
+    "subtitle": "接入外部 Model Context Protocol 服务器。其工具将提供给助手使用，并遵循相同的审批规则。",
+    "empty": "尚未配置任何 MCP 服务器。",
+    "add": "添加服务器",
+    "edit": "编辑",
+    "delete": "删除",
+    "save": "保存并连接",
+    "cancel": "取消",
+    "id": "ID",
+    "idHint": "稳定标识（字母、数字、- 和 _），用于工具命名空间。",
+    "name": "名称",
+    "command": "命令",
+    "commandHint": "要启动的可执行文件，如 npx 或 node。",
+    "args": "参数",
+    "argsHint": "每行一个。",
+    "env": "环境变量",
+    "envHint": "KEY=value，每行一个。请勿在此存放密钥。",
+    "enabled": "启用",
+    "toolCount": "{{count}} 个工具",
+    "state": {
+      "connecting": "连接中…",
+      "connected": "已连接",
+      "disconnected": "已禁用",
+      "error": "错误"
+    }
+  },
   "home": {
     "quickActions": "快捷操作",
     "quickActionsHint": "在主页快速执行常用任务，无需进入设置。",

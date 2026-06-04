@@ -278,6 +278,27 @@ declare global {
 
   type SynapseAiRememberScope = "once" | "conversation" | "always"
 
+  interface SynapseMcpServerConfig {
+    id: string
+    name?: string
+    command: string
+    args?: string[]
+    env?: Record<string, string>
+    cwd?: string
+    enabled?: boolean
+  }
+
+  type SynapseMcpConnectionState = "connecting" | "connected" | "disconnected" | "error"
+
+  interface SynapseMcpServerStatus {
+    id: string
+    name?: string
+    enabled: boolean
+    state: SynapseMcpConnectionState
+    toolCount: number
+    error?: string
+  }
+
   interface Window {
     electronAPI?: {
       searchApps: (query: string) => Promise<LauncherSearchResult[]>
@@ -380,6 +401,10 @@ declare global {
         allow: boolean,
         remember?: SynapseAiRememberScope
       ) => Promise<void>
+      listAiMcpServers: () => Promise<SynapseMcpServerConfig[]>
+      getAiMcpServerStatus: () => Promise<SynapseMcpServerStatus[]>
+      saveAiMcpServer: (config: SynapseMcpServerConfig) => Promise<SynapseMcpServerStatus[]>
+      deleteAiMcpServer: (id: string) => Promise<void>
       onAiChatEvent: (handler: (event: SynapseAiChatEvent) => void) => () => void
     }
   }

@@ -22,8 +22,12 @@ import {
   shell,
 } from "electron"
 import { AgentService } from "./ai/agent-service"
+import { asFallbackSource, CompositeToolHost } from "./ai/composite-tool-host"
 import { ConversationStore } from "./ai/conversation-store"
 import { aiCredentialFilePath, AiCredentialStore } from "./ai/credential-store"
+import { MCP_FQ_PREFIX, McpClientManager } from "./ai/mcp-client-manager"
+import { aiMcpServersFilePath, McpServerConfigStore } from "./ai/mcp-server-config-store"
+import { createStdioMcpClient } from "./ai/mcp-stdio-client"
 import { AnthropicProvider } from "./ai/providers/anthropic-provider"
 import { AiToolRegistry } from "./ai/tool-registry"
 import {
@@ -165,6 +169,9 @@ const launcher = new LauncherService()
 let plugins: PluginHost
 let lan: LanService
 let agent: AgentService
+// External MCP servers feeding tools to the built-in agent (P5). Held at module
+// scope so shutdown can disconnect the child processes.
+let mcpClients: McpClientManager | null = null
 let mainWindow: BrowserWindow | null = null
 // A `.syn` path from an OS "open with" before the plugin host finished
 // initializing — replayed once init completes. Also guards against handling
@@ -515,15 +522,29 @@ function pluginResourcesDir(): string {
 
 function createAgentService(): AgentService {
   const userDataDir = app.getPath("userData")
+  const manager = new McpClientManager(createStdioMcpClient)
+  mcpClients = manager
+  // The model sees one flat tool list: local plugin tools plus any external MCP
+  // tools (namespaced `mcp:<id>/<tool>`). Invocations route by ownership.
+  const tools = new AiToolRegistry(
+    new CompositeToolHost([
+      asFallbackSource(plugins, (fqName) => fqName.startsWith(MCP_FQ_PREFIX)),
+      manager,
+    ])
+  )
   return new AgentService({
     credentials: new AiCredentialStore({
       filePath: aiCredentialFilePath(userDataDir),
       protector: osSecretProtector(),
     }),
-    tools: new AiToolRegistry(plugins),
+    tools,
     conversations: new ConversationStore(path.join(userDataDir, "ai", "conversations")),
     createProvider: (apiKey) => new AnthropicProvider({ apiKey }),
     sendEvent: broadcastAiChatEvent,
+    mcp: {
+      configs: new McpServerConfigStore(aiMcpServersFilePath(userDataDir)),
+      manager,
+    },
   })
 }
 
@@ -723,6 +744,12 @@ if (isMcpStdioMode) {
       }
       await plugins.init()
 
+      // Connect external MCP servers in the background — a slow or broken
+      // server must not block the launcher coming up.
+      void agent
+        .startMcpServers()
+        .catch((err) => console.error("[synapse] failed to start MCP clients", err))
+
       // Replay a queued macOS open-file, or a .syn passed on first launch
       // (Windows/Linux "open with"), now that the plugin host is ready.
       const launchSynapse = pendingSynapseImport ?? findSynapseArg(process.argv.slice(1))
@@ -757,6 +784,9 @@ if (isMcpStdioMode) {
       setSearchWindowQuitting(true)
       destroyFloatingBallWindow()
       void lan?.stop().catch((err) => console.error("[synapse] failed to stop LAN discovery", err))
+      void mcpClients
+        ?.dispose()
+        .catch((err) => console.error("[synapse] failed to stop MCP clients", err))
       unbindGlobalShortcut()
       destroyTray()
       plugins?.dispose()

@@ -5,6 +5,8 @@ import type {
   StoredConversation,
 } from "./conversation-store"
 import type { AiCredentialStore } from "./credential-store"
+import type { McpClientManager, McpServerStatus } from "./mcp-client-manager"
+import type { McpServerConfig, McpServerConfigStore } from "./mcp-server-config-store"
 import type { ChatMessage, ChatProvider, ProviderToolSchema, TokenUsage } from "./providers/types"
 import type { AiToolRegistry } from "./tool-registry"
 import { AgentRuntime } from "./agent-runtime"
@@ -44,6 +46,11 @@ export interface AgentServiceOptions {
   sendEvent: (event: AiChatEvent) => void
   model?: string
   now?: () => number
+  /** External MCP servers (P5). Omitted in tests that don't exercise MCP. */
+  mcp?: {
+    configs: McpServerConfigStore
+    manager: McpClientManager
+  }
 }
 
 export class AgentMissingKeyError extends Error {
@@ -94,6 +101,37 @@ export class AgentService {
 
   listTools(): ProviderToolSchema[] {
     return this.options.tools.list()
+  }
+
+  /** Connect every configured external MCP server. Call once at startup. */
+  async startMcpServers(): Promise<void> {
+    if (!this.options.mcp) return
+    await this.options.mcp.manager.start(await this.options.mcp.configs.list())
+  }
+
+  /** The user's configured external MCP servers (launch definitions). */
+  async listMcpServers(): Promise<McpServerConfig[]> {
+    return this.options.mcp ? this.options.mcp.configs.list() : []
+  }
+
+  /** Live connection state for each configured server. */
+  mcpServerStatus(): McpServerStatus[] {
+    return this.options.mcp ? this.options.mcp.manager.status() : []
+  }
+
+  /** Persist a server config and (re)connect it; returns fresh status. */
+  async saveMcpServer(config: McpServerConfig): Promise<McpServerStatus[]> {
+    if (!this.options.mcp) throw new Error("MCP client support is not configured.")
+    const saved = await this.options.mcp.configs.save(config)
+    await this.options.mcp.manager.restart(saved)
+    return this.options.mcp.manager.status()
+  }
+
+  /** Remove a server config and disconnect it. */
+  async deleteMcpServer(id: string): Promise<void> {
+    if (!this.options.mcp) return
+    await this.options.mcp.configs.delete(id)
+    await this.options.mcp.manager.stop(id)
   }
 
   listConversations(): Promise<ConversationSummary[]> {

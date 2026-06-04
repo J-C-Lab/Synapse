@@ -1,6 +1,8 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { AiStatus, RememberScope } from "../ai/agent-service"
 import type { ConversationSummary, StoredConversation } from "../ai/conversation-store"
+import type { McpServerStatus } from "../ai/mcp-client-manager"
+import type { McpServerConfig } from "../ai/mcp-server-config-store"
 import type { ProviderToolSchema, TokenUsage } from "../ai/providers/types"
 
 // IPC surface for the built-in assistant (design §8). Streaming is push-based:
@@ -18,6 +20,10 @@ export interface AiIpcService {
   chat: (conversationId: string, text: string) => Promise<{ stopReason: string; usage: TokenUsage }>
   cancel: (conversationId: string) => void
   resolveApproval: (approvalId: string, allow: boolean, remember?: RememberScope) => void
+  listMcpServers: () => Promise<McpServerConfig[]>
+  mcpServerStatus: () => McpServerStatus[]
+  saveMcpServer: (config: McpServerConfig) => Promise<McpServerStatus[]>
+  deleteMcpServer: (id: string) => Promise<void>
 }
 
 export interface RegisterAiIpcOptions {
@@ -73,6 +79,47 @@ export function registerAiIpc(
     const { approvalId, allow, remember } = coerceApprove(payload)
     service.resolveApproval(approvalId, allow, remember)
   })
+  ipcMain.handle("ai:mcp:list", (event) => {
+    guard(event, "ai:mcp:list")
+    return service.listMcpServers()
+  })
+  ipcMain.handle("ai:mcp:status", (event) => {
+    guard(event, "ai:mcp:status")
+    return service.mcpServerStatus()
+  })
+  ipcMain.handle("ai:mcp:save", (event, payload: unknown) => {
+    guard(event, "ai:mcp:save")
+    return service.saveMcpServer(coerceMcpServer(payload))
+  })
+  ipcMain.handle("ai:mcp:delete", (event, id: unknown) => {
+    guard(event, "ai:mcp:delete")
+    return service.deleteMcpServer(requireString(id, "id"))
+  })
+}
+
+export function coerceMcpServer(payload: unknown): McpServerConfig {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("MCP server payload must be an object.")
+  }
+  const v = payload as Record<string, unknown>
+  const config: McpServerConfig = {
+    id: requireString(v.id, "id"),
+    command: requireString(v.command, "command"),
+  }
+  if (typeof v.name === "string") config.name = v.name
+  if (typeof v.cwd === "string") config.cwd = v.cwd
+  if (typeof v.enabled === "boolean") config.enabled = v.enabled
+  if (Array.isArray(v.args)) {
+    config.args = v.args.filter((arg): arg is string => typeof arg === "string")
+  }
+  if (v.env && typeof v.env === "object" && !Array.isArray(v.env)) {
+    const env: Record<string, string> = {}
+    for (const [key, value] of Object.entries(v.env as Record<string, unknown>)) {
+      if (typeof value === "string") env[key] = value
+    }
+    config.env = env
+  }
+  return config
 }
 
 export function coerceChat(payload: unknown): { conversationId: string; text: string } {

@@ -27,6 +27,34 @@
     "allowAlways": "Always allow",
     "deny": "Deny"
   },
+  "mcp": {
+    "title": "MCP servers",
+    "manage": "MCP servers",
+    "subtitle": "Connect external Model Context Protocol servers. Their tools become available to the assistant, gated by the same approval rules.",
+    "empty": "No MCP servers configured yet.",
+    "add": "Add server",
+    "edit": "Edit",
+    "delete": "Remove",
+    "save": "Save & connect",
+    "cancel": "Cancel",
+    "id": "ID",
+    "idHint": "Stable identifier (letters, numbers, - and _). Used to namespace tools.",
+    "name": "Name",
+    "command": "Command",
+    "commandHint": "Executable to launch, e.g. npx or node.",
+    "args": "Arguments",
+    "argsHint": "One per line.",
+    "env": "Environment",
+    "envHint": "KEY=value, one per line. Avoid storing secrets here.",
+    "enabled": "Enabled",
+    "toolCount": "{{count}} tools",
+    "state": {
+      "connecting": "Connecting…",
+      "connected": "Connected",
+      "disconnected": "Disabled",
+      "error": "Error"
+    }
+  },
   "home": {
     "quickActions": "Quick actions",
     "quickActionsHint": "Common tasks from the home page so you don't have to dig into settings.",

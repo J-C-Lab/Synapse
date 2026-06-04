@@ -289,6 +289,8 @@ export type AiChatMessage = SynapseAiChatMessage
 export type AiChatEvent = SynapseAiChatEvent
 export type AiTokenUsage = SynapseAiTokenUsage
 export type AiRememberScope = SynapseAiRememberScope
+export type McpServerConfig = SynapseMcpServerConfig
+export type McpServerStatus = SynapseMcpServerStatus
 
 export async function getAiStatus(): Promise<AiStatus> {
   return api().getAiStatus()
@@ -335,4 +337,20 @@ export async function approveAiTool(
 
 export function onAiChatEvent(handler: (event: AiChatEvent) => void): () => void {
   return api().onAiChatEvent(handler)
+}
+
+export async function listAiMcpServers(): Promise<McpServerConfig[]> {
+  return api().listAiMcpServers()
+}
+
+export async function getAiMcpServerStatus(): Promise<McpServerStatus[]> {
+  return api().getAiMcpServerStatus()
+}
+
+export async function saveAiMcpServer(config: McpServerConfig): Promise<McpServerStatus[]> {
+  return api().saveAiMcpServer(config)
+}
+
+export async function deleteAiMcpServer(id: string): Promise<void> {
+  await api().deleteAiMcpServer(id)
 }

@@ -14,7 +14,8 @@
 | **P2 AgentRuntime + Claude provider** | 编排循环 + Anthropic 适配(prompt caching)+ key 凭据库                                      | ✅ 已完成                 |
 | **P3 Chat UI + 审批**                 | Chat 页 + 工具卡片 + ApprovalGate + 流式 IPC                                               | ✅ 已完成                 |
 | **P4 MCP server(对外)**               | 内置 MCP server 暴露插件工具给 Claude Desktop/Code                                         | ✅ 已完成                 |
-| **P5 MCP client + 多 provider**       | 接入外部 MCP server + OpenAI 适配                                                          | ⬜ **下一步**             |
+| **P5a MCP client(对内)**              | 接入外部 stdio MCP server,工具汇入内置智能体                                               | ✅ 已完成                 |
+| **P5b 多 provider**                   | OpenAI 适配 + provider/模型切换                                                            | ⬜ **下一步**             |
 | **P6 记忆/RAG(可选)**                 | 长期记忆工具 + 本地向量检索                                                                | ⬜                        |
 
 MVP 目标范围:**P0–P3** 端到端「插件工具被内置智能体调用」闭环,P4 紧随。
@@ -73,7 +74,7 @@ MVP 目标范围:**P0–P3** 端到端「插件工具被内置智能体调用」
 
 ## 质量基线(当前)
 
-- `pnpm typecheck` ✅ · `pnpm lint` ✅ · `pnpm test` **336 passed**(P0 +6,P1 +23,P2 +22,P3 +15,P4 +5)
+- `pnpm typecheck` ✅ · `pnpm lint` ✅ · `pnpm test` **354 passed**(P0 +6,P1 +23,P2 +22,P3 +15,P4 +5,P5a +18)
 - commitlint 生效:**subject 必须小写开头**(用 `feat(ai): add ...` 不要 `feat(ai): P1 ...`)。
 - husky/lint-staged 在提交时跑 eslint --fix + prettier,可能改动暂存文件(正常)。
 
@@ -159,16 +160,40 @@ MVP 目标范围:**P0–P3** 端到端「插件工具被内置智能体调用」
 - 类型/静态检查 ✅:`pnpm typecheck`、`pnpm lint`
 - 手动外部客户端冒烟 ⬜:在 Claude Desktop/Code 配置 `Synapse --mcp-stdio`,确认能列出并调用只读插件工具(如模板 `greet`)。
 
-## 下一步:P5 — MCP client + 多 provider
+## P5a 成果(已落地)
 
-目标:**接入外部 MCP server,并补 OpenAI provider 适配**。P4 已完成对外 server;P5 开始做对内 client,让 Synapse 内置智能体也能调用外部 MCP 工具。
+**内置智能体可调用外部 stdio MCP server 的工具**。复用 P4 已引入的 `@modelcontextprotocol/sdk`(Client 端),无新依赖。
+
+| 文件                                                      | 作用                                                                                                                                                                                           |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/main/ai/composite-tool-host.ts` (新)                 | `CompositeToolHost`(实现 `ToolHostPort`,合并多个 `ToolHostSource`,按 `ownsTool(fqName)` 路由)+ `asFallbackSource`(把裸 PluginHost 包成兜底 source)                                             |
+| `src/main/ai/mcp-server-config-store.ts` (新)             | `McpServerConfigStore`:外部 server 启动配置(id/name/command/args/env/cwd/enabled)持久化为纯 JSON(复用 atomic-json-store);id 校验 `^[\w-]{1,64}$`;加载时丢弃损坏/重复项                         |
+| `src/main/ai/mcp-client-manager.ts` (新)                  | `McpClientManager`(实现 `ToolHostSource`):连接/断开/重启每个 server,缓存 `tools/list`,工具命名空间 `mcp:<id>/<tool>`;`callTool` 映射 MCP `CallToolResult`→`ToolResult`;client 端口注入便于测试 |
+| `src/main/ai/mcp-stdio-client.ts` (新)                    | 生产 stdio 客户端工厂(`createStdioMcpClient`):`Client` + `StdioClientTransport`;env 合并 `getDefaultEnvironment()` 以保留 PATH;隔离 SDK/子进程面                                               |
+| `src/main/ai/agent-service.ts`                            | 新增 `mcp?` 选项;`startMcpServers`/`listMcpServers`/`mcpServerStatus`/`saveMcpServer`(持久化+重连)/`deleteMcpServer`                                                                           |
+| `src/main/ipc/ai.ts`                                      | 新增 `ai:mcp:list`/`status`/`save`/`delete` + `coerceMcpServer` 校验                                                                                                                           |
+| `src/main/index.ts`                                       | `createAgentService` 改用 `CompositeToolHost([asFallbackSource(plugins, mcp:前缀), manager])`;init 后台 `startMcpServers`;退出 `mcpClients.dispose()`                                          |
+| preload/d.ts、renderer `lib/electron.ts`                  | `listAiMcpServers`/`getAiMcpServerStatus`/`saveAiMcpServer`/`deleteAiMcpServer` + `SynapseMcpServer*` 类型                                                                                     |
+| `src/renderer/src/components/mcp-servers-dialog.tsx` (新) | MCP 服务器管理弹窗(列表+状态徽章+工具数+增改删表单),从 Chat 页头部 `MCP servers` 按钮打开;`mcp.*` i18n(en/zh-CN)                                                                               |
+
+**关键不变量(P5b+ 注意)**
+
+- 工具来源统一为 `ToolHostPort`;`AiToolRegistry` 不感知插件 vs 外部 MCP,二者经 `CompositeToolHost` 合并、按 fqName 前缀(`mcp:`)路由。要再加来源(如 HTTP MCP)只需实现 `ToolHostSource` 并加进数组。
+- 外部 server **不可信**:其 annotations 仅作提示。采用统一审批规则——`readOnlyHint` 自动放行,其余(含未标注)ask;启用某 server 本身即一次信任决定,用户可按会话/永久记忆放行。
+- 外部工具执行**不走** P1 沙箱(那是给插件 vm 的);直接经 MCP 协议 `tools/call`,`caller` 仍标 `{kind:"agent"}`;取消经 `AbortSignal` 透传到 `callTool`。
+- 对外 MCP server(P4,`--mcp-stdio`)仍直接用 `PluginHost`,**不**经 CompositeToolHost——避免把外部工具再转发出去形成环。
+- env 配置以明文持久化(它是启动指令,非密钥库);UI 已提示勿存密钥。provider key 仍只在加密的 `AiCredentialStore`。
+
+## 下一步:P5b — 多 provider(OpenAI)
+
+目标:**补 OpenAI provider 适配 + provider/模型切换**。P5a 已完成对内 MCP client。
 
 ### 落地要点
 
-1. **MCP client 管理**:主进程维护外部 MCP server 配置(command/args/env/启停),先支持 stdio;持久化配置进入设置存储或 AI 专用 JSON store。
-2. **外部工具接入**:外部 MCP `tools/list` 汇入 AI tool registry,命名空间建议 `mcp:<serverId>/<toolName>` 后再走 provider sanitize;调用时路由到对应 MCP client。
-3. **审批策略**:外部 MCP tool annotations 只能作为提示,默认仍按 Synapse 审批规则:只读可自动放行,未标注/破坏性 ask。注意外部 server 不可信。
-4. **OpenAI provider**:实现 P2 provider IR ↔ OpenAI Responses/Chat 工具调用映射,保留工具名 sanitize 反查逻辑和 token usage 汇总。
+1. **OpenAI provider**:实现 P2 provider IR ↔ OpenAI Responses/Chat 工具调用映射,保留工具名 sanitize 反查逻辑和 token usage 汇总;新增 `openai` 依赖(外置)。
+2. **多 provider 选择**:`AgentService` 目前硬编码 `ANTHROPIC_PROVIDER_ID`/`createProvider`;需引入 provider 选择(活动 provider + 每 provider key + 模型选择),`AiCredentialStore` 已按 providerId 存多 key。
+3. **状态/设置**:`ai:status` 暴露当前 provider/模型;UI 出 provider 选择与模型选择(可与 MCP servers 弹窗合并成一个「AI 设置」面板)。
+4. **审批/工具**:工具层与审批不变(provider 无关)。
 
 ---
 

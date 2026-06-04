@@ -1,7 +1,8 @@
 import type { AiChatEvent, AiStatus, AiTokenUsage } from "@/lib/electron"
-import { Bot, Loader2, Send, Wrench } from "lucide-react"
+import { Bot, Loader2, Send, Server, Wrench } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
+import { McpServersDialog } from "@/components/mcp-servers-dialog"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -53,6 +54,7 @@ export function ChatPage() {
   const [busy, setBusy] = useState(false)
   const [usage, setUsage] = useState<AiTokenUsage | null>(null)
   const [approval, setApproval] = useState<PendingApproval | null>(null)
+  const [showMcp, setShowMcp] = useState(false)
   const [conversationId] = useState(() => crypto.randomUUID())
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -124,7 +126,8 @@ export function ChatPage() {
   if (status && !status.hasKey) {
     return (
       <div className="space-y-4">
-        <Header />
+        <Header onManageMcp={() => setShowMcp(true)} />
+        <McpServersDialog open={showMcp} onOpenChange={setShowMcp} />
         <div className="rounded-lg border bg-card p-6">
           <p className="mb-3 text-sm text-muted-foreground">{t("chat.keyPrompt")}</p>
           <div className="flex gap-2">
@@ -146,7 +149,8 @@ export function ChatPage() {
 
   return (
     <div className="flex h-[calc(100vh-8rem)] flex-col gap-3">
-      <Header model={status?.model} />
+      <Header model={status?.model} onManageMcp={() => setShowMcp(true)} />
+      <McpServersDialog open={showMcp} onOpenChange={setShowMcp} />
 
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto pr-1">
         {messages.length === 0 ? (
@@ -218,13 +222,19 @@ export function ChatPage() {
   )
 }
 
-function Header({ model }: { model?: string }) {
+function Header({ model, onManageMcp }: { model?: string; onManageMcp: () => void }) {
   const { t } = useTranslation()
   return (
     <div className="flex items-center gap-2">
       <Bot className="size-5 text-primary" />
       <h2 className="text-lg font-semibold">{t("chat.title")}</h2>
-      {model && <span className="ml-auto text-xs text-muted-foreground">{model}</span>}
+      <div className="ml-auto flex items-center gap-2">
+        {model && <span className="text-xs text-muted-foreground">{model}</span>}
+        <Button variant="ghost" size="sm" onClick={onManageMcp}>
+          <Server className="size-4" />
+          {t("mcp.manage")}
+        </Button>
+      </div>
     </div>
   )
 }

@@ -82,6 +82,10 @@ function installElectronApi(settings: SynapseUserSettings): TestElectronApi {
     sendAiChat: vi.fn().mockResolvedValue({ stopReason: "end_turn", usage: {} }),
     cancelAiChat: vi.fn().mockResolvedValue(undefined),
     approveAiTool: vi.fn().mockResolvedValue(undefined),
+    listAiMcpServers: vi.fn().mockResolvedValue([]),
+    getAiMcpServerStatus: vi.fn().mockResolvedValue([]),
+    saveAiMcpServer: vi.fn().mockResolvedValue([]),
+    deleteAiMcpServer: vi.fn().mockResolvedValue(undefined),
     onAiChatEvent: vi.fn(() => () => undefined),
   } satisfies TestElectronApi
 

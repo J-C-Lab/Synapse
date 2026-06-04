@@ -96,6 +96,10 @@ const electronAPI = {
   cancelAiChat: (conversationId: string) => ipcRenderer.invoke("ai:cancel", conversationId),
   approveAiTool: (approvalId: string, allow: boolean, remember?: string) =>
     ipcRenderer.invoke("ai:approve", { approvalId, allow, remember }),
+  listAiMcpServers: () => ipcRenderer.invoke("ai:mcp:list"),
+  getAiMcpServerStatus: () => ipcRenderer.invoke("ai:mcp:status"),
+  saveAiMcpServer: (config: unknown) => ipcRenderer.invoke("ai:mcp:save", config),
+  deleteAiMcpServer: (id: string) => ipcRenderer.invoke("ai:mcp:delete", id),
   onAiChatEvent: (handler: (event: unknown) => void): (() => void) => {
     const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
     ipcRenderer.on("ai:chat:event", listener)

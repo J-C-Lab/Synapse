@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { coerceApprove, coerceChat } from "./ai"
+import { coerceApprove, coerceChat, coerceMcpServer } from "./ai"
 
 describe("coerceChat", () => {
   it("accepts a well-formed payload", () => {
@@ -37,5 +37,35 @@ describe("coerceApprove", () => {
     expect(() => coerceApprove({ approvalId: "a1", allow: "yes" })).toThrow(
       /allow must be a boolean/
     )
+  })
+})
+
+describe("coerceMcpServer", () => {
+  it("keeps a full config and filters non-string args/env", () => {
+    expect(
+      coerceMcpServer({
+        id: "fs",
+        name: "Files",
+        command: "npx",
+        args: ["-y", 3, "pkg"],
+        env: { TOKEN: "x", BAD: 5 },
+        cwd: "/tmp",
+        enabled: false,
+      })
+    ).toEqual({
+      id: "fs",
+      name: "Files",
+      command: "npx",
+      args: ["-y", "pkg"],
+      env: { TOKEN: "x" },
+      cwd: "/tmp",
+      enabled: false,
+    })
+  })
+
+  it("requires id and command", () => {
+    expect(() => coerceMcpServer({ command: "npx" })).toThrow(/id must be a string/)
+    expect(() => coerceMcpServer({ id: "fs" })).toThrow(/command must be a string/)
+    expect(() => coerceMcpServer(null)).toThrow(/must be an object/)
   })
 })
