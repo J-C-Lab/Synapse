@@ -1,4 +1,5 @@
 import type { AgentEvent } from "./agent-runtime"
+import type { AiSettingsStore } from "./ai-settings-store"
 import type {
   ConversationStore,
   ConversationSummary,
@@ -7,18 +8,18 @@ import type {
 import type { AiCredentialStore } from "./credential-store"
 import type { McpClientManager, McpServerStatus } from "./mcp-client-manager"
 import type { McpServerConfig, McpServerConfigStore } from "./mcp-server-config-store"
+import type { ProviderDescriptor } from "./providers/catalog"
 import type { ChatMessage, ChatProvider, ProviderToolSchema, TokenUsage } from "./providers/types"
 import type { AiToolRegistry } from "./tool-registry"
 import { AgentRuntime } from "./agent-runtime"
 import { decideApproval } from "./approval-gate"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
+import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./providers/catalog"
 
-// Assembles the P2 pieces (credentials + provider + tools + runtime + store)
-// into the surface the IPC layer drives. Owns conversation persistence, the
-// approval round-trip (ask the renderer, await the user), cancellation, and
+// Assembles the AI pieces (credentials + provider catalog + tools + runtime +
+// stores) into the surface the IPC layer drives. Owns provider selection (BYOK,
+// P5b), conversation persistence, the approval round-trip, cancellation, and
 // remembered allow-decisions.
-
-export const ANTHROPIC_PROVIDER_ID = "anthropic"
 
 export type RememberScope = "once" | "conversation" | "always"
 
@@ -41,10 +42,13 @@ export interface AgentServiceOptions {
   credentials: AiCredentialStore
   tools: AiToolRegistry
   conversations: ConversationStore
-  /** Builds a provider from a decrypted key. Injectable for tests. */
-  createProvider: (apiKey: string) => ChatProvider
   sendEvent: (event: AiChatEvent) => void
-  model?: string
+  /** BYOK provider catalog. Defaults to {@link defaultProviderCatalog}. */
+  providers?: ProviderDescriptor[]
+  /** Active provider + per-provider model. Omitted → in-memory defaults. */
+  settings?: AiSettingsStore
+  /** Override how a provider is built from a key. Injectable for tests. */
+  createProvider?: (providerId: string, apiKey: string) => ChatProvider
   now?: () => number
   /** External MCP servers (P5). Omitted in tests that don't exercise MCP. */
   mcp?: {
@@ -66,9 +70,22 @@ interface PendingApproval {
   conversationId: string
 }
 
-export interface AiStatus {
+export interface AiProviderStatus {
+  id: string
+  label: string
   hasKey: boolean
   model: string
+  models: string[]
+}
+
+export interface AiStatus {
+  /** Active provider id. */
+  provider: string
+  /** Whether the active provider has a key (drives the key-entry empty state). */
+  hasKey: boolean
+  /** Active provider's selected model. */
+  model: string
+  providers: AiProviderStatus[]
 }
 
 export class AgentService {
@@ -84,19 +101,66 @@ export class AgentService {
     return this.options.now ?? Date.now
   }
 
+  private get catalog(): ProviderDescriptor[] {
+    return this.options.providers ?? defaultProviderCatalog()
+  }
+
+  private get defaultProviderId(): string {
+    return this.catalog[0]?.id ?? DEFAULT_PROVIDER_ID
+  }
+
+  /** Resolve the active provider id and the model it should run. */
+  private async selection(): Promise<{ providerId: string; model: string }> {
+    const settings = this.options.settings ? await this.options.settings.get() : undefined
+    const providerId = settings?.activeProvider ?? this.defaultProviderId
+    const descriptor = this.catalog.find((provider) => provider.id === providerId)
+    const model =
+      settings?.models[providerId] ?? descriptor?.defaultModel ?? DEFAULT_ANTHROPIC_MODEL
+    return { providerId, model }
+  }
+
+  private createProviderFor(providerId: string, apiKey: string): ChatProvider {
+    if (this.options.createProvider) return this.options.createProvider(providerId, apiKey)
+    const descriptor = this.catalog.find((provider) => provider.id === providerId)
+    if (!descriptor) throw new Error(`Unknown provider: ${providerId}`)
+    return descriptor.create(apiKey)
+  }
+
   async getStatus(): Promise<AiStatus> {
-    return {
-      hasKey: await this.options.credentials.has(ANTHROPIC_PROVIDER_ID),
-      model: this.options.model ?? DEFAULT_ANTHROPIC_MODEL,
+    const { providerId, model } = await this.selection()
+    const settings = this.options.settings ? await this.options.settings.get() : undefined
+    const providers = await Promise.all(
+      this.catalog.map(async (provider) => ({
+        id: provider.id,
+        label: provider.label,
+        hasKey: await this.options.credentials.has(provider.id),
+        model: settings?.models[provider.id] ?? provider.defaultModel,
+        models: provider.models,
+      }))
+    )
+    const active = providers.find((provider) => provider.id === providerId)
+    return { provider: providerId, hasKey: active?.hasKey ?? false, model, providers }
+  }
+
+  async setKey(providerId: string, key: string): Promise<void> {
+    await this.options.credentials.set(providerId, key)
+  }
+
+  async deleteKey(providerId: string): Promise<void> {
+    await this.options.credentials.delete(providerId)
+  }
+
+  /** Switch the active provider used for new turns. */
+  async setActiveProvider(providerId: string): Promise<void> {
+    if (!this.catalog.some((provider) => provider.id === providerId)) {
+      throw new Error(`Unknown provider: ${providerId}`)
     }
+    if (this.options.settings) await this.options.settings.setActiveProvider(providerId)
   }
 
-  async setKey(key: string): Promise<void> {
-    await this.options.credentials.set(ANTHROPIC_PROVIDER_ID, key)
-  }
-
-  async deleteKey(): Promise<void> {
-    await this.options.credentials.delete(ANTHROPIC_PROVIDER_ID)
+  /** Choose the model a provider should use. */
+  async setModel(providerId: string, model: string): Promise<void> {
+    if (this.options.settings) await this.options.settings.setModel(providerId, model)
   }
 
   listTools(): ProviderToolSchema[] {
@@ -147,13 +211,14 @@ export class AgentService {
     conversationId: string,
     text: string
   ): Promise<{ stopReason: string; usage: TokenUsage }> {
-    const apiKey = await this.options.credentials.get(ANTHROPIC_PROVIDER_ID)
+    const { providerId, model } = await this.selection()
+    const apiKey = await this.options.credentials.get(providerId)
     if (!apiKey) throw new AgentMissingKeyError()
 
     const runtime = new AgentRuntime({
-      provider: this.options.createProvider(apiKey),
+      provider: this.createProviderFor(providerId, apiKey),
       tools: this.options.tools,
-      model: this.options.model,
+      model,
     })
 
     const existing = await this.options.conversations.get(conversationId)

@@ -282,6 +282,7 @@ export function onLanTransfersChanged(handler: (transfers: LanTransfer[]) => voi
 }
 
 export type AiStatus = SynapseAiStatus
+export type AiProviderStatus = SynapseAiProviderStatus
 export type AiTool = SynapseAiTool
 export type AiConversationSummary = SynapseAiConversationSummary
 export type AiConversation = SynapseAiConversation
@@ -296,12 +297,20 @@ export async function getAiStatus(): Promise<AiStatus> {
   return api().getAiStatus()
 }
 
-export async function setAiKey(key: string): Promise<void> {
-  await api().setAiKey(key)
+export async function setAiKey(providerId: string, key: string): Promise<void> {
+  await api().setAiKey(providerId, key)
 }
 
-export async function deleteAiKey(): Promise<void> {
-  await api().deleteAiKey()
+export async function deleteAiKey(providerId: string): Promise<void> {
+  await api().deleteAiKey(providerId)
+}
+
+export async function setAiProvider(providerId: string): Promise<void> {
+  await api().setAiProvider(providerId)
+}
+
+export async function setAiModel(providerId: string, model: string): Promise<void> {
+  await api().setAiModel(providerId, model)
 }
 
 export async function listAiTools(): Promise<AiTool[]> {

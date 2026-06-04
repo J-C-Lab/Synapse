@@ -27,6 +27,17 @@
     "allowAlways": "Always allow",
     "deny": "Deny"
   },
+  "providers": {
+    "title": "AI settings",
+    "subtitle": "Choose your provider and model (BYOK). Keys are stored encrypted on this device and never leave the main process.",
+    "provider": "Provider",
+    "model": "Model",
+    "key": "API key",
+    "keySet": "Key configured",
+    "saveKey": "Save",
+    "clearKey": "Remove",
+    "keyHint": "Each provider keeps its own key; switching providers does not clear it."
+  },
   "mcp": {
     "title": "MCP servers",
     "manage": "MCP servers",

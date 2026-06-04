@@ -86,8 +86,12 @@ const electronAPI = {
 
   // ---- AI assistant ----
   getAiStatus: () => ipcRenderer.invoke("ai:status"),
-  setAiKey: (key: string) => ipcRenderer.invoke("ai:set-key", key),
-  deleteAiKey: () => ipcRenderer.invoke("ai:delete-key"),
+  setAiKey: (providerId: string, key: string) =>
+    ipcRenderer.invoke("ai:set-key", { providerId, key }),
+  deleteAiKey: (providerId: string) => ipcRenderer.invoke("ai:delete-key", providerId),
+  setAiProvider: (providerId: string) => ipcRenderer.invoke("ai:set-provider", providerId),
+  setAiModel: (providerId: string, model: string) =>
+    ipcRenderer.invoke("ai:set-model", { providerId, model }),
   listAiTools: () => ipcRenderer.invoke("ai:list-tools"),
   listAiConversations: () => ipcRenderer.invoke("ai:list-conversations"),
   getAiConversation: (id: string) => ipcRenderer.invoke("ai:get-conversation", id),

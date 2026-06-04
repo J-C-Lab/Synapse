@@ -1,7 +1,8 @@
 import type { AiChatEvent, AiStatus, AiTokenUsage } from "@/lib/electron"
-import { Bot, Loader2, Send, Server, Wrench } from "lucide-react"
+import { Bot, Loader2, Send, Server, Settings, Wrench } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
+import { AiSettingsDialog } from "@/components/ai-settings-dialog"
 import { McpServersDialog } from "@/components/mcp-servers-dialog"
 import { Button } from "@/components/ui/button"
 import {
@@ -55,6 +56,7 @@ export function ChatPage() {
   const [usage, setUsage] = useState<AiTokenUsage | null>(null)
   const [approval, setApproval] = useState<PendingApproval | null>(null)
   const [showMcp, setShowMcp] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
   const [conversationId] = useState(() => crypto.randomUUID())
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -91,7 +93,7 @@ export function ChatPage() {
     if (!keyDraft.trim() || savingKey) return
     setSavingKey(true)
     try {
-      await setAiKey(keyDraft.trim())
+      await setAiKey(status?.provider ?? "anthropic", keyDraft.trim())
       setKeyDraft("")
       setStatus(await getAiStatus())
     } finally {
@@ -126,8 +128,14 @@ export function ChatPage() {
   if (status && !status.hasKey) {
     return (
       <div className="space-y-4">
-        <Header onManageMcp={() => setShowMcp(true)} />
+        <Header onManageMcp={() => setShowMcp(true)} onOpenSettings={() => setShowSettings(true)} />
         <McpServersDialog open={showMcp} onOpenChange={setShowMcp} />
+        <AiSettingsDialog
+          open={showSettings}
+          onOpenChange={setShowSettings}
+          status={status}
+          onStatusChange={setStatus}
+        />
         <div className="rounded-lg border bg-card p-6">
           <p className="mb-3 text-sm text-muted-foreground">{t("chat.keyPrompt")}</p>
           <div className="flex gap-2">
@@ -149,8 +157,18 @@ export function ChatPage() {
 
   return (
     <div className="flex h-[calc(100vh-8rem)] flex-col gap-3">
-      <Header model={status?.model} onManageMcp={() => setShowMcp(true)} />
+      <Header
+        model={status?.model}
+        onManageMcp={() => setShowMcp(true)}
+        onOpenSettings={() => setShowSettings(true)}
+      />
       <McpServersDialog open={showMcp} onOpenChange={setShowMcp} />
+      <AiSettingsDialog
+        open={showSettings}
+        onOpenChange={setShowSettings}
+        status={status}
+        onStatusChange={setStatus}
+      />
 
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto pr-1">
         {messages.length === 0 ? (
@@ -222,7 +240,15 @@ export function ChatPage() {
   )
 }
 
-function Header({ model, onManageMcp }: { model?: string; onManageMcp: () => void }) {
+function Header({
+  model,
+  onManageMcp,
+  onOpenSettings,
+}: {
+  model?: string
+  onManageMcp: () => void
+  onOpenSettings: () => void
+}) {
   const { t } = useTranslation()
   return (
     <div className="flex items-center gap-2">
@@ -233,6 +259,10 @@ function Header({ model, onManageMcp }: { model?: string; onManageMcp: () => voi
         <Button variant="ghost" size="sm" onClick={onManageMcp}>
           <Server className="size-4" />
           {t("mcp.manage")}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onOpenSettings}>
+          <Settings className="size-4" />
+          {t("providers.title")}
         </Button>
       </div>
     </div>

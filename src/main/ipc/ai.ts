@@ -12,8 +12,10 @@ import type { ProviderToolSchema, TokenUsage } from "../ai/providers/types"
 
 export interface AiIpcService {
   getStatus: () => Promise<AiStatus>
-  setKey: (key: string) => Promise<void>
-  deleteKey: () => Promise<void>
+  setKey: (providerId: string, key: string) => Promise<void>
+  deleteKey: (providerId: string) => Promise<void>
+  setActiveProvider: (providerId: string) => Promise<void>
+  setModel: (providerId: string, model: string) => Promise<void>
   listTools: () => ProviderToolSchema[]
   listConversations: () => Promise<ConversationSummary[]>
   getConversation: (id: string) => Promise<StoredConversation | undefined>
@@ -45,13 +47,23 @@ export function registerAiIpc(
     guard(event, "ai:status")
     return service.getStatus()
   })
-  ipcMain.handle("ai:set-key", (event, key: unknown) => {
+  ipcMain.handle("ai:set-key", (event, payload: unknown) => {
     guard(event, "ai:set-key")
-    return service.setKey(requireString(key, "key"))
+    const { providerId, key } = coerceProviderKey(payload)
+    return service.setKey(providerId, key)
   })
-  ipcMain.handle("ai:delete-key", (event) => {
+  ipcMain.handle("ai:delete-key", (event, providerId: unknown) => {
     guard(event, "ai:delete-key")
-    return service.deleteKey()
+    return service.deleteKey(requireString(providerId, "providerId"))
+  })
+  ipcMain.handle("ai:set-provider", (event, providerId: unknown) => {
+    guard(event, "ai:set-provider")
+    return service.setActiveProvider(requireString(providerId, "providerId"))
+  })
+  ipcMain.handle("ai:set-model", (event, payload: unknown) => {
+    guard(event, "ai:set-model")
+    const { providerId, model } = coerceProviderModel(payload)
+    return service.setModel(providerId, model)
   })
   ipcMain.handle("ai:list-tools", (event) => {
     guard(event, "ai:list-tools")
@@ -95,6 +107,23 @@ export function registerAiIpc(
     guard(event, "ai:mcp:delete")
     return service.deleteMcpServer(requireString(id, "id"))
   })
+}
+
+export function coerceProviderKey(payload: unknown): { providerId: string; key: string } {
+  if (!payload || typeof payload !== "object") throw new Error("set-key payload must be an object.")
+  const v = payload as Record<string, unknown>
+  return { providerId: requireString(v.providerId, "providerId"), key: requireString(v.key, "key") }
+}
+
+export function coerceProviderModel(payload: unknown): { providerId: string; model: string } {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("set-model payload must be an object.")
+  }
+  const v = payload as Record<string, unknown>
+  return {
+    providerId: requireString(v.providerId, "providerId"),
+    model: requireString(v.model, "model"),
+  }
 }
 
 export function coerceMcpServer(payload: unknown): McpServerConfig {

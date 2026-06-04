@@ -27,6 +27,17 @@
     "allowAlways": "始终允许",
     "deny": "拒绝"
   },
+  "providers": {
+    "title": "AI 设置",
+    "subtitle": "选择服务商与模型(自带密钥)。密钥在本机加密存储,永不离开主进程。",
+    "provider": "服务商",
+    "model": "模型",
+    "key": "API 密钥",
+    "keySet": "已配置密钥",
+    "saveKey": "保存",
+    "clearKey": "移除",
+    "keyHint": "每个服务商各存各的密钥;切换服务商不会清除它。"
+  },
   "mcp": {
     "title": "MCP 服务器",
     "manage": "MCP 服务器",

@@ -220,9 +220,19 @@ declare global {
     | { type: "form"; [key: string]: unknown }
     | { type: "toast"; [key: string]: unknown }
 
-  interface SynapseAiStatus {
+  interface SynapseAiProviderStatus {
+    id: string
+    label: string
     hasKey: boolean
     model: string
+    models: string[]
+  }
+
+  interface SynapseAiStatus {
+    provider: string
+    hasKey: boolean
+    model: string
+    providers: SynapseAiProviderStatus[]
   }
 
   interface SynapseAiTool {
@@ -386,8 +396,10 @@ declare global {
       onLanPairingsChanged: (handler: (pairings: SynapseLanPairing[]) => void) => () => void
       onLanTransfersChanged: (handler: (transfers: SynapseLanTransfer[]) => void) => () => void
       getAiStatus: () => Promise<SynapseAiStatus>
-      setAiKey: (key: string) => Promise<void>
-      deleteAiKey: () => Promise<void>
+      setAiKey: (providerId: string, key: string) => Promise<void>
+      deleteAiKey: (providerId: string) => Promise<void>
+      setAiProvider: (providerId: string) => Promise<void>
+      setAiModel: (providerId: string, model: string) => Promise<void>
       listAiTools: () => Promise<SynapseAiTool[]>
       listAiConversations: () => Promise<SynapseAiConversationSummary[]>
       getAiConversation: (id: string) => Promise<SynapseAiConversation | undefined>

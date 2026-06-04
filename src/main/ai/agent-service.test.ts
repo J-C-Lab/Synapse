@@ -1,13 +1,25 @@
 import type { RegisteredToolDescriptor } from "../plugins/types"
 import type { AiChatEvent } from "./agent-service"
+import type { AiSettingsStore } from "./ai-settings-store"
 import type { ConversationStore, StoredConversation } from "./conversation-store"
 import type { AiCredentialStore } from "./credential-store"
+import type { ProviderDescriptor } from "./providers/catalog"
 import type { ChatContentBlock, ChatProvider } from "./providers/types"
 import type { ToolHostPort } from "./tool-registry"
 import { describe, expect, it, vi } from "vitest"
 import { AgentMissingKeyError, AgentService } from "./agent-service"
 import { emptyUsage } from "./providers/types"
 import { AiToolRegistry } from "./tool-registry"
+
+function descriptorFor(id: string): ProviderDescriptor {
+  return {
+    id,
+    label: id,
+    defaultModel: `${id}-default`,
+    models: [`${id}-default`],
+    create: () => fakeProvider([{ text: "x" }]),
+  }
+}
 
 interface ScriptedTurn {
   text?: string
@@ -181,6 +193,51 @@ describe("agentService", () => {
       key: undefined,
     })
     await expect(svc.chat("c1", "hi")).rejects.toBeInstanceOf(AgentMissingKeyError)
+  })
+
+  it("uses the active provider's key, model, and factory", async () => {
+    const calls: { providerId: string; apiKey: string }[] = []
+    const convo = conversations()
+    const settings = {
+      state: { activeProvider: "openai", models: { openai: "gpt-4.1" } as Record<string, string> },
+      get: async () => settings.state,
+      setActiveProvider: async (id: string) => {
+        settings.state = { ...settings.state, activeProvider: id }
+      },
+      setModel: async (id: string, model: string) => {
+        settings.state = { ...settings.state, models: { ...settings.state.models, [id]: model } }
+      },
+    }
+    const creds = {
+      has: async (id: string) => id === "openai",
+      get: async (id: string) => (id === "openai" ? "sk-openai" : undefined),
+      set: vi.fn(),
+      delete: vi.fn(),
+      list: async () => ["openai"],
+    } as unknown as AiCredentialStore
+
+    const svc = new AgentService({
+      credentials: creds,
+      tools: new AiToolRegistry(fakeHost({ readOnlyHint: true })),
+      conversations: convo.store,
+      providers: [descriptorFor("anthropic"), descriptorFor("openai")],
+      settings: settings as unknown as AiSettingsStore,
+      createProvider: (providerId, apiKey) => {
+        calls.push({ providerId, apiKey })
+        return fakeProvider([{ text: "hi" }])
+      },
+      sendEvent: () => {},
+      now: () => 1000,
+    })
+
+    await svc.chat("c1", "go")
+    expect(calls).toEqual([{ providerId: "openai", apiKey: "sk-openai" }])
+
+    const status = await svc.getStatus()
+    expect(status.provider).toBe("openai")
+    expect(status.model).toBe("gpt-4.1")
+    expect(status.providers.find((provider) => provider.id === "openai")?.hasKey).toBe(true)
+    expect(status.providers.find((provider) => provider.id === "anthropic")?.hasKey).toBe(false)
   })
 
   it("remembers an always-allow decision for the rest of the run", async () => {

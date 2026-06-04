@@ -1,7 +1,7 @@
 # Synapse AI 基座 —— 进度存档 & 续作指南
 
 > 本文件是**跨会话工作交接单**。在新窗口开工前先读这份 + [ai-foundation.md](ai-foundation.md)(完整设计)。
-> 最近更新:2026-06-03。仓库:`sunzrnobug/Synapse`(private),单 `main` 分支。
+> 最近更新:2026-06-04。仓库:`sunzrnobug/Synapse`(public),单 `main` 分支。
 
 ---
 
@@ -15,8 +15,8 @@
 | **P3 Chat UI + 审批**                 | Chat 页 + 工具卡片 + ApprovalGate + 流式 IPC                                               | ✅ 已完成                 |
 | **P4 MCP server(对外)**               | 内置 MCP server 暴露插件工具给 Claude Desktop/Code                                         | ✅ 已完成                 |
 | **P5a MCP client(对内)**              | 接入外部 stdio MCP server,工具汇入内置智能体                                               | ✅ 已完成                 |
-| **P5b 多 provider**                   | OpenAI 适配 + provider/模型切换                                                            | ⬜ **下一步**             |
-| **P6 记忆/RAG(可选)**                 | 长期记忆工具 + 本地向量检索                                                                | ⬜                        |
+| **P5b 多 provider**                   | OpenAI 适配 + provider/模型切换                                                            | ✅ 已完成                 |
+| **P6 记忆/RAG(可选)**                 | 长期记忆工具 + 本地向量检索                                                                | ⬜ **下一步**             |
 
 MVP 目标范围:**P0–P3** 端到端「插件工具被内置智能体调用」闭环,P4 紧随。
 
@@ -74,7 +74,7 @@ MVP 目标范围:**P0–P3** 端到端「插件工具被内置智能体调用」
 
 ## 质量基线(当前)
 
-- `pnpm typecheck` ✅ · `pnpm lint` ✅ · `pnpm test` **354 passed**(P0 +6,P1 +23,P2 +22,P3 +15,P4 +5,P5a +18)
+- `pnpm typecheck` ✅ · `pnpm lint` ✅ · `pnpm test` **361 passed**(P0 +6,P1 +23,P2 +22,P3 +15,P4 +5,P5a +18,P5b +7)
 - commitlint 生效:**subject 必须小写开头**(用 `feat(ai): add ...` 不要 `feat(ai): P1 ...`)。
 - husky/lint-staged 在提交时跑 eslint --fix + prettier,可能改动暂存文件(正常)。
 
@@ -184,16 +184,31 @@ MVP 目标范围:**P0–P3** 端到端「插件工具被内置智能体调用」
 - 对外 MCP server(P4,`--mcp-stdio`)仍直接用 `PluginHost`,**不**经 CompositeToolHost——避免把外部工具再转发出去形成环。
 - env 配置以明文持久化(它是启动指令,非密钥库);UI 已提示勿存密钥。provider key 仍只在加密的 `AiCredentialStore`。
 
-## 下一步:P5b — 多 provider(OpenAI)
+## P5b 成果(已落地)
 
-目标:**补 OpenAI provider 适配 + provider/模型切换**。P5a 已完成对内 MCP client。
+**多 provider BYOK:OpenAI 适配 + provider/模型切换**。工具层、审批、MCP 全部 provider 无关,只在装配层选 provider。新增 `openai` 依赖(纯 JS,外置)。
 
-### 落地要点
+| 文件                                                      | 作用                                                                                                                                                                                                                                        |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `providers/openai-provider.ts` (新)                       | `OpenAiProvider` 实现 `ChatProvider`:IR ↔ Chat Completions;流式 text delta;**跨 chunk 累积 tool_calls** 成 IR `tool_use`(parse arguments JSON);usage 映射(`cached_tokens`→cacheRead);`OpenAiChatClient` 端口注入便于测试;默认模型 `gpt-4.1` |
+| `providers/catalog.ts` (新)                               | `ProviderDescriptor`(id/label/defaultModel/models/`create(apiKey)`)+ `defaultProviderCatalog()`(anthropic + openai)+ `DEFAULT_PROVIDER_ID`。provider 元数据与工厂的单一来源                                                                 |
+| `ai-settings-store.ts` (新)                               | `AiSettingsStore`:活动 provider + 每 provider 模型,纯 JSON 持久化(无密钥)                                                                                                                                                                   |
+| `agent-service.ts`                                        | 移除硬编码 anthropic;`selection()` 解析活动 provider+模型;`createProviderFor()`(catalog.create 或注入 override);`getStatus` 返回 `{provider, hasKey, model, providers[]}`;`setKey/deleteKey(providerId)`、`setActiveProvider`、`setModel`   |
+| `ipc/ai.ts`                                               | `ai:set-key`(payload `{providerId,key}`)、`ai:delete-key(providerId)`、`ai:set-provider`、`ai:set-model` + `coerceProviderKey`/`coerceProviderModel`                                                                                        |
+| preload/d.ts、renderer `lib/electron.ts`                  | provider 参数化的 key 操作 + `setAiProvider`/`setAiModel`;`SynapseAiProviderStatus`、`AiStatus` 扩展                                                                                                                                        |
+| `src/renderer/src/components/ai-settings-dialog.tsx` (新) | 「AI 设置」弹窗:provider 选择、模型选择、每 provider key 录入/移除;Chat 页头部齿轮按钮打开;`providers.*` i18n(en/zh-CN)。Chat 空状态的 key 录入改用活动 provider                                                                            |
 
-1. **OpenAI provider**:实现 P2 provider IR ↔ OpenAI Responses/Chat 工具调用映射,保留工具名 sanitize 反查逻辑和 token usage 汇总;新增 `openai` 依赖(外置)。
-2. **多 provider 选择**:`AgentService` 目前硬编码 `ANTHROPIC_PROVIDER_ID`/`createProvider`;需引入 provider 选择(活动 provider + 每 provider key + 模型选择),`AiCredentialStore` 已按 providerId 存多 key。
-3. **状态/设置**:`ai:status` 暴露当前 provider/模型;UI 出 provider 选择与模型选择(可与 MCP servers 弹窗合并成一个「AI 设置」面板)。
-4. **审批/工具**:工具层与审批不变(provider 无关)。
+**关键不变量(P6+ 注意)**
+
+- 装配处用 `providers: defaultProviderCatalog()` + `settings: AiSettingsStore`;测试可注入 `createProvider(providerId, apiKey)` override 绕开真实 SDK。
+- 模型经 `AgentRuntime.model` → `ProviderRequest.model` 流动,**不**进 provider 构造器;故 catalog 工厂只接收 key。
+- 每 provider 各存各的 key(`AiCredentialStore` 按 providerId),切换 provider 不清除其它 key;`getStatus().providers[]` 报告每个的 hasKey。
+- 工具名 sanitize(`[\w-]≤128`)对 OpenAI(限 64)偏宽:插件工具名短,暂不收紧;如接入超长名外部 MCP 工具需注意。
+- 默认 provider 仍是 anthropic(catalog 首项 / `DEFAULT_PROVIDER_ID`)。
+
+## 下一步:P6 — 记忆 / RAG(可选)
+
+目标:**长期记忆工具 + 本地向量检索**(设计 §未定,可选增强)。也可转向此前列出的非阻塞增强:会话历史侧栏、Markdown 渲染、HTTP/SSE MCP 传输、审批「always」持久化、预算上限。
 
 ---
 

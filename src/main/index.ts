@@ -22,13 +22,14 @@ import {
   shell,
 } from "electron"
 import { AgentService } from "./ai/agent-service"
+import { aiSettingsFilePath, AiSettingsStore } from "./ai/ai-settings-store"
 import { asFallbackSource, CompositeToolHost } from "./ai/composite-tool-host"
 import { ConversationStore } from "./ai/conversation-store"
 import { aiCredentialFilePath, AiCredentialStore } from "./ai/credential-store"
 import { MCP_FQ_PREFIX, McpClientManager } from "./ai/mcp-client-manager"
 import { aiMcpServersFilePath, McpServerConfigStore } from "./ai/mcp-server-config-store"
 import { createStdioMcpClient } from "./ai/mcp-stdio-client"
-import { AnthropicProvider } from "./ai/providers/anthropic-provider"
+import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/catalog"
 import { AiToolRegistry } from "./ai/tool-registry"
 import {
   destroyFloatingBallWindow,
@@ -539,7 +540,8 @@ function createAgentService(): AgentService {
     }),
     tools,
     conversations: new ConversationStore(path.join(userDataDir, "ai", "conversations")),
-    createProvider: (apiKey) => new AnthropicProvider({ apiKey }),
+    providers: defaultProviderCatalog(),
+    settings: new AiSettingsStore(aiSettingsFilePath(userDataDir), DEFAULT_PROVIDER_ID),
     sendEvent: broadcastAiChatEvent,
     mcp: {
       configs: new McpServerConfigStore(aiMcpServersFilePath(userDataDir)),
