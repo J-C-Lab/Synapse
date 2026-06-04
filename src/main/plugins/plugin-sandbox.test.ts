@@ -299,10 +299,13 @@ module.exports = {
   })
 })
 
+// Default budgets are generous so normal (non-timeout) cases stay reliable when
+// the test run saturates the CPU; the timeout-behavior tests pass explicit
+// small values to trigger the timeouts they assert.
 function sandboxForTest(
-  invokeTimeoutMs = 100,
-  loadTimeoutMs = 100,
-  toolInvokeTimeoutMs = 100
+  invokeTimeoutMs = 2000,
+  loadTimeoutMs = 2000,
+  toolInvokeTimeoutMs = 2000
 ): PluginSandbox {
   const bridge = new PluginBridge({
     userDataDir: dir,

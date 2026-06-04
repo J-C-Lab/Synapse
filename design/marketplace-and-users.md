@@ -203,18 +203,18 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 
 > 命名 **M(arketplace)** 阶段,与 AI 基座的 P 阶段区分。每阶段独立可验收。
 
-| 阶段                        | 内容                                                                                                  | 产出 / 验收                                            |
-| --------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| **M0 数据模型 + 协议**      | 定义 User/Plugin/Version/Download/Rating 的 schema(zod 共享包 `@synapse/marketplace-types`)、API 契约 | ✅ **已完成**(见 §11)——类型 + 契约,无运行时,前后端共用 |
-| **M1 后端骨架 + 鉴权**      | `marketplace-server` 起服务、Postgres + 对象存储接线、GitHub OAuth、JWT、用户表                       | 能登录、拿到身份、健康检查;含集成测试                  |
-| **M2 发布闭环(CLI)**        | `publish`(鉴权+上传+注册版本)+ owner/semver/sha256 校验;CLI `login/whoami`                            | 开发者能从命令行把私人插件发布上去并在 DB 可见         |
-| **M3 桌面端市场(读)**       | 市场浏览/搜索/详情页 + 安装前权限展示;公开走**快照**,登录态拉私人;复用现有 install                    | 用户能在 app 内浏览并安装公开/自己的私人插件           |
-| **M4 下载量 + 评分 + 评级** | 下载计数(防刷)、评分写入与聚合、排行算法(Wilson+衰减)、排行榜/精选位                                  | 公开插件有真实下载量与星级,首页有排行                  |
-| **M5 私人/公开治理**        | app 内可见性切换、yank、举报、admin 下架;可信源开关                                                   | owner 自助管理可见性;基础治理可用                      |
-| **M6 Web 门户**             | 浏览器端市场门户(复用现有 Fumadocs/Next 工作流)、SEO、可分享插件详情链接、Web 端浏览/搜索/详情        | 非桌面用户也能逛市场;插件有公开可索引页面              |
-| **M7 审核流水线**           | 上传自动扫描 + 人工审核队列、敏感权限分级、审核状态机(pending/approved/rejected)、admin 控制台        | 公开插件经审核后上架;治理可规模化                      |
-| **M8 组织 / 协作者**        | Organization 实体、团队命名空间、Collaborator 角色与权限、转移所有权                                  | 多人共同维护一个插件 / 组织发布                        |
-| **M9 付费 / 分成(可选)**    | 付费插件、结算(Stripe 等)、开发者收入分成、发票                                                       | 形态 C 完整体;插件可商业化                             |
+| 阶段                        | 内容                                                                                                  | 产出 / 验收                                                                                 |
+| --------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| **M0 数据模型 + 协议**      | 定义 User/Plugin/Version/Download/Rating 的 schema(zod 共享包 `@synapse/marketplace-types`)、API 契约 | ✅ **已完成**(见 §11)——类型 + 契约,无运行时,前后端共用                                      |
+| **M1 后端骨架 + 鉴权**      | `marketplace-server` 起服务、Postgres + 对象存储接线、GitHub OAuth、JWT、用户表                       | ✅ **已完成**(见 §12)——Fastify+Drizzle 骨架、全量 schema、device-flow 鉴权、pglite 集成测试 |
+| **M2 发布闭环(CLI)**        | `publish`(鉴权+上传+注册版本)+ owner/semver/sha256 校验;CLI `login/whoami`                            | 开发者能从命令行把私人插件发布上去并在 DB 可见                                              |
+| **M3 桌面端市场(读)**       | 市场浏览/搜索/详情页 + 安装前权限展示;公开走**快照**,登录态拉私人;复用现有 install                    | 用户能在 app 内浏览并安装公开/自己的私人插件                                                |
+| **M4 下载量 + 评分 + 评级** | 下载计数(防刷)、评分写入与聚合、排行算法(Wilson+衰减)、排行榜/精选位                                  | 公开插件有真实下载量与星级,首页有排行                                                       |
+| **M5 私人/公开治理**        | app 内可见性切换、yank、举报、admin 下架;可信源开关                                                   | owner 自助管理可见性;基础治理可用                                                           |
+| **M6 Web 门户**             | 浏览器端市场门户(复用现有 Fumadocs/Next 工作流)、SEO、可分享插件详情链接、Web 端浏览/搜索/详情        | 非桌面用户也能逛市场;插件有公开可索引页面                                                   |
+| **M7 审核流水线**           | 上传自动扫描 + 人工审核队列、敏感权限分级、审核状态机(pending/approved/rejected)、admin 控制台        | 公开插件经审核后上架;治理可规模化                                                           |
+| **M8 组织 / 协作者**        | Organization 实体、团队命名空间、Collaborator 角色与权限、转移所有权                                  | 多人共同维护一个插件 / 组织发布                                                             |
+| **M9 付费 / 分成(可选)**    | 付费插件、结算(Stripe 等)、开发者收入分成、发票                                                       | 形态 C 完整体;插件可商业化                                                                  |
 
 **实现优先级(C 平台分波次上线)**:
 
@@ -286,6 +286,8 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 - **2026-06-05**:项目现由单人开发(`sunzrnobug`);前协作者 `WiIIiamWei` 名下的注册表仓库不再作为权威源。**建议建 GitHub Org** 统一持有 app / 后端 / 快照仓库(待确认)。
 - **2026-06-05**:**栈 = 解耦组合**拍板。**Fastify + Drizzle + zod**(API/ORM/校验)、**Neon**(Postgres)、**Cloudflare R2**(对象存储,出流量免费)、**Fastify 自管鉴权**(GitHub OAuth 起步 + provider 无关 `User⇄AuthIdentity` 身份表 + CLI device-code)。理由:契合零原生/TS-first 基线;C 平台后期付费/组织/审核权限不被 Supabase RLS 绊住;单人运维成本可控。
 - **2026-06-05**:**归属 = GitHub Org `JC-Lab`**。app + `marketplace-server` + 快照仓库统一收编进 `JC-Lab`;前协作者 `WiIIiamWei` 注册表退役。**品牌名暂定 Synapse**(真实域名待注册,需查商标/可用性)。
+- **2026-06-05(M1)**:**会话采用「不透明 token + DB」而非 JWT**。只存 token 的 SHA-256,撤销=删行,无签名密钥管理——对 §2.1「JWT 签发/刷新」的实现细化。如未来需无状态/跨服务校验再引入 JWT 访问令牌。
+- **2026-06-05(M1)**:**测试数据库 = pglite**(进程内 WASM Postgres),生产 = node-postgres 对 Neon。同一 Drizzle schema + 迁移两边通用;集成测试零外部依赖。
 - _(待定,不阻塞 M0)_:§7 第 5–8 项——私人包存储/同步、审核策略、评级算法、成本合规,各在对应阶段前定。
 
 ---
@@ -315,4 +317,35 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 - 接入仓库工具链:`vitest.config.ts` + `tsconfig.node.json` 已加 `@synapse/marketplace-types` 别名;`package.json` 的 `build:packages` / `typecheck` 链已纳入本包(依赖 `plugin-manifest`,排在其后构建)。
 - `pnpm lint` ✅ · `pnpm typecheck` ✅ · `pnpm test` **412 passed**(原 392 + M0 新增 20)。
 
-> 下一步 **M1**:`packages/marketplace-server`(Fastify + Drizzle)起服务、接 Neon + R2、GitHub OAuth + 自管会话、`User`/`AuthIdentity` 落库;消费本包 schema 做请求校验。
+---
+
+## 12. M1 成果(已落地,2026-06-05)
+
+**后端骨架 + 鉴权闭环**。新增 pnpm workspace 包 `@synapse/marketplace-server`(`packages/marketplace-server/`):Fastify + Drizzle 服务,消费 M0 的 `@synapse/marketplace-types` 做请求/响应校验。**全程零外部凭据可测**——生产用 node-postgres(对 Neon),测试用 pglite(进程内 WASM Postgres),GitHub 身份用可注入端口(测试注入 fake)。
+
+| 区域                              | 内容                                                                                                                                                                                                        |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `db/schema.ts`                    | **全量 9 张表** Drizzle schema(users / auth_identities / sessions / device_codes / plugins / plugin_versions / downloads / ratings / reviews),列形与 marketplace-types 对齐;`drizzle/` 生成迁移 SQL(已提交) |
+| `db/client.ts`                    | 驱动无关 `MarketplaceDb` 类型 + node-postgres 工厂;`db/migrate.ts` 生产迁移脚本                                                                                                                             |
+| `auth/github.ts`                  | `IdentityProvider` 端口 + GitHub OAuth 实现(code→token→/user);可注入,测试用 fake 不触网                                                                                                                     |
+| `services/`                       | `UserService`(按身份 upsert + handle 去重)、`SessionService`(不透明 token,仅存 SHA-256,可撤销)、`DeviceCodeService`(RFC 8628 式 start/approve/poll,一次性消费)                                              |
+| `routes/`                         | `GET /health`(探活+DB ping)、`POST /auth/device/{start,approve,poll}`、`GET /session`(whoami,Bearer 鉴权);统一 `apiError` 信封                                                                              |
+| `app.ts`                          | `buildApp(deps)` 依赖注入装配(db / github / config / clock),生产与测试共用同一工厂                                                                                                                          |
+| `test/harness.ts` + `app.test.ts` | pglite 集成测试(单实例 + 每用例 truncate);**10 条**:健康检查、完整 device 流、单次消费、未知码、入参校验、whoami、缺/错 token、身份幂等、handle 去重                                                        |
+
+**关键决策 / 不变量(M2+ 注意)**
+
+- **栈落地**:Fastify(长驻)+ Drizzle + zod;ORM 选 Drizzle(纯 JS 无原生引擎);DB 测试 pglite、生产 node-postgres(对 Neon 走标准 PG 协议)。
+- **会话 = 不透明 token + DB**(非 JWT):仅存 token 的 SHA-256,撤销=删行,无签名密钥管理。(对 design §2.1「JWT」的实现细化,已在决策记录登记。)
+- **身份 provider 无关**:`users ⇄ auth_identities`,GitHub 起步,加 Google/邮箱不迁 user 表。
+- **DI 装配**:一切经 `buildApp(deps)` 注入(db/github/clock),故无需真实 Neon/R2/GitHub 即可全量测试;`now` 可注入做确定性过期测试。
+- **时间**:DB 存 `timestamptz`(JS `Date`),在 mapper 边界 `toISOString()` 转 marketplace-types 的 ISO 字符串,并经 zod 复核响应契约。
+- **改了 schema 必须**`pnpm -F @synapse/marketplace-server db:generate` 重新生成迁移。
+
+**质量基线**
+
+- 接入根工具链:root `typecheck` 链加入本包;root `pnpm test` 自动发现 pglite 集成测试(`// @vitest-environment node`)。
+- 顺带修复一处**既有 flaky**:`plugin-sandbox.test.ts` 的默认沙箱超时 100ms→2000ms(只影响非超时用例;显式超时用例仍传小值)。CPU 高负载下 100ms 墙钟预算会偶发失败,与本次新增的 WASM 测试并发时暴露。
+- `pnpm lint` ✅ · `pnpm typecheck` ✅ · `pnpm test` **422 passed**(M0 后 412 + M1 新增 10);连跑两次稳定。
+
+> 下一步 **M2**:CLI `login`(device-flow,token 存 OS 凭据库)/ `whoami` / `publish`(build .syn → 算 sha256 → 上传 R2 → 注册 `PluginVersion`,后端校验 owner/semver 单调/digest)。需接入真实 R2 桶与 GitHub OAuth app(对象存储上传是 M2 首个需外部凭据的点)。
