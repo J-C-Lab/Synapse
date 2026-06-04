@@ -206,6 +206,12 @@ export class AgentService {
     return this.options.conversations.get(id)
   }
 
+  /** Delete a stored conversation. Cancels it first if a turn is in flight. */
+  async deleteConversation(id: string): Promise<void> {
+    this.cancel(id)
+    await this.options.conversations.delete(id)
+  }
+
   /** Run one chat turn, streaming events. Resolves when the turn completes. */
   async chat(
     conversationId: string,

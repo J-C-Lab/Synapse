@@ -1,8 +1,10 @@
-import type { AiChatEvent, AiStatus, AiTokenUsage } from "@/lib/electron"
-import { Bot, Loader2, Send, Server, Settings, Wrench } from "lucide-react"
+import type { DisplayMessage, ToolCard } from "./chat-message-model"
+import type { AiChatEvent, AiConversationSummary, AiStatus, AiTokenUsage } from "@/lib/electron"
+import { Bot, Loader2, PanelLeft, Send, Server, Settings, Wrench } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { AiSettingsDialog } from "@/components/ai-settings-dialog"
+import { ConversationSidebar } from "@/components/conversation-sidebar"
 import { Markdown } from "@/components/markdown"
 import { McpServersDialog } from "@/components/mcp-servers-dialog"
 import { Button } from "@/components/ui/button"
@@ -18,27 +20,17 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import {
   approveAiTool,
+  deleteAiConversation,
+  getAiConversation,
   getAiStatus,
   isElectron,
+  listAiConversations,
   onAiChatEvent,
   sendAiChat,
   setAiKey,
 } from "@/lib/electron"
 import { cn } from "@/lib/utils"
-
-interface ToolCard {
-  id: string
-  name: string
-  input: unknown
-  status: "running" | "success" | "error"
-}
-
-interface DisplayMessage {
-  id: string
-  role: "user" | "assistant"
-  text: string
-  tools: ToolCard[]
-}
+import { hydrateMessages } from "./chat-message-model"
 
 interface PendingApproval {
   approvalId: string
@@ -58,12 +50,20 @@ export function ChatPage() {
   const [approval, setApproval] = useState<PendingApproval | null>(null)
   const [showMcp, setShowMcp] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
-  const [conversationId] = useState(() => crypto.randomUUID())
+  const [showSidebar, setShowSidebar] = useState(true)
+  const [conversations, setConversations] = useState<AiConversationSummary[]>([])
+  const [conversationId, setConversationId] = useState<string>(() => crypto.randomUUID())
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    if (isElectron()) void getAiStatus().then(setStatus)
+  const refreshConversations = useCallback(() => {
+    if (isElectron()) void listAiConversations().then(setConversations)
   }, [])
+
+  useEffect(() => {
+    if (!isElectron()) return
+    void getAiStatus().then(setStatus)
+    refreshConversations()
+  }, [refreshConversations])
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
@@ -73,7 +73,10 @@ export function ChatPage() {
     (event: AiChatEvent) => {
       if (event.conversationId !== conversationId) return
       setMessages((prev) => applyEvent(prev, event))
-      if (event.type === "done") setUsage(event.usage)
+      if (event.type === "done") {
+        setUsage(event.usage)
+        refreshConversations()
+      }
       if (event.type === "approval_request") {
         setApproval({
           approvalId: event.approvalId,
@@ -82,13 +85,36 @@ export function ChatPage() {
         })
       }
     },
-    [conversationId]
+    [conversationId, refreshConversations]
   )
 
   useEffect(() => {
     if (!isElectron()) return
     return onAiChatEvent(handleEvent)
   }, [handleEvent])
+
+  async function selectConversation(id: string) {
+    if (id === conversationId || busy) return
+    setConversationId(id)
+    setUsage(null)
+    setApproval(null)
+    const stored = await getAiConversation(id)
+    setMessages(stored ? hydrateMessages(stored.messages) : [])
+  }
+
+  function newConversation() {
+    if (busy) return
+    setConversationId(crypto.randomUUID())
+    setMessages([])
+    setUsage(null)
+    setApproval(null)
+  }
+
+  async function removeConversation(id: string) {
+    await deleteAiConversation(id)
+    if (id === conversationId) newConversation()
+    refreshConversations()
+  }
 
   async function saveKey() {
     if (!keyDraft.trim() || savingKey) return
@@ -157,102 +183,129 @@ export function ChatPage() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] flex-col gap-3">
-      <Header
-        model={status?.model}
-        onManageMcp={() => setShowMcp(true)}
-        onOpenSettings={() => setShowSettings(true)}
-      />
-      <McpServersDialog open={showMcp} onOpenChange={setShowMcp} />
-      <AiSettingsDialog
-        open={showSettings}
-        onOpenChange={setShowSettings}
-        status={status}
-        onStatusChange={setStatus}
-      />
-
-      <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto pr-1">
-        {messages.length === 0 ? (
-          <p className="py-12 text-center text-sm text-muted-foreground">{t("chat.empty")}</p>
-        ) : (
-          messages.map((message) => <MessageBubble key={message.id} message={message} />)
-        )}
-      </div>
-
-      {usage && (
-        <p className="text-right text-[11px] text-muted-foreground">
-          {t("chat.usage", {
-            input: usage.inputTokens,
-            output: usage.outputTokens,
-            cached: usage.cacheReadInputTokens,
-          })}
-        </p>
-      )}
-
-      <div className="flex items-end gap-2">
-        <Textarea
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault()
-              void send()
-            }
-          }}
-          placeholder={t("chat.placeholder")}
-          className="max-h-40 min-h-10 resize-none"
-          rows={1}
+    <div className="flex h-[calc(100vh-8rem)] gap-3">
+      {showSidebar && (
+        <ConversationSidebar
+          conversations={conversations}
+          activeId={conversationId}
+          onSelect={(id) => void selectConversation(id)}
+          onNew={newConversation}
+          onDelete={(id) => void removeConversation(id)}
         />
-        <Button onClick={() => void send()} disabled={busy || !input.trim()} size="icon">
-          {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-        </Button>
-      </div>
+      )}
+      <div className="flex min-w-0 flex-1 flex-col gap-3">
+        <Header
+          model={status?.model}
+          onToggleSidebar={() => setShowSidebar((value) => !value)}
+          onManageMcp={() => setShowMcp(true)}
+          onOpenSettings={() => setShowSettings(true)}
+        />
+        <McpServersDialog open={showMcp} onOpenChange={setShowMcp} />
+        <AiSettingsDialog
+          open={showSettings}
+          onOpenChange={setShowSettings}
+          status={status}
+          onStatusChange={setStatus}
+        />
 
-      <Dialog
-        open={approval !== null}
-        onOpenChange={(open) => !open && void resolveApproval(false, "once")}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t("chat.approvalTitle")}</DialogTitle>
-            <DialogDescription>
-              {t("chat.approvalBody", { tool: approval?.toolName ?? "" })}
-            </DialogDescription>
-          </DialogHeader>
-          {approval && (
-            <pre className="max-h-48 overflow-auto rounded bg-muted p-3 text-xs">
-              {JSON.stringify(approval.input, null, 2)}
-            </pre>
+        <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto pr-1">
+          {messages.length === 0 ? (
+            <p className="py-12 text-center text-sm text-muted-foreground">{t("chat.empty")}</p>
+          ) : (
+            messages.map((message) => <MessageBubble key={message.id} message={message} />)
           )}
-          <DialogFooter className="gap-2 sm:justify-between">
-            <Button variant="ghost" onClick={() => void resolveApproval(false, "once")}>
-              {t("chat.deny")}
-            </Button>
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={() => void resolveApproval(true, "always")}>
-                {t("chat.allowAlways")}
+        </div>
+
+        {usage && (
+          <p className="text-right text-[11px] text-muted-foreground">
+            {t("chat.usage", {
+              input: usage.inputTokens,
+              output: usage.outputTokens,
+              cached: usage.cacheReadInputTokens,
+            })}
+          </p>
+        )}
+
+        <div className="flex items-end gap-2">
+          <Textarea
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault()
+                void send()
+              }
+            }}
+            placeholder={t("chat.placeholder")}
+            className="max-h-40 min-h-10 resize-none"
+            rows={1}
+          />
+          <Button onClick={() => void send()} disabled={busy || !input.trim()} size="icon">
+            {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+          </Button>
+        </div>
+
+        <Dialog
+          open={approval !== null}
+          onOpenChange={(open) => !open && void resolveApproval(false, "once")}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{t("chat.approvalTitle")}</DialogTitle>
+              <DialogDescription>
+                {t("chat.approvalBody", { tool: approval?.toolName ?? "" })}
+              </DialogDescription>
+            </DialogHeader>
+            {approval && (
+              <pre className="max-h-48 overflow-auto rounded bg-muted p-3 text-xs">
+                {JSON.stringify(approval.input, null, 2)}
+              </pre>
+            )}
+            <DialogFooter className="gap-2 sm:justify-between">
+              <Button variant="ghost" onClick={() => void resolveApproval(false, "once")}>
+                {t("chat.deny")}
               </Button>
-              <Button onClick={() => void resolveApproval(true, "once")}>{t("chat.allow")}</Button>
-            </div>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={() => void resolveApproval(true, "always")}>
+                  {t("chat.allowAlways")}
+                </Button>
+                <Button onClick={() => void resolveApproval(true, "once")}>
+                  {t("chat.allow")}
+                </Button>
+              </div>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
     </div>
   )
 }
 
 function Header({
   model,
+  onToggleSidebar,
   onManageMcp,
   onOpenSettings,
 }: {
   model?: string
+  onToggleSidebar?: () => void
   onManageMcp: () => void
   onOpenSettings: () => void
 }) {
   const { t } = useTranslation()
   return (
     <div className="flex items-center gap-2">
+      {onToggleSidebar && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7"
+          aria-label={t("chat.toggleSidebar")}
+          onClick={onToggleSidebar}
+        >
+          <PanelLeft className="size-4" />
+        </Button>
+      )}
       <Bot className="size-5 text-primary" />
       <h2 className="text-lg font-semibold">{t("chat.title")}</h2>
       <div className="ml-auto flex items-center gap-2">

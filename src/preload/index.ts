@@ -95,6 +95,7 @@ const electronAPI = {
   listAiTools: () => ipcRenderer.invoke("ai:list-tools"),
   listAiConversations: () => ipcRenderer.invoke("ai:list-conversations"),
   getAiConversation: (id: string) => ipcRenderer.invoke("ai:get-conversation", id),
+  deleteAiConversation: (id: string) => ipcRenderer.invoke("ai:delete-conversation", id),
   sendAiChat: (conversationId: string, text: string) =>
     ipcRenderer.invoke("ai:chat", { conversationId, text }),
   cancelAiChat: (conversationId: string) => ipcRenderer.invoke("ai:cancel", conversationId),

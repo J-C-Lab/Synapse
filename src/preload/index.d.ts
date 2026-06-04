@@ -403,6 +403,7 @@ declare global {
       listAiTools: () => Promise<SynapseAiTool[]>
       listAiConversations: () => Promise<SynapseAiConversationSummary[]>
       getAiConversation: (id: string) => Promise<SynapseAiConversation | undefined>
+      deleteAiConversation: (id: string) => Promise<void>
       sendAiChat: (
         conversationId: string,
         text: string

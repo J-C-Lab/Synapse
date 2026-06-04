@@ -325,6 +325,10 @@ export async function getAiConversation(id: string): Promise<AiConversation | un
   return api().getAiConversation(id)
 }
 
+export async function deleteAiConversation(id: string): Promise<void> {
+  await api().deleteAiConversation(id)
+}
+
 export async function sendAiChat(
   conversationId: string,
   text: string

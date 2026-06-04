@@ -23,13 +23,13 @@
 
 ## 推荐落地顺序
 
-| 顺序 | 项                          | 工作量 | 理由                        |
-| ---- | --------------------------- | ------ | --------------------------- |
-| 1    | **Markdown 渲染** ✅ 已完成 | 小     | 日用价值最高、零回归        |
-| 2    | **会话历史侧栏** ⬅ 下一项   | 中     | IPC 基本就绪、自包含        |
-| 3    | **审批 always 持久化**      | 小     | 补已知安全缺口、带撤销出口  |
-| 4    | **HTTP/SSE MCP 传输**       | 中     | 干净扩展 P5a                |
-| 5    | **长期记忆 / RAG**          | 中→大  | 最开放;先 P6a 词法,RAG 选做 |
+| 顺序 | 项                              | 工作量 | 理由                        |
+| ---- | ------------------------------- | ------ | --------------------------- |
+| 1    | **Markdown 渲染** ✅ 已完成     | 小     | 日用价值最高、零回归        |
+| 2    | **会话历史侧栏** ✅ 已完成      | 中     | IPC 基本就绪、自包含        |
+| 3    | **审批 always 持久化** ⬅ 下一项 | 小     | 补已知安全缺口、带撤销出口  |
+| 4    | **HTTP/SSE MCP 传输**           | 中     | 干净扩展 P5a                |
+| 5    | **长期记忆 / RAG**              | 中→大  | 最开放;先 P6a 词法,RAG 选做 |
 
 ### 待你拍板的决策
 
@@ -51,20 +51,22 @@
 
 ---
 
-## 2. 会话历史侧栏
+## 2. 会话历史侧栏 ✅ 已完成
 
 **目标**:左侧列历史会话(标题/时间),点击加载,支持新建/删除。
 
-**现状**:`ai:list-conversations` / `ai:get-conversation` 已就绪;chat-page 当前单会话(`useState(()=>crypto.randomUUID())`)、从不加载历史。**缺 delete 通道**。
+**落地**:
 
-**方案**:
+- 新增 `AgentService.deleteConversation`(先 `cancel` 在飞轮次再 `ConversationStore.delete`)+ `ai:delete-conversation` IPC + preload/wrapper(`deleteAiConversation`)。
+- 新 [chat-message-model.ts](../src/renderer/src/components/pages/chat-message-model.ts):抽出 `DisplayMessage`/`ToolCard` 类型 + `hydrateMessages(stored)` —— `ChatMessage[]` IR → `DisplayMessage[]`。**仅含 tool_result 的 user 轮不产生气泡**(只回填工具卡状态,按 `toolUseId` 配对 `isError`);有文本的 user 轮才出气泡。配 3 个单测。
+- 新 [conversation-sidebar.tsx](../src/renderer/src/components/conversation-sidebar.tsx):新建按钮 + 列表(标题/未命名,active 高亮,hover 删除),`ScrollArea`。
+- `chat-page.tsx`:`conversationId` 改 state;`selectConversation`(拉取并水合)、`newConversation`、`removeConversation`;列表在挂载 + 每次 `done` 事件后刷新;Header 加 `PanelLeft` 折叠按钮(`showSidebar`)。
+- i18n `chat.newConversation/noHistory/untitled/deleteConversation/toggleSidebar`(en/zh-CN);`launcher-settings.test.tsx` mock 补 `deleteAiConversation`。
 
-- `conversationId` 改成 state;切换即 `getAiConversation` 拉取并**水合**:`ChatMessage[]` IR → `DisplayMessage[]`(assistant 的 text+tool_use → 文本 + 工具卡(历史置 success);按 `toolUseId` 配对后续 user 轮的 tool_result.isError 回填卡片状态)。
-- 新增 `ai:delete-conversation`(`ConversationStore.delete` 已存在,补 service/IPC/preload/wrapper)。
-- 抽 `conversation-sidebar.tsx`;列表在每次 `done` 事件后刷新(标题首条用户消息后才有)。
-- 布局:固定可折叠侧栏(窄屏用 `sheet`)。
+**注意/已知限制**:
 
-**触点**:`agent-service.ts`、`ipc/ai.ts`、preload(+d.ts)、`lib/electron.ts`、`chat-page.tsx`、新 `conversation-sidebar.tsx`、i18n、`launcher-settings.test.tsx` mock。水合映射单测。
+- 工具卡显示的是 IR 里的 **sanitized** 名(如 `com_x_act`),非 live 时的 fqName(渲染层无反查表);历史工具卡默认 `success`(被 `tool_result.isError` 覆写为 error)。
+- `crypto.randomUUID()` 返回模板字面量类型,`useState<string>(...)` 显式标注以便 `setConversationId(普通 string)`。
 
 ---
 

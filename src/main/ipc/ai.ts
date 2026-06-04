@@ -19,6 +19,7 @@ export interface AiIpcService {
   listTools: () => ProviderToolSchema[]
   listConversations: () => Promise<ConversationSummary[]>
   getConversation: (id: string) => Promise<StoredConversation | undefined>
+  deleteConversation: (id: string) => Promise<void>
   chat: (conversationId: string, text: string) => Promise<{ stopReason: string; usage: TokenUsage }>
   cancel: (conversationId: string) => void
   resolveApproval: (approvalId: string, allow: boolean, remember?: RememberScope) => void
@@ -76,6 +77,10 @@ export function registerAiIpc(
   ipcMain.handle("ai:get-conversation", (event, id: unknown) => {
     guard(event, "ai:get-conversation")
     return service.getConversation(requireString(id, "id"))
+  })
+  ipcMain.handle("ai:delete-conversation", (event, id: unknown) => {
+    guard(event, "ai:delete-conversation")
+    return service.deleteConversation(requireString(id, "id"))
   })
   ipcMain.handle("ai:chat", (event, payload: unknown) => {
     guard(event, "ai:chat")

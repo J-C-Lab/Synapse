@@ -25,7 +25,12 @@
     "approvalBody": "The assistant wants to run {{tool}} with these inputs:",
     "allow": "Allow once",
     "allowAlways": "Always allow",
-    "deny": "Deny"
+    "deny": "Deny",
+    "newConversation": "New chat",
+    "noHistory": "No conversations yet.",
+    "untitled": "Untitled",
+    "deleteConversation": "Delete conversation",
+    "toggleSidebar": "Toggle history"
   },
   "providers": {
     "title": "AI settings",
