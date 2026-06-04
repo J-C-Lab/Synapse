@@ -6,6 +6,7 @@ import {
   deviceCodeStartResponseSchema,
 } from "@synapse/marketplace-types"
 import { z } from "zod"
+import { githubAuthorizeUrl } from "../auth/github"
 import { parseBody } from "../lib/http"
 import { toUserDto } from "../mappers"
 
@@ -17,23 +18,55 @@ const approveBodySchema = z
   })
   .strict()
 
-/** CLI device-authorization flow (RFC 8628-style) + browser approval. */
+const callbackQuerySchema = z.object({
+  code: z.string().min(1),
+  /** The device grant's user code, round-tripped through OAuth `state`. */
+  state: z.string().min(1),
+})
+
+function htmlPage(title: string, body: string): string {
+  return `<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font-family:system-ui;max-width:32rem;margin:4rem auto;text-align:center"><h1>${title}</h1><p>${body}</p></body>`
+}
+
+/** CLI device-authorization flow (RFC 8628-style) + GitHub browser leg. */
 export function registerAuthRoutes(app: FastifyInstance, services: Services): void {
-  // The CLI starts a grant and shows the user code + verification URL.
+  // The CLI starts a grant; the verification URL is the GitHub authorize URL
+  // with the user code carried in `state`, so opening it completes the grant.
   app.post("/auth/device/start", async (_request, reply) => {
     const grant = await services.deviceCodes.start()
+    const verificationUri = githubAuthorizeUrl({
+      clientId: services.config.GITHUB_CLIENT_ID ?? "",
+      redirectUri: new URL("/auth/github/callback", services.config.PUBLIC_BASE_URL).toString(),
+      state: grant.userCode,
+    })
     return reply.send(
       deviceCodeStartResponseSchema.parse({
         deviceCode: grant.deviceCode,
         userCode: grant.userCode,
-        verificationUri: new URL("/device", services.config.PUBLIC_BASE_URL).toString(),
+        verificationUri,
         interval: grant.interval,
         expiresAt: grant.expiresAt.toISOString(),
       })
     )
   })
 
-  // The browser leg: resolve the GitHub identity and approve the grant.
+  // GitHub redirects here after the user authorizes; resolve the identity and
+  // approve the pending device grant identified by `state`.
+  app.get("/auth/github/callback", async (request, reply) => {
+    const parsed = callbackQuerySchema.safeParse(request.query)
+    if (!parsed.success) {
+      return reply
+        .status(400)
+        .type("text/html")
+        .send(htmlPage("Sign-in failed", "Missing authorization code."))
+    }
+    const profile = await services.github.exchangeCodeForProfile(parsed.data.code)
+    const user = await services.users.upsertFromIdentity({ provider: "github", ...profile })
+    await services.deviceCodes.approve(parsed.data.state, user.id)
+    return reply.type("text/html").send(htmlPage("Signed in", "You can return to your terminal."))
+  })
+
+  // Programmatic approval (used by tests / non-browser flows).
   app.post("/auth/device/approve", async (request, reply) => {
     const body = parseBody(approveBodySchema, request.body)
     const profile = await services.github.exchangeCodeForProfile(body.code)

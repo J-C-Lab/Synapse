@@ -24,6 +24,22 @@ interface GitHubOptions {
   fetch?: typeof globalThis.fetch
 }
 
+/** Build the GitHub OAuth authorize URL the CLI opens in the user's browser. */
+export function githubAuthorizeUrl(options: {
+  clientId: string
+  redirectUri: string
+  state: string
+  scope?: string
+}): string {
+  const params = new URLSearchParams({
+    client_id: options.clientId,
+    redirect_uri: options.redirectUri,
+    scope: options.scope ?? "read:user",
+    state: options.state,
+  })
+  return `https://github.com/login/oauth/authorize?${params.toString()}`
+}
+
 interface GitHubUser {
   id: number
   login: string

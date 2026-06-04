@@ -1,11 +1,19 @@
 #!/usr/bin/env node
+import type { AccountDeps, CommandIo } from "./account-commands"
+import type { BuildResult } from "./build"
+import { spawn } from "node:child_process"
 import * as path from "node:path"
 import process from "node:process"
 import { ManifestValidationError } from "@synapse/plugin-manifest"
+import { runLogin, runLogout, runPublish, runWhoami } from "./account-commands"
 import { buildPlugin, PluginBuildError } from "./build"
+import { fileCredentialStore } from "./credentials-store"
 import { watchPlugin } from "./dev"
 import { linkDevPlugin, unlinkDevPlugin } from "./dev-links"
 import { readManifest } from "./manifest-io"
+import { createMarketplaceClient, MarketplaceApiError } from "./marketplace-client"
+
+const DEFAULT_SERVER = "http://localhost:8787"
 
 interface ParsedArgs {
   command: string | undefined
@@ -21,6 +29,10 @@ Usage:
   synapse-plugin dev      [dir] [--entry src/index.ts] [--data-dir <dir>] [--no-link]
   synapse-plugin link     [dir] [--data-dir <dir>]
   synapse-plugin unlink   [dir] [--data-dir <dir>]
+  synapse-plugin login    [--server <url>]
+  synapse-plugin logout   [--server <url>]
+  synapse-plugin whoami   [--server <url>]
+  synapse-plugin publish  [dir] [--public] [--server <url>]
 
 Commands:
   build      Bundle the plugin and write an installable <id>-<version>.syn
@@ -28,6 +40,13 @@ Commands:
   dev        Watch + rebuild and register the project for Synapse dev loading
   link       Register the project in Synapse's dev-plugins.json
   unlink     Remove the project from Synapse's dev-plugins.json
+  login      Sign in to the marketplace (GitHub, via the browser)
+  logout     Forget the stored marketplace token
+  whoami     Show the signed-in marketplace account
+  publish    Build and publish the plugin (private by default; --public to list)
+
+Environment:
+  SYNAPSE_MARKETPLACE_URL   Marketplace server URL (default ${DEFAULT_SERVER})
 `
 
 async function main(argv: string[]): Promise<void> {
@@ -62,9 +81,71 @@ async function main(argv: string[]): Promise<void> {
       info(`Unlinked dev plugin: ${unlinked}`)
       return
     }
+    case "login":
+      await runLogin(accountDeps(args))
+      return
+    case "logout":
+      await runLogout(accountDeps(args))
+      return
+    case "whoami":
+      await runWhoami(accountDeps(args))
+      return
+    case "publish":
+      await runPublish({
+        ...accountDeps(args),
+        projectDir,
+        visibility: args.flags.get("public") ? "public" : "private",
+        build: cliBuild,
+      })
+      return
     default:
       fail(`Unknown command: ${args.command}\n\n${USAGE}`)
   }
+}
+
+function resolveBaseUrl(args: ParsedArgs): string {
+  return str(args.flags.get("server")) ?? process.env.SYNAPSE_MARKETPLACE_URL ?? DEFAULT_SERVER
+}
+
+function accountDeps(args: ParsedArgs): AccountDeps {
+  const baseUrl = resolveBaseUrl(args)
+  return {
+    client: createMarketplaceClient({ baseUrl }),
+    store: fileCredentialStore(),
+    baseUrl,
+    io: realIo(),
+  }
+}
+
+function realIo(): CommandIo {
+  return {
+    log: info,
+    openBrowser: async (url) => openBrowser(url),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now: () => Date.now(),
+  }
+}
+
+function openBrowser(url: string): void {
+  const platform = process.platform
+  const [cmd, cmdArgs] =
+    platform === "win32"
+      ? (["cmd", ["/c", "start", "", url]] as const)
+      : platform === "darwin"
+        ? (["open", [url]] as const)
+        : (["xdg-open", [url]] as const)
+  try {
+    spawn(cmd, [...cmdArgs], { stdio: "ignore", detached: true }).unref()
+  } catch {
+    // best-effort; the user can open the URL manually
+  }
+}
+
+async function cliBuild(
+  projectDir: string
+): Promise<{ manifest: BuildResult["manifest"]; packagePath: string }> {
+  const result = await buildPlugin({ projectDir })
+  return { manifest: result.manifest, packagePath: result.packagePath }
 }
 
 async function runBuild(projectDir: string, args: ParsedArgs): Promise<void> {
@@ -173,6 +254,10 @@ main(process.argv.slice(2)).catch((err) => {
   if (err instanceof ManifestValidationError || err instanceof PluginBuildError) {
     process.stderr.write(`${err.name}: ${err.message}\n`)
     for (const issue of err.issues) process.stderr.write(`  - ${issue}\n`)
+    process.exit(1)
+  }
+  if (err instanceof MarketplaceApiError) {
+    process.stderr.write(`Error: ${err.message} (${err.code})\n`)
     process.exit(1)
   }
   process.stderr.write(`${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`)

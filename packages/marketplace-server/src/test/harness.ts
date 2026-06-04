@@ -69,7 +69,10 @@ export async function createTestHarness(options: { now?: () => Date } = {}): Pro
 
   const github = new FakeIdentityProvider()
   const storage = new InMemoryStorageProvider()
-  const config = loadConfig({ PUBLIC_BASE_URL: "https://market.test" } as NodeJS.ProcessEnv)
+  const config = loadConfig({
+    PUBLIC_BASE_URL: "https://market.test",
+    GITHUB_CLIENT_ID: "test-client-id",
+  } as NodeJS.ProcessEnv)
   const marketplaceDb = db as unknown as MarketplaceDb
   const app = buildApp({ db: marketplaceDb, github, storage, config, now: options.now })
   await app.ready()

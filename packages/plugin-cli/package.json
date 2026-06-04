@@ -23,6 +23,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@synapse/marketplace-types": "workspace:*",
     "@synapse/plugin-manifest": "workspace:*",
     "esbuild": "^0.25.0",
     "yazl": "^3.3.1"

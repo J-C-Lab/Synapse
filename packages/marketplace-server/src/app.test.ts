@@ -63,7 +63,8 @@ describe("device authorization flow", () => {
   it("starts pending and authorizes after approval", async () => {
     const start = await harness.app.inject({ method: "POST", url: "/auth/device/start" })
     const { deviceCode, userCode, verificationUri, interval } = start.json()
-    expect(verificationUri).toBe("https://market.test/device")
+    expect(verificationUri).toContain("https://github.com/login/oauth/authorize")
+    expect(verificationUri).toContain(`state=${encodeURIComponent(userCode)}`)
     expect(interval).toBeGreaterThan(0)
     expect(userCode).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/)
 
@@ -90,6 +91,26 @@ describe("device authorization flow", () => {
     expect(body.status).toBe("authorized")
     expect(body.accessToken).toBeTruthy()
     expect(body.user.handle).toBe("octocat")
+  })
+
+  it("authorizes via the GitHub callback browser leg", async () => {
+    harness.github.setProfile(OCTOCAT)
+    const start = await harness.app.inject({ method: "POST", url: "/auth/device/start" })
+    const { deviceCode, userCode } = start.json()
+
+    const callback = await harness.app.inject({
+      method: "GET",
+      url: `/auth/github/callback?code=gh-code&state=${encodeURIComponent(userCode)}`,
+    })
+    expect(callback.statusCode).toBe(200)
+    expect(callback.headers["content-type"]).toContain("text/html")
+
+    const poll = await harness.app.inject({
+      method: "POST",
+      url: "/auth/device/poll",
+      payload: { deviceCode },
+    })
+    expect(poll.json().status).toBe("authorized")
   })
 
   it("consumes the device code (single-use)", async () => {

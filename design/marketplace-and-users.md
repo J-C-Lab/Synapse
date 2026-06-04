@@ -372,16 +372,17 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 - **下载计数 / 评分**仍属 **M4**:`resolveDownload` 暂不自增 `downloads`。
 - **搜索**为 M2 基础版:`q` 匹配 id + displayName(jsonb 转文本 ILIKE);排序 downloads/rating/recent;全文检索留待后续。
 
-**仍待「凭据段」完成 M2**
+**凭据段进展**
 
 - ✅ **R2 `StorageProvider` 实现**(@aws-sdk/client-s3 + 预签名)+ `createStorage` 工厂(按 R2\_\* env 切换,缺则 InMemory dev 兜底);index.ts 已接。**已对真实 R2 桶端到端验证**(put→presign→fetch→字节一致)。
-- ✅ **Neon 接通**:`db:migrate` 已对真实 Neon 建好 9 张表。
-- ⏳ **CLI**`login`(device-flow,token 存 OS 凭据库)/ `whoami` / `publish`(build .syn → sha256 → 调 `POST /plugins`)。
-- ⏳ 真实 GitHub OAuth app 的浏览器登录腿(web callback 路由)+ 全链路端到端冒烟。
+- ✅ **Neon 接通**:`db:migrate` 已对真实 Neon 建好 9 张表;真实 `.env` 启动服务 `/health` 返回 ok(对 Neon 跑通 `select 1`)。
+- ✅ **CLI**(`@synapse/plugin-cli`):`login`(device-flow:开浏览器→轮询→token 存 `~/.synapse/credentials.json` mode 0600)/ `logout` / `whoami` / `publish`(复用 `buildPlugin` → 算 sha256 → multipart 调 `POST /plugins`)。`MarketplaceClient`(可注入 fetch)+ 命令逻辑全部依赖注入,**12 条单测**(mock client + 临时目录 store)。
+- ✅ **GitHub 浏览器登录腿**:`/auth/device/start` 的 `verificationUri` 改为 GitHub 授权 URL(userCode 走 `state`);新增 `GET /auth/github/callback`(换 token→upsert 用户→approve 设备授权→返回成功 HTML)。
+- ⏳ **唯一剩余**:真实 GitHub OAuth 浏览器授权的人工端到端冒烟(需在浏览器点一次授权;CLI/服务代码均已就绪)。
 
 **质量基线**
 
 - 顺带修一处**既有 flaky**:`plugin-sandbox.test.ts` 的「times out a tool」用例把 load/invoke 预算 100ms→2000ms(只测 5ms 工具超时);并在 `vitest.config.ts` 加 `maxWorkers`(核数 70%)上限,给 CPU 密集套件(pglite WASM / LAN TLS / vm 墙钟超时)留调度余量,消除并发竞争 flaky。
-- `pnpm lint` ✅ · `pnpm typecheck` ✅ · `pnpm test` **433 passed**(M1 后 422 + M2 新增 11)。
+- `pnpm lint` ✅ · `pnpm typecheck` ✅ · `pnpm test` **446 passed**(M1 后 422 + M2 后端 11 + GitHub 回调 1 + CLI 12)。
 
-> 下一步:**M2 凭据段**(R2 实现 + CLI 命令 + 端到端),或先做 **M3 桌面端市场(读)** 的凭据无关部分(市场页/详情/搜索 UI 接后端,安装前权限展示)。
+> 下一步:**M2 收尾**(你在浏览器跑一次真实登录+发布冒烟),或开 **M3 桌面端市场(读)**(市场页/详情/搜索 UI 接后端,安装前权限展示;凭据无关)。
