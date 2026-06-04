@@ -14,6 +14,7 @@ export default defineConfig({
       "@synapse/plugin-sdk": resolve(__dirname, "packages/plugin-sdk/src/index.ts"),
       "@synapse/plugin-manifest": resolve(__dirname, "packages/plugin-manifest/src/index.ts"),
       "@synapse/plugin-cli": resolve(__dirname, "packages/plugin-cli/src/index.ts"),
+      "@synapse/marketplace-types": resolve(__dirname, "packages/marketplace-types/src/index.ts"),
       // Stub Electron when running unit tests outside of Electron runtime.
       electron: resolve(__dirname, "__mocks__/electron.ts"),
     },
