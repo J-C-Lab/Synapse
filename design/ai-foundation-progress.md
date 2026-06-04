@@ -13,8 +13,8 @@
 | **P1 本地工具桥 + 沙箱执行**          | `PluginToolBridge` + 沙箱 `invokeTool` + 权限校验 + 单测                                   | ✅ 已完成                 |
 | **P2 AgentRuntime + Claude provider** | 编排循环 + Anthropic 适配(prompt caching)+ key 凭据库                                      | ✅ 已完成                 |
 | **P3 Chat UI + 审批**                 | Chat 页 + 工具卡片 + ApprovalGate + 流式 IPC                                               | ✅ 已完成                 |
-| **P4 MCP server(对外)**               | 内置 MCP server 暴露插件工具给 Claude Desktop/Code                                         | ⬜ **下一步**             |
-| **P5 MCP client + 多 provider**       | 接入外部 MCP server + OpenAI 适配                                                          | ⬜                        |
+| **P4 MCP server(对外)**               | 内置 MCP server 暴露插件工具给 Claude Desktop/Code                                         | ✅ 已完成                 |
+| **P5 MCP client + 多 provider**       | 接入外部 MCP server + OpenAI 适配                                                          | ⬜ **下一步**             |
 | **P6 记忆/RAG(可选)**                 | 长期记忆工具 + 本地向量检索                                                                | ⬜                        |
 
 MVP 目标范围:**P0–P3** 端到端「插件工具被内置智能体调用」闭环,P4 紧随。
@@ -73,7 +73,7 @@ MVP 目标范围:**P0–P3** 端到端「插件工具被内置智能体调用」
 
 ## 质量基线(当前)
 
-- `pnpm typecheck` ✅ · `pnpm lint` ✅ · `pnpm test` **331 passed**(P0 +6,P1 +23,P2 +22,P3 +15)
+- `pnpm typecheck` ✅ · `pnpm lint` ✅ · `pnpm test` **336 passed**(P0 +6,P1 +23,P2 +22,P3 +15,P4 +5)
 - commitlint 生效:**subject 必须小写开头**(用 `feat(ai): add ...` 不要 `feat(ai): P1 ...`)。
 - husky/lint-staged 在提交时跑 eslint --fix + prettier,可能改动暂存文件(正常)。
 
@@ -134,21 +134,41 @@ MVP 目标范围:**P0–P3** 端到端「插件工具被内置智能体调用」
 
 ---
 
-## 下一步:P4 — 内置 MCP server(对外)
+## P4 成果(已落地)
 
-目标:**把插件工具经 MCP 暴露给 Claude Desktop/Code 等外部智能体**(decision §11.2:仅 stdio 起步)。
+**插件工具可经 stdio MCP 暴露给 Claude Desktop/Code 等外部智能体**。依赖新增官方 `@modelcontextprotocol/sdk`(纯 JS,主进程外置)。传输只做 stdio;HTTP/SSE 仍推迟到 P5。
+
+| 文件                                      | 作用                                                                                                                                                                                            |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/main/mcp/synapse-mcp-server.ts` (新) | `SynapseMcpToolService`:复用插件 `listTools()`/`invokeTool()`;复用 P2 `sanitizeToolName`/`uniqueName`;低层 MCP `Server` 注册 `tools/list`/`tools/call`;`ToolResult` → MCP `CallToolResult` 转换 |
+| `src/main/mcp/synapse-mcp-server.test.ts` | P4 单测:只读工具默认暴露、MCP caller 路由、隐藏破坏性工具、`exposurePolicy:"all"` opt-in、SDK in-memory `tools/list` + `tools/call` 协议冒烟                                                    |
+| `src/main/ai/tool-registry.ts`            | 导出 `sanitizeToolName`/`uniqueName`,供 AI provider 与 MCP server 共用同一命名规则                                                                                                              |
+| `src/main/index.ts`                       | 新增早期 `--mcp-stdio` 模式:只初始化 `PluginHost` + MCP stdio server;不抢 packaged app 单实例锁;不创建窗口/托盘/IPCs;退出时 dispose 插件宿主                                                    |
+
+**关键不变量(P5+ 注意)**
+
+- 启动入口:`Synapse --mcp-stdio`(dev 下可让 Electron 进程带该参数);该进程是 MCP 子进程模式,不会打开 UI,也不会触发 packaged app 的 single-instance lock。
+- 默认安全策略:`exposurePolicy:"readOnlyOnly"`。只有 `decideApproval(annotations)==="allow"` 的工具会出现在 `tools/list`;破坏性/需要确认/未标注工具不会暴露,直接调用也返回 `isError:true`。
+- 工具执行仍走 P1 链路:`PluginToolBridge` → `PluginRegistry` → `PluginSandbox`;caller 标 `{kind:"mcp"}`。输入校验、权限收窄、超时/取消语义保持一致。
+- MCP schema 边界:插件 `inputSchema`/`outputSchema` 原样保留根字段,但 `properties` 会窄化为对象型 schema,以满足 MCP SDK 类型约束。
+- `ToolResult.content` 转 MCP content:text 原样;json 转 JSON 字符串 text;image 转 `[image: path]` text。`structured` 为普通对象时映射到 `structuredContent`。
+
+**P4 验收状态**
+
+- P4 单测/协议冒烟 ✅:`pnpm test src/main/mcp/synapse-mcp-server.test.ts src/main/ai/tool-registry.test.ts`
+- 类型/静态检查 ✅:`pnpm typecheck`、`pnpm lint`
+- 手动外部客户端冒烟 ⬜:在 Claude Desktop/Code 配置 `Synapse --mcp-stdio`,确认能列出并调用只读插件工具(如模板 `greet`)。
+
+## 下一步:P5 — MCP client + 多 provider
+
+目标:**接入外部 MCP server,并补 OpenAI provider 适配**。P4 已完成对外 server;P5 开始做对内 client,让 Synapse 内置智能体也能调用外部 MCP 工具。
 
 ### 落地要点
 
-1. **MCP server(stdio)**:主进程内置一个 MCP server,把 `pluginHost.listTools()`/`invokeTool()` 暴露为标准 MCP tools。建议用官方 `@modelcontextprotocol/sdk`(纯 JS)。工具的 inputSchema/annotations 已按 MCP 字段建模,几乎直接映射。
-2. **传输**:stdio。需要一个可执行入口(单独的 Node 进程 / Electron 子命令),让外部客户端用命令行拉起。考虑 `electron … --mcp-stdio` 或独立 bin。
-3. **复用 P1 桥**:工具执行仍走 `PluginToolBridge`(校验+沙箱+权限),caller 标 `{kind:"mcp"}`;外部 MCP 默认按 `requiresConfirmation` 处理(design §5)——但 stdio server 无 UI,需决定:拒绝破坏性工具 / 配置允许清单 / 仅暴露 readOnly。建议先只暴露 readOnly + 非破坏工具,破坏性需显式 opt-in。
-4. **复用 sanitize**:工具名同样要 sanitize(MCP 工具名约束)。可抽出 `tool-registry.ts` 的 sanitize 供 server 复用。
-
-### P4 验收
-
-- MCP server 纯逻辑单测:list/call 往返,readOnly 放行、破坏性按策略处理。
-- 手动:在 Claude Desktop 配置该 stdio server,确认能列出并调用 Synapse 插件工具(如 `greet`)。
+1. **MCP client 管理**:主进程维护外部 MCP server 配置(command/args/env/启停),先支持 stdio;持久化配置进入设置存储或 AI 专用 JSON store。
+2. **外部工具接入**:外部 MCP `tools/list` 汇入 AI tool registry,命名空间建议 `mcp:<serverId>/<toolName>` 后再走 provider sanitize;调用时路由到对应 MCP client。
+3. **审批策略**:外部 MCP tool annotations 只能作为提示,默认仍按 Synapse 审批规则:只读可自动放行,未标注/破坏性 ask。注意外部 server 不可信。
+4. **OpenAI provider**:实现 P2 provider IR ↔ OpenAI Responses/Chat 工具调用映射,保留工具名 sanitize 反查逻辑和 token usage 汇总。
 
 ---
 

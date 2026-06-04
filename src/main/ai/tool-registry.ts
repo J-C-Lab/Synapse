@@ -81,12 +81,12 @@ export function renderToolResultText(result: ToolResult): string {
   return parts.join("\n")
 }
 
-function sanitizeToolName(fqName: string): string {
+export function sanitizeToolName(fqName: string): string {
   const cleaned = fqName.replace(/[^\w-]/g, "_")
   return cleaned.length > 128 ? cleaned.slice(0, 128) : cleaned
 }
 
-function uniqueName(base: string, used: Set<string>): string {
+export function uniqueName(base: string, used: Set<string>): string {
   if (!used.has(base)) return base
   for (let i = 2; ; i++) {
     const candidate = `${base.slice(0, 124)}_${i}`

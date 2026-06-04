@@ -46,6 +46,7 @@ import {
   resolveDevLanSimulation,
 } from "./lan/dev-simulation"
 import { LanService } from "./lan/lan-service"
+import { runSynapseMcpStdioServer } from "./mcp/synapse-mcp-server"
 import { defaultNotificationIcon, showStartupNotification } from "./notifications"
 import { PluginHost } from "./plugins/plugin-host"
 import { getContentType, resolveStaticPath } from "./protocol/resolve-static-path"
@@ -76,6 +77,7 @@ if (lanSimulation) {
 }
 // electron-vite injects this in dev (Vite dev server URL). Undefined in prod.
 const rendererDevUrl = process.env.ELECTRON_RENDERER_URL
+const isMcpStdioMode = process.argv.includes("--mcp-stdio")
 
 // Custom scheme used for the production renderer. Loading the renderer at
 // `app://app/index.html` makes absolute asset paths (`/assets/...`) resolve
@@ -632,141 +634,159 @@ async function initLan(enabled: boolean): Promise<void> {
   }
 }
 
+async function startMcpStdioMode(): Promise<void> {
+  await app.whenReady()
+  plugins = createPluginHost()
+  await plugins.init()
+  await runSynapseMcpStdioServer(plugins, { version: app.getVersion() })
+}
+
 // Single-instance lock: focusing the existing packaged app is friendlier than
 // silently launching a duplicate process that fights for the same resources.
 // In dev, skip the lock so stale Electron processes do not steal restarts and
 // leave the visible window stuck on only the BrowserWindow background.
 const shouldUseSingleInstanceLock = app.isPackaged
-const gotLock = !shouldUseSingleInstanceLock || app.requestSingleInstanceLock()
-if (!gotLock) {
-  app.quit()
-} else {
-  // macOS delivers "open with" through this event, possibly before the app is
-  // ready — importSynapseFromOs queues until the plugin host exists.
-  app.on("open-file", (event, filePath) => {
-    event.preventDefault()
-    if (filePath.toLowerCase().endsWith(".syn")) void importSynapseFromOs(filePath)
-  })
-
-  if (shouldUseSingleInstanceLock) {
-    app.on("second-instance", (_event, argv) => {
-      // A second launch carrying a .syn file (Windows/Linux "open with")
-      // routes to import; otherwise re-open the launcher rather than steal
-      // focus from whatever the user is doing — matches PowerToys behaviour.
-      const synapseArg = findSynapseArg(argv)
-      if (synapseArg) {
-        void importSynapseFromOs(synapseArg)
-        return
-      }
-      showSearchWindow(searchWindowDeps())
-    })
-  }
-
-  void app.whenReady().then(async () => {
-    // Match package.json build.appId so Windows recognises the app
-    // identity and the post-install Start Menu shortcut's icon flows
-    // through to toast notifications. Without this the OS treats us
-    // as "electron.app.Electron" and shows Electron's default logo.
-    if (process.platform === "win32") {
-      app.setAppUserModelId("com.synapse.desktop")
-    }
-
-    applyCsp()
-    registerStaticProtocol()
-    plugins = createPluginHost()
-    lan = new LanService({
-      userDataDir: app.getPath("userData"),
-      adapter: new BonjourLanDiscoveryAdapter(),
-      deviceName: lanSimulation?.deviceName,
-      protector: {
-        encrypt: (plainText) => {
-          if (!safeStorage.isEncryptionAvailable()) {
-            throw new Error("OS-backed encryption is unavailable for LAN credentials.")
-          }
-          return safeStorage.encryptString(plainText).toString("base64")
-        },
-        decrypt: (encryptedText) => safeStorage.decryptString(Buffer.from(encryptedText, "base64")),
-      },
-    })
-    agent = createAgentService()
-    registerIpc()
-
-    // Remove the default File/Edit/View… menu bar — the app uses a tray icon
-    // and sidebar navigation instead.
-    Menu.setApplicationMenu(null)
-
-    let settings = await launcher.init()
-    try {
-      await initLan(settings.lanEnabled)
-    } catch (err) {
-      console.error("[synapse] failed to initialize LAN discovery", err)
-      settings = await launcher.updateSettings({ lanEnabled: false })
-    }
-    await plugins.init()
-
-    // Replay a queued macOS open-file, or a .syn passed on first launch
-    // (Windows/Linux "open with"), now that the plugin host is ready.
-    const launchSynapse = pendingSynapseImport ?? findSynapseArg(process.argv.slice(1))
-    pendingSynapseImport = null
-    if (launchSynapse) void importSynapseFromOs(launchSynapse)
-
-    // Pre-warm both the main window (so the first show is instant) and the
-    // app cache (so the first launcher query has results).
-    mainWindow = createMainWindow()
-    if (lanSimulation) showMainWindow()
-    ensureSearchWindow(searchWindowDeps())
-    void launcher.refreshApps()
-
-    createTray(defaultTrayIcon(), trayActions())
-    rebindHotkey(settings.hotkey)
-    syncFloatingBallWindow(floatingBallDeps())
-    showStartupNotification({
-      hotkey: settings.hotkey,
-      locale: app.getLocale(),
-      iconPath: defaultNotificationIcon(),
-    })
-
-    app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        mainWindow = createMainWindow()
-      }
-      showMainWindow()
-    })
-  })
-
+if (isMcpStdioMode) {
   app.on("will-quit", () => {
-    setSearchWindowQuitting(true)
-    destroyFloatingBallWindow()
-    void lan?.stop().catch((err) => console.error("[synapse] failed to stop LAN discovery", err))
-    unbindGlobalShortcut()
-    destroyTray()
     plugins?.dispose()
   })
+  void startMcpStdioMode().catch((err) => {
+    console.error("[synapse:mcp] stdio server failed", err)
+    app.exit(1)
+  })
+} else {
+  const gotLock = !shouldUseSingleInstanceLock || app.requestSingleInstanceLock()
+  if (!gotLock) {
+    app.quit()
+  } else {
+    // macOS delivers "open with" through this event, possibly before the app is
+    // ready — importSynapseFromOs queues until the plugin host exists.
+    app.on("open-file", (event, filePath) => {
+      event.preventDefault()
+      if (filePath.toLowerCase().endsWith(".syn")) void importSynapseFromOs(filePath)
+    })
 
-  // Plugin storage uses a 250ms throttled tmp+rename flush. Without this
-  // hook the user clicks Quit at t=240ms after a `storage.set` and Electron
-  // exits before the flush timer fires — the write is dropped. We block
-  // before-quit once, run flushAll, then quit again. The `pluginsFlushed`
-  // flag ensures the second quit goes through normally instead of looping.
-  let pluginsFlushed = false
-  app.on("before-quit", (event) => {
-    quitRequested = true
-    setSearchWindowQuitting(true)
-    if (pluginsFlushed || !plugins) return
-    event.preventDefault()
-    void plugins
-      .flush()
-      .catch((err) => console.error("[synapse] plugin flush failed during shutdown", err))
-      .finally(() => {
-        pluginsFlushed = true
-        app.quit()
+    if (shouldUseSingleInstanceLock) {
+      app.on("second-instance", (_event, argv) => {
+        // A second launch carrying a .syn file (Windows/Linux "open with")
+        // routes to import; otherwise re-open the launcher rather than steal
+        // focus from whatever the user is doing — matches PowerToys behaviour.
+        const synapseArg = findSynapseArg(argv)
+        if (synapseArg) {
+          void importSynapseFromOs(synapseArg)
+          return
+        }
+        showSearchWindow(searchWindowDeps())
       })
-  })
+    }
 
-  // Tray-resident launcher: do NOT quit when all windows are closed.
-  // Subscribing with a no-op handler suppresses Electron's default
-  // "quit when last window closes" behaviour on Windows/Linux.
-  app.on("window-all-closed", () => {
-    // intentionally empty
-  })
+    void app.whenReady().then(async () => {
+      // Match package.json build.appId so Windows recognises the app
+      // identity and the post-install Start Menu shortcut's icon flows
+      // through to toast notifications. Without this the OS treats us
+      // as "electron.app.Electron" and shows Electron's default logo.
+      if (process.platform === "win32") {
+        app.setAppUserModelId("com.synapse.desktop")
+      }
+
+      applyCsp()
+      registerStaticProtocol()
+      plugins = createPluginHost()
+      lan = new LanService({
+        userDataDir: app.getPath("userData"),
+        adapter: new BonjourLanDiscoveryAdapter(),
+        deviceName: lanSimulation?.deviceName,
+        protector: {
+          encrypt: (plainText) => {
+            if (!safeStorage.isEncryptionAvailable()) {
+              throw new Error("OS-backed encryption is unavailable for LAN credentials.")
+            }
+            return safeStorage.encryptString(plainText).toString("base64")
+          },
+          decrypt: (encryptedText) =>
+            safeStorage.decryptString(Buffer.from(encryptedText, "base64")),
+        },
+      })
+      agent = createAgentService()
+      registerIpc()
+
+      // Remove the default File/Edit/View… menu bar — the app uses a tray icon
+      // and sidebar navigation instead.
+      Menu.setApplicationMenu(null)
+
+      let settings = await launcher.init()
+      try {
+        await initLan(settings.lanEnabled)
+      } catch (err) {
+        console.error("[synapse] failed to initialize LAN discovery", err)
+        settings = await launcher.updateSettings({ lanEnabled: false })
+      }
+      await plugins.init()
+
+      // Replay a queued macOS open-file, or a .syn passed on first launch
+      // (Windows/Linux "open with"), now that the plugin host is ready.
+      const launchSynapse = pendingSynapseImport ?? findSynapseArg(process.argv.slice(1))
+      pendingSynapseImport = null
+      if (launchSynapse) void importSynapseFromOs(launchSynapse)
+
+      // Pre-warm both the main window (so the first show is instant) and the
+      // app cache (so the first launcher query has results).
+      mainWindow = createMainWindow()
+      if (lanSimulation) showMainWindow()
+      ensureSearchWindow(searchWindowDeps())
+      void launcher.refreshApps()
+
+      createTray(defaultTrayIcon(), trayActions())
+      rebindHotkey(settings.hotkey)
+      syncFloatingBallWindow(floatingBallDeps())
+      showStartupNotification({
+        hotkey: settings.hotkey,
+        locale: app.getLocale(),
+        iconPath: defaultNotificationIcon(),
+      })
+
+      app.on("activate", () => {
+        if (BrowserWindow.getAllWindows().length === 0) {
+          mainWindow = createMainWindow()
+        }
+        showMainWindow()
+      })
+    })
+
+    app.on("will-quit", () => {
+      setSearchWindowQuitting(true)
+      destroyFloatingBallWindow()
+      void lan?.stop().catch((err) => console.error("[synapse] failed to stop LAN discovery", err))
+      unbindGlobalShortcut()
+      destroyTray()
+      plugins?.dispose()
+    })
+
+    // Plugin storage uses a 250ms throttled tmp+rename flush. Without this
+    // hook the user clicks Quit at t=240ms after a `storage.set` and Electron
+    // exits before the flush timer fires — the write is dropped. We block
+    // before-quit once, run flushAll, then quit again. The `pluginsFlushed`
+    // flag ensures the second quit goes through normally instead of looping.
+    let pluginsFlushed = false
+    app.on("before-quit", (event) => {
+      quitRequested = true
+      setSearchWindowQuitting(true)
+      if (pluginsFlushed || !plugins) return
+      event.preventDefault()
+      void plugins
+        .flush()
+        .catch((err) => console.error("[synapse] plugin flush failed during shutdown", err))
+        .finally(() => {
+          pluginsFlushed = true
+          app.quit()
+        })
+    })
+
+    // Tray-resident launcher: do NOT quit when all windows are closed.
+    // Subscribing with a no-op handler suppresses Electron's default
+    // "quit when last window closes" behaviour on Windows/Linux.
+    app.on("window-all-closed", () => {
+      // intentionally empty
+    })
+  }
 }
