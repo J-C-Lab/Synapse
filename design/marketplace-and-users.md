@@ -374,9 +374,10 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 
 **仍待「凭据段」完成 M2**
 
-- **R2 `StorageProvider` 实现**(@aws-sdk/client-s3 + 预签名),index.ts 按 env 切换(现为 InMemory + 启动告警,dev 用)。
-- **CLI**`login`(device-flow,token 存 OS 凭据库)/ `whoami` / `publish`(build .syn → sha256 → 调 `POST /plugins`)。
-- 真实 GitHub OAuth app + R2 桶,端到端冒烟。
+- ✅ **R2 `StorageProvider` 实现**(@aws-sdk/client-s3 + 预签名)+ `createStorage` 工厂(按 R2\_\* env 切换,缺则 InMemory dev 兜底);index.ts 已接。**已对真实 R2 桶端到端验证**(put→presign→fetch→字节一致)。
+- ✅ **Neon 接通**:`db:migrate` 已对真实 Neon 建好 9 张表。
+- ⏳ **CLI**`login`(device-flow,token 存 OS 凭据库)/ `whoami` / `publish`(build .syn → sha256 → 调 `POST /plugins`)。
+- ⏳ 真实 GitHub OAuth app 的浏览器登录腿(web callback 路由)+ 全链路端到端冒烟。
 
 **质量基线**
 
