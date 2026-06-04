@@ -217,7 +217,9 @@ module.exports = {
   tools: { hang() { return new Promise(() => {}) } }
 }
 `)
-    const sandbox = sandboxForTest(100, 100, 5)
+    // Only the tool-invoke budget (5ms) is under test; keep load/invoke generous
+    // so the load step does not flake under CPU load.
+    const sandbox = sandboxForTest(2000, 2000, 5)
     await sandbox.loadPlugin(entry)
 
     await expect(

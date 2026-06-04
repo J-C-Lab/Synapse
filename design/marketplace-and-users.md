@@ -203,18 +203,18 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 
 > 命名 **M(arketplace)** 阶段,与 AI 基座的 P 阶段区分。每阶段独立可验收。
 
-| 阶段                        | 内容                                                                                                  | 产出 / 验收                                                                                 |
-| --------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| **M0 数据模型 + 协议**      | 定义 User/Plugin/Version/Download/Rating 的 schema(zod 共享包 `@synapse/marketplace-types`)、API 契约 | ✅ **已完成**(见 §11)——类型 + 契约,无运行时,前后端共用                                      |
-| **M1 后端骨架 + 鉴权**      | `marketplace-server` 起服务、Postgres + 对象存储接线、GitHub OAuth、JWT、用户表                       | ✅ **已完成**(见 §12)——Fastify+Drizzle 骨架、全量 schema、device-flow 鉴权、pglite 集成测试 |
-| **M2 发布闭环(CLI)**        | `publish`(鉴权+上传+注册版本)+ owner/semver/sha256 校验;CLI `login/whoami`                            | 开发者能从命令行把私人插件发布上去并在 DB 可见                                              |
-| **M3 桌面端市场(读)**       | 市场浏览/搜索/详情页 + 安装前权限展示;公开走**快照**,登录态拉私人;复用现有 install                    | 用户能在 app 内浏览并安装公开/自己的私人插件                                                |
-| **M4 下载量 + 评分 + 评级** | 下载计数(防刷)、评分写入与聚合、排行算法(Wilson+衰减)、排行榜/精选位                                  | 公开插件有真实下载量与星级,首页有排行                                                       |
-| **M5 私人/公开治理**        | app 内可见性切换、yank、举报、admin 下架;可信源开关                                                   | owner 自助管理可见性;基础治理可用                                                           |
-| **M6 Web 门户**             | 浏览器端市场门户(复用现有 Fumadocs/Next 工作流)、SEO、可分享插件详情链接、Web 端浏览/搜索/详情        | 非桌面用户也能逛市场;插件有公开可索引页面                                                   |
-| **M7 审核流水线**           | 上传自动扫描 + 人工审核队列、敏感权限分级、审核状态机(pending/approved/rejected)、admin 控制台        | 公开插件经审核后上架;治理可规模化                                                           |
-| **M8 组织 / 协作者**        | Organization 实体、团队命名空间、Collaborator 角色与权限、转移所有权                                  | 多人共同维护一个插件 / 组织发布                                                             |
-| **M9 付费 / 分成(可选)**    | 付费插件、结算(Stripe 等)、开发者收入分成、发票                                                       | 形态 C 完整体;插件可商业化                                                                  |
+| 阶段                        | 内容                                                                                                  | 产出 / 验收                                                                                                      |
+| --------------------------- | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **M0 数据模型 + 协议**      | 定义 User/Plugin/Version/Download/Rating 的 schema(zod 共享包 `@synapse/marketplace-types`)、API 契约 | ✅ **已完成**(见 §11)——类型 + 契约,无运行时,前后端共用                                                           |
+| **M1 后端骨架 + 鉴权**      | `marketplace-server` 起服务、Postgres + 对象存储接线、GitHub OAuth、JWT、用户表                       | ✅ **已完成**(见 §12)——Fastify+Drizzle 骨架、全量 schema、device-flow 鉴权、pglite 集成测试                      |
+| **M2 发布闭环(CLI)**        | `publish`(鉴权+上传+注册版本)+ owner/semver/sha256 校验;CLI `login/whoami`                            | 🟡 **进行中**(见 §13)——后端 publish/browse/download 端点 + 测试已落地(凭据无关段);CLI 命令与真实 R2/OAuth 待后续 |
+| **M3 桌面端市场(读)**       | 市场浏览/搜索/详情页 + 安装前权限展示;公开走**快照**,登录态拉私人;复用现有 install                    | 用户能在 app 内浏览并安装公开/自己的私人插件                                                                     |
+| **M4 下载量 + 评分 + 评级** | 下载计数(防刷)、评分写入与聚合、排行算法(Wilson+衰减)、排行榜/精选位                                  | 公开插件有真实下载量与星级,首页有排行                                                                            |
+| **M5 私人/公开治理**        | app 内可见性切换、yank、举报、admin 下架;可信源开关                                                   | owner 自助管理可见性;基础治理可用                                                                                |
+| **M6 Web 门户**             | 浏览器端市场门户(复用现有 Fumadocs/Next 工作流)、SEO、可分享插件详情链接、Web 端浏览/搜索/详情        | 非桌面用户也能逛市场;插件有公开可索引页面                                                                        |
+| **M7 审核流水线**           | 上传自动扫描 + 人工审核队列、敏感权限分级、审核状态机(pending/approved/rejected)、admin 控制台        | 公开插件经审核后上架;治理可规模化                                                                                |
+| **M8 组织 / 协作者**        | Organization 实体、团队命名空间、Collaborator 角色与权限、转移所有权                                  | 多人共同维护一个插件 / 组织发布                                                                                  |
+| **M9 付费 / 分成(可选)**    | 付费插件、结算(Stripe 等)、开发者收入分成、发票                                                       | 形态 C 完整体;插件可商业化                                                                                       |
 
 **实现优先级(C 平台分波次上线)**:
 
@@ -348,4 +348,39 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 - 顺带修复一处**既有 flaky**:`plugin-sandbox.test.ts` 的默认沙箱超时 100ms→2000ms(只影响非超时用例;显式超时用例仍传小值)。CPU 高负载下 100ms 墙钟预算会偶发失败,与本次新增的 WASM 测试并发时暴露。
 - `pnpm lint` ✅ · `pnpm typecheck` ✅ · `pnpm test` **422 passed**(M0 后 412 + M1 新增 10);连跑两次稳定。
 
-> 下一步 **M2**:CLI `login`(device-flow,token 存 OS 凭据库)/ `whoami` / `publish`(build .syn → 算 sha256 → 上传 R2 → 注册 `PluginVersion`,后端校验 owner/semver 单调/digest)。需接入真实 R2 桶与 GitHub OAuth app(对象存储上传是 M2 首个需外部凭据的点)。
+---
+
+## 13. M2 成果(进行中 —— 后端段已落地,2026-06-05)
+
+**发布 / 浏览 / 下载的后端端点 + 测试**(M2 的「凭据无关段」)。在 `@synapse/marketplace-server` 上新增对象存储端口与插件服务;`.syn` 字节经可注入 `StorageProvider` 落地,测试用进程内 fake,**仍零外部凭据**。
+
+| 区域                             | 内容                                                                                                                                                                                                                                                                 |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `storage/types.ts` + `memory.ts` | `StorageProvider` 端口(`put` / `signedDownloadUrl`)+ `InMemoryStorageProvider`(测试 / 本地 dev;返回合成 https URL)。R2 实现留待凭据段。                                                                                                                              |
+| `lib/semver.ts`                  | `compareVersions`(发布单调性校验)                                                                                                                                                                                                                                    |
+| `services/plugin-service.ts`     | `publish`(owner 校验 + 版本不存在且严格大于 latest + digest/size 校验 → 上传 → 写不可变版本 → upsert 插件 → 首发布升级 `developer`)、`search`(仅 public/active)、`listByOwner`、`getDetail`(私有仅 owner 可见,否则 404 不泄露)、`resolveDownload`(签名 URL + digest) |
+| `routes/plugins.ts`              | `POST /plugins`(鉴权 + multipart:`metadata` JSON + `package` 文件)、`GET /plugins`(搜索)、`GET /plugins/mine`(鉴权)、`GET /plugins/:id`(详情,可选鉴权)、`GET /plugins/:id/versions/:version/download`                                                                |
+| `mappers.ts`                     | 新增 `toPluginDto` / `toPluginSummaryDto` / `toPluginVersionDto`(行→契约,日期转 ISO 并经 zod 复核)                                                                                                                                                                   |
+| `routes/plugins.test.ts`         | **11 条** pglite 集成测试:发布建插件+版本+升级 developer、匿名拒绝、digest 不符、版本单调/重复(409)、跨 owner 发布(403)、搜索仅公开、详情含版本、私有可见性(owner/anon/他人)、myPlugins、下载签名 URL、私有下载 404                                                  |
+
+**关键不变量(凭据段 / M3 注意)**
+
+- **发布顺序**:先 upsert `plugins` 行再插 `plugin_versions`(满足 FK)。
+- **存储端口契约**:key 形如 `plugins/<id>/<version>/<id>-<version>.syn`;`put` 与 `signedDownloadUrl` 用同一 key 推导。R2 实现只需实现该端口,路由/服务无需改。
+- **可见性裁决**集中在 `PluginService.canView`:`removed`→不可见;`public`→所有人;`private`→仅 owner。下载/详情共用。
+- **multipart**:`@fastify/multipart`,单文件、上限 50MB;`metadata` 字段为 JSON 串,经 `publishRequestSchema` 校验。
+- **下载计数 / 评分**仍属 **M4**:`resolveDownload` 暂不自增 `downloads`。
+- **搜索**为 M2 基础版:`q` 匹配 id + displayName(jsonb 转文本 ILIKE);排序 downloads/rating/recent;全文检索留待后续。
+
+**仍待「凭据段」完成 M2**
+
+- **R2 `StorageProvider` 实现**(@aws-sdk/client-s3 + 预签名),index.ts 按 env 切换(现为 InMemory + 启动告警,dev 用)。
+- **CLI**`login`(device-flow,token 存 OS 凭据库)/ `whoami` / `publish`(build .syn → sha256 → 调 `POST /plugins`)。
+- 真实 GitHub OAuth app + R2 桶,端到端冒烟。
+
+**质量基线**
+
+- 顺带修一处**既有 flaky**:`plugin-sandbox.test.ts` 的「times out a tool」用例把 load/invoke 预算 100ms→2000ms(只测 5ms 工具超时);并在 `vitest.config.ts` 加 `maxWorkers`(核数 70%)上限,给 CPU 密集套件(pglite WASM / LAN TLS / vm 墙钟超时)留调度余量,消除并发竞争 flaky。
+- `pnpm lint` ✅ · `pnpm typecheck` ✅ · `pnpm test` **433 passed**(M1 后 422 + M2 新增 11)。
+
+> 下一步:**M2 凭据段**(R2 实现 + CLI 命令 + 端到端),或先做 **M3 桌面端市场(读)** 的凭据无关部分(市场页/详情/搜索 UI 接后端,安装前权限展示)。

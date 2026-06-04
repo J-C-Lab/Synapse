@@ -1,6 +1,12 @@
+import { availableParallelism } from "node:os"
 import { resolve } from "node:path"
 import react from "@vitejs/plugin-react"
 import { defineConfig } from "vitest/config"
+
+// Cap worker count below the core count so CPU-heavy suites (pglite WASM,
+// LAN TLS handshakes, vm wall-clock timeouts) keep enough scheduling headroom
+// to stay deterministic when the whole suite runs in parallel.
+const maxWorkers = Math.max(2, Math.floor(availableParallelism() * 0.7))
 
 export default defineConfig({
   plugins: [react()],
@@ -24,6 +30,8 @@ export default defineConfig({
     globals: false,
     setupFiles: ["./vitest.setup.ts"],
     css: false,
+    maxWorkers,
+    minWorkers: 1,
     // junit reporter writes a single XML file so the workflow can upload it
     // as the "test-results" artifact and feed it to publish-unit-test-result
     // for a PR comment. "default" keeps the terminal output local devs expect.

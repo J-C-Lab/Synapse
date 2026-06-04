@@ -8,6 +8,7 @@ import { migrate } from "drizzle-orm/pglite/migrator"
 import { buildApp } from "../app"
 import { loadConfig } from "../config"
 import { schema } from "../db/schema"
+import { InMemoryStorageProvider } from "../storage/memory"
 
 /**
  * A scriptable identity provider for tests — no GitHub, no network. Set the
@@ -45,6 +46,7 @@ export interface TestHarness {
   app: FastifyInstance
   db: MarketplaceDb
   github: FakeIdentityProvider
+  storage: InMemoryStorageProvider
   /** Truncate all tables so a single pglite instance can be reused per test. */
   reset: () => Promise<void>
   close: () => Promise<void>
@@ -66,15 +68,17 @@ export async function createTestHarness(options: { now?: () => Date } = {}): Pro
   await migrate(db, { migrationsFolder: path.join(__dirname, "..", "..", "drizzle") })
 
   const github = new FakeIdentityProvider()
+  const storage = new InMemoryStorageProvider()
   const config = loadConfig({ PUBLIC_BASE_URL: "https://market.test" } as NodeJS.ProcessEnv)
   const marketplaceDb = db as unknown as MarketplaceDb
-  const app = buildApp({ db: marketplaceDb, github, config, now: options.now })
+  const app = buildApp({ db: marketplaceDb, github, storage, config, now: options.now })
   await app.ready()
 
   return {
     app,
     db: marketplaceDb,
     github,
+    storage,
     reset: async () => {
       await client.exec(`TRUNCATE TABLE ${TABLES.join(", ")} RESTART IDENTITY CASCADE;`)
     },

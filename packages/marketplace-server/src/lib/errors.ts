@@ -25,6 +25,8 @@ export const badRequest = (message: string, issues?: string[]): HttpError =>
   new HttpError(400, "bad_request", message, issues)
 export const unauthorized = (message: string): HttpError =>
   new HttpError(401, "unauthorized", message)
+export const forbidden = (message: string): HttpError => new HttpError(403, "forbidden", message)
+export const conflict = (message: string): HttpError => new HttpError(409, "conflict", message)
 export const gone = (message: string): HttpError => new HttpError(410, "gone", message)
 
 /** Write the uniform error envelope. */
