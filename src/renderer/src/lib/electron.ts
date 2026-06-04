@@ -1,3 +1,9 @@
+import type {
+  PluginDetailResponse,
+  PluginSummary,
+  SearchPluginsResponse,
+} from "@synapse/marketplace-types"
+
 /**
  * Detects whether the app is running inside an Electron renderer.
  * Use this to gate any code that calls IPC so the same component
@@ -24,6 +30,9 @@ export type LanPairing = SynapseLanPairing
 export type LanTransfer = SynapseLanTransfer
 export type PluginRegistryEntry = SynapsePluginRegistryEntry
 export type MarketplaceEntry = SynapseMarketplaceEntry
+export type MarketplaceSummary = PluginSummary
+export type MarketplaceDetail = PluginDetailResponse
+export type MarketplaceSearchResponse = SearchPluginsResponse
 export type PluginCommandResult = SynapsePluginCommandResult
 export type PluginInvokePhase = SynapsePluginInvokePhase
 export type PluginView = SynapsePluginView
@@ -239,6 +248,21 @@ export async function installMarketplacePlugin(
   version?: string
 ): Promise<PluginRegistryEntry> {
   return unwrapIpcResult(await api().installMarketplacePlugin(id, version))
+}
+
+export async function searchMarketplace(query?: string): Promise<MarketplaceSearchResponse> {
+  return unwrapIpcResult(await api().searchMarketplace(query))
+}
+
+export async function getMarketplaceDetail(pluginId: string): Promise<MarketplaceDetail> {
+  return unwrapIpcResult(await api().getMarketplaceDetail(pluginId))
+}
+
+export async function installMarketplaceBackendPlugin(
+  id: string,
+  version: string
+): Promise<PluginRegistryEntry> {
+  return unwrapIpcResult(await api().installMarketplaceBackendPlugin(id, version))
 }
 
 export function onLauncherFocus(handler: () => void): () => void {

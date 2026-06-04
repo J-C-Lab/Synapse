@@ -403,6 +403,20 @@ declare global {
         id: string,
         version?: string
       ) => Promise<SynapsePluginIpcResult<SynapsePluginRegistryEntry>>
+      searchMarketplace: (
+        query?: string
+      ) => Promise<
+        SynapsePluginIpcResult<import("@synapse/marketplace-types").SearchPluginsResponse>
+      >
+      getMarketplaceDetail: (
+        pluginId: string
+      ) => Promise<
+        SynapsePluginIpcResult<import("@synapse/marketplace-types").PluginDetailResponse>
+      >
+      installMarketplaceBackendPlugin: (
+        id: string,
+        version: string
+      ) => Promise<SynapsePluginIpcResult<SynapsePluginRegistryEntry>>
       onLauncherFocus: (handler: () => void) => () => void
       onFloatingBallMenuState: (handler: (expanded: boolean) => void) => () => void
       onFloatingBallFeatures: (

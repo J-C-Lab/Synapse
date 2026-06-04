@@ -208,7 +208,7 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 | **M0 数据模型 + 协议**      | 定义 User/Plugin/Version/Download/Rating 的 schema(zod 共享包 `@synapse/marketplace-types`)、API 契约 | ✅ **已完成**(见 §11)——类型 + 契约,无运行时,前后端共用                                                                                    |
 | **M1 后端骨架 + 鉴权**      | `marketplace-server` 起服务、Postgres + 对象存储接线、GitHub OAuth、JWT、用户表                       | ✅ **已完成**(见 §12)——Fastify+Drizzle 骨架、全量 schema、device-flow 鉴权、pglite 集成测试                                               |
 | **M2 发布闭环(CLI)**        | `publish`(鉴权+上传+注册版本)+ owner/semver/sha256 校验;CLI `login/whoami`                            | ✅ **已完成**(见 §13)——CLI login/whoami/publish + GitHub 浏览器登录腿;**真实端到端冒烟通过**(登录→发布→搜索→详情→签名下载,Neon+R2+GitHub) |
-| **M3 桌面端市场(读)**       | 市场浏览/搜索/详情页 + 安装前权限展示;公开走**快照**,登录态拉私人;复用现有 install                    | 用户能在 app 内浏览并安装公开/自己的私人插件                                                                                              |
+| **M3 桌面端市场(读)**       | 市场浏览/搜索/详情页 + 安装前权限展示;公开走**快照**,登录态拉私人;复用现有 install                    | ✅ **已完成**(见 §14)——市场页接后端搜索/详情 + 安装前权限/工具披露 + 经签名 URL 校验 sha256 安装。桌面端账户登录(私人插件)留作增强        |
 | **M4 下载量 + 评分 + 评级** | 下载计数(防刷)、评分写入与聚合、排行算法(Wilson+衰减)、排行榜/精选位                                  | 公开插件有真实下载量与星级,首页有排行                                                                                                     |
 | **M5 私人/公开治理**        | app 内可见性切换、yank、举报、admin 下架;可信源开关                                                   | owner 自助管理可见性;基础治理可用                                                                                                         |
 | **M6 Web 门户**             | 浏览器端市场门户(复用现有 Fumadocs/Next 工作流)、SEO、可分享插件详情链接、Web 端浏览/搜索/详情        | 非桌面用户也能逛市场;插件有公开可索引页面                                                                                                 |
@@ -385,4 +385,30 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 - 顺带修一处**既有 flaky**:`plugin-sandbox.test.ts` 的「times out a tool」用例把 load/invoke 预算 100ms→2000ms(只测 5ms 工具超时);并在 `vitest.config.ts` 加 `maxWorkers`(核数 70%)上限,给 CPU 密集套件(pglite WASM / LAN TLS / vm 墙钟超时)留调度余量,消除并发竞争 flaky。
 - `pnpm lint` ✅ · `pnpm typecheck` ✅ · `pnpm test` **446 passed**(M1 后 422 + M2 后端 11 + GitHub 回调 1 + CLI 12)。
 
-> 下一步:**M2 收尾**(你在浏览器跑一次真实登录+发布冒烟),或开 **M3 桌面端市场(读)**(市场页/详情/搜索 UI 接后端,安装前权限展示;凭据无关)。
+---
+
+## 14. M3 成果(已落地,2026-06-05)
+
+**桌面端市场页接入后端**(凭据无关)。把现有 marketplace 页从静态 registry 演进为后端 API 驱动:搜索 / 详情 / **安装前权限与工具披露** / 经签名 URL 校验 sha256 安装。
+
+| 区域                                           | 内容                                                                                                                                                                    |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/main/plugins/marketplace-api.ts` (新)     | 后端客户端 `createMarketplaceApi`(`search`/`detail`/`resolveDownload`),baseUrl 走 `SYNAPSE_MARKETPLACE_URL` 可配置,可注入 fetch;`MarketplaceApiError`。6 条单测         |
+| `plugin-host.ts`                               | `searchMarketplace`/`marketplaceDetail`/`installFromMarketplace`(resolveDownload→fetch→**sha256 校验**→复用 staged install + id/version 检查);`downloadVerifiedPackage` |
+| `ipc/plugins.ts` + preload + `lib/electron.ts` | 新增 `marketplace:search`/`detail`/`backend-install` 三段式通道 + 包装;旧静态 `marketplace:list/install` 保留作兜底                                                     |
+| `pages/marketplace-page.tsx`                   | 重写:防抖搜索 → `PluginSummary` 卡片 → 详情 Dialog(**权限徽章 + AI 工具列表 + 版本历史**)→ 安装(经后端、装好刷新)。3 条页面集成测试                                     |
+| i18n + tsconfig.web                            | `marketplace.detail.*` / `by` / `viewDetails`(en/zh-CN);web tsconfig 加 marketplace-types / plugin-manifest 路径                                                        |
+
+**关键不变量 / 说明**
+
+- **后端为数据源**:页面走 `search`/`detail`;旧静态 registry 路径(`listMarketplacePlugins`/`installMarketplacePlugin`)保留但页面不再使用,作离线兜底,待 §2.1「快照读取器」整合。
+- **安装即信任披露**:安装前在详情 Dialog 展示该版本 `manifestSnapshot` 的 `permissions` 与 `contributes.tools`(对应设计「权限透明」)。
+- **完整性**:`installFromMarketplace` 对下载字节做 sha256 校验(后端为权威 sha256 源),再走与其它安装路径一致的暂存解包 + id/version 校验。
+- **遗留增强**:桌面端账户登录(系统浏览器 OAuth + loopback)以拉取**私人**插件、以及评分 UI(M4)未做;当前页面仅浏览公开插件。
+- 一处小遗留:详情 Dialog 的 `useEffect` 有 4 条 `react/set-state-in-effect` **warning**(非 error,不阻塞 lint),后续可清理。
+
+**质量基线**
+
+- `pnpm lint` ✅(0 error)· `pnpm typecheck` ✅ · `pnpm test` **455 passed**(M2 后 446 + 后端客户端 6 + 页面 3);连跑两次稳定。
+
+> 下一步:**M4 下载量 + 评分 + 评级**(下载计数防刷 + 评分写入聚合 + 排行算法),即可闭合第一波内核「登录→发布→浏览安装→评分」。桌面端账户登录(私人插件)可作为穿插增强。

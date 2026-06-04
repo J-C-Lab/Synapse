@@ -83,6 +83,10 @@ const electronAPI = {
   listMarketplacePlugins: () => ipcRenderer.invoke("marketplace:list"),
   installMarketplacePlugin: (id: string, version?: string) =>
     ipcRenderer.invoke("marketplace:install", { id, version }),
+  searchMarketplace: (query?: string) => ipcRenderer.invoke("marketplace:search", query),
+  getMarketplaceDetail: (pluginId: string) => ipcRenderer.invoke("marketplace:detail", pluginId),
+  installMarketplaceBackendPlugin: (id: string, version: string) =>
+    ipcRenderer.invoke("marketplace:backend-install", { id, version }),
 
   // ---- AI assistant ----
   getAiStatus: () => ipcRenderer.invoke("ai:status"),

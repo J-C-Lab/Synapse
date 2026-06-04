@@ -216,6 +216,17 @@
     "submit": "Submit plugin",
     "submitTooltip": "Coming soon",
     "protectedSource": "This plugin is provided by {{source}} and cannot be reinstalled from the marketplace.",
+    "by": "by {{handle}}",
+    "viewDetails": "Details",
+    "detail": {
+      "permissionsTitle": "Permissions requested",
+      "permissionsNone": "No special permissions requested.",
+      "toolsTitle": "AI tools exposed",
+      "versions": "Version history",
+      "install": "Install",
+      "installing": "Installing…",
+      "close": "Close"
+    },
     "actions": {
       "refresh": "Refresh",
       "install": "Install",

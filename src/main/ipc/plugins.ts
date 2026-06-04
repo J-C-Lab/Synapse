@@ -58,6 +58,9 @@ export interface PluginIpcHandlers {
   disposeCommand: (payload: unknown) => Promise<void>
   marketplaceList: () => unknown[] | Promise<unknown[]>
   marketplaceInstall: (payload: unknown) => Promise<unknown>
+  marketplaceSearch: (query: unknown) => Promise<unknown>
+  marketplaceDetail: (pluginId: unknown) => Promise<unknown>
+  marketplaceBackendInstall: (payload: unknown) => Promise<unknown>
 }
 
 export interface PluginIpcDeps {
@@ -146,6 +149,22 @@ export function createPluginIpcHandlers(
       return host.installMarketplacePlugin(
         requireString(value.id, "id"),
         typeof value.version === "string" ? value.version : undefined
+      )
+    },
+
+    marketplaceSearch(query) {
+      return host.searchMarketplace(typeof query === "string" ? query : undefined)
+    },
+
+    marketplaceDetail(pluginId) {
+      return host.marketplaceDetail(requireString(pluginId, "pluginId"))
+    },
+
+    marketplaceBackendInstall(payload) {
+      const value = requireRecord(payload, "marketplace:backend-install payload")
+      return host.installFromMarketplace(
+        requireString(value.id, "id"),
+        requireString(value.version, "version")
       )
     },
   }
@@ -262,6 +281,30 @@ export function registerPluginIpc(
       "marketplace:install",
       event,
       () => handlers.marketplaceInstall(payload),
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("marketplace:search", (event, query: unknown) =>
+    invokePluginIpcHandler(
+      "marketplace:search",
+      event,
+      () => handlers.marketplaceSearch(query),
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("marketplace:detail", (event, pluginId: unknown) =>
+    invokePluginIpcHandler(
+      "marketplace:detail",
+      event,
+      () => handlers.marketplaceDetail(pluginId),
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("marketplace:backend-install", (event, payload: unknown) =>
+    invokePluginIpcHandler(
+      "marketplace:backend-install",
+      event,
+      () => handlers.marketplaceBackendInstall(payload),
       options.isTrustedSender
     )
   )

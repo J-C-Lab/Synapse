@@ -216,6 +216,17 @@
     "submit": "提交插件",
     "submitTooltip": "敬请期待",
     "protectedSource": "该插件来自{{source}}，不能从应用市场重新安装。",
+    "by": "作者 {{handle}}",
+    "viewDetails": "详情",
+    "detail": {
+      "permissionsTitle": "请求的权限",
+      "permissionsNone": "不请求任何特殊权限。",
+      "toolsTitle": "暴露的 AI 工具",
+      "versions": "版本历史",
+      "install": "安装",
+      "installing": "安装中…",
+      "close": "关闭"
+    },
     "actions": {
       "refresh": "刷新",
       "install": "安装",
