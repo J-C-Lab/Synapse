@@ -29,7 +29,7 @@
 | 2    | **会话历史侧栏** ✅ 已完成       | 中     | IPC 基本就绪、自包含       |
 | 3    | **审批 always 持久化** ✅ 已完成 | 小     | 补已知安全缺口、带撤销出口 |
 | 4    | **HTTP/SSE MCP 传输** ✅ 已完成  | 中     | 干净扩展 P5a               |
-| 5    | **长期记忆 / RAG** ⬅ 下一项      | 中→大  | 用 **embeddings**(已拍板)  |
+| 5    | **长期记忆 / RAG** ✅ 已完成     | 中→大  | 用 **embeddings**(已拍板)  |
 
 ### 已拍板的决策
 
@@ -102,14 +102,24 @@
 
 ---
 
-## 5. 长期记忆 / RAG(拆 P6a / P6b)
+## 5. 长期记忆 / RAG ✅ 已完成(embeddings)
 
-**架构契合**:做成内置工具源 `BuiltinToolSource implements ToolHostSource`,塞进 `CompositeToolHost([plugins, mcp, builtin])`——与 P5a 同构,自动进 registry、走同一审批/命名。命名空间 `memory:`。
+**目标**:跨会话的长期记忆,语义召回(用 embeddings,用户拍板)。
 
-- **P6a 记忆工具(零原生依赖,先落地)**:`MemoryStore`(JSON,atomic-json-store)+ 工具 `memory_save`(text+tags,非破坏)、`memory_search`(query→top-k,`readOnlyHint` 自动放行)、`memory_list`/`memory_delete`。检索用**词法 BM25/TF-IDF**(纯 JS、零依赖、无密钥成本)。
-- **P6b 向量 RAG(可选)**:加 `provider.embed()`(OpenAI `text-embedding-3-small` / Anthropic 侧 Voyage),embedding 存 JSON,JS 算 cosine;文档 ingest = 分块→embed→存。**取舍**:引入 embedding 成本/额外 key,偏离「零原生依赖」需斟酌 → 与 P6a 解耦、按需上。
+**落地**(全部 `src/main/ai/memory/`):
 
-**触点**:`src/main/ai/memory/memory-store.ts`、`memory/builtin-tools.ts`、index.ts CompositeToolHost 加一项、(P6b)`providers/*` 加 embed + ingest、测试。
+- [memory-store.ts](../src/main/ai/memory/memory-store.ts):`MemoryEntry { id, text, tags, createdAt, embedding? }` JSON 持久化(atomic-json-store);`all/add/remove`,加载丢弃损坏项。
+- [openai-embedding-provider.ts](../src/main/ai/memory/openai-embedding-provider.ts):`Embedder.embed(texts) => number[][] | null`;OpenAI `text-embedding-3-small`,key 经 `getApiKey`(复用 BYOK 的 openai key)**调用时**解析——无 key 返回 `null`;client 可注入测试。
+- [memory-service.ts](../src/main/ai/memory/memory-service.ts):`save/search/list/delete`。save 嵌入并存;search 有嵌入则 **cosine** 排序,否则**词法回退**(词项重叠);`safeEmbed` 吞掉嵌入失败(无 key/网络/配额)→ 回退词法。导出 `cosineSimilarity`。
+- [memory-tools.ts](../src/main/ai/memory/memory-tools.ts):`MemoryToolSource implements ToolHostSource`(命名空间 `memory:core/…`),暴露 `memory_save`(写,需审批)、`memory_search`/`memory_list`(`readOnlyHint` 自动放行)、`memory_delete`(`destructiveHint` 需审批);入参就地校验(不走 vm 沙箱),错误→`isError`。
+- index.ts:`OpenAiEmbeddingProvider` + `MemoryService` + `MemoryToolSource` 接入 `CompositeToolHost`(plugin 兜底谓词加 `memory:` 排除);与 mcp 共享同一 `AiCredentialStore`。
+- 测试:memory-store(2)、memory-service(cosine 排序 + 词法回退 + 列表/删除 + 空文本 + cosine 工具,5)、memory-tools(命名空间/列表、存→召回、错误、注解审批,4)。
+
+**说明/已知限制**:
+
+- 嵌入需 **OpenAI key**;只配了 Anthropic key 时自动走词法回退(仍可用,但非语义)。RAG 文档分块 ingest(P6b)未做——当前「语料」即记忆条目本身。
+- `memory_save` 每次写入会触发审批(与统一安全模型一致);可用「始终允许」(已持久化,见第 3 项)免后续询问。
+- 工具名 `memory_*` 对 OpenAI 64 字符限制安全。
 
 ---
 

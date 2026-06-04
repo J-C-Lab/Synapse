@@ -30,6 +30,10 @@ import { aiCredentialFilePath, AiCredentialStore } from "./ai/credential-store"
 import { createMcpClient } from "./ai/mcp-client-factory"
 import { MCP_FQ_PREFIX, McpClientManager } from "./ai/mcp-client-manager"
 import { aiMcpServersFilePath, McpServerConfigStore } from "./ai/mcp-server-config-store"
+import { MemoryService } from "./ai/memory/memory-service"
+import { aiMemoryFilePath, MemoryStore } from "./ai/memory/memory-store"
+import { MEMORY_FQ_PREFIX, MemoryToolSource } from "./ai/memory/memory-tools"
+import { OpenAiEmbeddingProvider } from "./ai/memory/openai-embedding-provider"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/catalog"
 import { AiToolRegistry } from "./ai/tool-registry"
 import {
@@ -524,21 +528,35 @@ function pluginResourcesDir(): string {
 
 function createAgentService(): AgentService {
   const userDataDir = app.getPath("userData")
+  const credentials = new AiCredentialStore({
+    filePath: aiCredentialFilePath(userDataDir),
+    protector: osSecretProtector(),
+  })
   const manager = new McpClientManager(createMcpClient)
   mcpClients = manager
-  // The model sees one flat tool list: local plugin tools plus any external MCP
-  // tools (namespaced `mcp:<id>/<tool>`). Invocations route by ownership.
+
+  // Built-in long-term memory: embeds with the user's OpenAI key (falls back to
+  // lexical recall when none is set).
+  const memory = new MemoryService(
+    new MemoryStore(aiMemoryFilePath(userDataDir)),
+    new OpenAiEmbeddingProvider({ getApiKey: () => credentials.get("openai") })
+  )
+
+  // The model sees one flat tool list: local plugin tools, external MCP tools
+  // (`mcp:<id>/<tool>`), and built-in memory tools (`memory:…`). Invocations
+  // route by ownership.
   const tools = new AiToolRegistry(
     new CompositeToolHost([
-      asFallbackSource(plugins, (fqName) => fqName.startsWith(MCP_FQ_PREFIX)),
+      asFallbackSource(
+        plugins,
+        (fqName) => fqName.startsWith(MCP_FQ_PREFIX) || fqName.startsWith(MEMORY_FQ_PREFIX)
+      ),
       manager,
+      new MemoryToolSource(memory),
     ])
   )
   return new AgentService({
-    credentials: new AiCredentialStore({
-      filePath: aiCredentialFilePath(userDataDir),
-      protector: osSecretProtector(),
-    }),
+    credentials,
     tools,
     conversations: new ConversationStore(path.join(userDataDir, "ai", "conversations")),
     providers: defaultProviderCatalog(),
