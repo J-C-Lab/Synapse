@@ -3,6 +3,7 @@ import { Bot, Loader2, Send, Server, Settings, Wrench } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { AiSettingsDialog } from "@/components/ai-settings-dialog"
+import { Markdown } from "@/components/markdown"
 import { McpServersDialog } from "@/components/mcp-servers-dialog"
 import { Button } from "@/components/ui/button"
 import {
@@ -279,7 +280,12 @@ function MessageBubble({ message }: { message: DisplayMessage }) {
           isUser ? "bg-primary text-primary-foreground" : "bg-muted"
         )}
       >
-        {message.text && <p className="whitespace-pre-wrap wrap-break-word">{message.text}</p>}
+        {message.text &&
+          (isUser ? (
+            <p className="whitespace-pre-wrap wrap-break-word">{message.text}</p>
+          ) : (
+            <Markdown>{message.text}</Markdown>
+          ))}
         {message.tools.map((tool) => (
           <ToolCardView key={tool.id} tool={tool} />
         ))}
