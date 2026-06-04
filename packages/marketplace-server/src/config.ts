@@ -14,6 +14,12 @@ const configSchema = z.object({
   DATABASE_URL: z.string().min(1).optional(),
   GITHUB_CLIENT_ID: z.string().min(1).optional(),
   GITHUB_CLIENT_SECRET: z.string().min(1).optional(),
+  // Cloudflare R2 (S3-compatible). When all are present, object storage uses
+  // R2; otherwise the server falls back to in-memory storage (dev only).
+  R2_ENDPOINT: z.string().url().optional(),
+  R2_BUCKET: z.string().min(1).optional(),
+  R2_ACCESS_KEY_ID: z.string().min(1).optional(),
+  R2_SECRET_ACCESS_KEY: z.string().min(1).optional(),
 })
 
 export type ServerConfig = z.infer<typeof configSchema>

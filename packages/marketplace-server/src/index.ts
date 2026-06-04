@@ -3,7 +3,7 @@ import { buildApp } from "./app"
 import { createGitHubIdentityProvider } from "./auth/github"
 import { loadConfig } from "./config"
 import { createDb } from "./db/client"
-import { InMemoryStorageProvider } from "./storage/memory"
+import { createStorage } from "./storage/factory"
 
 async function main(): Promise<void> {
   const config = loadConfig()
@@ -20,12 +20,7 @@ async function main(): Promise<void> {
     clientSecret: config.GITHUB_CLIENT_SECRET,
   })
 
-  // TODO(M2-credentialed): swap in the R2 StorageProvider once R2 env is wired.
-  // Until then object storage is in-process and lost on restart — dev only.
-  const storage = new InMemoryStorageProvider(config.PUBLIC_BASE_URL)
-  process.stderr.write(
-    "warning: using in-memory object storage (dev only); configure R2 before production use\n"
-  )
+  const storage = createStorage(config)
 
   const app = buildApp({ db, github, storage, config, logger: true })
   await app.listen({ port: config.PORT, host: config.HOST })
