@@ -1,0 +1,318 @@
+# Synapse 用户与插件市场设计方案 (v0.1 draft)
+
+> 目标:在已完成的「AI 基座 + 插件即工具」之上,引入 **「用户」** 概念,
+> 进而构建 **插件市场生态**——开发者用脚手架开发插件,选择 **私人 / 公开** 发布,
+> 公开插件通过 **下载量 / 评分** 形成评级与排行,沉淀为可流通的生态。
+>
+> 心智模型(项目定义):
+>
+> - **AI = 大脑 / 设计师**
+> - **可安装的 skill = 大脑能学习的知识**
+> - **插件(Synapse plugin)= 大脑的四肢 / 设计师的员工**
+> - **市场 = 让四肢可被生产、流通、互评的「社会」**
+>
+> 配套阅读:[ai-foundation.md](ai-foundation.md)(基座设计)、[ai-foundation-progress.md](ai-foundation-progress.md)(基座进度)。
+
+---
+
+## 0. 一句话结论:离目标还差多远?
+
+**「给大脑造手脚」的技术内核已经做完了。** 现在缺的不是手脚,而是**让手脚能被生产、流通、互评的「社会层」——人、身份、信任、市场。**
+
+| 维度                         | 状态      | 说明                                                                           |
+| ---------------------------- | --------- | ------------------------------------------------------------------------------ |
+| 插件**开发**(脚手架/SDK/CLI) | ✅ 已具备 | `create-synapse-plugin` + `@synapse/plugin-sdk` + `plugin-cli`(build/validate) |
+| 插件**运行时**(沙箱/权限)    | ✅ 已具备 | `src/main/plugins/*` 全套宿主/沙箱/权限/工具桥                                 |
+| **大脑**(AI 编排/双向 MCP)   | ✅ 已具备 | AgentRuntime + 多 provider BYOK + MCP server/client(P0–P5b)                    |
+| 插件**本地安装**(.syn 包)    | ✅ 已具备 | `install-from-package.ts` 解包安装                                             |
+| 插件**分发**(市场)           | 🟡 半成品 | 只读**静态** `registry.json`(GitHub raw)+ 手动 GitHub Release 发布;**无后端**  |
+| **用户 / 身份**              | ❌ 不存在 | 无账户、无登录、无「我的插件」                                                 |
+| **私人 / 公开**可见性        | ❌ 不存在 | 所有市场条目均公开;无隐私边界                                                  |
+| **发布闭环**(app/CLI 内)     | ❌ 不存在 | 发布 = 手动打 tag → CI → 手动 PR 改 registry 仓库                              |
+| **下载量 / 评分 / 评级**     | ❌ 不存在 | 静态 JSON 无法承载可写计数与评价                                               |
+| **后端服务**                 | ❌ 不存在 | 当前架构是「无服务器 + 静态 git」,无法支撑上面四项                             |
+
+> **关键判断**:剩余工作的 ~90% 集中在一个此前完全不存在的子系统——**带鉴权与数据库的市场后端服务**,
+> 以及围绕它的 CLI / 桌面端 / 信任链改造。这是一次从「纯客户端 + 静态 git」到「客户端 + 云服务」的架构跃迁。
+
+---
+
+## 1. 现状基线(设计出发点)
+
+### 1.1 已有的「四肢生产线」
+
+```
+作者本机                          分发                         用户本机
+─────────                        ────                        ─────────
+create-synapse-plugin  ──脚手架──►  (手写工具/命令)
+        │
+   plugin-cli build  ──►  <id>-<version>.syn (zip)
+        │
+   git tag v* ──CI(release.yml)──►  GitHub Release(.syn + .sha256)
+        │
+   手动 PR ──►  WiIIiamWei/Synapse-Marketplace/registry.json (静态)
+                                          │
+                          marketplace-registry.ts ──fetch(只读)──►  市场列表
+                                          │
+                          install-from-package.ts ──解包──►  已安装插件
+```
+
+- **`marketplace-registry.ts`**:从固定 GitHub raw URL 拉 `registry.json`,zod 校验,引擎兼容过滤;失败回退到 `resources/mock-marketplace`。**纯读、静态、无计数、无鉴权。**
+- **`MarketplaceEntry`** 现有字段:`id / name / displayName / description / author / homepage / version / downloadUrl / sha256 / synapseEngine / icon? / categories?`。**没有 owner(用户)、visibility、downloads、rating 等字段。**
+- **发布**:作者侧靠 `release.yml`(打 tag → 构建 .syn + sha256 → GitHub Release)。把条目登记进市场仍是**手动改注册表仓库**。
+- **桌面端**:`src/renderer/src/components/plugins/` 目前只有 **view-renderer**(渲染插件命令返回的 View),**没有市场浏览页 / 账户页 / 发布页**。
+
+### 1.2 核心张力
+
+> 现有市场是「**只读静态 git 注册表**」。
+> 而「用户、私人/公开、下载量、评分、排行」**本质上都需要一个可写、可鉴权、可计数的服务**。
+> 静态 JSON 无法表达「谁拥有这个插件」「这个插件只给我自己看」「它被下载了多少次」「平均几星」。
+
+因此本方案的核心,是**新增一个市场后端服务**,并把现有的「静态 registry」演进为「后端 API(+ 可缓存的公开快照)」。
+
+---
+
+## 2. 核心架构抉择:市场后端形态
+
+引入「用户」就必须有一个**可信、可写、有状态**的中心(或准中心)。三种形态:
+
+| 形态                         | 用户/私有 | 下载量/评分 | 运维成本 | 评价                                       |
+| ---------------------------- | --------- | ----------- | -------- | ------------------------------------------ |
+| **A. 纯静态 git(现状)**      | ❌        | ❌          | 极低     | 无法满足目标,仅作公开快照的 CDN 兜底       |
+| **B. 轻后端(推荐起步)**      | ✅        | ✅          | 中       | 一个 API 服务 + DB + 对象存储,够用且可演进 |
+| **C. 全平台(Web 门户+审核)** | ✅        | ✅✅        | 高       | B 的超集,加 Web 端、人工审核、组织、付费   |
+
+**已定路线:C(全平台)。** 目标是完整的市场平台——桌面端 + Web 门户 + 人工审核 + 组织/协作者 + 付费分成。
+**实现策略仍是「先内核后外延」**:M0–M4 先把 B 的内核(后端服务 + 桌面端闭环 + 下载量/评分)做扎实,
+再在其上叠加 C 的外延(Web 门户、审核流水线、组织、付费)。静态 git(A)降级为**公开市场的只读缓存/兜底**
+(离线或后端故障时仍能浏览公开插件),与后端形成「**后端为权威源、静态快照为兜底**」的双层。
+
+> 选 C 不等于一次性全做。C 的内核 = B;C 的差异化(门户/审核/组织/付费)按 M6–M9 增量上线。
+> 这样既锁定「完整平台」终局,又避免在内核未验证前就背上门户与付费的复杂度。
+
+### 2.1 技术形态(已锁定,2026-06-05)
+
+走**解耦组合**,与「零原生依赖、TypeScript 优先」基线一致:
+
+- **API 服务**:**Fastify** + TypeScript,pnpm workspace 新包 `packages/marketplace-server`。长驻 Node 服务(承载大文件上传、后台队列、审核流水线、Stripe webhook)。
+- **ORM / 校验**:**Drizzle**(纯 JS,无原生引擎,契合零原生基线)+ **zod**(复用,放进共享 `marketplace-types`)。
+- **数据库**:**Neon**(serverless Postgres,可缩到零、分支化、慷慨免费额度)。
+- **对象存储**:**Cloudflare R2**(S3 兼容、**出流量免费**——下载密集型市场的关键省钱点)存 `.syn` 包;DB 只存元数据 + 签名下载 URL + sha256。
+- **鉴权**:**Fastify 自管**(Auth.js/Lucia/Better Auth 之一,不手搓 token);**GitHub OAuth 起步**(受众=开发者),**身份建模为 provider 无关** `User ⇄ AuthIdentity{provider, providerUserId}`,M6 再加邮箱/Google;桌面 app 走系统浏览器 OAuth + loopback 回调,**CLI `publish` 走 device-code flow**(M2 即需)。
+- **公开快照**:后端定时把「公开插件」导出为只读 `registry.json` 发到 CDN(自有域名);`marketplace-registry.ts` 改造为「快照读取器」,URL **可配置**(去硬编码)。仅作离线/容灾兜底,**非权威源**。
+- **代码归属**:统一收编进 GitHub Org **`JC-Lab`**(app + `marketplace-server` + 快照仓库);品牌名**暂定 Synapse**。
+
+> 这样桌面端的「公开浏览」可继续走快照(快、可缓存、可离线),而「登录、私人插件、发布、评分」走后端 API。
+
+---
+
+## 3. 领域模型(引入「用户」)
+
+```
+User (账户)
+  ├─ id, handle, displayName, avatar, authProvider(github), createdAt
+  └─ role: user | developer | admin           # developer = 已发布过插件者
+
+Plugin (一个插件的逻辑实体,跨版本)
+  ├─ id (反向域名: com.author.foo), ownerUserId
+  ├─ visibility: private | public             # ← 私人/公开 的核心字段
+  ├─ displayName, description, categories, homepage, icon
+  ├─ latestVersion, stats{ downloads, ratingAvg, ratingCount }
+  └─ status: active | deprecated | unlisted | removed
+
+PluginVersion (不可变版本)
+  ├─ pluginId, version(semver), synapseEngine
+  ├─ packageUrl(对象存储), sha256, sizeBytes
+  ├─ manifestSnapshot(权限/工具/命令,供安装前展示与审计)
+  └─ publishedAt, yanked?(撤回标记,不物理删)
+
+Download   { pluginId, version, userId?, at }   # 计数与防刷的事实表
+Rating     { pluginId, userId, stars(1..5), updatedAt }   # 每用户每插件唯一
+Review     { pluginId, userId, body, createdAt }          # 可选,评分附带文字
+OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期)
+```
+
+可见性语义:
+
+1. **私人插件(private)**:仅 owner 可见、可下载、可在自己设备间同步安装。不进公开列表、不计入公开排行。
+2. **公开插件(public)**:所有人可见、可下载;参与下载量/评分统计与排行。
+
+**评级 = 由 `stats.downloads` 与 `ratingAvg`/`ratingCount` 派生的派生量**(如 Wilson 置信下界 + 时间衰减),用于排行榜与「精选」。详见 §6 M4。
+
+---
+
+## 4. 端到端用户流程(目标态)
+
+```
+① 开发者:登录                synapse-plugin login            (device-code → 浏览器 GitHub 授权)
+② 开发:脚手架               npx create-synapse-plugin myfoo  (现有,无需改)
+③ 本地联调                   synapse-plugin dev / link        (现有)
+④ 发布:私人或公开            synapse-plugin publish [--public]
+       └─ build .syn → 计算 sha256 → 上传对象存储 → 注册 PluginVersion(后端鉴权校验 owner)
+⑤ 桌面端「市场」浏览          公开走快照/后端;「我的插件 / 私人插件」走后端鉴权
+⑥ 用户:安装                 选择插件 → 校验 sha256 → install-from-package(现有)→ downloads+1
+⑦ 用户:评分/评价            登录后 1..5 星(+可选文字)→ 影响 ratingAvg 与排行
+⑧ 大脑使用                   已安装插件的 tools 自动进入 AgentRuntime / 对外 MCP(现有,无需改)
+```
+
+> 第 ⑧ 步已经是现成能力——这正是「四肢已就位」的体现。本方案不触碰 AI 基座,只补「人 + 流通」。
+
+---
+
+## 5. 系统组件拆分(要做什么)
+
+### 5.1 新增:市场后端服务 `packages/marketplace-server`
+
+| 模块      | 职责                                                                       |
+| --------- | -------------------------------------------------------------------------- |
+| 鉴权      | GitHub OAuth、JWT 签发/刷新、CLI device-code、PAT 管理                     |
+| 用户      | 账户 CRUD、handle、developer 升级                                          |
+| 插件/版本 | 发布(校验 owner/semver 单调递增/sha256/引擎)、可见性切换、yank、列表/详情  |
+| 下载      | 签发下载 URL、计数(防刷:去重窗口 + 速率限制)、统计聚合                     |
+| 评分/评价 | 每用户每插件唯一评分、聚合 `ratingAvg/ratingCount`、可选文字评价、滥用举报 |
+| 排行/检索 | 关键词/分类检索、排行榜(评级算法)、精选位                                  |
+| 快照导出  | 定时把 public 插件导出为 `registry.json` 静态快照(兼容现有读路径)          |
+| 审核/安全 | 上传扫描、manifest 权限审计、敏感权限标记、下架/封禁(admin)                |
+
+### 5.2 扩展:CLI(`packages/plugin-cli`)
+
+- `synapse-plugin login` / `logout` / `whoami`(device-code,token 存 OS 凭据库)。
+- `synapse-plugin publish [dir] [--public|--private] [--tag]`:build → 上传 → 注册版本。
+- `synapse-plugin unpublish` / `yank <version>` / `visibility <public|private>`。
+- 复用现有 `build.ts`(已产出 `.syn` + 可算 sha256)与 `manifest-io.ts`。
+
+### 5.3 扩展:桌面端(`src/renderer` + `src/main`)
+
+- **账户**:登录(打开系统浏览器 OAuth 回调)、`我的资料`、token 存主进程凭据库(复用 `AiCredentialStore`/`SecretProtector` 思路,renderer 不碰 token)。
+- **市场页(新)**:浏览/搜索/分类/排行;插件详情(权限清单、工具列表、评分、版本历史);**安装前展示 manifest 权限与 tools**(信任透明)。
+- **「我的插件 / 私人插件」页**:列出 owner 名下插件、可见性切换、发布状态。
+- **评分/评价 UI**:已安装插件可打分(复用 shadcn `dialog`/`form`)。
+- **IPC 新增面(遵循四段式)**:`market:*`(login/status/search/detail/install/publish/rate/myPlugins)。
+
+### 5.4 信任与安全(贯穿)
+
+- **包完整性**:沿用 `sha256` 强校验(安装前必校);后端为权威 sha256 源。
+- **来源可信**:发布需登录鉴权;owner 与插件 `id` 域名前缀绑定(防抢注/冒名)。
+- **权限透明**:安装前在 UI 展示插件声明的 `permissions` 与 `tools`(尤其 `destructiveHint`)。
+- **可信源开关**:用户可选择「仅允许来自官方市场 / 也允许任意 URL / 仅本地 .syn」。
+- **滥用治理**:评分防刷(每用户唯一 + 需已安装)、举报、admin 下架、版本 yank(不物理删,保可复现)。
+
+---
+
+## 6. 分期路线图
+
+> 命名 **M(arketplace)** 阶段,与 AI 基座的 P 阶段区分。每阶段独立可验收。
+
+| 阶段                        | 内容                                                                                                  | 产出 / 验收                                            |
+| --------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| **M0 数据模型 + 协议**      | 定义 User/Plugin/Version/Download/Rating 的 schema(zod 共享包 `@synapse/marketplace-types`)、API 契约 | ✅ **已完成**(见 §11)——类型 + 契约,无运行时,前后端共用 |
+| **M1 后端骨架 + 鉴权**      | `marketplace-server` 起服务、Postgres + 对象存储接线、GitHub OAuth、JWT、用户表                       | 能登录、拿到身份、健康检查;含集成测试                  |
+| **M2 发布闭环(CLI)**        | `publish`(鉴权+上传+注册版本)+ owner/semver/sha256 校验;CLI `login/whoami`                            | 开发者能从命令行把私人插件发布上去并在 DB 可见         |
+| **M3 桌面端市场(读)**       | 市场浏览/搜索/详情页 + 安装前权限展示;公开走**快照**,登录态拉私人;复用现有 install                    | 用户能在 app 内浏览并安装公开/自己的私人插件           |
+| **M4 下载量 + 评分 + 评级** | 下载计数(防刷)、评分写入与聚合、排行算法(Wilson+衰减)、排行榜/精选位                                  | 公开插件有真实下载量与星级,首页有排行                  |
+| **M5 私人/公开治理**        | app 内可见性切换、yank、举报、admin 下架;可信源开关                                                   | owner 自助管理可见性;基础治理可用                      |
+| **M6 Web 门户**             | 浏览器端市场门户(复用现有 Fumadocs/Next 工作流)、SEO、可分享插件详情链接、Web 端浏览/搜索/详情        | 非桌面用户也能逛市场;插件有公开可索引页面              |
+| **M7 审核流水线**           | 上传自动扫描 + 人工审核队列、敏感权限分级、审核状态机(pending/approved/rejected)、admin 控制台        | 公开插件经审核后上架;治理可规模化                      |
+| **M8 组织 / 协作者**        | Organization 实体、团队命名空间、Collaborator 角色与权限、转移所有权                                  | 多人共同维护一个插件 / 组织发布                        |
+| **M9 付费 / 分成(可选)**    | 付费插件、结算(Stripe 等)、开发者收入分成、发票                                                       | 形态 C 完整体;插件可商业化                             |
+
+**实现优先级(C 平台分波次上线)**:
+
+- **第一波 内核(M0–M4)**:「登录 → 发布(私人/公开)→ app 内浏览安装 → 下载量与评分」最小生态闭环。**这是必须先跑通的地基。**
+- **第二波 治理+门户(M5–M7)**:可见性治理、Web 门户、审核流水线——**公开市场对外开放的前置**。
+- **第三波 商业化(M8–M9)**:组织协作与付费分成,按增长与商业需要再上。
+
+---
+
+## 7. 待定决策(需要拍板)
+
+> 这些选择会显著改变实现量与运维形态,建议在进入 M1 前定稿。
+
+**已拍板(2026-06-05,见 §2.1 与 §10):**
+
+1. ✅ **后端形态**:C(全平台),后端为唯一权威源 + 自动快照兜底。
+2. ✅ **托管与栈**:Fastify + Drizzle + zod / Neon / Cloudflare R2(解耦组合)。
+3. ✅ **鉴权方式**:Fastify 自管,GitHub OAuth 起步 + provider 无关身份表;CLI device-code。
+4. ✅ **域名与品牌**:代码收编进 GitHub Org `JC-Lab`;品牌名暂定 **Synapse**;真实域名待注册(需查 "Synapse" 商标/可用性,可能加限定词)。
+
+**仍待定(可在对应阶段前再定,不阻塞 M0):**
+
+5. **私人插件存储**:私人 `.syn` 是否同进 R2(签名 URL + 鉴权)?是否需要设备间同步?(M2 前定)
+6. **审核策略**:第一波先发后审;M7 上人工审核 + 上传期自动扫描清单。(M7 前定)
+7. **评级算法**:排行权重(下载量 vs 评分 vs 时新度)与防刷强度。(M4 前定)
+8. **成本/合规**:运维预算上限、数据存放区域、隐私政策。(公开上线即 M5/M6 前定)
+
+---
+
+## 8. 范围与排期(走完整平台 C)
+
+**在范围内(分波次,见 §6)**:用户/身份、私人/公开、发布闭环、下载量/评分/评级、治理、
+**Web 门户(M6)、审核流水线(M7)、组织/协作者(M8)、付费分成(M9)**——即形态 C 的完整能力。
+
+**第一波(M0–M4)明确不做、留给后波**:
+
+- 付费 / 分成 / 结算 → M9。
+- 组织与团队权限 → M8(第一波只支持单 owner)。
+- Web 门户 → M6(第一波只在桌面端 app 内)。
+- 人工审核 → M7(第一波公开插件先发后审 + sha256/owner 校验兜底)。
+
+**始终排除(不在本方案范围)**:
+
+- 插件自动更新后台服务(先手动「检查更新」即可)。
+- 跨语言运行时(仍是 JS/TS 插件)。
+- 触碰 AI 基座(P0–P5b)——**保持不变**,市场层与其正交。
+
+---
+
+## 9. 对现有代码的影响摘要(落地锚点)
+
+| 现有文件/包                      | 变化                                                                              |
+| -------------------------------- | --------------------------------------------------------------------------------- |
+| `marketplace-registry.ts`        | 从「唯一数据源」降级为「公开快照读取器」;`MarketplaceEntry` 扩展 owner/stats 字段 |
+| `install-from-package.ts`        | 基本不动;安装前增加权限展示钩子(UI 调用)                                          |
+| `packages/plugin-cli`            | 新增 `login`/`publish`/`whoami`/`visibility`/`yank`                               |
+| `create-synapse-plugin/template` | README 增加「发布到市场」指引;`release.yml` 可保留为「GitHub Release 兜底分发」   |
+| `src/renderer/src/components/`   | 新增 市场页 / 我的插件页 / 账户 / 评分组件                                        |
+| `src/main/ipc/`                  | 新增 `market.ts`(四段式);token 存主进程凭据库                                     |
+| `packages/`(新)                  | `marketplace-server`、`marketplace-types`                                         |
+
+---
+
+## 10. 决策记录
+
+- **2026-06-05**:**后端形态 = C(全平台)** 拍板。终局为完整市场平台:桌面端 + Web 门户(M6)+ 审核流水线(M7)+ 组织/协作者(M8)+ 付费分成(M9)。新增 `marketplace-server`(Node+TS)+ Postgres + 对象存储 + GitHub OAuth;公开走静态快照兜底。实现按三波次推进:内核 M0–M4 → 治理+门户 M5–M7 → 商业化 M8–M9。
+- **2026-06-05**:**后端为唯一权威数据源**。现有「手工维护的 GitHub 静态 `registry.json`」(`WiIIiamWei/Synapse-Marketplace`)是协作者时代的占位桩,**计划 C 中整体退役**。浏览/搜索/发布/私人公开/下载量/评分全部走后端 API。
+- **2026-06-05**:**保留「后端自动生成的只读快照」作为离线/容灾兜底**。该快照由后端定时导出到 CDN,**非手工 JSON**——是权威数据源的影子,不是数据源本身。`marketplace-registry.ts` 改造为「快照读取器」并把 URL 改为**可配置**(去掉硬编码 `DEFAULT_MARKETPLACE_REGISTRY_URL`)。
+- **2026-06-05**:项目现由单人开发(`sunzrnobug`);前协作者 `WiIIiamWei` 名下的注册表仓库不再作为权威源。**建议建 GitHub Org** 统一持有 app / 后端 / 快照仓库(待确认)。
+- **2026-06-05**:**栈 = 解耦组合**拍板。**Fastify + Drizzle + zod**(API/ORM/校验)、**Neon**(Postgres)、**Cloudflare R2**(对象存储,出流量免费)、**Fastify 自管鉴权**(GitHub OAuth 起步 + provider 无关 `User⇄AuthIdentity` 身份表 + CLI device-code)。理由:契合零原生/TS-first 基线;C 平台后期付费/组织/审核权限不被 Supabase RLS 绊住;单人运维成本可控。
+- **2026-06-05**:**归属 = GitHub Org `JC-Lab`**。app + `marketplace-server` + 快照仓库统一收编进 `JC-Lab`;前协作者 `WiIIiamWei` 注册表退役。**品牌名暂定 Synapse**(真实域名待注册,需查商标/可用性)。
+- _(待定,不阻塞 M0)_:§7 第 5–8 项——私人包存储/同步、审核策略、评级算法、成本合规,各在对应阶段前定。
+
+---
+
+## 11. M0 成果(已落地,2026-06-05)
+
+**领域模型 + API 契约**,纯类型 / zod 校验,**零运行时**。新增 pnpm workspace 包 `@synapse/marketplace-types`(`packages/marketplace-types/`),作为后端 / CLI / 桌面端 / Web 门户的**单一事实源**——zod schema 权威,TS 类型由 `z.infer` 派生(不手写双份、不漂移)。
+
+| 文件                | 作用                                                                                                                                                                                                                                                                 |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/common.ts`     | 共享原语:`pluginId`(反向域名)/ `handle` / `semver` / `sha256` / `timestamp`(ISO)/ `httpsUrl` / `localizedString` + 枚举 `visibility`/`userRole`/`pluginStatus`/`pluginSort`/`authProvider`                                                                           |
+| `src/domain.ts`     | 实体:`User`、`AuthIdentity`(provider 无关身份)、`Plugin`(含 `visibility`/`stats`/`status`)、`PluginVersion`(不可变,`manifestSnapshot` 复用 `@synapse/plugin-manifest` 的 `manifestSchema`、支持 `yankedAt`)、`Download`/`Rating`/`Review`、`PluginSummary`(列表投影) |
+| `src/api.ts`        | HTTP 契约:device-code 鉴权(`discriminatedUnion` pending/authorized)、搜索(分页+排序)、详情、发布(metadata + 嵌套 manifest)、可见性/yank、下载解析(签名 URL + sha256)、评分/评价、统一 `apiError` 信封                                                                |
+| `src/index.ts`      | 桶导出(schema + 推导类型)                                                                                                                                                                                                                                            |
+| `src/index.test.ts` | 20 条契约用例:id/handle/sha256/visibility 校验、strict 拒未知键、嵌套 manifest 校验、评分 1–5 边界、搜索默认值、device-code 判别联合                                                                                                                                 |
+
+**关键不变量(M1+ 必须遵守)**
+
+- **schema 是唯一事实源**:任何字段变更改 zod,类型自动跟随;**不要**手写并行 interface。
+- **身份 provider 无关**:`User ⇄ AuthIdentity{provider, providerUserId}`,加 Google/邮箱不迁 user 表。
+- **版本不可变**:坏版本 `yankedAt` 撤回,**不物理删**,保安装可复现。
+- **manifest 单源**:`PluginVersion.manifestSnapshot` 与 `PublishRequest.manifest` 直接复用 `manifestSchema`——发布校验与安装前权限披露,与插件宿主运行期强制的规则一致。
+- **所有对象 schema `.strict()`**:拒未知键,契约收紧。
+
+**质量基线**
+
+- 接入仓库工具链:`vitest.config.ts` + `tsconfig.node.json` 已加 `@synapse/marketplace-types` 别名;`package.json` 的 `build:packages` / `typecheck` 链已纳入本包(依赖 `plugin-manifest`,排在其后构建)。
+- `pnpm lint` ✅ · `pnpm typecheck` ✅ · `pnpm test` **412 passed**(原 392 + M0 新增 20)。
+
+> 下一步 **M1**:`packages/marketplace-server`(Fastify + Drizzle)起服务、接 Neon + R2、GitHub OAuth + 自管会话、`User`/`AuthIdentity` 落库;消费本包 schema 做请求校验。
