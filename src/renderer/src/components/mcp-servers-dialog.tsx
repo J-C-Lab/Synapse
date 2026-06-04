@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -27,19 +28,30 @@ import { cn } from "@/lib/utils"
 interface DraftServer {
   id: string
   name: string
+  transport: "stdio" | "http"
   command: string
   argsText: string
   envText: string
+  url: string
+  headersText: string
   enabled: boolean
 }
 
 const emptyDraft: DraftServer = {
   id: "",
   name: "",
+  transport: "stdio",
   command: "",
   argsText: "",
   envText: "",
+  url: "",
+  headersText: "",
   enabled: true,
+}
+
+function draftIsValid(draft: DraftServer): boolean {
+  if (!draft.id.trim()) return false
+  return draft.transport === "http" ? draft.url.trim().length > 0 : draft.command.trim().length > 0
 }
 
 export function McpServersDialog({
@@ -67,18 +79,25 @@ export function McpServersDialog({
   }, [open])
 
   async function save() {
-    if (!draft || saving) return
-    if (!draft.id.trim() || !draft.command.trim()) return
+    if (!draft || saving || !draftIsValid(draft)) return
     setSaving(true)
     try {
-      const status = await saveAiMcpServer({
+      const base: McpServerConfig = {
         id: draft.id.trim(),
         name: draft.name.trim() || undefined,
-        command: draft.command.trim(),
-        args: parseArgs(draft.argsText),
-        env: parseEnv(draft.envText),
+        transport: draft.transport,
         enabled: draft.enabled,
-      })
+      }
+      const config: McpServerConfig =
+        draft.transport === "http"
+          ? { ...base, url: draft.url.trim(), headers: parseEnv(draft.headersText) }
+          : {
+              ...base,
+              command: draft.command.trim(),
+              args: parseArgs(draft.argsText),
+              env: parseEnv(draft.envText),
+            }
+      const status = await saveAiMcpServer(config)
       setStatuses(status)
       setServers(await listAiMcpServers())
       setDraft(null)
@@ -120,9 +139,12 @@ export function McpServersDialog({
                 setDraft({
                   id: server.id,
                   name: server.name ?? "",
-                  command: server.command,
+                  transport: server.transport === "http" ? "http" : "stdio",
+                  command: server.command ?? "",
                   argsText: (server.args ?? []).join("\n"),
                   envText: envToText(server.env),
+                  url: server.url ?? "",
+                  headersText: envToText(server.headers),
                   enabled: server.enabled !== false,
                 })
               }
@@ -179,7 +201,9 @@ function ServerRow({
           )}
         </div>
         <p className="truncate font-mono text-[11px] text-muted-foreground">
-          {server.command} {(server.args ?? []).join(" ")}
+          {server.transport === "http"
+            ? server.url
+            : `${server.command ?? ""} ${(server.args ?? []).join(" ")}`}
         </p>
         {status?.error && <p className="truncate text-[11px] text-red-500">{status.error}</p>}
       </div>
@@ -225,30 +249,63 @@ function ServerForm({
           <Input value={draft.name} onChange={(event) => set({ name: event.target.value })} />
         </Field>
       </div>
-      <Field label={t("mcp.command")} hint={t("mcp.commandHint")}>
-        <Input
-          value={draft.command}
-          onChange={(event) => set({ command: event.target.value })}
-          placeholder="npx"
-          className="font-mono"
-        />
+      <Field label={t("mcp.transport")}>
+        <NativeSelect
+          value={draft.transport}
+          onChange={(event) => set({ transport: event.target.value as DraftServer["transport"] })}
+        >
+          <NativeSelectOption value="stdio">{t("mcp.transportStdio")}</NativeSelectOption>
+          <NativeSelectOption value="http">{t("mcp.transportHttp")}</NativeSelectOption>
+        </NativeSelect>
       </Field>
-      <Field label={t("mcp.args")} hint={t("mcp.argsHint")}>
-        <Textarea
-          value={draft.argsText}
-          onChange={(event) => set({ argsText: event.target.value })}
-          placeholder={"-y\n@modelcontextprotocol/server-filesystem\n/path"}
-          className="min-h-20 font-mono text-xs"
-        />
-      </Field>
-      <Field label={t("mcp.env")} hint={t("mcp.envHint")}>
-        <Textarea
-          value={draft.envText}
-          onChange={(event) => set({ envText: event.target.value })}
-          placeholder="API_BASE=https://example.com"
-          className="min-h-14 font-mono text-xs"
-        />
-      </Field>
+
+      {draft.transport === "http" ? (
+        <>
+          <Field label={t("mcp.url")} hint={t("mcp.urlHint")}>
+            <Input
+              value={draft.url}
+              onChange={(event) => set({ url: event.target.value })}
+              placeholder="https://example.com/mcp"
+              className="font-mono"
+            />
+          </Field>
+          <Field label={t("mcp.headers")} hint={t("mcp.headersHint")}>
+            <Textarea
+              value={draft.headersText}
+              onChange={(event) => set({ headersText: event.target.value })}
+              placeholder="Authorization=Bearer …"
+              className="min-h-14 font-mono text-xs"
+            />
+          </Field>
+        </>
+      ) : (
+        <>
+          <Field label={t("mcp.command")} hint={t("mcp.commandHint")}>
+            <Input
+              value={draft.command}
+              onChange={(event) => set({ command: event.target.value })}
+              placeholder="npx"
+              className="font-mono"
+            />
+          </Field>
+          <Field label={t("mcp.args")} hint={t("mcp.argsHint")}>
+            <Textarea
+              value={draft.argsText}
+              onChange={(event) => set({ argsText: event.target.value })}
+              placeholder={"-y\n@modelcontextprotocol/server-filesystem\n/path"}
+              className="min-h-20 font-mono text-xs"
+            />
+          </Field>
+          <Field label={t("mcp.env")} hint={t("mcp.envHint")}>
+            <Textarea
+              value={draft.envText}
+              onChange={(event) => set({ envText: event.target.value })}
+              placeholder="API_BASE=https://example.com"
+              className="min-h-14 font-mono text-xs"
+            />
+          </Field>
+        </>
+      )}
       <div className="flex items-center gap-2">
         <Switch
           id="mcp-enabled"
@@ -261,7 +318,7 @@ function ServerForm({
         <Button variant="ghost" onClick={onCancel}>
           {t("mcp.cancel")}
         </Button>
-        <Button onClick={onSave} disabled={saving || !draft.id.trim() || !draft.command.trim()}>
+        <Button onClick={onSave} disabled={saving || !draftIsValid(draft)}>
           {saving && <Loader2 className="size-4 animate-spin" />}
           {t("mcp.save")}
         </Button>

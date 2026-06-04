@@ -33,12 +33,47 @@ describe("mcpServerConfigStore", () => {
     expect(list[0]).toMatchObject({ command: "node", enabled: false })
   })
 
+  it("defaults the transport to stdio", async () => {
+    const s = store()
+    await s.save({ id: "fs", command: "npx" })
+    expect((await s.list())[0]).toMatchObject({ transport: "stdio" })
+  })
+
   it("rejects invalid ids and empty commands", async () => {
     const s = store()
     await expect(s.save({ id: "bad id", command: "x" })).rejects.toBeInstanceOf(
       McpServerConfigError
     )
     await expect(s.save({ id: "ok", command: "   " })).rejects.toBeInstanceOf(McpServerConfigError)
+  })
+
+  it("saves an http server with url and headers, dropping stdio-only fields", async () => {
+    const s = store()
+    await s.save({
+      id: "remote",
+      transport: "http",
+      url: "  https://example.com/mcp ",
+      headers: { Authorization: "Bearer t" },
+      command: "ignored",
+    })
+    const saved = (await s.list())[0]
+    expect(saved).toMatchObject({
+      id: "remote",
+      transport: "http",
+      url: "https://example.com/mcp",
+      headers: { Authorization: "Bearer t" },
+    })
+    expect(saved?.command).toBeUndefined()
+  })
+
+  it("rejects an http server without a valid url", async () => {
+    const s = store()
+    await expect(s.save({ id: "r", transport: "http" })).rejects.toBeInstanceOf(
+      McpServerConfigError
+    )
+    await expect(s.save({ id: "r", transport: "http", url: "not-a-url" })).rejects.toBeInstanceOf(
+      McpServerConfigError
+    )
   })
 
   it("deletes by id and is a no-op for unknown ids", async () => {

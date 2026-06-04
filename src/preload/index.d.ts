@@ -291,10 +291,13 @@ declare global {
   interface SynapseMcpServerConfig {
     id: string
     name?: string
-    command: string
+    transport?: "stdio" | "http"
+    command?: string
     args?: string[]
     env?: Record<string, string>
     cwd?: string
+    url?: string
+    headers?: Record<string, string>
     enabled?: boolean
   }
 

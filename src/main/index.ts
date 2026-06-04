@@ -27,9 +27,9 @@ import { aiApprovalsFilePath, ApprovalStore } from "./ai/approval-store"
 import { asFallbackSource, CompositeToolHost } from "./ai/composite-tool-host"
 import { ConversationStore } from "./ai/conversation-store"
 import { aiCredentialFilePath, AiCredentialStore } from "./ai/credential-store"
+import { createMcpClient } from "./ai/mcp-client-factory"
 import { MCP_FQ_PREFIX, McpClientManager } from "./ai/mcp-client-manager"
 import { aiMcpServersFilePath, McpServerConfigStore } from "./ai/mcp-server-config-store"
-import { createStdioMcpClient } from "./ai/mcp-stdio-client"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/catalog"
 import { AiToolRegistry } from "./ai/tool-registry"
 import {
@@ -524,7 +524,7 @@ function pluginResourcesDir(): string {
 
 function createAgentService(): AgentService {
   const userDataDir = app.getPath("userData")
-  const manager = new McpClientManager(createStdioMcpClient)
+  const manager = new McpClientManager(createMcpClient)
   mcpClients = manager
   // The model sees one flat tool list: local plugin tools plus any external MCP
   // tools (namespaced `mcp:<id>/<tool>`). Invocations route by ownership.

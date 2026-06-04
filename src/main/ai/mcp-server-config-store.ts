@@ -7,16 +7,24 @@ import { readJsonFile, writeJsonFile } from "../lan/atomic-json-store"
 // (provider keys stay in the encrypted AiCredentialStore). `env` values are
 // stored verbatim, so the UI should steer users away from putting secrets here.
 
+export type McpTransport = "stdio" | "http"
+
 export interface McpServerConfig {
   /** Stable id, also used in the `mcp:<id>/<tool>` tool namespace. */
   id: string
   /** Human-friendly label for the UI. */
   name?: string
-  /** Executable to spawn for the stdio transport. */
-  command: string
+  /** How to reach the server. Defaults to "stdio" for back-compat. */
+  transport?: McpTransport
+  /** stdio: executable to spawn. */
+  command?: string
   args?: string[]
   env?: Record<string, string>
   cwd?: string
+  /** http: Streamable HTTP endpoint (SSE is used as a fallback). */
+  url?: string
+  /** http: extra request headers (e.g. Authorization). Stored verbatim. */
+  headers?: Record<string, string>
   /** Disabled servers are persisted but not connected. Defaults to true. */
   enabled?: boolean
 }
@@ -76,26 +84,52 @@ function normalizeConfig(config: McpServerConfig): McpServerConfig {
   if (!ID_PATTERN.test(config.id ?? "")) {
     throw new McpServerConfigError(`Invalid MCP server id: ${String(config.id)}`)
   }
-  if (typeof config.command !== "string" || config.command.trim().length === 0) {
-    throw new McpServerConfigError(`MCP server "${config.id}" requires a command.`)
-  }
+  const transport: McpTransport = config.transport === "http" ? "http" : "stdio"
   const out: McpServerConfig = {
     id: config.id,
-    command: config.command.trim(),
+    transport,
     enabled: config.enabled !== false,
   }
   if (typeof config.name === "string" && config.name.trim().length > 0)
     out.name = config.name.trim()
-  if (Array.isArray(config.args)) out.args = config.args.filter((arg) => typeof arg === "string")
-  if (config.env && typeof config.env === "object" && !Array.isArray(config.env)) {
-    const env: Record<string, string> = {}
-    for (const [key, value] of Object.entries(config.env)) {
-      if (typeof value === "string") env[key] = value
+
+  if (transport === "http") {
+    if (typeof config.url !== "string" || !isHttpUrl(config.url.trim())) {
+      throw new McpServerConfigError(`MCP server "${config.id}" requires an http(s) url.`)
     }
-    if (Object.keys(env).length > 0) out.env = env
+    out.url = config.url.trim()
+    const headers = stringRecord(config.headers)
+    if (headers) out.headers = headers
+    return out
   }
+
+  if (typeof config.command !== "string" || config.command.trim().length === 0) {
+    throw new McpServerConfigError(`MCP server "${config.id}" requires a command.`)
+  }
+  out.command = config.command.trim()
+  if (Array.isArray(config.args)) out.args = config.args.filter((arg) => typeof arg === "string")
+  const env = stringRecord(config.env)
+  if (env) out.env = env
   if (typeof config.cwd === "string" && config.cwd.trim().length > 0) out.cwd = config.cwd.trim()
   return out
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === "http:" || url.protocol === "https:"
+  } catch {
+    return false
+  }
+}
+
+function stringRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const out: Record<string, string> = {}
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === "string") out[key] = entry
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 function normalizeStored(value: unknown): McpServerConfig[] {

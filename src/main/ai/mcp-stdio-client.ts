@@ -16,6 +16,7 @@ import {
 // an injected fake client.
 
 export const createStdioMcpClient: McpClientFactory = (config): McpClientPort => {
+  if (!config.command) throw new Error(`MCP server "${config.id}" has no command for stdio.`)
   const client = new Client({ name: "synapse", version: "0.3.0" }, { capabilities: {} })
   const transport = new StdioClientTransport({
     command: config.command,

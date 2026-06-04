@@ -146,24 +146,31 @@ export function coerceMcpServer(payload: unknown): McpServerConfig {
     throw new Error("MCP server payload must be an object.")
   }
   const v = payload as Record<string, unknown>
-  const config: McpServerConfig = {
-    id: requireString(v.id, "id"),
-    command: requireString(v.command, "command"),
-  }
+  // Shape-only coercion; the config store validates command-or-url per transport.
+  const config: McpServerConfig = { id: requireString(v.id, "id") }
+  if (v.transport === "http" || v.transport === "stdio") config.transport = v.transport
   if (typeof v.name === "string") config.name = v.name
+  if (typeof v.command === "string") config.command = v.command
   if (typeof v.cwd === "string") config.cwd = v.cwd
+  if (typeof v.url === "string") config.url = v.url
   if (typeof v.enabled === "boolean") config.enabled = v.enabled
   if (Array.isArray(v.args)) {
     config.args = v.args.filter((arg): arg is string => typeof arg === "string")
   }
-  if (v.env && typeof v.env === "object" && !Array.isArray(v.env)) {
-    const env: Record<string, string> = {}
-    for (const [key, value] of Object.entries(v.env as Record<string, unknown>)) {
-      if (typeof value === "string") env[key] = value
-    }
-    config.env = env
-  }
+  const env = stringRecord(v.env)
+  if (env) config.env = env
+  const headers = stringRecord(v.headers)
+  if (headers) config.headers = headers
   return config
+}
+
+function stringRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const out: Record<string, string> = {}
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === "string") out[key] = entry
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 export function coerceChat(payload: unknown): { conversationId: string; text: string } {

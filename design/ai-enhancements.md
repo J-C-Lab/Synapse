@@ -23,18 +23,18 @@
 
 ## 推荐落地顺序
 
-| 顺序 | 项                               | 工作量 | 理由                        |
-| ---- | -------------------------------- | ------ | --------------------------- |
-| 1    | **Markdown 渲染** ✅ 已完成      | 小     | 日用价值最高、零回归        |
-| 2    | **会话历史侧栏** ✅ 已完成       | 中     | IPC 基本就绪、自包含        |
-| 3    | **审批 always 持久化** ✅ 已完成 | 小     | 补已知安全缺口、带撤销出口  |
-| 4    | **HTTP/SSE MCP 传输** ⬅ 下一项   | 中     | 干净扩展 P5a                |
-| 5    | **长期记忆 / RAG**               | 中→大  | 最开放;先 P6a 词法,RAG 选做 |
+| 顺序 | 项                               | 工作量 | 理由                       |
+| ---- | -------------------------------- | ------ | -------------------------- |
+| 1    | **Markdown 渲染** ✅ 已完成      | 小     | 日用价值最高、零回归       |
+| 2    | **会话历史侧栏** ✅ 已完成       | 中     | IPC 基本就绪、自包含       |
+| 3    | **审批 always 持久化** ✅ 已完成 | 小     | 补已知安全缺口、带撤销出口 |
+| 4    | **HTTP/SSE MCP 传输** ✅ 已完成  | 中     | 干净扩展 P5a               |
+| 5    | **长期记忆 / RAG** ⬅ 下一项      | 中→大  | 用 **embeddings**(已拍板)  |
 
-### 待你拍板的决策
+### 已拍板的决策
 
-1. **记忆检索默认**:词法 BM25(推荐,零依赖)还是直接 embeddings RAG?(仅影响第 5 项)
-2. **Markdown 排版**:可加 `@tailwindcss/typography`?——**已采纳为默认**,第 1 项按此实现。
+1. **记忆检索**:用 **embeddings RAG**(用户拍板,2026-06-04),不走 BM25。
+2. **Markdown 排版**:采用 `@tailwindcss/typography`(已落地第 1 项)。
 
 ---
 
@@ -86,21 +86,19 @@
 
 ---
 
-## 4. HTTP/SSE MCP 传输
+## 4. HTTP/SSE MCP 传输 ✅ 已完成
 
 **目标**:除 stdio 外,支持连接远程 HTTP MCP server(Streamable HTTP,SSE 兜底)。
 
-**方案**:
+**落地**:
 
-- `McpServerConfig` 加判别字段 `transport: "stdio" | "http"`(缺省 `"stdio"`,向后兼容);http 用 `url` + `headers`,stdio 保持 `command/args/env/cwd`。`normalizeConfig` 按 transport 分支校验。
-- 新 `mcp-http-client.ts`:`createHttpMcpClient`(`StreamableHTTPClientTransport`,connect 失败回退 `SSEClientTransport`)。
-- 新 `mcp-client-factory.ts`:`createMcpClient(config)` 按 transport 派发;index.ts 注入这个派发工厂(`McpClientManager` 不变——工厂已是注入点)。
-- UI:`mcp-servers-dialog` 加 transport 选择,http 显示 url/headers;`coerceMcpServer` 扩展。
-- 取消经 `AbortSignal` 已透传到 `callTool`。
+- `McpServerConfig` 加判别字段 `transport?: "stdio" | "http"`(缺省 stdio,向后兼容);http 用 `url` + `headers`,`command` 改为可选。`normalizeConfig` 按 transport 分支:http 校验 `url` 为 http(s)、stdio 校验 `command`;落库时丢弃另一传输的字段。
+- 新 [mcp-http-client.ts](../src/main/ai/mcp-http-client.ts):`createHttpMcpClient` 先 `StreamableHTTPClientTransport`,connect 失败用**新 Client** 回退 `SSEClientTransport`;`headers` 经 `requestInit` 注入。
+- 新 [mcp-client-factory.ts](../src/main/ai/mcp-client-factory.ts):`createMcpClient` 按 `transport` 派发;index.ts 注入它(`McpClientManager` 不变——工厂本就是注入点);`createStdioMcpClient` 加 command 缺失守卫。
+- UI:`mcp-servers-dialog` 加传输 `NativeSelect`,http 显示 url/headers、stdio 显示 command/args/env;`draftIsValid` 按传输判定;`coerceMcpServer` 放宽为仅 require id(命令/URL 校验下沉到 store)。`SynapseMcpServerConfig` 加 transport/url/headers。
+- 测试:config-store(http 保存/丢 stdio 字段、缺 url 拒绝、默认 stdio)+ `mcp-client-factory`(派发 + 缺 command/url 抛错)+ ipc coerce(http 透传)。
 
-**关键取舍**:headers 里的鉴权 token 敏感。MVP 同 env 明文存 + UI 提示;更稳做法是 token 存进加密 `AiCredentialStore`(键 `mcp:<id>`)再注入——标为后续项。
-
-**触点**:`mcp-server-config-store.ts`、新 `mcp-http-client.ts` / `mcp-client-factory.ts`、`index.ts`、`mcp-client-manager.ts`(status 带 transport,可选)、UI + coerce + 类型、测试(config 校验 + 工厂派发)。
+**关键取舍/caveat**:headers 里的鉴权 token 明文存于配置(同 env),UI 已提示勿存密钥;更稳做法是存进加密 `AiCredentialStore`(键 `mcp:<id>`)再注入——留作后续。HTTP client 跑主进程,不受渲染层 CSP 限制。
 
 ---
 

@@ -63,9 +63,26 @@ describe("coerceMcpServer", () => {
     })
   })
 
-  it("requires id and command", () => {
+  it("passes through an http config (command/url validation lives in the store)", () => {
+    expect(
+      coerceMcpServer({
+        id: "r",
+        transport: "http",
+        url: "https://example.com/mcp",
+        headers: { Authorization: "Bearer t", BAD: 5 },
+      })
+    ).toEqual({
+      id: "r",
+      transport: "http",
+      url: "https://example.com/mcp",
+      headers: { Authorization: "Bearer t" },
+    })
+  })
+
+  it("requires only id at the coerce layer", () => {
     expect(() => coerceMcpServer({ command: "npx" })).toThrow(/id must be a string/)
-    expect(() => coerceMcpServer({ id: "fs" })).toThrow(/command must be a string/)
     expect(() => coerceMcpServer(null)).toThrow(/must be an object/)
+    // command/url are optional here; the config store enforces them per transport.
+    expect(coerceMcpServer({ id: "fs" })).toEqual({ id: "fs" })
   })
 })
