@@ -50,6 +50,17 @@ export class MemoryStore {
     return true
   }
 
+  /** Remove every entry whose id is in `ids`, with one write. Returns the count. */
+  async removeMany(ids: string[]): Promise<number> {
+    if (ids.length === 0) return 0
+    const remove = new Set(ids)
+    const entries = await this.load()
+    const next = entries.filter((entry) => !remove.has(entry.id))
+    const removed = entries.length - next.length
+    if (removed > 0) await this.persist(next)
+    return removed
+  }
+
   private async load(): Promise<MemoryEntry[]> {
     if (this.entries) return this.entries
     this.entries = normalize(await readJsonFile(this.filePath))

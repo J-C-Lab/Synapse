@@ -289,6 +289,23 @@ declare global {
 
   type SynapseAiRememberScope = "once" | "conversation" | "always"
 
+  interface SynapseMemoryEntry {
+    id: string
+    text: string
+    tags: string[]
+    createdAt: number
+  }
+
+  interface SynapseMemorySource {
+    source: string
+    count: number
+  }
+
+  interface SynapseMemoryIngestResult {
+    source: string
+    chunks: number
+  }
+
   type SynapseUpdateStatus =
     | "idle"
     | "checking"
@@ -442,6 +459,14 @@ declare global {
       getAiMcpServerStatus: () => Promise<SynapseMcpServerStatus[]>
       saveAiMcpServer: (config: SynapseMcpServerConfig) => Promise<SynapseMcpServerStatus[]>
       deleteAiMcpServer: (id: string) => Promise<void>
+      listMemories: () => Promise<SynapseMemoryEntry[]>
+      listMemorySources: () => Promise<SynapseMemorySource[]>
+      ingestMemoryDocument: (input: {
+        source: string
+        text: string
+      }) => Promise<SynapseMemoryIngestResult>
+      deleteMemory: (id: string) => Promise<boolean>
+      deleteMemorySource: (source: string) => Promise<number>
       onAiChatEvent: (handler: (event: SynapseAiChatEvent) => void) => () => void
       getUpdateStatus: () => Promise<SynapseUpdateState>
       checkForUpdates: () => Promise<void>

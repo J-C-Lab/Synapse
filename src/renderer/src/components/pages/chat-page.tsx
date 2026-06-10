@@ -1,12 +1,13 @@
 import type { DisplayMessage, ToolCard } from "./chat-message-model"
 import type { AiChatEvent, AiConversationSummary, AiStatus, AiTokenUsage } from "@/lib/electron"
-import { Bot, Loader2, PanelLeft, Send, Server, Settings, Wrench } from "lucide-react"
+import { Bot, Brain, Loader2, PanelLeft, Send, Server, Settings, Wrench } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { AiSettingsDialog } from "@/components/ai-settings-dialog"
 import { ConversationSidebar } from "@/components/conversation-sidebar"
 import { Markdown } from "@/components/markdown"
 import { McpServersDialog } from "@/components/mcp-servers-dialog"
+import { MemoryDialog } from "@/components/memory-dialog"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -49,6 +50,7 @@ export function ChatPage() {
   const [usage, setUsage] = useState<AiTokenUsage | null>(null)
   const [approval, setApproval] = useState<PendingApproval | null>(null)
   const [showMcp, setShowMcp] = useState(false)
+  const [showMemory, setShowMemory] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showSidebar, setShowSidebar] = useState(true)
   const [conversations, setConversations] = useState<AiConversationSummary[]>([])
@@ -155,8 +157,13 @@ export function ChatPage() {
   if (status && !status.hasKey) {
     return (
       <div className="space-y-4">
-        <Header onManageMcp={() => setShowMcp(true)} onOpenSettings={() => setShowSettings(true)} />
+        <Header
+          onManageMcp={() => setShowMcp(true)}
+          onManageMemory={() => setShowMemory(true)}
+          onOpenSettings={() => setShowSettings(true)}
+        />
         <McpServersDialog open={showMcp} onOpenChange={setShowMcp} />
+        <MemoryDialog open={showMemory} onOpenChange={setShowMemory} />
         <AiSettingsDialog
           open={showSettings}
           onOpenChange={setShowSettings}
@@ -198,9 +205,11 @@ export function ChatPage() {
           model={status?.model}
           onToggleSidebar={() => setShowSidebar((value) => !value)}
           onManageMcp={() => setShowMcp(true)}
+          onManageMemory={() => setShowMemory(true)}
           onOpenSettings={() => setShowSettings(true)}
         />
         <McpServersDialog open={showMcp} onOpenChange={setShowMcp} />
+        <MemoryDialog open={showMemory} onOpenChange={setShowMemory} />
         <AiSettingsDialog
           open={showSettings}
           onOpenChange={setShowSettings}
@@ -298,11 +307,13 @@ function Header({
   model,
   onToggleSidebar,
   onManageMcp,
+  onManageMemory,
   onOpenSettings,
 }: {
   model?: string
   onToggleSidebar?: () => void
   onManageMcp: () => void
+  onManageMemory: () => void
   onOpenSettings: () => void
 }) {
   const { t } = useTranslation()
@@ -326,6 +337,10 @@ function Header({
         <Button variant="ghost" size="sm" onClick={onManageMcp}>
           <Server className="size-4" />
           {t("mcp.manage")}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onManageMemory}>
+          <Brain className="size-4" />
+          {t("memory.manage")}
         </Button>
         <Button variant="ghost" size="sm" onClick={onOpenSettings}>
           <Settings className="size-4" />

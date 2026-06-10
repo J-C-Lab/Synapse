@@ -119,6 +119,27 @@ describe("memoryService", () => {
     const svc = service({ embed: async () => null })
     await expect(svc.ingestDocument({ source: "d", text: "   " })).rejects.toThrow(/empty/)
   })
+
+  it("lists ingested document sources with their chunk counts", async () => {
+    const svc = service({ embed: async () => null })
+    await svc.ingestDocument({ source: "a.md", text: "abcdefghij" }, { size: 4, overlap: 2 })
+    await svc.ingestDocument({ source: "b.md", text: "hello" })
+    await svc.save({ text: "a standalone fact" }) // no source tag → not a document
+
+    expect(await svc.listSources()).toEqual([
+      { source: "a.md", count: 4 },
+      { source: "b.md", count: 1 },
+    ])
+  })
+
+  it("deletes every chunk belonging to a source", async () => {
+    const svc = service({ embed: async () => null })
+    await svc.ingestDocument({ source: "a.md", text: "abcdefghij" }, { size: 4, overlap: 2 })
+    await svc.ingestDocument({ source: "b.md", text: "hello" })
+
+    expect(await svc.deleteSource("a.md")).toBe(4)
+    expect(await svc.listSources()).toEqual([{ source: "b.md", count: 1 }])
+  })
 })
 
 describe("cosineSimilarity", () => {

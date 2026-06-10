@@ -59,6 +59,20 @@
     "allowedEmpty": "No tools are permanently allowed.",
     "revoke": "Revoke"
   },
+  "memory": {
+    "manage": "Memory",
+    "title": "Long-term memory",
+    "subtitle": "Import documents to make their passages searchable by the assistant, and review or delete what is remembered.",
+    "documents": "Imported documents",
+    "import": "Import document",
+    "noDocuments": "No documents imported yet.",
+    "chunks": "chunks",
+    "facts": "Saved facts",
+    "noFacts": "No standalone facts saved yet.",
+    "delete": "Delete",
+    "imported": "Imported {{source}} ({{chunks}} chunks).",
+    "importFailed": "Could not import the document."
+  },
   "mcp": {
     "title": "MCP servers",
     "manage": "MCP servers",

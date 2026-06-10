@@ -108,6 +108,12 @@ const electronAPI = {
   getAiMcpServerStatus: () => ipcRenderer.invoke("ai:mcp:status"),
   saveAiMcpServer: (config: unknown) => ipcRenderer.invoke("ai:mcp:save", config),
   deleteAiMcpServer: (id: string) => ipcRenderer.invoke("ai:mcp:delete", id),
+  listMemories: () => ipcRenderer.invoke("ai:memory:list"),
+  listMemorySources: () => ipcRenderer.invoke("ai:memory:sources"),
+  ingestMemoryDocument: (input: { source: string; text: string }) =>
+    ipcRenderer.invoke("ai:memory:ingest", input),
+  deleteMemory: (id: string) => ipcRenderer.invoke("ai:memory:delete", id),
+  deleteMemorySource: (source: string) => ipcRenderer.invoke("ai:memory:delete-source", source),
   onAiChatEvent: (handler: (event: unknown) => void): (() => void) => {
     const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
     ipcRenderer.on("ai:chat:event", listener)

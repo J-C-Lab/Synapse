@@ -294,6 +294,9 @@ export type McpServerConfig = SynapseMcpServerConfig
 export type McpServerStatus = SynapseMcpServerStatus
 export type UpdateState = SynapseUpdateState
 export type UpdateStatus = SynapseUpdateStatus
+export type MemoryEntry = SynapseMemoryEntry
+export type MemorySource = SynapseMemorySource
+export type MemoryIngestResult = SynapseMemoryIngestResult
 
 export async function getAiStatus(): Promise<AiStatus> {
   return api().getAiStatus()
@@ -380,6 +383,29 @@ export async function saveAiMcpServer(config: McpServerConfig): Promise<McpServe
 
 export async function deleteAiMcpServer(id: string): Promise<void> {
   await api().deleteAiMcpServer(id)
+}
+
+export async function listMemories(): Promise<MemoryEntry[]> {
+  return api().listMemories()
+}
+
+export async function listMemorySources(): Promise<MemorySource[]> {
+  return api().listMemorySources()
+}
+
+export async function ingestMemoryDocument(input: {
+  source: string
+  text: string
+}): Promise<MemoryIngestResult> {
+  return api().ingestMemoryDocument(input)
+}
+
+export async function deleteMemory(id: string): Promise<boolean> {
+  return api().deleteMemory(id)
+}
+
+export async function deleteMemorySource(source: string): Promise<number> {
+  return api().deleteMemorySource(source)
 }
 
 export async function getUpdateStatus(): Promise<UpdateState> {

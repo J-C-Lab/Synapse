@@ -59,6 +59,20 @@
     "allowedEmpty": "没有永久允许的工具。",
     "revoke": "撤销"
   },
+  "memory": {
+    "manage": "记忆",
+    "title": "长期记忆",
+    "subtitle": "导入文档,让助手能语义检索其中的段落;也可查看或删除已记住的内容。",
+    "documents": "已导入文档",
+    "import": "导入文档",
+    "noDocuments": "尚未导入任何文档。",
+    "chunks": "块",
+    "facts": "已保存事实",
+    "noFacts": "尚未保存独立事实。",
+    "delete": "删除",
+    "imported": "已导入 {{source}}({{chunks}} 块)。",
+    "importFailed": "无法导入该文档。"
+  },
   "mcp": {
     "title": "MCP 服务器",
     "manage": "MCP 服务器",

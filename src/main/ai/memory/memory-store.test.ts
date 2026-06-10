@@ -43,6 +43,19 @@ describe("memoryStore", () => {
     expect(reloaded.map((entry) => entry.id)).toEqual(["1", "2"])
   })
 
+  it("removes many entries by id in one write and reports the count", async () => {
+    const file = path.join(dir, "memory.json")
+    const store = new MemoryStore(file)
+    await store.addMany([
+      { id: "1", text: "a", tags: [], createdAt: 1 },
+      { id: "2", text: "b", tags: [], createdAt: 2 },
+      { id: "3", text: "c", tags: [], createdAt: 3 },
+    ])
+
+    expect(await store.removeMany(["1", "3", "missing"])).toBe(2)
+    expect((await new MemoryStore(file).all()).map((entry) => entry.id)).toEqual(["2"])
+  })
+
   it("drops malformed entries when loading", async () => {
     const file = path.join(dir, "memory.json")
     await fs.writeFile(

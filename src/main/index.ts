@@ -49,6 +49,7 @@ import {
 import { registerAiIpc } from "./ipc/ai"
 import { registerLanIpc } from "./ipc/lan"
 import { LauncherService } from "./ipc/launcher-service"
+import { registerMemoryIpc } from "./ipc/memory"
 import { registerPluginIpc } from "./ipc/plugins"
 import { registerUpdatesIpc } from "./ipc/updates"
 import { BonjourLanDiscoveryAdapter } from "./lan/bonjour-discovery-adapter"
@@ -182,6 +183,9 @@ let agent: AgentService
 // External MCP servers feeding tools to the built-in agent (P5). Held at module
 // scope so shutdown can disconnect the child processes.
 let mcpClients: McpClientManager | null = null
+// Long-term memory service, held at module scope so the memory IPC can reach the
+// same instance the agent's memory tools use.
+let memoryService: MemoryService | null = null
 let mainWindow: BrowserWindow | null = null
 // Auto-update orchestration (electron-updater). Constructed during IPC setup.
 let updateService: UpdateService | null = null
@@ -282,6 +286,8 @@ function registerIpc(): void {
     pickPackageFile: pickSynapsePackageFile,
   })
   registerAiIpc(ipcMain, agent, { isTrustedSender: isTrustedIpcSender })
+  if (memoryService)
+    registerMemoryIpc(ipcMain, memoryService, { isTrustedSender: isTrustedIpcSender })
   updateService = setupAutoUpdates()
   registerUpdatesIpc(ipcMain, updateService, { isTrustedSender: isTrustedIpcSender })
   registerLanIpc(ipcMain, lan, {
@@ -562,6 +568,7 @@ function createAgentService(): AgentService {
     new MemoryStore(aiMemoryFilePath(userDataDir)),
     new OpenAiEmbeddingProvider({ getApiKey: () => credentials.get("openai") })
   )
+  memoryService = memory
 
   // The model sees one flat tool list: local plugin tools, external MCP tools
   // (`mcp:<id>/<tool>`), and built-in memory tools (`memory:…`). Invocations

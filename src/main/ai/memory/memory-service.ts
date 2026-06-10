@@ -30,6 +30,15 @@ export interface IngestDocumentResult {
   chunks: number
 }
 
+export interface MemorySource {
+  source: string
+  /** Number of stored chunks for this document. */
+  count: number
+}
+
+/** Tag prefix marking a chunk's originating document. */
+export const SOURCE_TAG_PREFIX = "source:"
+
 export class MemoryService {
   constructor(
     private readonly store: MemoryStore,
@@ -69,7 +78,7 @@ export class MemoryService {
 
     const embeddings = await this.safeEmbed(chunks)
     const tags = [
-      `source:${source}`,
+      `${SOURCE_TAG_PREFIX}${source}`,
       ...(input.tags ?? []).map((tag) => tag.trim()).filter(Boolean),
     ]
     const entries: MemoryEntry[] = chunks.map((text, index) => ({
@@ -114,6 +123,26 @@ export class MemoryService {
     return this.store.remove(id)
   }
 
+  /** Ingested documents (by `source:` tag) with their chunk counts, sorted by name. */
+  async listSources(): Promise<MemorySource[]> {
+    const counts = new Map<string, number>()
+    for (const entry of await this.store.all()) {
+      const source = sourceOf(entry.tags)
+      if (source) counts.set(source, (counts.get(source) ?? 0) + 1)
+    }
+    return [...counts.entries()]
+      .map(([source, count]) => ({ source, count }))
+      .sort((a, b) => a.source.localeCompare(b.source))
+  }
+
+  /** Delete every chunk belonging to a document. Returns how many were removed. */
+  async deleteSource(source: string): Promise<number> {
+    const ids = (await this.store.all())
+      .filter((entry) => sourceOf(entry.tags) === source)
+      .map((entry) => entry.id)
+    return this.store.removeMany(ids)
+  }
+
   private async safeEmbed(texts: string[]): Promise<number[][] | null> {
     try {
       return await this.embedder.embed(texts)
@@ -123,6 +152,12 @@ export class MemoryService {
       return null
     }
   }
+}
+
+/** The document a chunk came from, read from its `source:` tag, or undefined. */
+function sourceOf(tags: string[]): string | undefined {
+  const tag = tags.find((value) => value.startsWith(SOURCE_TAG_PREFIX))
+  return tag ? tag.slice(SOURCE_TAG_PREFIX.length) : undefined
 }
 
 function lexicalHits(query: string, entries: MemoryEntry[]): MemorySearchHit[] {
