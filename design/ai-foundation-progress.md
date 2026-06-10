@@ -16,9 +16,11 @@
 | **P4 MCP server(对外)**               | 内置 MCP server 暴露插件工具给 Claude Desktop/Code                                         | ✅ 已完成                 |
 | **P5a MCP client(对内)**              | 接入外部 stdio MCP server,工具汇入内置智能体                                               | ✅ 已完成                 |
 | **P5b 多 provider**                   | OpenAI 适配 + provider/模型切换                                                            | ✅ 已完成                 |
-| **P6 记忆/RAG(可选)**                 | 长期记忆工具 + 本地向量检索                                                                | ⬜ **下一步**             |
+| **P6 记忆/RAG**                       | 长期记忆工具 + 本地向量检索(embeddings)                                                    | ✅ 已完成(提交 `b2ea404`) |
 
 MVP 目标范围:**P0–P3** 端到端「插件工具被内置智能体调用」闭环,P4 紧随。
+
+> **路线图已走完。** P0–P6 + [ai-enhancements.md](ai-enhancements.md) 的 5 项增强(Markdown、会话侧栏、审批 always 持久化、HTTP/SSE MCP、长期记忆)全部落地。后续工作转入「发布就绪」与「AI 深化」两条线,详见仓库根的开发计划。
 
 ---
 
@@ -207,9 +209,18 @@ MVP 目标范围:**P0–P3** 端到端「插件工具被内置智能体调用」
 - 工具名 sanitize(`[\w-]≤128`)对 OpenAI(限 64)偏宽:插件工具名短,暂不收紧;如接入超长名外部 MCP 工具需注意。
 - 默认 provider 仍是 anthropic(catalog 首项 / `DEFAULT_PROVIDER_ID`)。
 
-## 下一步:P6 — 记忆 / RAG(可选)
+## P6 成果(已落地)
 
-目标:**长期记忆工具 + 本地向量检索**(设计 §未定,可选增强)。也可转向此前列出的非阻塞增强:会话历史侧栏、Markdown 渲染、HTTP/SSE MCP 传输、审批「always」持久化、预算上限。
+**长期记忆 + 本地语义召回(embeddings RAG)**,落地细节见 [ai-enhancements.md §5](ai-enhancements.md)。全部在 `src/main/ai/memory/`:`memory-store`(JSON 持久化)、`openai-embedding-provider`(`text-embedding-3-small`,调用时解析 BYOK openai key,无 key 返回 `null`)、`memory-service`(cosine 排序,无嵌入时词法回退)、`memory-tools`(`MemoryToolSource`,命名空间 `memory:core/…`,`memory_save`/`memory_search`/`memory_list`/`memory_delete`)。经 `CompositeToolHost` 接入。
+
+## 路线图已走完——后续方向
+
+计划内 P0–P6 + 5 项增强全部完成。下一阶段分两条线推进:
+
+- **发布就绪**:AI 真实 key 端到端冒烟、对外 MCP 接 Claude Desktop 验证、代码签名 + `electron-updater` 自动更新、打包发布走查 + CI 产物。
+- **AI 深化**:代码块语法高亮(`shiki`)、token 预算上限、RAG 文档分块 ingest(P6b)、MCP 明文密钥下沉到加密 `AiCredentialStore`。
+
+仍未做的手动验证(发布前必须补):配真实 key 让模型调用脚手架 `greet` 闭环;`Synapse --mcp-stdio` 接 Claude Desktop 列出/调用只读工具。
 
 ---
 
