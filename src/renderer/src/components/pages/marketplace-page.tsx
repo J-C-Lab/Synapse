@@ -541,10 +541,16 @@ function MarketplaceAvatar({
   user: NonNullable<MarketplaceAccount["user"]>
   size: "sm" | "lg"
 }) {
+  const [failed, setFailed] = useState(false)
   return (
     <Avatar size={size} className="border bg-muted">
-      {user.avatarUrl ? (
-        <img className="aspect-square size-full" src={user.avatarUrl} alt={user.displayName} />
+      {user.avatarUrl && !failed ? (
+        <img
+          className="aspect-square size-full"
+          src={user.avatarUrl}
+          alt={user.displayName}
+          onError={() => setFailed(true)}
+        />
       ) : (
         <AvatarFallback>{accountInitial(user)}</AvatarFallback>
       )}

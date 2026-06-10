@@ -119,9 +119,13 @@ protocol.registerSchemesAsPrivileged([
   },
 ])
 
+// Marketplace user avatars are served by GitHub. Allowlist that specific host
+// in img-src rather than opening it to all https.
+const AVATAR_IMG_SRC = "https://avatars.githubusercontent.com"
+
 const PROD_CSP =
   "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-  "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; " +
+  `img-src 'self' data: blob: ${AVATAR_IMG_SRC}; font-src 'self' data:; connect-src 'self'; ` +
   "object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'self'"
 
 function devCsp(devOrigin: string): string {
@@ -130,7 +134,7 @@ function devCsp(devOrigin: string): string {
     `default-src 'self' ${devOrigin} ${ws}; ` +
     `script-src 'self' 'unsafe-inline' 'unsafe-eval' ${devOrigin}; ` +
     `style-src 'self' 'unsafe-inline' ${devOrigin}; ` +
-    `img-src 'self' data: blob: ${devOrigin}; ` +
+    `img-src 'self' data: blob: ${AVATAR_IMG_SRC} ${devOrigin}; ` +
     `font-src 'self' data: ${devOrigin}; ` +
     `connect-src 'self' ${devOrigin} ${ws}`
   )
