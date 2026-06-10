@@ -83,6 +83,7 @@ function installElectronApi(settings: SynapseUserSettings): TestElectronApi {
     deleteAiKey: vi.fn().mockResolvedValue(undefined),
     setAiProvider: vi.fn().mockResolvedValue(undefined),
     setAiModel: vi.fn().mockResolvedValue(undefined),
+    setAiBudget: vi.fn().mockResolvedValue(undefined),
     listAiTools: vi.fn().mockResolvedValue([]),
     listAiConversations: vi.fn().mockResolvedValue([]),
     getAiConversation: vi.fn().mockResolvedValue(undefined),

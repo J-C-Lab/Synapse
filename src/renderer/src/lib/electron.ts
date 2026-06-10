@@ -313,6 +313,10 @@ export async function setAiModel(providerId: string, model: string): Promise<voi
   await api().setAiModel(providerId, model)
 }
 
+export async function setAiBudget(tokens: number): Promise<void> {
+  await api().setAiBudget(tokens)
+}
+
 export async function listAiTools(): Promise<AiTool[]> {
   return api().listAiTools()
 }

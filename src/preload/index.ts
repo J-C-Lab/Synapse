@@ -92,6 +92,7 @@ const electronAPI = {
   setAiProvider: (providerId: string) => ipcRenderer.invoke("ai:set-provider", providerId),
   setAiModel: (providerId: string, model: string) =>
     ipcRenderer.invoke("ai:set-model", { providerId, model }),
+  setAiBudget: (tokens: number) => ipcRenderer.invoke("ai:set-budget", tokens),
   listAiTools: () => ipcRenderer.invoke("ai:list-tools"),
   listAiConversations: () => ipcRenderer.invoke("ai:list-conversations"),
   getAiConversation: (id: string) => ipcRenderer.invoke("ai:get-conversation", id),

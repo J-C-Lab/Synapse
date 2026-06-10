@@ -48,6 +48,16 @@ export function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
   }
 }
 
+/** Total tokens billed across input, output, and prompt-cache writes/reads. */
+export function totalTokens(usage: TokenUsage): number {
+  return (
+    usage.inputTokens +
+    usage.outputTokens +
+    usage.cacheCreationInputTokens +
+    usage.cacheReadInputTokens
+  )
+}
+
 /** A tool as the model sees it. `name` is already provider-safe (sanitized). */
 export interface ProviderToolSchema {
   name: string

@@ -9,6 +9,8 @@ export interface AiSettings {
   activeProvider: string
   /** Selected model per provider id. Falls back to the catalog default. */
   models: Record<string, string>
+  /** Per-run cumulative token budget. 0 means unlimited. */
+  budgetTokens: number
 }
 
 export function aiSettingsFilePath(userDataDir: string): string {
@@ -42,6 +44,12 @@ export class AiSettingsStore {
     })
   }
 
+  /** Set the per-run token budget. Negative values clamp to 0 (unlimited). */
+  async setBudget(tokens: number): Promise<void> {
+    const settings = await this.get()
+    await this.persist({ ...settings, budgetTokens: Math.max(0, Math.floor(tokens)) })
+  }
+
   private async persist(settings: AiSettings): Promise<void> {
     this.settings = settings
     await writeJsonFile(this.filePath, settings)
@@ -56,8 +64,13 @@ function normalize(value: unknown, defaultProvider: string): AiSettings {
       if (typeof model === "string") models[provider] = model
     }
   }
+  const budgetTokens =
+    typeof v.budgetTokens === "number" && Number.isFinite(v.budgetTokens) && v.budgetTokens > 0
+      ? Math.floor(v.budgetTokens)
+      : 0
   return {
     activeProvider: typeof v.activeProvider === "string" ? v.activeProvider : defaultProvider,
     models,
+    budgetTokens,
   }
 }

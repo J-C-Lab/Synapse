@@ -1,5 +1,5 @@
 import type { RegisteredToolDescriptor } from "../plugins/types"
-import type { ChatContentBlock, ChatMessage, ChatProvider } from "./providers/types"
+import type { ChatContentBlock, ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
 import type { ToolHostPort } from "./tool-registry"
 import { describe, expect, it, vi } from "vitest"
 import { AgentRuntime } from "./agent-runtime"
@@ -9,6 +9,8 @@ import { AiToolRegistry } from "./tool-registry"
 interface ScriptedTurn {
   text?: string
   toolUses?: { id: string; name: string; input: unknown }[]
+  /** Tokens this turn reports, for budget tests. Defaults to none. */
+  usage?: Partial<TokenUsage>
 }
 
 function fakeProvider(turns: ScriptedTurn[]): ChatProvider {
@@ -28,7 +30,7 @@ function fakeProvider(turns: ScriptedTurn[]): ChatProvider {
       yield {
         type: "message",
         message: { role: "assistant", content },
-        usage: emptyUsage(),
+        usage: { ...emptyUsage(), ...turn.usage },
         stopReason: turn.toolUses?.length ? "tool_use" : "end_turn",
       }
     },
@@ -110,6 +112,48 @@ describe("agentRuntime", () => {
     const result = await runtime.run({ conversationId: "c1", messages: [userMessage("loop")] })
     expect(result.stopReason).toBe("max_steps")
     expect(host.invokeTool).toHaveBeenCalledTimes(2)
+  })
+
+  it("stops with budget_exceeded once cumulative usage passes the token budget", async () => {
+    const host = fakeHost()
+    const runtime = new AgentRuntime({
+      provider: fakeProvider([
+        {
+          toolUses: [{ id: "a", name: "com_x_demo_greet", input: {} }],
+          usage: { outputTokens: 80 },
+        },
+        { toolUses: [{ id: "b", name: "com_x_demo_greet", input: {} }] },
+        { text: "should not reach" },
+      ]),
+      tools: new AiToolRegistry(host),
+      budgetTokens: 50,
+    })
+
+    const result = await runtime.run({ conversationId: "c1", messages: [userMessage("loop")] })
+
+    expect(result.stopReason).toBe("budget_exceeded")
+    // First turn's tools run; the loop bails before the second provider call.
+    expect(host.invokeTool).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not stop early when usage stays under the token budget", async () => {
+    const host = fakeHost()
+    const runtime = new AgentRuntime({
+      provider: fakeProvider([
+        {
+          toolUses: [{ id: "a", name: "com_x_demo_greet", input: {} }],
+          usage: { outputTokens: 10 },
+        },
+        { text: "done", usage: { outputTokens: 10 } },
+      ]),
+      tools: new AiToolRegistry(host),
+      budgetTokens: 1000,
+    })
+
+    const result = await runtime.run({ conversationId: "c1", messages: [userMessage("hi")] })
+
+    expect(result.stopReason).toBe("end_turn")
+    expect(host.invokeTool).toHaveBeenCalledTimes(1)
   })
 
   it("returns immediately when the signal is already aborted", async () => {

@@ -1,7 +1,7 @@
 import type { ChatContentBlock, ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
 import type { AiToolRegistry } from "./tool-registry"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
-import { addUsage, emptyUsage } from "./providers/types"
+import { addUsage, emptyUsage, totalTokens } from "./providers/types"
 import { renderToolResultText } from "./tool-registry"
 
 // The agent loop: stream a turn → if the model called tools, run them through
@@ -20,6 +20,11 @@ export interface AgentRuntimeOptions {
   /** Hard ceiling on tool-use rounds, guarding against runaway loops. */
   maxSteps?: number
   maxTokens?: number
+  /**
+   * Cumulative token budget for the whole run. Once total usage reaches this,
+   * the loop stops before the next (expensive) provider call. Undefined = no cap.
+   */
+  budgetTokens?: number
   defaultSystem?: string
 }
 
@@ -48,7 +53,7 @@ export interface AgentRunOptions {
 
 export interface AgentRunResult {
   messages: ChatMessage[]
-  stopReason: "end_turn" | "max_steps" | "aborted"
+  stopReason: "end_turn" | "max_steps" | "aborted" | "budget_exceeded"
   usage: TokenUsage
 }
 
@@ -60,11 +65,16 @@ export class AgentRuntime {
     const model = this.options.model ?? DEFAULT_ANTHROPIC_MODEL
     const maxSteps = this.options.maxSteps ?? 10
     const maxTokens = this.options.maxTokens ?? 4096
+    const budgetTokens = this.options.budgetTokens
     const system = options.system ?? this.options.defaultSystem ?? DEFAULT_SYSTEM_PROMPT
     let usage = emptyUsage()
 
     for (let step = 0; step < maxSteps; step++) {
       if (options.signal?.aborted) return { messages, stopReason: "aborted", usage }
+      // Guard before starting another expensive turn (the first turn always runs).
+      if (step > 0 && budgetTokens !== undefined && totalTokens(usage) >= budgetTokens) {
+        return { messages, stopReason: "budget_exceeded", usage }
+      }
 
       const tools = this.options.tools.list()
       let assistant: ChatMessage | undefined

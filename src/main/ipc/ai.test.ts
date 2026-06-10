@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest"
-import { coerceApprove, coerceChat, coerceMcpServer } from "./ai"
+import { coerceApprove, coerceBudget, coerceChat, coerceMcpServer } from "./ai"
+
+describe("coerceBudget", () => {
+  it("accepts a non-negative integer and floors it", () => {
+    expect(coerceBudget(5000)).toBe(5000)
+    expect(coerceBudget(0)).toBe(0)
+    expect(coerceBudget(12.9)).toBe(12)
+  })
+
+  it("rejects negative values and non-numbers", () => {
+    expect(() => coerceBudget(-1)).toThrow(/budget/)
+    expect(() => coerceBudget("x")).toThrow(/budget/)
+    expect(() => coerceBudget(Number.NaN)).toThrow(/budget/)
+  })
+})
 
 describe("coerceChat", () => {
   it("accepts a well-formed payload", () => {

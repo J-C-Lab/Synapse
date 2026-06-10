@@ -5,7 +5,7 @@ import type { ApprovalStore } from "./approval-store"
 import type { ConversationStore, StoredConversation } from "./conversation-store"
 import type { AiCredentialStore } from "./credential-store"
 import type { ProviderDescriptor } from "./providers/catalog"
-import type { ChatContentBlock, ChatProvider } from "./providers/types"
+import type { ChatContentBlock, ChatProvider, TokenUsage } from "./providers/types"
 import type { ToolHostPort } from "./tool-registry"
 import { describe, expect, it, vi } from "vitest"
 import { AgentMissingKeyError, AgentService } from "./agent-service"
@@ -25,6 +25,7 @@ function descriptorFor(id: string): ProviderDescriptor {
 interface ScriptedTurn {
   text?: string
   toolUses?: { id: string; name: string; input: unknown }[]
+  usage?: Partial<TokenUsage>
 }
 
 function fakeProvider(turns: ScriptedTurn[]): ChatProvider {
@@ -41,11 +42,27 @@ function fakeProvider(turns: ScriptedTurn[]): ChatProvider {
       yield {
         type: "message",
         message: { role: "assistant", content },
-        usage: emptyUsage(),
+        usage: { ...emptyUsage(), ...turn.usage },
         stopReason: turn.toolUses?.length ? "tool_use" : "end_turn",
       }
     },
   }
+}
+
+/** Minimal AiSettingsStore stub with a mutable in-memory state. */
+function settingsStub(initial: Partial<{ budgetTokens: number }> = {}) {
+  const state = { activeProvider: "anthropic", models: {}, budgetTokens: 0, ...initial }
+  return {
+    state,
+    get: async () => state,
+    setActiveProvider: async (id: string) => {
+      state.activeProvider = id
+    },
+    setModel: async () => {},
+    setBudget: async (tokens: number) => {
+      state.budgetTokens = Math.max(0, Math.floor(tokens))
+    },
+  } as unknown as AiSettingsStore & { state: { budgetTokens: number } }
 }
 
 function descriptor(annotations?: RegisteredToolDescriptor["manifestTool"]["annotations"]) {
@@ -239,6 +256,50 @@ describe("agentService", () => {
     expect(status.model).toBe("gpt-4.1")
     expect(status.providers.find((provider) => provider.id === "openai")?.hasKey).toBe(true)
     expect(status.providers.find((provider) => provider.id === "anthropic")?.hasKey).toBe(false)
+  })
+
+  it("stops a turn with budget_exceeded once the configured token budget is passed", async () => {
+    const events: AiChatEvent[] = []
+    const svc = new AgentService({
+      credentials: credentials("sk-test"),
+      tools: new AiToolRegistry(fakeHost({ readOnlyHint: true })),
+      conversations: conversations().store,
+      settings: settingsStub({ budgetTokens: 50 }),
+      createProvider: () =>
+        fakeProvider([
+          {
+            toolUses: [{ id: "a", name: "com_x_demo_act", input: {} }],
+            usage: { outputTokens: 80 },
+          },
+          { text: "should not reach" },
+        ]),
+      sendEvent: (event) => events.push(event),
+      now: () => 1000,
+    })
+
+    const result = await svc.chat("c1", "go")
+
+    expect(result.stopReason).toBe("budget_exceeded")
+    const done = events.find((event) => event.type === "done")
+    expect(done).toMatchObject({ stopReason: "budget_exceeded" })
+  })
+
+  it("reports the configured token budget in status and can set it", async () => {
+    const settings = settingsStub({ budgetTokens: 2000 })
+    const svc = new AgentService({
+      credentials: credentials("sk-test"),
+      tools: new AiToolRegistry(fakeHost()),
+      conversations: conversations().store,
+      settings,
+      createProvider: () => fakeProvider([{ text: "hi" }]),
+      sendEvent: () => {},
+      now: () => 1000,
+    })
+
+    expect((await svc.getStatus()).budgetTokens).toBe(2000)
+    await svc.setBudget(500)
+    expect(settings.state.budgetTokens).toBe(500)
+    expect((await svc.getStatus()).budgetTokens).toBe(500)
   })
 
   it("seeds permanent allow from the approval store so a seeded tool runs unasked", async () => {

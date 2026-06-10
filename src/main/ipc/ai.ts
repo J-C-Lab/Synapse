@@ -16,6 +16,7 @@ export interface AiIpcService {
   deleteKey: (providerId: string) => Promise<void>
   setActiveProvider: (providerId: string) => Promise<void>
   setModel: (providerId: string, model: string) => Promise<void>
+  setBudget: (tokens: number) => Promise<void>
   listTools: () => ProviderToolSchema[]
   listConversations: () => Promise<ConversationSummary[]>
   getConversation: (id: string) => Promise<StoredConversation | undefined>
@@ -67,6 +68,10 @@ export function registerAiIpc(
     guard(event, "ai:set-model")
     const { providerId, model } = coerceProviderModel(payload)
     return service.setModel(providerId, model)
+  })
+  ipcMain.handle("ai:set-budget", (event, tokens: unknown) => {
+    guard(event, "ai:set-budget")
+    return service.setBudget(coerceBudget(tokens))
   })
   ipcMain.handle("ai:list-tools", (event) => {
     guard(event, "ai:list-tools")
@@ -139,6 +144,13 @@ export function coerceProviderModel(payload: unknown): { providerId: string; mod
     providerId: requireString(v.providerId, "providerId"),
     model: requireString(v.model, "model"),
   }
+}
+
+export function coerceBudget(tokens: unknown): number {
+  if (typeof tokens !== "number" || !Number.isFinite(tokens) || tokens < 0) {
+    throw new Error("budget must be a non-negative number.")
+  }
+  return Math.floor(tokens)
 }
 
 export function coerceMcpServer(payload: unknown): McpServerConfig {

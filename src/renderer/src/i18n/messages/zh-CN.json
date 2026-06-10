@@ -21,6 +21,7 @@
     "keyPrompt": "添加你的 Anthropic API Key 即可开始对话。密钥在本机加密存储，永不离开主进程。",
     "saveKey": "保存密钥",
     "usage": "输入 {{input}} · 输出 {{output}} · 缓存 {{cached}}",
+    "usageBudget": "预算 {{used}}/{{budget}}",
     "approvalTitle": "允许运行此工具？",
     "approvalBody": "助手想用以下入参运行 {{tool}}：",
     "allow": "允许一次",
@@ -42,6 +43,10 @@
     "saveKey": "保存",
     "clearKey": "移除",
     "keyHint": "每个服务商各存各的密钥;切换服务商不会清除它。",
+    "budget": "每轮 token 预算",
+    "budgetSave": "保存",
+    "budgetUnlimited": "不限",
+    "budgetHint": "一轮对话消耗达到该 token 数即停止。留空或填 0 表示不限。",
     "allowedTools": "始终允许的工具",
     "allowedEmpty": "没有永久允许的工具。",
     "revoke": "撤销"

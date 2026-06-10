@@ -1,5 +1,5 @@
 import type { AiStatus } from "@/lib/electron"
-import { Check, KeyRound, Loader2, ShieldOff } from "lucide-react"
+import { Check, Gauge, KeyRound, Loader2, ShieldOff } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Button } from "@/components/ui/button"
@@ -19,6 +19,7 @@ import {
   isElectron,
   listAiAllowedTools,
   revokeAiTool,
+  setAiBudget,
   setAiKey,
   setAiModel,
   setAiProvider,
@@ -37,10 +38,13 @@ export function AiSettingsDialog({
 }) {
   const { t } = useTranslation()
   const [keyDraft, setKeyDraft] = useState("")
+  // null = show the persisted budget; a string = the user is editing.
+  const [budgetDraft, setBudgetDraft] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [allowed, setAllowed] = useState<string[]>([])
 
   const active = status?.providers.find((provider) => provider.id === status.provider)
+  const budgetValue = budgetDraft ?? (status?.budgetTokens ? String(status.budgetTokens) : "")
 
   useEffect(() => {
     if (open && isElectron()) void listAiAllowedTools().then(setAllowed)
@@ -91,8 +95,21 @@ export function AiSettingsDialog({
     await mutate(() => deleteAiKey(active.id))
   }
 
+  async function saveBudget() {
+    const parsed = Number.parseInt(budgetValue, 10)
+    const tokens = Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+    await mutate(() => setAiBudget(tokens))
+    setBudgetDraft(null) // fall back to the freshly persisted value
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) setBudgetDraft(null) // discard unsaved budget edits on close
+        onOpenChange(next)
+      }}
+    >
       <DialogContent className="gap-4 sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -168,6 +185,29 @@ export function AiSettingsDialog({
             </div>
           </>
         )}
+
+        <div className="space-y-1 border-t pt-3">
+          <Label className="flex items-center gap-1.5 text-xs">
+            <Gauge className="size-3.5" />
+            {t("providers.budget")}
+          </Label>
+          <div className="flex gap-2">
+            <Input
+              type="number"
+              min={0}
+              step={1000}
+              value={budgetValue}
+              disabled={busy}
+              onChange={(event) => setBudgetDraft(event.target.value)}
+              placeholder={t("providers.budgetUnlimited")}
+              onKeyDown={(event) => event.key === "Enter" && void saveBudget()}
+            />
+            <Button variant="secondary" disabled={busy} onClick={() => void saveBudget()}>
+              {t("providers.budgetSave")}
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">{t("providers.budgetHint")}</p>
+        </div>
 
         <div className="space-y-1 border-t pt-3">
           <Label className="flex items-center gap-1.5 text-xs">

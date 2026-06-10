@@ -89,6 +89,8 @@ export interface AiStatus {
   /** Active provider's selected model. */
   model: string
   providers: AiProviderStatus[]
+  /** Per-run token budget; 0 means unlimited. */
+  budgetTokens: number
 }
 
 export class AgentService {
@@ -151,7 +153,13 @@ export class AgentService {
       }))
     )
     const active = providers.find((provider) => provider.id === providerId)
-    return { provider: providerId, hasKey: active?.hasKey ?? false, model, providers }
+    return {
+      provider: providerId,
+      hasKey: active?.hasKey ?? false,
+      model,
+      providers,
+      budgetTokens: settings?.budgetTokens ?? 0,
+    }
   }
 
   async setKey(providerId: string, key: string): Promise<void> {
@@ -173,6 +181,11 @@ export class AgentService {
   /** Choose the model a provider should use. */
   async setModel(providerId: string, model: string): Promise<void> {
     if (this.options.settings) await this.options.settings.setModel(providerId, model)
+  }
+
+  /** Set the per-run token budget (0 = unlimited). */
+  async setBudget(tokens: number): Promise<void> {
+    if (this.options.settings) await this.options.settings.setBudget(tokens)
   }
 
   listTools(): ProviderToolSchema[] {
@@ -233,10 +246,14 @@ export class AgentService {
     const apiKey = await this.options.credentials.get(providerId)
     if (!apiKey) throw new AgentMissingKeyError()
 
+    const budgetTokens = this.options.settings
+      ? (await this.options.settings.get()).budgetTokens
+      : 0
     const runtime = new AgentRuntime({
       provider: this.createProviderFor(providerId, apiKey),
       tools: this.options.tools,
       model,
+      budgetTokens: budgetTokens > 0 ? budgetTokens : undefined,
     })
 
     const existing = await this.options.conversations.get(conversationId)

@@ -20,7 +20,11 @@ function store(): AiSettingsStore {
 
 describe("aiSettingsStore", () => {
   it("defaults to the given provider with no models", async () => {
-    expect(await store().get()).toEqual({ activeProvider: "anthropic", models: {} })
+    expect(await store().get()).toEqual({
+      activeProvider: "anthropic",
+      models: {},
+      budgetTokens: 0,
+    })
   })
 
   it("persists active provider and per-provider model across instances", async () => {
@@ -34,7 +38,28 @@ describe("aiSettingsStore", () => {
     expect(await b.get()).toEqual({
       activeProvider: "openai",
       models: { openai: "gpt-4.1", anthropic: "claude-sonnet-4-6" },
+      budgetTokens: 0,
     })
+  })
+
+  it("defaults the token budget to 0 (unlimited)", async () => {
+    expect((await store().get()).budgetTokens).toBe(0)
+  })
+
+  it("persists the token budget across instances", async () => {
+    const file = path.join(dir, "settings.json")
+    const a = new AiSettingsStore(file, "anthropic")
+    await a.setBudget(5000)
+
+    const b = new AiSettingsStore(file, "anthropic")
+    expect((await b.get()).budgetTokens).toBe(5000)
+  })
+
+  it("clamps a negative budget to 0", async () => {
+    const file = path.join(dir, "settings.json")
+    const a = new AiSettingsStore(file, "anthropic")
+    await a.setBudget(-100)
+    expect((await a.get()).budgetTokens).toBe(0)
   })
 
   it("ignores malformed persisted data", async () => {
@@ -43,6 +68,7 @@ describe("aiSettingsStore", () => {
     expect(await new AiSettingsStore(file, "anthropic").get()).toEqual({
       activeProvider: "anthropic",
       models: {},
+      budgetTokens: 0,
     })
   })
 })

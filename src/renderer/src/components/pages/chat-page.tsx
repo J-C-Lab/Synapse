@@ -223,6 +223,19 @@ export function ChatPage() {
               output: usage.outputTokens,
               cached: usage.cacheReadInputTokens,
             })}
+            {status && status.budgetTokens > 0 && (
+              <span>
+                {" · "}
+                {t("chat.usageBudget", {
+                  used:
+                    usage.inputTokens +
+                    usage.outputTokens +
+                    usage.cacheCreationInputTokens +
+                    usage.cacheReadInputTokens,
+                  budget: status.budgetTokens,
+                })}
+              </span>
+            )}
           </p>
         )}
 

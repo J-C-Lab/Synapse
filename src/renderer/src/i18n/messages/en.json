@@ -21,6 +21,7 @@
     "keyPrompt": "Add your Anthropic API key to start chatting. It is stored encrypted on this device and never leaves the main process.",
     "saveKey": "Save key",
     "usage": "{{input}} in · {{output}} out · {{cached}} cached",
+    "usageBudget": "{{used}}/{{budget}} budget",
     "approvalTitle": "Allow this tool to run?",
     "approvalBody": "The assistant wants to run {{tool}} with these inputs:",
     "allow": "Allow once",
@@ -42,6 +43,10 @@
     "saveKey": "Save",
     "clearKey": "Remove",
     "keyHint": "Each provider keeps its own key; switching providers does not clear it.",
+    "budget": "Token budget per turn",
+    "budgetSave": "Save",
+    "budgetUnlimited": "Unlimited",
+    "budgetHint": "Stop a turn once it spends this many tokens. Leave empty or 0 for no limit.",
     "allowedTools": "Always-allowed tools",
     "allowedEmpty": "No tools are permanently allowed.",
     "revoke": "Revoke"

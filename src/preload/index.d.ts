@@ -233,6 +233,7 @@ declare global {
     hasKey: boolean
     model: string
     providers: SynapseAiProviderStatus[]
+    budgetTokens: number
   }
 
   interface SynapseAiTool {
@@ -403,6 +404,7 @@ declare global {
       deleteAiKey: (providerId: string) => Promise<void>
       setAiProvider: (providerId: string) => Promise<void>
       setAiModel: (providerId: string, model: string) => Promise<void>
+      setAiBudget: (tokens: number) => Promise<void>
       listAiTools: () => Promise<SynapseAiTool[]>
       listAiConversations: () => Promise<SynapseAiConversationSummary[]>
       getAiConversation: (id: string) => Promise<SynapseAiConversation | undefined>
