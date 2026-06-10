@@ -100,7 +100,7 @@ create-synapse-plugin  ──脚手架──►  (手写工具/命令)
 - **对象存储**:**Cloudflare R2**(S3 兼容、**出流量免费**——下载密集型市场的关键省钱点)存 `.syn` 包;DB 只存元数据 + 签名下载 URL + sha256。
 - **鉴权**:**Fastify 自管**(Auth.js/Lucia/Better Auth 之一,不手搓 token);**GitHub OAuth 起步**(受众=开发者),**身份建模为 provider 无关** `User ⇄ AuthIdentity{provider, providerUserId}`,M6 再加邮箱/Google;桌面 app 走系统浏览器 OAuth + loopback 回调,**CLI `publish` 走 device-code flow**(M2 即需)。
 - **公开快照**:后端定时把「公开插件」导出为只读 `registry.json` 发到 CDN(自有域名);`marketplace-registry.ts` 改造为「快照读取器」,URL **可配置**(去硬编码)。仅作离线/容灾兜底,**非权威源**。
-- **代码归属**:统一收编进 GitHub Org **`JC-Lab`**(app + `marketplace-server` + 快照仓库);品牌名**暂定 Synapse**。
+- **代码归属**:统一收编进 GitHub Org **`J-C-Lab`**(app + `marketplace-server` + 快照仓库);品牌名**暂定 Synapse**。
 
 > 这样桌面端的「公开浏览」可继续走快照(快、可缓存、可离线),而「登录、私人插件、发布、评分」走后端 API。
 
@@ -233,7 +233,7 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 1. ✅ **后端形态**:C(全平台),后端为唯一权威源 + 自动快照兜底。
 2. ✅ **托管与栈**:Fastify + Drizzle + zod / Neon / Cloudflare R2(解耦组合)。
 3. ✅ **鉴权方式**:Fastify 自管,GitHub OAuth 起步 + provider 无关身份表;CLI device-code。
-4. ✅ **域名与品牌**:代码收编进 GitHub Org `JC-Lab`;品牌名暂定 **Synapse**;真实域名待注册(需查 "Synapse" 商标/可用性,可能加限定词)。
+4. ✅ **域名与品牌**:代码收编进 GitHub Org `J-C-Lab`;品牌名暂定 **Synapse**;真实域名待注册(需查 "Synapse" 商标/可用性,可能加限定词)。
 
 **仍待定(可在对应阶段前再定,不阻塞 M0):**
 
@@ -285,7 +285,8 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 - **2026-06-05**:**保留「后端自动生成的只读快照」作为离线/容灾兜底**。该快照由后端定时导出到 CDN,**非手工 JSON**——是权威数据源的影子,不是数据源本身。`marketplace-registry.ts` 改造为「快照读取器」并把 URL 改为**可配置**(去掉硬编码 `DEFAULT_MARKETPLACE_REGISTRY_URL`)。
 - **2026-06-05**:项目现由单人开发(`sunzrnobug`);前协作者 `WiIIiamWei` 名下的注册表仓库不再作为权威源。**建议建 GitHub Org** 统一持有 app / 后端 / 快照仓库(待确认)。
 - **2026-06-05**:**栈 = 解耦组合**拍板。**Fastify + Drizzle + zod**(API/ORM/校验)、**Neon**(Postgres)、**Cloudflare R2**(对象存储,出流量免费)、**Fastify 自管鉴权**(GitHub OAuth 起步 + provider 无关 `User⇄AuthIdentity` 身份表 + CLI device-code)。理由:契合零原生/TS-first 基线;C 平台后期付费/组织/审核权限不被 Supabase RLS 绊住;单人运维成本可控。
-- **2026-06-05**:**归属 = GitHub Org `JC-Lab`**。app + `marketplace-server` + 快照仓库统一收编进 `JC-Lab`;前协作者 `WiIIiamWei` 注册表退役。**品牌名暂定 Synapse**(真实域名待注册,需查商标/可用性)。
+- **2026-06-05**:**归属 = GitHub Org `J-C-Lab`**。app + `marketplace-server` + 快照仓库统一收编进 `J-C-Lab`;前协作者 `WiIIiamWei` 注册表退役。**品牌名暂定 Synapse**(真实域名待注册,需查商标/可用性)。
+- **2026-06-11**:仓库已转移到 `J-C-Lab/Synapse`(原 `sunzrnobug/Synapse` 重定向);本地 `origin` 已改指新地址。
 - **2026-06-05(M1)**:**会话采用「不透明 token + DB」而非 JWT**。只存 token 的 SHA-256,撤销=删行,无签名密钥管理——对 §2.1「JWT 签发/刷新」的实现细化。如未来需无状态/跨服务校验再引入 JWT 访问令牌。
 - **2026-06-05(M1)**:**测试数据库 = pglite**(进程内 WASM Postgres),生产 = node-postgres 对 Neon。同一 Drizzle schema + 迁移两边通用;集成测试零外部依赖。
 - _(待定,不阻塞 M0)_:§7 第 5–8 项——私人包存储/同步、审核策略、评级算法、成本合规,各在对应阶段前定。
