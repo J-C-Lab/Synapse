@@ -49,6 +49,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "date-fns": "^4.1.0",
+    "electron-updater": "^6.8.9",
     "embla-carousel-react": "^8.5.1",
     "i18next": "^25.0.0",
     "input-otp": "^1.4.1",
@@ -126,6 +127,13 @@
     "npmRebuild": false,
     "buildDependenciesFromSource": false,
     "nodeGypRebuild": false,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "sunzrnobug",
+        "repo": "Synapse"
+      }
+    ],
     "directories": {
       "output": "release",
       "buildResources": "resources"

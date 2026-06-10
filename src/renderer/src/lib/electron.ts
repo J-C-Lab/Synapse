@@ -292,6 +292,8 @@ export type AiTokenUsage = SynapseAiTokenUsage
 export type AiRememberScope = SynapseAiRememberScope
 export type McpServerConfig = SynapseMcpServerConfig
 export type McpServerStatus = SynapseMcpServerStatus
+export type UpdateState = SynapseUpdateState
+export type UpdateStatus = SynapseUpdateStatus
 
 export async function getAiStatus(): Promise<AiStatus> {
   return api().getAiStatus()
@@ -378,4 +380,24 @@ export async function saveAiMcpServer(config: McpServerConfig): Promise<McpServe
 
 export async function deleteAiMcpServer(id: string): Promise<void> {
   await api().deleteAiMcpServer(id)
+}
+
+export async function getUpdateStatus(): Promise<UpdateState> {
+  return api().getUpdateStatus()
+}
+
+export async function checkForUpdates(): Promise<void> {
+  await api().checkForUpdates()
+}
+
+export async function downloadUpdate(): Promise<void> {
+  await api().downloadUpdate()
+}
+
+export async function installUpdate(): Promise<void> {
+  await api().installUpdate()
+}
+
+export function onUpdateEvent(handler: (state: UpdateState) => void): () => void {
+  return api().onUpdateEvent(handler)
 }

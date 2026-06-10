@@ -98,6 +98,11 @@ function installElectronApi(settings: SynapseUserSettings): TestElectronApi {
     saveAiMcpServer: vi.fn().mockResolvedValue([]),
     deleteAiMcpServer: vi.fn().mockResolvedValue(undefined),
     onAiChatEvent: vi.fn(() => () => undefined),
+    getUpdateStatus: vi.fn().mockResolvedValue({ status: "idle", currentVersion: "0.0.0" }),
+    checkForUpdates: vi.fn().mockResolvedValue(undefined),
+    downloadUpdate: vi.fn().mockResolvedValue(undefined),
+    installUpdate: vi.fn().mockResolvedValue(undefined),
+    onUpdateEvent: vi.fn(() => () => undefined),
   } satisfies TestElectronApi
 
   window.electronAPI = api

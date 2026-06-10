@@ -3,6 +3,14 @@
     "title": "Synapse",
     "subtitle": "桌面端提效工具箱"
   },
+  "updates": {
+    "available": "新版本 {{version}} 可用。",
+    "download": "下载",
+    "downloading": "正在下载更新… {{percent}}%",
+    "ready": "版本 {{version}} 已就绪,可安装。",
+    "restart": "重启以更新",
+    "dismiss": "忽略"
+  },
   "nav": {
     "home": "主页",
     "assistant": "智能助手",

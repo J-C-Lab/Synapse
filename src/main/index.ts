@@ -3,6 +3,7 @@ import type { IpcMainInvokeEvent } from "electron"
 import type { SecretProtector } from "./lan/credential-store"
 import type { LanDevice, LanPairing, LanStatus, LanTransfer } from "./lan/types"
 import type { SearchWindowDeps } from "./search-window"
+import type { AutoUpdaterPort } from "./updates/update-service"
 import { Buffer } from "node:buffer"
 import * as path from "node:path"
 import process from "node:process"
@@ -21,6 +22,7 @@ import {
   session,
   shell,
 } from "electron"
+import electronUpdater from "electron-updater"
 import { AgentService } from "./ai/agent-service"
 import { aiSettingsFilePath, AiSettingsStore } from "./ai/ai-settings-store"
 import { aiApprovalsFilePath, ApprovalStore } from "./ai/approval-store"
@@ -48,6 +50,7 @@ import { registerAiIpc } from "./ipc/ai"
 import { registerLanIpc } from "./ipc/lan"
 import { LauncherService } from "./ipc/launcher-service"
 import { registerPluginIpc } from "./ipc/plugins"
+import { registerUpdatesIpc } from "./ipc/updates"
 import { BonjourLanDiscoveryAdapter } from "./lan/bonjour-discovery-adapter"
 import { LanCredentialLoadError } from "./lan/credential-store"
 import {
@@ -71,6 +74,7 @@ import {
 } from "./search-window"
 import { bindGlobalShortcut, unbindGlobalShortcut } from "./shortcut"
 import { createTray, defaultTrayIcon, destroyTray, refreshTrayMenu } from "./tray"
+import { UpdateService } from "./updates/update-service"
 import { attachWindowSecurity, isSameOrigin } from "./window-security"
 
 const isDev = !app.isPackaged
@@ -179,6 +183,8 @@ let agent: AgentService
 // scope so shutdown can disconnect the child processes.
 let mcpClients: McpClientManager | null = null
 let mainWindow: BrowserWindow | null = null
+// Auto-update orchestration (electron-updater). Constructed during IPC setup.
+let updateService: UpdateService | null = null
 // A `.syn` path from an OS "open with" before the plugin host finished
 // initializing — replayed once init completes. Also guards against handling
 // the same import twice concurrently.
@@ -276,6 +282,8 @@ function registerIpc(): void {
     pickPackageFile: pickSynapsePackageFile,
   })
   registerAiIpc(ipcMain, agent, { isTrustedSender: isTrustedIpcSender })
+  updateService = setupAutoUpdates()
+  registerUpdatesIpc(ipcMain, updateService, { isTrustedSender: isTrustedIpcSender })
   registerLanIpc(ipcMain, lan, {
     isTrustedSender: isTrustedIpcSender,
     onDevicesChanged: broadcastLanDevicesChanged,
@@ -435,6 +443,19 @@ function broadcast(channel: string, payload: unknown): void {
 
 function broadcastAiChatEvent(event: unknown): void {
   broadcast("ai:chat:event", event)
+}
+
+// Build the auto-update service around electron-updater's singleton. Manual
+// flow: we surface "available"/"downloaded" to the renderer and only download
+// or restart on the user's request. State changes stream on `updates:event`.
+function setupAutoUpdates(): UpdateService {
+  const { autoUpdater } = electronUpdater
+  autoUpdater.autoInstallOnAppQuit = true
+  return new UpdateService({
+    updater: autoUpdater as unknown as AutoUpdaterPort,
+    currentVersion: app.getVersion(),
+    onChange: (state) => broadcast("updates:event", state),
+  })
 }
 
 function osSecretProtector(): SecretProtector {
@@ -785,6 +806,14 @@ if (isMcpStdioMode) {
       if (lanSimulation) showMainWindow()
       ensureSearchWindow(searchWindowDeps())
       void launcher.refreshApps()
+
+      // Check for updates once on startup. Only packaged builds have an update
+      // feed (app-update.yml); in dev electron-updater would throw, so skip it.
+      if (app.isPackaged) {
+        void updateService
+          ?.check()
+          .catch((err) => console.error("[synapse] update check failed", err))
+      }
 
       createTray(defaultTrayIcon(), trayActions())
       rebindHotkey(settings.hotkey)

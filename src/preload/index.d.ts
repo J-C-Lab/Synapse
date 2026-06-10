@@ -289,6 +289,23 @@ declare global {
 
   type SynapseAiRememberScope = "once" | "conversation" | "always"
 
+  type SynapseUpdateStatus =
+    | "idle"
+    | "checking"
+    | "available"
+    | "downloading"
+    | "downloaded"
+    | "not-available"
+    | "error"
+
+  interface SynapseUpdateState {
+    status: SynapseUpdateStatus
+    currentVersion: string
+    version?: string
+    percent?: number
+    error?: string
+  }
+
   interface SynapseMcpServerConfig {
     id: string
     name?: string
@@ -426,6 +443,11 @@ declare global {
       saveAiMcpServer: (config: SynapseMcpServerConfig) => Promise<SynapseMcpServerStatus[]>
       deleteAiMcpServer: (id: string) => Promise<void>
       onAiChatEvent: (handler: (event: SynapseAiChatEvent) => void) => () => void
+      getUpdateStatus: () => Promise<SynapseUpdateState>
+      checkForUpdates: () => Promise<void>
+      downloadUpdate: () => Promise<void>
+      installUpdate: () => Promise<void>
+      onUpdateEvent: (handler: (state: SynapseUpdateState) => void) => () => void
     }
   }
 }

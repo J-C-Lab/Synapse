@@ -166,7 +166,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: electron-linux-${{ matrix.arch }}-appimage
-          path: release/*.AppImage
+          # latest-linux.yml is the electron-updater feed metadata.
+          path: |
+            release/*.AppImage
+            release/latest-linux.yml
           retention-days: 30
           if-no-files-found: warn
 
@@ -184,7 +187,11 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: electron-windows-${{ matrix.arch }}-nsis
-          path: release/*.exe
+          # latest.yml + .blockmap drive electron-updater (and delta downloads).
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
           retention-days: 30
           if-no-files-found: warn
 
@@ -211,6 +218,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: electron-macos-${{ matrix.arch }}-zip
-          path: release/*.zip
+          # The zip + latest-mac.yml (+ blockmap) are the macOS updater feed.
+          path: |
+            release/*.zip
+            release/*.blockmap
+            release/latest-mac.yml
           retention-days: 30
           if-no-files-found: warn

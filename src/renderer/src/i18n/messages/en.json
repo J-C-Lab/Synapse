@@ -3,6 +3,14 @@
     "title": "Synapse",
     "subtitle": "Desktop productivity toolbox"
   },
+  "updates": {
+    "available": "Version {{version}} is available.",
+    "download": "Download",
+    "downloading": "Downloading update… {{percent}}%",
+    "ready": "Version {{version}} is ready to install.",
+    "restart": "Restart to update",
+    "dismiss": "Dismiss"
+  },
   "nav": {
     "home": "Home",
     "assistant": "Assistant",

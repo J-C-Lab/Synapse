@@ -113,6 +113,15 @@ const electronAPI = {
     ipcRenderer.on("ai:chat:event", listener)
     return () => ipcRenderer.removeListener("ai:chat:event", listener)
   },
+  getUpdateStatus: () => ipcRenderer.invoke("updates:status"),
+  checkForUpdates: () => ipcRenderer.invoke("updates:check"),
+  downloadUpdate: () => ipcRenderer.invoke("updates:download"),
+  installUpdate: () => ipcRenderer.invoke("updates:install"),
+  onUpdateEvent: (handler: (state: unknown) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
+    ipcRenderer.on("updates:event", listener)
+    return () => ipcRenderer.removeListener("updates:event", listener)
+  },
 
   // Subscribe to the "search window just gained focus" pulse so the
   // renderer can reset its input + selection without polling.

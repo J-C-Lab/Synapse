@@ -34,6 +34,7 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar"
+import { UpdateBanner } from "@/components/update-banner"
 import { cn } from "@/lib/utils"
 
 export type NavId =
@@ -167,6 +168,7 @@ export function AppShell() {
       </Sidebar>
 
       <SidebarInset>
+        <UpdateBanner />
         <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
           <SidebarTrigger />
           <span className="text-sm font-medium">{t(`nav.${navKey(nav)}`)}</span>
