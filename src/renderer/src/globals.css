@@ -220,3 +220,32 @@
     animation-duration: 1ms;
   }
 }
+
+/* shiki dual-theme code blocks. Rendered with defaultColor:false, so each token
+   carries both --shiki-light and --shiki-dark; we pick which to apply per mode.
+   Keeps highlighting working under the strict CSP (inline styles are allowed). */
+.shiki-block .shiki {
+  margin: 0.5rem 0;
+  padding: 0.75rem 0.875rem;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.shiki-block .shiki,
+.shiki-block .shiki span {
+  color: var(--shiki-light);
+  background-color: var(--shiki-light-bg);
+}
+
+.dark .shiki-block .shiki,
+.dark .shiki-block .shiki span {
+  color: var(--shiki-dark);
+  background-color: var(--shiki-dark-bg);
+}
+
+/* Token spans should not paint their own background over the block background. */
+.shiki-block .shiki span {
+  background-color: transparent;
+}

@@ -1,6 +1,10 @@
 import { render, screen } from "@testing-library/react"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { Markdown } from "@/components/markdown"
+
+// Force the plain-text fallback so code-block rendering stays deterministic and
+// does not depend on shiki loading grammars asynchronously.
+vi.mock("@/lib/shiki", () => ({ highlightToHtml: vi.fn(async () => null) }))
 
 describe("markdown", () => {
   it("renders headings, lists, and inline code", () => {

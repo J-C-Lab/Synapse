@@ -1,5 +1,7 @@
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
+import { CodeBlock } from "@/components/code-block"
+import { extractLanguage } from "@/lib/code-lang"
 import { cn } from "@/lib/utils"
 
 // Safe Markdown rendering for assistant messages. react-markdown does NOT
@@ -25,6 +27,18 @@ export function Markdown({ children, className }: { children: string; className?
           a: ({ node: _node, ...props }) => (
             <a {...props} target="_blank" rel="noreferrer noopener" />
           ),
+          // CodeBlock renders its own <pre>, so unwrap react-markdown's.
+          pre: ({ children }) => <>{children}</>,
+          code: ({ node: _node, className, children, ...props }) => {
+            const text = String(children ?? "").replace(/\n$/, "")
+            const isBlock = extractLanguage(className) !== "" || text.includes("\n")
+            if (isBlock) return <CodeBlock className={className} code={text} />
+            return (
+              <code className={className} {...props}>
+                {children}
+              </code>
+            )
+          },
         }}
       >
         {children}
