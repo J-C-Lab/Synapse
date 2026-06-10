@@ -4,13 +4,32 @@ import type { Buffer } from "node:buffer"
 import type { MarketplaceDb } from "../db/client"
 import type { StorageProvider } from "../storage/types"
 import { createHash } from "node:crypto"
-import { and, desc, eq, ilike, or, sql } from "drizzle-orm"
-import { plugins, pluginVersions, users } from "../db/schema"
+import { and, avg, count, desc, eq, gt, ilike, or, sql } from "drizzle-orm"
+import { downloads, plugins, pluginVersions, ratings, reviews, users } from "../db/schema"
+import { newId } from "../lib/crypto"
 import { badRequest, conflict, forbidden, notFound } from "../lib/errors"
 import { compareVersions } from "../lib/semver"
 
+/** A download by the same user inside this window does not re-count. */
+const DOWNLOAD_DEDUP_WINDOW_MS = 60 * 60 * 1000
+
 export type PluginRow = typeof plugins.$inferSelect
 export type PluginVersionRow = typeof pluginVersions.$inferSelect
+export type RatingRow = typeof ratings.$inferSelect
+export type ReviewRow = typeof reviews.$inferSelect
+
+export interface PluginStats {
+  downloads: number
+  ratingAvg: number
+  ratingCount: number
+}
+
+export interface ReviewPage {
+  items: ReviewRow[]
+  page: number
+  perPage: number
+  total: number
+}
 
 export interface PublishInput {
   ownerUserId: string
@@ -28,6 +47,8 @@ export interface PluginWithOwner {
 
 export interface PluginDetail extends PluginWithOwner {
   versions: PluginVersionRow[]
+  /** The viewer's own rating, when authenticated and present. */
+  myRating?: RatingRow
 }
 
 export interface SearchParams {
@@ -187,7 +208,8 @@ export class PluginService {
       .where(eq(pluginVersions.pluginId, pluginId))
       .orderBy(desc(pluginVersions.publishedAt))
 
-    return { ...owned, versions }
+    const myRating = viewerUserId ? await this.getRating(pluginId, viewerUserId) : undefined
+    return { ...owned, versions, myRating }
   }
 
   /** Resolve a download: a short-lived signed URL plus the digest to verify. */
@@ -209,6 +231,8 @@ export class PluginService {
     const row = rows[0]
     if (!row || row.yankedAt) throw notFound(`Version ${version} of "${pluginId}" is not available`)
 
+    await this.recordDownload(pluginId, version, viewerUserId)
+
     const ttlSeconds = 300
     const key = `plugins/${pluginId}/${version}/${pluginId}-${version}.syn`
     const downloadUrl = await this.storage.signedDownloadUrl(key, ttlSeconds)
@@ -218,6 +242,137 @@ export class PluginService {
       sha256: row.sha256,
       expiresAt: new Date(Date.now() + ttlSeconds * 1000),
     }
+  }
+
+  /**
+   * Record a download event and bump the denormalized counter. An authenticated
+   * user re-downloading the same plugin within {@link DOWNLOAD_DEDUP_WINDOW_MS}
+   * does not re-count (basic anti-inflation; stronger abuse controls are M7).
+   */
+  private async recordDownload(pluginId: string, version: string, userId?: string): Promise<void> {
+    const now = new Date()
+    let counts = true
+    if (userId) {
+      const cutoff = new Date(now.getTime() - DOWNLOAD_DEDUP_WINDOW_MS)
+      const recent = await this.db
+        .select({ at: downloads.at })
+        .from(downloads)
+        .where(
+          and(
+            eq(downloads.pluginId, pluginId),
+            eq(downloads.userId, userId),
+            gt(downloads.at, cutoff)
+          )
+        )
+        .limit(1)
+      counts = recent.length === 0
+    }
+
+    await this.db
+      .insert(downloads)
+      .values({ id: newId(), pluginId, version, userId: userId ?? null, at: now })
+    if (counts) {
+      await this.db
+        .update(plugins)
+        .set({ downloads: sql`${plugins.downloads} + 1` })
+        .where(eq(plugins.id, pluginId))
+    }
+  }
+
+  /** Upsert the caller's 1–5 star rating and recompute the plugin's aggregate. */
+  async rate(
+    pluginId: string,
+    userId: string,
+    stars: number
+  ): Promise<{ rating: RatingRow; stats: PluginStats }> {
+    const owned = await this.getPluginWithOwner(pluginId)
+    if (!owned || !this.canView(owned.plugin, userId)) {
+      throw notFound(`Plugin "${pluginId}" not found`)
+    }
+
+    const now = new Date()
+    await this.db
+      .insert(ratings)
+      .values({ pluginId, userId, stars, updatedAt: now })
+      .onConflictDoUpdate({
+        target: [ratings.pluginId, ratings.userId],
+        set: { stars, updatedAt: now },
+      })
+
+    const agg = await this.db
+      .select({ avgStars: avg(ratings.stars), total: count() })
+      .from(ratings)
+      .where(eq(ratings.pluginId, pluginId))
+    const ratingAvg = Number(agg[0]?.avgStars ?? 0)
+    const ratingCount = Number(agg[0]?.total ?? 0)
+
+    await this.db
+      .update(plugins)
+      .set({ ratingAvg, ratingCount, updatedAt: now })
+      .where(eq(plugins.id, pluginId))
+
+    const rating = await this.getRating(pluginId, userId)
+    return {
+      rating: rating!,
+      stats: { downloads: owned.plugin.downloads, ratingAvg, ratingCount },
+    }
+  }
+
+  /** Upsert the caller's free-text review. */
+  async upsertReview(pluginId: string, userId: string, body: string): Promise<ReviewRow> {
+    const owned = await this.getPluginWithOwner(pluginId)
+    if (!owned || !this.canView(owned.plugin, userId)) {
+      throw notFound(`Plugin "${pluginId}" not found`)
+    }
+    const now = new Date()
+    await this.db
+      .insert(reviews)
+      .values({ pluginId, userId, body, createdAt: now, updatedAt: now })
+      .onConflictDoUpdate({
+        target: [reviews.pluginId, reviews.userId],
+        set: { body, updatedAt: now },
+      })
+    const rows = await this.db
+      .select()
+      .from(reviews)
+      .where(and(eq(reviews.pluginId, pluginId), eq(reviews.userId, userId)))
+      .limit(1)
+    return rows[0]!
+  }
+
+  /** Paginated reviews, newest first. */
+  async listReviews(
+    pluginId: string,
+    page: number,
+    perPage: number,
+    viewerUserId?: string
+  ): Promise<ReviewPage> {
+    const owned = await this.getPluginWithOwner(pluginId)
+    if (!owned || !this.canView(owned.plugin, viewerUserId)) {
+      throw notFound(`Plugin "${pluginId}" not found`)
+    }
+    const totalRows = await this.db
+      .select({ total: count() })
+      .from(reviews)
+      .where(eq(reviews.pluginId, pluginId))
+    const total = Number(totalRows[0]?.total ?? 0)
+    const items = await this.db
+      .select()
+      .from(reviews)
+      .where(eq(reviews.pluginId, pluginId))
+      .orderBy(desc(reviews.updatedAt))
+      .limit(perPage)
+      .offset((page - 1) * perPage)
+    return { items, page, perPage, total }
+  }
+
+  private async getRating(pluginId: string, userId: string): Promise<RatingRow | undefined> {
+    const rows = await this.db
+      .select()
+      .from(ratings)
+      .where(and(eq(ratings.pluginId, pluginId), eq(ratings.userId, userId)))
+      .limit(1)
+    return rows[0]
   }
 
   private verifyPayload(input: PublishInput): void {
@@ -245,9 +400,15 @@ export class PluginService {
       case "rating":
         return desc(plugins.ratingAvg)
       case "recent":
+        return desc(plugins.updatedAt)
       case "relevance":
       default:
-        return desc(plugins.updatedAt)
+        // A simple popularity score: average rating weighted by how many people
+        // rated, plus a log-damped download count. Keeps a single 5-star plugin
+        // from outranking a widely-installed, well-reviewed one.
+        return desc(
+          sql`${plugins.ratingAvg} * ln(${plugins.ratingCount} + 1) + ln(${plugins.downloads} + 1)`
+        )
     }
   }
 

@@ -209,7 +209,7 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 | **M1 后端骨架 + 鉴权**      | `marketplace-server` 起服务、Postgres + 对象存储接线、GitHub OAuth、JWT、用户表                       | ✅ **已完成**(见 §12)——Fastify+Drizzle 骨架、全量 schema、device-flow 鉴权、pglite 集成测试                                               |
 | **M2 发布闭环(CLI)**        | `publish`(鉴权+上传+注册版本)+ owner/semver/sha256 校验;CLI `login/whoami`                            | ✅ **已完成**(见 §13)——CLI login/whoami/publish + GitHub 浏览器登录腿;**真实端到端冒烟通过**(登录→发布→搜索→详情→签名下载,Neon+R2+GitHub) |
 | **M3 桌面端市场(读)**       | 市场浏览/搜索/详情页 + 安装前权限展示;公开走**快照**,登录态拉私人;复用现有 install                    | ✅ **已完成**(见 §14)——市场页接后端搜索/详情 + 安装前权限/工具披露 + 经签名 URL 校验 sha256 安装。桌面端账户登录(私人插件)留作增强        |
-| **M4 下载量 + 评分 + 评级** | 下载计数(防刷)、评分写入与聚合、排行算法(Wilson+衰减)、排行榜/精选位                                  | 公开插件有真实下载量与星级,首页有排行                                                                                                     |
+| **M4 下载量 + 评分 + 评级** | 下载计数(防刷)、评分写入与聚合、排行算法(Wilson+衰减)、排行榜/精选位                                  | ✅ **已完成**(见 §15)——下载计数(authed 窗口去重)+ 评分 upsert/聚合 + 评论 + relevance 排行评分;桌面端只读展示 ★。评分提交 UI 待桌面登录   |
 | **M5 私人/公开治理**        | app 内可见性切换、yank、举报、admin 下架;可信源开关                                                   | owner 自助管理可见性;基础治理可用                                                                                                         |
 | **M6 Web 门户**             | 浏览器端市场门户(复用现有 Fumadocs/Next 工作流)、SEO、可分享插件详情链接、Web 端浏览/搜索/详情        | 非桌面用户也能逛市场;插件有公开可索引页面                                                                                                 |
 | **M7 审核流水线**           | 上传自动扫描 + 人工审核队列、敏感权限分级、审核状态机(pending/approved/rejected)、admin 控制台        | 公开插件经审核后上架;治理可规模化                                                                                                         |
@@ -411,4 +411,29 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 
 - `pnpm lint` ✅(0 error)· `pnpm typecheck` ✅ · `pnpm test` **455 passed**(M2 后 446 + 后端客户端 6 + 页面 3);连跑两次稳定。
 
-> 下一步:**M4 下载量 + 评分 + 评级**(下载计数防刷 + 评分写入聚合 + 排行算法),即可闭合第一波内核「登录→发布→浏览安装→评分」。桌面端账户登录(私人插件)可作为穿插增强。
+---
+
+## 15. M4 成果(已落地,2026-06-05)
+
+**下载量 + 评分 + 评论 + 排行**(后端为主,凭据无关,pglite 全测)。第一波内核「登录 → 发布 → 浏览安装 → 评分」就此闭合。
+
+| 区域                   | 内容                                                                                                                                                                                                                                                                 |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plugin-service.ts`    | `recordDownload`(写 `downloads` 事实表 + 自增 `plugins.downloads`;**authed 用户 1 小时窗口去重**,匿名每次计)— 在 `resolveDownload` 内触发;`rate`(upsert 评分 → `avg/count` 聚合回写 `plugins`)、`upsertReview`、`listReviews`、`getRating`;`getDetail` 带 `myRating` |
+| 排行                   | `relevance` 排序改为 popularity 评分 `ratingAvg·ln(ratingCount+1) + ln(downloads+1)`(log 阻尼,避免单条 5 星压过广装好评插件);`downloads`/`rating`/`recent` 各自排序                                                                                                  |
+| `routes/plugins.ts`    | `PUT /plugins/:id/rating`(鉴权)、`GET /plugins/:id/reviews`(分页)、`POST /plugins/:id/reviews`(鉴权);详情返回 `myRating`                                                                                                                                             |
+| `mappers.ts`           | `toRatingDto` / `toReviewDto`                                                                                                                                                                                                                                        |
+| 桌面端                 | 详情 Dialog 只读展示 `★ avg (count)`(评分**提交** UI 待桌面登录)                                                                                                                                                                                                     |
+| `ratings.test.ts` (新) | **8 条** pglite 集成测试:匿名计数、authed 窗口去重、评分需鉴权、跨用户聚合 + myRating、评分 upsert、评未知插件 404、评论建/改/列、downloads 排序                                                                                                                     |
+
+**关键不变量 / 说明**
+
+- **下载计数**:`resolveDownload` 现有副作用——每次解析签名 URL 记一次下载;authed 用户窗口内去重,匿名每次计(更强的 IP/速率防刷属 M7)。
+- **评分**:每用户每插件唯一(`onConflictDoUpdate`),聚合实时回写 `plugins.ratingAvg/ratingCount`;评分/评论要求 `canView`(私有仅 owner)。
+- **遗留**:桌面端**账户登录**未做,故 app 内无法提交评分(只读展示);评级的时间衰减、精选位、排行榜页留作后续。
+
+**质量基线**
+
+- `pnpm lint` ✅(0 error,4 个 M3 遗留 warning)· `pnpm typecheck` ✅ · `pnpm test` **463 passed**(M3 后 455 + M4 新增 8);连跑两次稳定。
+
+> 第一波内核(M0–M4)完成。下一步可选:**桌面端账户登录**(解锁私人插件浏览 + app 内评分提交),或进入**第二波**——M5 治理(可见性切换/yank/举报/下架)、M6 Web 门户、M7 审核流水线。

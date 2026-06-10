@@ -323,6 +323,14 @@ function PluginDetailDialog({
               <span>v{latest?.version}</span>
               <span>·</span>
               <span>{detail.plugin.stats.downloads} ↓</span>
+              {detail.plugin.stats.ratingCount > 0 && (
+                <>
+                  <span>·</span>
+                  <span>
+                    ★ {detail.plugin.stats.ratingAvg.toFixed(1)} ({detail.plugin.stats.ratingCount})
+                  </span>
+                </>
+              )}
             </div>
 
             <section className="space-y-2">

@@ -2,17 +2,28 @@ import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Buffer } from "node:buffer"
 import type { Services } from "../services/context"
 import {
+  createReviewRequestSchema,
+  listReviewsResponseSchema,
   myPluginsResponseSchema,
+  paginationQuerySchema,
   pluginDetailResponseSchema,
   publishRequestSchema,
   publishResponseSchema,
+  rateRequestSchema,
+  rateResponseSchema,
   resolveDownloadResponseSchema,
   searchPluginsQuerySchema,
   searchPluginsResponseSchema,
 } from "@synapse/marketplace-types"
 import { badRequest, notFound, unauthorized } from "../lib/errors"
 import { parseBody } from "../lib/http"
-import { toPluginDto, toPluginSummaryDto, toPluginVersionDto } from "../mappers"
+import {
+  toPluginDto,
+  toPluginSummaryDto,
+  toPluginVersionDto,
+  toRatingDto,
+  toReviewDto,
+} from "../mappers"
 import { authenticate, resolveOptionalUser } from "./middleware"
 
 interface MultipartUpload {
@@ -128,11 +139,12 @@ export function registerPluginRoutes(app: FastifyInstance, services: Services): 
         plugin: toPluginDto(detail.plugin),
         ownerHandle: detail.ownerHandle,
         versions: detail.versions.map(toPluginVersionDto),
+        myRating: detail.myRating ? toRatingDto(detail.myRating) : undefined,
       })
     )
   })
 
-  // Resolve a signed download URL for a specific version.
+  // Resolve a signed download URL for a specific version (counts a download).
   app.get("/plugins/:id/versions/:version/download", async (request, reply) => {
     const { id, version } = request.params as { id: string; version: string }
     const viewer = await resolveOptionalUser(services, request)
@@ -146,4 +158,51 @@ export function registerPluginRoutes(app: FastifyInstance, services: Services): 
       })
     )
   })
+
+  // Upsert the caller's star rating; returns the rating + refreshed aggregate.
+  app.put("/plugins/:id/rating", { preHandler: authenticate(services) }, async (request, reply) => {
+    if (!request.user) throw unauthorized("Not authenticated")
+    const { id } = request.params as { id: string }
+    const body = parseBody(rateRequestSchema, request.body)
+    const result = await services.plugins.rate(id, request.user.id, body.stars)
+    return reply.send(
+      rateResponseSchema.parse({ rating: toRatingDto(result.rating), stats: result.stats })
+    )
+  })
+
+  // Paginated reviews for a plugin.
+  app.get("/plugins/:id/reviews", async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const viewer = await resolveOptionalUser(services, request)
+    const query = paginationQuerySchema.parse({
+      page: queryNumber((request.query as Record<string, unknown>).page),
+      perPage: queryNumber((request.query as Record<string, unknown>).perPage),
+    })
+    const result = await services.plugins.listReviews(id, query.page, query.perPage, viewer?.id)
+    return reply.send(
+      listReviewsResponseSchema.parse({
+        items: result.items.map(toReviewDto),
+        page: result.page,
+        perPage: result.perPage,
+        total: result.total,
+      })
+    )
+  })
+
+  // Upsert the caller's free-text review.
+  app.post(
+    "/plugins/:id/reviews",
+    { preHandler: authenticate(services) },
+    async (request, reply) => {
+      if (!request.user) throw unauthorized("Not authenticated")
+      const { id } = request.params as { id: string }
+      const body = parseBody(createReviewRequestSchema, request.body)
+      const review = await services.plugins.upsertReview(id, request.user.id, body.body)
+      return reply.status(201).send(toReviewDto(review))
+    }
+  )
+}
+
+function queryNumber(value: unknown): number | undefined {
+  return value === undefined ? undefined : Number(value)
 }
