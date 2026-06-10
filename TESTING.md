@@ -113,6 +113,58 @@ Start the app with `pnpm dev`. Open **Assistant** from the sidebar.
 - [ ] Confirm `tools/list` shows only **read-only** plugin tools (destructive/unannotated tools are
       hidden) and that calling a read-only tool (e.g. `greet`) succeeds.
 
+## Windows Packaging Smoke Test (M3)
+
+`pnpm dev` runs the renderer from the Vite dev server; the packaged app serves it through the custom
+`app://` protocol and runs under the strict production CSP. Those paths differ enough that a few
+things can only be verified from an installed build (a packaged-IPC trust regression has bitten us
+before). Run this on a **clean Windows machine** (or a fresh VM) before a Windows release.
+
+### Build the installers
+
+```bash
+pnpm electron:build:win
+```
+
+- [ ] Build succeeds and `release/` contains both an NSIS installer (`Synapse Setup X.Y.Z.exe`) and
+      an MSI (`Synapse X.Y.Z.msi`), plus `latest.yml` and `*.blockmap` (the auto-update feed).
+
+### Install and first launch (NSIS)
+
+- [ ] Run the NSIS installer; the "choose install location" step appears (per `nsis.oneClick: false`
+      / `allowToChangeInstallationDirectory: true`).
+- [ ] The app launches and the window **renders** (no blank/white screen). A blank window means the
+      `app://` renderer or preload path failed — check DevTools console for CSP or asset 404s.
+- [ ] Open DevTools (or the app's UI) and confirm core IPC works in packaged mode: an app-launcher
+      search returns results, and changing a setting (e.g. theme/accent) persists across a restart.
+      (Packaged builds load the renderer from `app://app`, whose origin must be trusted for IPC.)
+
+### Shell integration
+
+- [ ] **Tray**: the tray icon appears; left-click / the tray menu open the launcher and the menu
+      actions work.
+- [ ] **Global hotkey**: the configured shortcut opens the search window from anywhere; rebinding it
+      in settings takes effect.
+- [ ] **Single instance**: launching the app again focuses the existing window instead of opening a
+      second one.
+- [ ] **External links**: a markdown/assistant link opens in the OS browser, not inside the app.
+
+### `.syn` file association
+
+- [ ] In Windows Explorer, double-click a `.syn` plugin package. The running app imports it (or, if
+      closed, launches and then imports it). Verify the plugin appears on the Plugins page.
+- [ ] Confirm the association shows Synapse's icon in Explorer (set via `fileAssociations` /
+      `resources/icon.ico`).
+
+### MSI and uninstall
+
+- [ ] The MSI (`Synapse X.Y.Z.msi`) installs and launches the same way.
+- [ ] Uninstall via Settings → Apps removes the app and its Start Menu shortcut cleanly.
+
+> Auto-update is verified separately — see the upgrade smoke in the release checklist in
+> [CI_CD.md](CI_CD.md). It needs a published GitHub Release, so it cannot be checked from a local
+> build alone.
+
 ## LAN Transfer Simulation
 
 Use two isolated development instances to manually test LAN transfers on one computer. Start each
