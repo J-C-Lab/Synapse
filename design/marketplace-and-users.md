@@ -210,7 +210,7 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 | **M2 发布闭环(CLI)**        | `publish`(鉴权+上传+注册版本)+ owner/semver/sha256 校验;CLI `login/whoami`                            | ✅ **已完成**(见 §13)——CLI login/whoami/publish + GitHub 浏览器登录腿;**真实端到端冒烟通过**(登录→发布→搜索→详情→签名下载,Neon+R2+GitHub) |
 | **M3 桌面端市场(读)**       | 市场浏览/搜索/详情页 + 安装前权限展示;公开走**快照**,登录态拉私人;复用现有 install                    | ✅ **已完成**(见 §14)——市场页接后端搜索/详情 + 安装前权限/工具披露 + 经签名 URL 校验 sha256 安装。桌面端账户登录(私人插件)留作增强        |
 | **M4 下载量 + 评分 + 评级** | 下载计数(防刷)、评分写入与聚合、排行算法(Wilson+衰减)、排行榜/精选位                                  | ✅ **已完成**(见 §15)——下载计数(authed 窗口去重)+ 评分 upsert/聚合 + 评论 + relevance 排行评分;桌面端只读展示 ★。评分提交 UI 待桌面登录   |
-| **M5 私人/公开治理**        | app 内可见性切换、yank、举报、admin 下架;可信源开关                                                   | ✅ **后端已完成**(见 §17)——可见性切换 / yank / 举报 / admin 下架 + 测试。桌面治理 UI 与可信源开关待续                                     |
+| **M5 私人/公开治理**        | app 内可见性切换、yank、举报、admin 下架;可信源开关                                                   | ✅ **已完成**(见 §17 + §18)——后端治理 + 桌面 UI(我的/管理标签、可见性切换/yank/举报/下架)+ 可信源开关                                     |
 | **M6 Web 门户**             | 浏览器端市场门户(复用现有 Fumadocs/Next 工作流)、SEO、可分享插件详情链接、Web 端浏览/搜索/详情        | 非桌面用户也能逛市场;插件有公开可索引页面                                                                                                 |
 | **M7 审核流水线**           | 上传自动扫描 + 人工审核队列、敏感权限分级、审核状态机(pending/approved/rejected)、admin 控制台        | 公开插件经审核后上架;治理可规模化                                                                                                         |
 | **M8 组织 / 协作者**        | Organization 实体、团队命名空间、Collaborator 角色与权限、转移所有权                                  | 多人共同维护一个插件 / 组织发布                                                                                                           |
@@ -499,3 +499,29 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 - `pnpm lint` ✅(0 error)· `pnpm typecheck` ✅ · `pnpm test` **478 passed**(账户后 470 + 治理 8);连跑两次稳定。
 
 > 第二波继续:**M6 Web 门户**(复用 docs 的 Next/Fumadocs 栈)或 **M7 审核流水线**(消费 §17 的 `reports` 表)。
+
+---
+
+## 18. M5 桌面治理 UI + 可信源(已落地,2026-06-11)
+
+把 §17 的治理后端接入桌面端,并加上客户端可信源策略。
+
+| 区域                                          | 内容                                                                                                                                                                             |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| main api/host/ipc/preload + `lib/electron.ts` | `myPlugins` / `setVisibility` / `yank` / `report` / `adminRemove` 直通(host→`marketplaceApi`,登录态自动带 token);`MARKETPLACE_ERROR` IPC 错误码透传 403/409 等                   |
+| `pages/marketplace-page.tsx`                  | **浏览 / 我的 / 管理** 三标签:「我的」列 owner 插件 + 可见性切换;详情 Dialog 加 **举报**(任意登录)、**yank**(owner,按版本)、**下架**(admin);「管理」标签仅 `role==="admin"` 可见 |
+| `settings/settings.ts`(重构)                  | 旧 launcher 设置抽成模块 + 新增 `trustedSourcePolicy`(official-marketplace / any-url / local-syn);`normalizeSettings` 向后兼容                                                   |
+| `components/trusted-source-settings.tsx`      | 设置页可信源开关(radio)                                                                                                                                                          |
+| 客户端强制                                    | `marketplace-page` 在 `local-syn` 下禁用市场安装;`plugins-page` 在 `official-marketplace` 下禁用本地 `.syn` 导入(用户自身策略,非安全边界)                                        |
+
+**说明 / 不变量**
+
+- **admin 双重校验**:UI 仅对 admin 显示「管理」标签,后端 `adminRemove` 仍校验 `role==="admin"`(防御纵深)。
+- **可信源 = 客户端策略**:在自己机器上对自己生效,故只做客户端 UI 门控;无需服务端介入。
+- 所有治理写操作经 `MARKETPLACE_ERROR` 把后端 owner/admin 拒绝(403)等如实回显到 UI。
+
+**质量基线**
+
+- `pnpm lint` ✅(0 error)· `pnpm typecheck` ✅ · `pnpm test` **493 passed**(治理后 478 + 桌面 UI/可信源/设置重构相关 +15);连跑两次稳定。
+
+> M5 全部完成。第二波继续:**M6 Web 门户** 或 **M7 审核流水线**(消费 `reports` 表)。
