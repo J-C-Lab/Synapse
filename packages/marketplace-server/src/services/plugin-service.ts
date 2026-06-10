@@ -4,8 +4,8 @@ import type { Buffer } from "node:buffer"
 import type { MarketplaceDb } from "../db/client"
 import type { StorageProvider } from "../storage/types"
 import { createHash } from "node:crypto"
-import { and, avg, count, desc, eq, gt, ilike, or, sql } from "drizzle-orm"
-import { downloads, plugins, pluginVersions, ratings, reviews, users } from "../db/schema"
+import { and, avg, count, desc, eq, gt, ilike, isNull, or, sql } from "drizzle-orm"
+import { downloads, plugins, pluginVersions, ratings, reports, reviews, users } from "../db/schema"
 import { newId } from "../lib/crypto"
 import { badRequest, conflict, forbidden, notFound } from "../lib/errors"
 import { compareVersions } from "../lib/semver"
@@ -364,6 +364,83 @@ export class PluginService {
       .limit(perPage)
       .offset((page - 1) * perPage)
     return { items, page, perPage, total }
+  }
+
+  /** Owner toggles a plugin between public and private. */
+  async setVisibility(
+    pluginId: string,
+    ownerUserId: string,
+    visibility: Visibility
+  ): Promise<void> {
+    await this.requireOwned(pluginId, ownerUserId)
+    await this.db
+      .update(plugins)
+      .set({ visibility, updatedAt: new Date() })
+      .where(eq(plugins.id, pluginId))
+  }
+
+  /**
+   * Owner withdraws a version (marks it yanked, never deletes — installs stay
+   * reproducible). `latestVersion` is recomputed from the remaining non-yanked
+   * versions.
+   */
+  async yankVersion(
+    pluginId: string,
+    ownerUserId: string,
+    version: string,
+    reason?: string
+  ): Promise<void> {
+    await this.requireOwned(pluginId, ownerUserId)
+    const existing = await this.db
+      .select({ version: pluginVersions.version })
+      .from(pluginVersions)
+      .where(and(eq(pluginVersions.pluginId, pluginId), eq(pluginVersions.version, version)))
+      .limit(1)
+    if (existing.length === 0) {
+      throw notFound(`Version ${version} of "${pluginId}" not found`)
+    }
+
+    await this.db
+      .update(pluginVersions)
+      .set({ yankedAt: new Date(), yankReason: reason ?? null })
+      .where(and(eq(pluginVersions.pluginId, pluginId), eq(pluginVersions.version, version)))
+
+    const active = await this.db
+      .select({ version: pluginVersions.version })
+      .from(pluginVersions)
+      .where(and(eq(pluginVersions.pluginId, pluginId), isNull(pluginVersions.yankedAt)))
+    const latest = active.map((row) => row.version).sort((a, b) => compareVersions(b, a))[0]
+    await this.db
+      .update(plugins)
+      .set({ latestVersion: latest ?? null, updatedAt: new Date() })
+      .where(eq(plugins.id, pluginId))
+  }
+
+  /** File an abuse/quality report against a viewable plugin. */
+  async report(pluginId: string, reporterUserId: string, reason: string): Promise<void> {
+    const owned = await this.getPluginWithOwner(pluginId)
+    if (!owned || !this.canView(owned.plugin, reporterUserId)) {
+      throw notFound(`Plugin "${pluginId}" not found`)
+    }
+    await this.db.insert(reports).values({ id: newId(), pluginId, reporterUserId, reason })
+  }
+
+  /** Admin takedown — tombstones the plugin (hidden everywhere, not deleted). */
+  async adminRemove(pluginId: string, role: string): Promise<void> {
+    if (role !== "admin") throw forbidden("Admin role required")
+    const plugin = await this.getPluginRow(pluginId)
+    if (!plugin) throw notFound(`Plugin "${pluginId}" not found`)
+    await this.db
+      .update(plugins)
+      .set({ status: "removed", updatedAt: new Date() })
+      .where(eq(plugins.id, pluginId))
+  }
+
+  private async requireOwned(pluginId: string, ownerUserId: string): Promise<PluginRow> {
+    const plugin = await this.getPluginRow(pluginId)
+    if (!plugin) throw notFound(`Plugin "${pluginId}" not found`)
+    if (plugin.ownerUserId !== ownerUserId) throw forbidden(`You do not own plugin "${pluginId}"`)
+    return plugin
   }
 
   private async getRating(pluginId: string, userId: string): Promise<RatingRow | undefined> {

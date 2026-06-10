@@ -11,9 +11,12 @@ import {
   publishResponseSchema,
   rateRequestSchema,
   rateResponseSchema,
+  reportRequestSchema,
   resolveDownloadResponseSchema,
   searchPluginsQuerySchema,
   searchPluginsResponseSchema,
+  setVisibilityRequestSchema,
+  yankRequestSchema,
 } from "@synapse/marketplace-types"
 import { badRequest, notFound, unauthorized } from "../lib/errors"
 import { parseBody } from "../lib/http"
@@ -199,6 +202,64 @@ export function registerPluginRoutes(app: FastifyInstance, services: Services): 
       const body = parseBody(createReviewRequestSchema, request.body)
       const review = await services.plugins.upsertReview(id, request.user.id, body.body)
       return reply.status(201).send(toReviewDto(review))
+    }
+  )
+
+  // Owner toggles public/private visibility.
+  async function ownerDetail(id: string, userId: string) {
+    const detail = await services.plugins.getDetail(id, userId)
+    if (!detail) throw notFound(`Plugin "${id}" not found`)
+    return pluginDetailResponseSchema.parse({
+      plugin: toPluginDto(detail.plugin),
+      ownerHandle: detail.ownerHandle,
+      versions: detail.versions.map(toPluginVersionDto),
+      myRating: detail.myRating ? toRatingDto(detail.myRating) : undefined,
+    })
+  }
+
+  app.patch(
+    "/plugins/:id/visibility",
+    { preHandler: authenticate(services) },
+    async (request, reply) => {
+      if (!request.user) throw unauthorized("Not authenticated")
+      const { id } = request.params as { id: string }
+      const body = parseBody(setVisibilityRequestSchema, request.body)
+      await services.plugins.setVisibility(id, request.user.id, body.visibility)
+      return reply.send(await ownerDetail(id, request.user.id))
+    }
+  )
+
+  // Owner withdraws (yanks) a version.
+  app.post("/plugins/:id/yank", { preHandler: authenticate(services) }, async (request, reply) => {
+    if (!request.user) throw unauthorized("Not authenticated")
+    const { id } = request.params as { id: string }
+    const body = parseBody(yankRequestSchema, request.body)
+    await services.plugins.yankVersion(id, request.user.id, body.version, body.reason)
+    return reply.send(await ownerDetail(id, request.user.id))
+  })
+
+  // Any signed-in user files an abuse/quality report.
+  app.post(
+    "/plugins/:id/report",
+    { preHandler: authenticate(services) },
+    async (request, reply) => {
+      if (!request.user) throw unauthorized("Not authenticated")
+      const { id } = request.params as { id: string }
+      const body = parseBody(reportRequestSchema, request.body)
+      await services.plugins.report(id, request.user.id, body.reason)
+      return reply.status(201).send({ status: "ok" as const })
+    }
+  )
+
+  // Admin takedown.
+  app.post(
+    "/plugins/:id/remove",
+    { preHandler: authenticate(services) },
+    async (request, reply) => {
+      if (!request.user) throw unauthorized("Not authenticated")
+      const { id } = request.params as { id: string }
+      await services.plugins.adminRemove(id, request.user.role)
+      return reply.send({ status: "ok" as const })
     }
   )
 }

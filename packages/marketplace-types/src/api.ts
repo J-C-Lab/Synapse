@@ -132,6 +132,9 @@ export const yankRequestSchema = z
   })
   .strict()
 
+/** A user-submitted abuse/quality report against a plugin. */
+export const reportRequestSchema = z.object({ reason: z.string().min(1).max(1000) }).strict()
+
 // ── Download ──────────────────────────────────────────────────────────────────
 
 /** A short-lived, signed URL plus the digest the client must verify post-download. */
@@ -191,6 +194,7 @@ export type PublishRequest = z.infer<typeof publishRequestSchema>
 export type PublishResponse = z.infer<typeof publishResponseSchema>
 export type SetVisibilityRequest = z.infer<typeof setVisibilityRequestSchema>
 export type YankRequest = z.infer<typeof yankRequestSchema>
+export type ReportRequest = z.infer<typeof reportRequestSchema>
 export type ResolveDownloadResponse = z.infer<typeof resolveDownloadResponseSchema>
 export type RateRequest = z.infer<typeof rateRequestSchema>
 export type RateResponse = z.infer<typeof rateResponseSchema>

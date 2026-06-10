@@ -158,6 +158,20 @@ export const reviews = pgTable(
   (table) => [primaryKey({ columns: [table.pluginId, table.userId] })]
 )
 
+/** Abuse/quality reports filed by users; triaged by admins (M7 pipeline). */
+export const reports = pgTable("reports", {
+  id: text("id").primaryKey(),
+  pluginId: text("plugin_id")
+    .notNull()
+    .references(() => plugins.id),
+  reporterUserId: text("reporter_user_id")
+    .notNull()
+    .references(() => users.id),
+  reason: text("reason").notNull(),
+  status: text("status").$type<"open" | "reviewed" | "dismissed">().notNull().default("open"),
+  createdAt,
+})
+
 export const schema = {
   users,
   authIdentities,
@@ -168,6 +182,7 @@ export const schema = {
   downloads,
   ratings,
   reviews,
+  reports,
 }
 
 export type Schema = typeof schema

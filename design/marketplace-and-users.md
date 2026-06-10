@@ -210,7 +210,7 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 | **M2 发布闭环(CLI)**        | `publish`(鉴权+上传+注册版本)+ owner/semver/sha256 校验;CLI `login/whoami`                            | ✅ **已完成**(见 §13)——CLI login/whoami/publish + GitHub 浏览器登录腿;**真实端到端冒烟通过**(登录→发布→搜索→详情→签名下载,Neon+R2+GitHub) |
 | **M3 桌面端市场(读)**       | 市场浏览/搜索/详情页 + 安装前权限展示;公开走**快照**,登录态拉私人;复用现有 install                    | ✅ **已完成**(见 §14)——市场页接后端搜索/详情 + 安装前权限/工具披露 + 经签名 URL 校验 sha256 安装。桌面端账户登录(私人插件)留作增强        |
 | **M4 下载量 + 评分 + 评级** | 下载计数(防刷)、评分写入与聚合、排行算法(Wilson+衰减)、排行榜/精选位                                  | ✅ **已完成**(见 §15)——下载计数(authed 窗口去重)+ 评分 upsert/聚合 + 评论 + relevance 排行评分;桌面端只读展示 ★。评分提交 UI 待桌面登录   |
-| **M5 私人/公开治理**        | app 内可见性切换、yank、举报、admin 下架;可信源开关                                                   | owner 自助管理可见性;基础治理可用                                                                                                         |
+| **M5 私人/公开治理**        | app 内可见性切换、yank、举报、admin 下架;可信源开关                                                   | ✅ **后端已完成**(见 §17)——可见性切换 / yank / 举报 / admin 下架 + 测试。桌面治理 UI 与可信源开关待续                                     |
 | **M6 Web 门户**             | 浏览器端市场门户(复用现有 Fumadocs/Next 工作流)、SEO、可分享插件详情链接、Web 端浏览/搜索/详情        | 非桌面用户也能逛市场;插件有公开可索引页面                                                                                                 |
 | **M7 审核流水线**           | 上传自动扫描 + 人工审核队列、敏感权限分级、审核状态机(pending/approved/rejected)、admin 控制台        | 公开插件经审核后上架;治理可规模化                                                                                                         |
 | **M8 组织 / 协作者**        | Organization 实体、团队命名空间、Collaborator 角色与权限、转移所有权                                  | 多人共同维护一个插件 / 组织发布                                                                                                           |
@@ -467,3 +467,35 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 - `pnpm lint` ✅(0 error,4 个 M3 遗留 warning)· `pnpm typecheck` ✅ · `pnpm test` **470 passed**(M4 后 463 + 账户 7);连跑两次稳定。
 
 > 第一波内核 + 桌面端账户全部就绪。下一步进入**第二波**:M5 治理(可见性切换 / yank / 举报 / admin 下架 / 可信源开关)、M6 Web 门户、M7 审核流水线。
+
+---
+
+## 17. M5 治理(后端已落地,2026-06-11)
+
+**治理后端**:可见性切换、版本撤回(yank)、举报、admin 下架。后端为主、pglite 全测、零凭据。
+
+| 区域                       | 内容                                                                                                                                                                        |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `marketplace-types`        | 新增 `reportRequestSchema`(复用已有 `setVisibilityRequestSchema` / `yankRequestSchema`)                                                                                     |
+| `db/schema.ts` + 迁移 0001 | 新增 `reports` 表(id / pluginId / reporterUserId / reason / status open\|reviewed\|dismissed / createdAt);已对 Neon 应用                                                    |
+| `plugin-service.ts`        | `setVisibility`(owner)、`yankVersion`(owner;标 `yankedAt`+`yankReason`,**重算 latestVersion** 排除已撤回)、`report`(可见即可报)、`adminRemove`(role=admin → status=removed) |
+| `routes/plugins.ts`        | `PATCH /plugins/:id/visibility`、`POST /plugins/:id/yank`、`POST /plugins/:id/report`、`POST /plugins/:id/remove`(均鉴权;owner/admin 校验)                                  |
+| `governance.test.ts` (新)  | **8 条**:可见性切换 + 隐藏 + 非 owner 403、yank 重算 latest + 撤回版本下载 404 + 非 owner 403、举报 201 + 未知 404、admin 下架(非 admin 403 / admin 隐藏全站)               |
+
+**关键不变量 / 说明**
+
+- **yank 不删**:仅标 `yankedAt`,已装可复现;`latestVersion` 从非撤回版本重算;撤回版本 `resolveDownload` 返回 404。
+- **admin 下架**:`status="removed"` 墓碑,`canView` 一律不可见(搜索/详情/下载全隐藏),不物理删。
+- **admin 角色**:暂无自助路径(手动改 `users.role`);测试直接置库。
+- **可见性裁决**仍集中在 `PluginService.canView`。
+
+**遗留(M5 续作)**
+
+- 桌面端**治理 UI**:「我的插件」管理页(可见性切换 / yank 按钮)、举报入口、admin 控制台。
+- **可信源开关**(桌面设置:仅官方市场 / 任意 URL / 仅本地 .syn),属客户端策略,后续单独做。
+
+**质量基线**
+
+- `pnpm lint` ✅(0 error)· `pnpm typecheck` ✅ · `pnpm test` **478 passed**(账户后 470 + 治理 8);连跑两次稳定。
+
+> 第二波继续:**M6 Web 门户**(复用 docs 的 Next/Fumadocs 栈)或 **M7 审核流水线**(消费 §17 的 `reports` 表)。
