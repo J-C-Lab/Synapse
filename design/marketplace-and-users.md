@@ -211,7 +211,7 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 | **M3 桌面端市场(读)**       | 市场浏览/搜索/详情页 + 安装前权限展示;公开走**快照**,登录态拉私人;复用现有 install                    | ✅ **已完成**(见 §14)——市场页接后端搜索/详情 + 安装前权限/工具披露 + 经签名 URL 校验 sha256 安装。桌面端账户登录(私人插件)留作增强        |
 | **M4 下载量 + 评分 + 评级** | 下载计数(防刷)、评分写入与聚合、排行算法(Wilson+衰减)、排行榜/精选位                                  | ✅ **已完成**(见 §15)——下载计数(authed 窗口去重)+ 评分 upsert/聚合 + 评论 + relevance 排行评分;桌面端只读展示 ★。评分提交 UI 待桌面登录   |
 | **M5 私人/公开治理**        | app 内可见性切换、yank、举报、admin 下架;可信源开关                                                   | ✅ **已完成**(见 §17 + §18)——后端治理 + 桌面 UI(我的/管理标签、可见性切换/yank/举报/下架)+ 可信源开关                                     |
-| **M6 Web 门户**             | 浏览器端市场门户(复用现有 Fumadocs/Next 工作流)、SEO、可分享插件详情链接、Web 端浏览/搜索/详情        | 非桌面用户也能逛市场;插件有公开可索引页面                                                                                                 |
+| **M6 Web 门户**             | 浏览器端市场门户(复用现有 Fumadocs/Next 工作流)、SEO、可分享插件详情链接、Web 端浏览/搜索/详情        | ✅ **已完成**(见 §21)——docs 应用内 `/marketplace` + `/marketplace/[id]`(RSC 读公开 API、SEO metadata);next build 通过                     |
 | **M7 审核流水线**           | 上传自动扫描 + 人工审核队列、敏感权限分级、审核状态机(pending/approved/rejected)、admin 控制台        | ✅ **已完成**(见 §19 + §20)——后端(自动扫描/队列/状态机/下架恢复)+ 桌面 admin 控制台(审核队列接「管理」标签)                               |
 | **M8 组织 / 协作者**        | Organization 实体、团队命名空间、Collaborator 角色与权限、转移所有权                                  | 多人共同维护一个插件 / 组织发布                                                                                                           |
 | **M9 付费 / 分成(可选)**    | 付费插件、结算(Stripe 等)、开发者收入分成、发票                                                       | 形态 C 完整体;插件可商业化                                                                                                                |
@@ -578,3 +578,28 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 - `pnpm lint` ✅(0 error)· `pnpm typecheck` ✅ · `pnpm test` **502 passed**(M7 后端后 501 + 审核队列 UI 1)。
 
 > **M7 全部完成。** 第二波只剩 **M6 Web 门户**(复用 docs 的 Next/Fumadocs 栈);第三波 M8 组织 / M9 付费按需。
+
+---
+
+## 21. M6 Web 门户(已落地,2026-06-11)
+
+**浏览器端公开市场门户**,复用 `docs` 的 Next 16 + Fumadocs + Tailwind v4 栈。无需登录,只读后端公开 API。
+
+| 区域                                      | 内容                                                                                                                                                                                                              |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/lib/marketplace.ts` (新)            | 只读门户客户端:`fetchPlugins(q?)` / `fetchPlugin(id)`(RSC server fetch + `revalidate:60` ISR;404→null)、`localize`、`marketplaceApiBase`(`MARKETPLACE_URL` env 可配)。复用 `@synapse/marketplace-types`。8 条单测 |
+| `docs/app/marketplace/page.tsx` (新)      | 列表 + 搜索(GET 表单):公开插件卡片(名称/描述/作者/下载/★)链到详情;API 不可用时优雅降级                                                                                                                            |
+| `docs/app/marketplace/[id]/page.tsx` (新) | 详情:描述 + owner + 版本历史 + **权限/工具披露** + 统计;`generateMetadata` 出 SEO title/description;404→`notFound()`                                                                                              |
+
+**说明**
+
+- **后端为源**:门户读 `GET /plugins` / `GET /plugins/:id`(仅公开+active);与桌面端同一公开 API。
+- **SEO / 可分享**:每个插件有独立可索引 URL `/marketplace/<id>`,带 metadata。
+- **部署**:`MARKETPLACE_URL` 指向生产后端;门户随 docs 站点部署(需域名,见 §7 待定项)。
+- 路由为动态 SSR(读 API),`next build` 通过(`/marketplace`、`/marketplace/[id]` 均 ƒ Dynamic)。
+
+**质量基线**
+
+- `pnpm lint` ✅(0 error)· `pnpm -F docs typecheck` ✅ · `pnpm -F docs build` ✅ · `pnpm test` **510 passed**(M7 后 502 + 门户 8)。
+
+> **第二波(M5–M7)+ M6 全部完成。** 整个市场平台:契约→后端→CLI 发布→桌面端(浏览/账户/评分/治理/审核)→Web 门户。第三波 **M8 组织 / M9 付费** 按商业化节奏再上;运维待 §7 域名/部署落地。
