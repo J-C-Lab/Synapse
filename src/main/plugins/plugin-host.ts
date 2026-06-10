@@ -1,7 +1,9 @@
 import type {
+  MyPluginsResponse,
   PluginDetailResponse,
   RateResponse,
   SearchPluginsResponse,
+  Visibility,
 } from "@synapse/marketplace-types"
 import type { ClipboardContent, ToolResult } from "@synapse/plugin-sdk"
 import type { MarketplaceApi } from "./marketplace-api"
@@ -241,6 +243,38 @@ export class PluginHost {
   /** Submit the signed-in user's star rating for a plugin. */
   async rateMarketplace(pluginId: string, stars: number): Promise<RateResponse> {
     return this.marketplaceApi.rate(pluginId, stars)
+  }
+
+  /** The signed-in user's own plugins (any visibility). */
+  async marketplaceMyPlugins(): Promise<MyPluginsResponse> {
+    return this.marketplaceApi.myPlugins()
+  }
+
+  /** Owner toggles a plugin's public/private visibility. */
+  async marketplaceSetVisibility(
+    pluginId: string,
+    visibility: Visibility
+  ): Promise<PluginDetailResponse> {
+    return this.marketplaceApi.setVisibility(pluginId, visibility)
+  }
+
+  /** Owner withdraws (yanks) a published version. */
+  async marketplaceYank(
+    pluginId: string,
+    version: string,
+    reason?: string
+  ): Promise<PluginDetailResponse> {
+    return this.marketplaceApi.yank(pluginId, version, reason)
+  }
+
+  /** File an abuse/quality report against a plugin. */
+  async marketplaceReport(pluginId: string, reason: string): Promise<void> {
+    await this.marketplaceApi.report(pluginId, reason)
+  }
+
+  /** Admin takedown of a plugin. */
+  async marketplaceAdminRemove(pluginId: string): Promise<void> {
+    await this.marketplaceApi.adminRemove(pluginId)
   }
 
   /**

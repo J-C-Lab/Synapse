@@ -3,10 +3,12 @@ import process from "node:process"
 import { drizzle } from "drizzle-orm/node-postgres"
 import { migrate } from "drizzle-orm/node-postgres/migrator"
 import { Pool } from "pg"
+import { loadDotEnvFile } from "../config"
 
 // Apply pending migrations to the configured database. Run with `db:migrate`
 // (via tsx) in CI/deploy before starting the server.
 async function main(): Promise<void> {
+  loadDotEnvFile()
   const url = process.env.DATABASE_URL
   if (!url) throw new Error("DATABASE_URL is required to run migrations")
 

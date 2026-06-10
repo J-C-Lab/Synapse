@@ -513,6 +513,7 @@ function coercePatch(value: unknown): Partial<{
   floatingBallEnabled: boolean
   floatingBallFeatures: "appLauncher"[]
   lanEnabled: boolean
+  trustedSourcePolicy: "official-marketplace" | "any-url" | "local-syn"
 }> {
   if (!value || typeof value !== "object") return {}
   const v = value as Record<string, unknown>
@@ -537,6 +538,13 @@ function coercePatch(value: unknown): Partial<{
     )
   }
   if (typeof v.lanEnabled === "boolean") out.lanEnabled = v.lanEnabled
+  if (
+    v.trustedSourcePolicy === "official-marketplace" ||
+    v.trustedSourcePolicy === "any-url" ||
+    v.trustedSourcePolicy === "local-syn"
+  ) {
+    out.trustedSourcePolicy = v.trustedSourcePolicy
+  }
   return out
 }
 

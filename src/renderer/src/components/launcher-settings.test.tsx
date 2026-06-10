@@ -71,6 +71,11 @@ function installElectronApi(settings: SynapseUserSettings): TestElectronApi {
     marketplaceLogin: vi.fn().mockResolvedValue(ok(null)),
     marketplaceLogout: vi.fn().mockResolvedValue(ok(undefined)),
     rateMarketplacePlugin: vi.fn().mockResolvedValue(ok(null)),
+    listMyMarketplacePlugins: vi.fn().mockResolvedValue(ok({ items: [] })),
+    setMarketplaceVisibility: vi.fn().mockResolvedValue(ok(null)),
+    yankMarketplaceVersion: vi.fn().mockResolvedValue(ok(null)),
+    reportMarketplacePlugin: vi.fn().mockResolvedValue(ok(undefined)),
+    removeMarketplacePlugin: vi.fn().mockResolvedValue(ok(undefined)),
     onMarketplaceLoginPrompt: vi.fn(() => () => undefined),
     onLauncherFocus: vi.fn(() => () => undefined),
     onFloatingBallMenuState: vi.fn(() => () => undefined),
@@ -136,6 +141,7 @@ describe("launcher settings", () => {
       floatingBallEnabled: false,
       floatingBallFeatures: [],
       lanEnabled: false,
+      trustedSourcePolicy: "official-marketplace",
     })
   })
 

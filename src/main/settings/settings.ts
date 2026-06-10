@@ -7,10 +7,16 @@ import * as path from "node:path"
 export type ThemeMode = "light" | "dark" | "system"
 export type ThemeAccent = "neutral" | "blue" | "green" | "rose" | "violet"
 export type FloatingBallFeature = "appLauncher"
+export type TrustedSourcePolicy = "official-marketplace" | "any-url" | "local-syn"
 
 export const THEME_MODES: readonly ThemeMode[] = ["light", "dark", "system"]
 export const THEME_ACCENTS: readonly ThemeAccent[] = ["neutral", "blue", "green", "rose", "violet"]
 export const FLOATING_BALL_FEATURES: readonly FloatingBallFeature[] = ["appLauncher"]
+export const TRUSTED_SOURCE_POLICIES: readonly TrustedSourcePolicy[] = [
+  "official-marketplace",
+  "any-url",
+  "local-syn",
+]
 const MAX_FLOATING_BALL_FEATURES = 6
 
 export interface UserSettings {
@@ -26,6 +32,8 @@ export interface UserSettings {
   floatingBallFeatures: FloatingBallFeature[]
   /** Whether Synapse advertises and browses devices on the local network. */
   lanEnabled: boolean
+  /** Which plugin package sources the desktop client should expose. */
+  trustedSourcePolicy: TrustedSourcePolicy
 }
 
 export const defaultSettings: UserSettings = {
@@ -35,6 +43,7 @@ export const defaultSettings: UserSettings = {
   floatingBallEnabled: false,
   floatingBallFeatures: ["appLauncher"],
   lanEnabled: false,
+  trustedSourcePolicy: "official-marketplace",
 }
 
 export function settingsFilePath(userDataDir: string): string {
@@ -65,6 +74,12 @@ export function normalizeSettings(raw: unknown): UserSettings {
     }
     if (typeof r.lanEnabled === "boolean") {
       next.lanEnabled = r.lanEnabled
+    }
+    if (
+      typeof r.trustedSourcePolicy === "string" &&
+      (TRUSTED_SOURCE_POLICIES as readonly string[]).includes(r.trustedSourcePolicy)
+    ) {
+      next.trustedSourcePolicy = r.trustedSourcePolicy as TrustedSourcePolicy
     }
   }
   return next

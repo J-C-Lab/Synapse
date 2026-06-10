@@ -26,6 +26,7 @@ declare global {
 
   type SynapseThemeMode = "light" | "dark" | "system"
   type SynapseThemeAccent = "neutral" | "blue" | "green" | "rose" | "violet"
+  type SynapseTrustedSourcePolicy = "official-marketplace" | "any-url" | "local-syn"
 
   interface SynapseUserSettings {
     hotkey: string
@@ -34,6 +35,7 @@ declare global {
     floatingBallEnabled: boolean
     floatingBallFeatures: SynapseFloatingBallFeature[]
     lanEnabled: boolean
+    trustedSourcePolicy: SynapseTrustedSourcePolicy
   }
 
   type SynapseLanPlatform = "win32" | "darwin" | "linux" | "unknown"
@@ -118,6 +120,7 @@ declare global {
   type SynapsePluginIpcErrorCode =
     | "IPC_FORBIDDEN"
     | "IPC_INVALID_PAYLOAD"
+    | "MARKETPLACE_ERROR"
     | "PLUGIN_NOT_FOUND"
     | "PLUGIN_NOT_ACTIVE"
     | "PLUGIN_PERMISSION_DENIED"
@@ -428,6 +431,24 @@ declare global {
         id: string,
         stars: number
       ) => Promise<SynapsePluginIpcResult<import("@synapse/marketplace-types").RateResponse>>
+      listMyMarketplacePlugins: () => Promise<
+        SynapsePluginIpcResult<import("@synapse/marketplace-types").MyPluginsResponse>
+      >
+      setMarketplaceVisibility: (
+        id: string,
+        visibility: "public" | "private"
+      ) => Promise<
+        SynapsePluginIpcResult<import("@synapse/marketplace-types").PluginDetailResponse>
+      >
+      yankMarketplaceVersion: (
+        id: string,
+        version: string,
+        reason?: string
+      ) => Promise<
+        SynapsePluginIpcResult<import("@synapse/marketplace-types").PluginDetailResponse>
+      >
+      reportMarketplacePlugin: (id: string, reason: string) => Promise<SynapsePluginIpcResult<void>>
+      removeMarketplacePlugin: (id: string) => Promise<SynapsePluginIpcResult<void>>
       onMarketplaceLoginPrompt: (
         handler: (prompt: { verificationUri: string; userCode: string; expiresAt: string }) => void
       ) => () => void

@@ -42,6 +42,15 @@ function fakeApi(overrides: Partial<MarketplaceApi> = {}): MarketplaceApi {
     rate: async () => {
       throw new Error("not used")
     },
+    myPlugins: async () => ({ items: [] }),
+    setVisibility: async () => {
+      throw new Error("not used")
+    },
+    yank: async () => {
+      throw new Error("not used")
+    },
+    report: async () => undefined,
+    adminRemove: async () => undefined,
     ...overrides,
   }
 }

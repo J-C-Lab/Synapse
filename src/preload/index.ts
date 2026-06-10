@@ -12,6 +12,7 @@ interface SettingsPatch {
   floatingBallEnabled?: boolean
   floatingBallFeatures?: "appLauncher"[]
   lanEnabled?: boolean
+  trustedSourcePolicy?: "official-marketplace" | "any-url" | "local-syn"
 }
 type Settings = Required<SettingsPatch>
 
@@ -94,6 +95,14 @@ const electronAPI = {
   marketplaceLogout: () => ipcRenderer.invoke("market:logout"),
   rateMarketplacePlugin: (id: string, stars: number) =>
     ipcRenderer.invoke("market:rate", { id, stars }),
+  listMyMarketplacePlugins: () => ipcRenderer.invoke("market:my-plugins"),
+  setMarketplaceVisibility: (id: string, visibility: "public" | "private") =>
+    ipcRenderer.invoke("market:set-visibility", { id, visibility }),
+  yankMarketplaceVersion: (id: string, version: string, reason?: string) =>
+    ipcRenderer.invoke("market:yank", { id, version, reason }),
+  reportMarketplacePlugin: (id: string, reason: string) =>
+    ipcRenderer.invoke("market:report", { id, reason }),
+  removeMarketplacePlugin: (id: string) => ipcRenderer.invoke("market:remove", { id }),
   onMarketplaceLoginPrompt: (handler: (prompt: unknown) => void): (() => void) => {
     const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
     ipcRenderer.on("market:login-prompt", listener)

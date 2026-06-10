@@ -1,4 +1,5 @@
 import type {
+  MyPluginsResponse,
   PluginDetailResponse,
   PluginSummary,
   RateResponse,
@@ -290,6 +291,33 @@ export async function marketplaceLogout(): Promise<void> {
 
 export async function rateMarketplacePlugin(id: string, stars: number): Promise<RateResponse> {
   return unwrapIpcResult(await api().rateMarketplacePlugin(id, stars))
+}
+
+export async function listMyMarketplacePlugins(): Promise<MyPluginsResponse> {
+  return unwrapIpcResult(await api().listMyMarketplacePlugins())
+}
+
+export async function setMarketplaceVisibility(
+  id: string,
+  visibility: "public" | "private"
+): Promise<MarketplaceDetail> {
+  return unwrapIpcResult(await api().setMarketplaceVisibility(id, visibility))
+}
+
+export async function yankMarketplaceVersion(
+  id: string,
+  version: string,
+  reason?: string
+): Promise<MarketplaceDetail> {
+  return unwrapIpcResult(await api().yankMarketplaceVersion(id, version, reason))
+}
+
+export async function reportMarketplacePlugin(id: string, reason: string): Promise<void> {
+  unwrapIpcResult(await api().reportMarketplacePlugin(id, reason))
+}
+
+export async function removeMarketplacePlugin(id: string): Promise<void> {
+  unwrapIpcResult(await api().removeMarketplacePlugin(id))
 }
 
 export function onMarketplaceLoginPrompt(

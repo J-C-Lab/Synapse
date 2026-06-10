@@ -2,23 +2,31 @@ import type { ReactNode } from "react"
 import type {
   MarketplaceAccount,
   MarketplaceDetail,
+  MarketplaceLoginPrompt,
   MarketplaceSummary,
   PluginRegistryEntry,
 } from "@/lib/electron"
 import {
   AlertCircle,
   Download,
+  Eye,
+  EyeOff,
+  Github,
+  Loader2,
+  LogOut,
   PackageSearch,
   RefreshCw,
   Send,
   ShieldCheck,
   Store,
+  TriangleAlert,
 } from "lucide-react"
 import { useCallback, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { localize } from "@/components/plugins/view-utils"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -30,21 +38,29 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import { Input } from "@/components/ui/input"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   ElectronIpcError,
   getMarketplaceAccount,
   getMarketplaceDetail,
+  getSettings,
   installMarketplaceBackendPlugin,
   isElectron,
+  listMyMarketplacePlugins,
   listPlugins,
   marketplaceLogin,
   marketplaceLogout,
   onMarketplaceLoginPrompt,
   onPluginRegistryChanged,
   rateMarketplacePlugin,
+  removeMarketplacePlugin,
+  reportMarketplacePlugin,
   searchMarketplace,
+  setMarketplaceVisibility,
+  yankMarketplaceVersion,
 } from "@/lib/electron"
 import { cn } from "@/lib/utils"
 
@@ -58,6 +74,13 @@ export function MarketplacePage() {
   const [error, setError] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [account, setAccount] = useState<MarketplaceAccount>({ user: null })
+  const [tab, setTab] = useState<"browse" | "mine" | "admin">("browse")
+  const [mineEntries, setMineEntries] = useState<MarketplaceSummary[]>([])
+  const [mineLoading, setMineLoading] = useState(false)
+  const [mineError, setMineError] = useState<string | null>(null)
+  const [governancePending, setGovernancePending] = useState<string | null>(null)
+  const [trustedSourcePolicy, setTrustedSourcePolicy] =
+    useState<SynapseTrustedSourcePolicy>("official-marketplace")
 
   const load = useCallback(
     async (search: string) => {
@@ -95,10 +118,78 @@ export function MarketplacePage() {
     void getMarketplaceAccount()
       .then((value) => active && setAccount(value))
       .catch(() => undefined)
+    void getSettings()
+      .then((settings) => active && setTrustedSourcePolicy(settings.trustedSourcePolicy))
+      .catch(() => undefined)
     return () => {
       active = false
     }
   }, [electronReady])
+
+  const loadMine = useCallback(async () => {
+    if (!electronReady || !account.user) return
+    setMineLoading(true)
+    setMineError(null)
+    try {
+      const result = await listMyMarketplacePlugins()
+      setMineEntries(result.items)
+    } catch (err) {
+      setMineError(errorMessage(err))
+    } finally {
+      setMineLoading(false)
+    }
+  }, [account.user, electronReady])
+
+  useEffect(() => {
+    if (tab === "mine") void loadMine()
+  }, [loadMine, tab])
+
+  async function toggleVisibility(entry: MarketplaceSummary) {
+    const next = entry.visibility === "public" ? "private" : "public"
+    setGovernancePending(`visibility:${entry.id}`)
+    try {
+      await setMarketplaceVisibility(entry.id, next)
+      setMineEntries((current) =>
+        current.map((item) => (item.id === entry.id ? { ...item, visibility: next } : item))
+      )
+      toast.success(t("marketplace.governance.visibilityUpdated"))
+    } catch (err) {
+      toast.error(errorMessage(err))
+    } finally {
+      setGovernancePending(null)
+    }
+  }
+
+  async function yankLatest(entry: MarketplaceSummary) {
+    if (!entry.latestVersion) return
+    setGovernancePending(`yank:${entry.id}`)
+    try {
+      const detail = await yankMarketplaceVersion(entry.id, entry.latestVersion, undefined)
+      setMineEntries((current) =>
+        current.map((item) =>
+          item.id === entry.id ? { ...item, latestVersion: detail.plugin.latestVersion } : item
+        )
+      )
+      toast.success(t("marketplace.governance.yanked"))
+    } catch (err) {
+      toast.error(errorMessage(err))
+    } finally {
+      setGovernancePending(null)
+    }
+  }
+
+  async function adminRemove(entry: MarketplaceSummary) {
+    setGovernancePending(`remove:${entry.id}`)
+    try {
+      await removeMarketplacePlugin(entry.id)
+      setEntries((current) => current.filter((item) => item.id !== entry.id))
+      toast.success(t("marketplace.governance.removed"))
+    } catch (err) {
+      toast.error(errorMessage(err))
+    } finally {
+      setGovernancePending(null)
+    }
+  }
 
   if (!electronReady) {
     return (
@@ -124,59 +215,113 @@ export function MarketplacePage() {
         </>
       }
     >
-      <div className="rounded-lg border bg-card p-3">
-        <div className="relative min-w-64 flex-1">
-          <PackageSearch className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={query}
-            onChange={(event) => setQuery(event.currentTarget.value)}
-            placeholder={t("marketplace.searchPlaceholder")}
-            className="pl-9"
+      <Tabs value={tab} onValueChange={(value) => setTab(value as typeof tab)}>
+        <TabsList>
+          <TabsTrigger value="browse">{t("marketplace.tabs.browse")}</TabsTrigger>
+          {account.user && <TabsTrigger value="mine">{t("marketplace.tabs.mine")}</TabsTrigger>}
+          {account.user?.role === "admin" && (
+            <TabsTrigger value="admin">{t("marketplace.tabs.admin")}</TabsTrigger>
+          )}
+        </TabsList>
+
+        <TabsContent value="browse" className="mt-4 space-y-4">
+          <div className="rounded-lg border bg-card p-3">
+            <div className="relative min-w-64 flex-1">
+              <PackageSearch className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.currentTarget.value)}
+                placeholder={t("marketplace.searchPlaceholder")}
+                className="pl-9"
+              />
+            </div>
+          </div>
+
+          {error && (
+            <Alert variant="destructive">
+              <AlertCircle className="size-4" aria-hidden />
+              <AlertTitle>{t("marketplace.errorTitle")}</AlertTitle>
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+
+          <MarketplaceGrid
+            emptyText={t("marketplace.empty")}
+            entries={entries}
+            installed={installed}
+            loading={loading}
+            locale={i18n.language}
+            onOpen={setSelectedId}
           />
-        </div>
-      </div>
+        </TabsContent>
 
-      {error && (
-        <Alert variant="destructive">
-          <AlertCircle className="size-4" aria-hidden />
-          <AlertTitle>{t("marketplace.errorTitle")}</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
+        <TabsContent value="mine" className="mt-4 space-y-4">
+          {!account.user ? (
+            <Alert>
+              <AlertCircle className="size-4" aria-hidden />
+              <AlertDescription>{t("marketplace.governance.signInRequired")}</AlertDescription>
+            </Alert>
+          ) : (
+            <>
+              {mineError && (
+                <Alert variant="destructive">
+                  <AlertCircle className="size-4" aria-hidden />
+                  <AlertTitle>{t("marketplace.errorTitle")}</AlertTitle>
+                  <AlertDescription>{mineError}</AlertDescription>
+                </Alert>
+              )}
+              <MarketplaceGrid
+                emptyText={t("marketplace.governance.emptyMine")}
+                entries={mineEntries}
+                installed={installed}
+                loading={mineLoading}
+                locale={i18n.language}
+                onOpen={setSelectedId}
+                renderActions={(entry) => (
+                  <GovernanceActions
+                    entry={entry}
+                    pending={governancePending}
+                    onToggleVisibility={toggleVisibility}
+                    onYank={yankLatest}
+                  />
+                )}
+              />
+            </>
+          )}
+        </TabsContent>
 
-      {loading ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("marketplace.loading")}</CardTitle>
-            <CardDescription>{t("marketplace.loadingHint")}</CardDescription>
-          </CardHeader>
-        </Card>
-      ) : entries.length === 0 ? (
-        <Card>
-          <CardContent className="flex min-h-56 items-center justify-center gap-3 text-sm text-muted-foreground">
-            <PackageSearch className="size-4" aria-hidden />
-            {t("marketplace.empty")}
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {entries.map((entry) => (
-            <MarketplaceCard
-              key={entry.id}
-              entry={entry}
-              installed={installed.get(entry.id)}
-              locale={i18n.language}
-              onOpen={() => setSelectedId(entry.id)}
-            />
-          ))}
-        </div>
-      )}
+        <TabsContent value="admin" className="mt-4">
+          <MarketplaceGrid
+            emptyText={t("marketplace.governance.emptyAdmin")}
+            entries={entries}
+            installed={installed}
+            loading={loading}
+            locale={i18n.language}
+            onOpen={setSelectedId}
+            renderActions={(entry) => (
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                disabled={governancePending === `remove:${entry.id}`}
+                onClick={() => void adminRemove(entry)}
+              >
+                <TriangleAlert className="size-4" aria-hidden />
+                {t("marketplace.governance.remove")}
+              </Button>
+            )}
+          />
+        </TabsContent>
+      </Tabs>
 
       <PluginDetailDialog
+        key={selectedId ?? "closed"}
         pluginId={selectedId}
         installed={selectedId ? installed.get(selectedId) : undefined}
         locale={i18n.language}
         canRate={Boolean(account.user)}
+        canReport={Boolean(account.user)}
+        canInstall={trustedSourcePolicy !== "local-syn"}
         onOpenChange={(open) => !open && setSelectedId(null)}
         onInstalled={(plugin) => {
           setInstalled((current) => new Map(current).set(plugin.pluginId, plugin))
@@ -232,21 +377,46 @@ function AccountControl({
 }) {
   const { t } = useTranslation()
   const [busy, setBusy] = useState(false)
+  const [prompt, setPrompt] = useState<MarketplaceLoginPrompt | null>(null)
+  const [open, setOpen] = useState(false)
+  const [loginError, setLoginError] = useState<string | null>(null)
 
   useEffect(
     () =>
-      onMarketplaceLoginPrompt((prompt) =>
-        toast.message(t("marketplace.account.prompt", { code: prompt.userCode }))
-      ),
-    [t]
+      onMarketplaceLoginPrompt((nextPrompt) => {
+        setPrompt(normalizeLoginPrompt(nextPrompt))
+        setOpen(true)
+      }),
+    []
   )
 
   async function signIn() {
     setBusy(true)
+    setOpen(true)
+    setPrompt(null)
+    setLoginError(null)
     try {
       const user = await marketplaceLogin()
       onChange({ user })
+      setOpen(false)
+      setPrompt(null)
       toast.success(t("marketplace.account.signedIn", { handle: user.handle }))
+    } catch (err) {
+      const message = errorMessage(err)
+      setLoginError(message)
+      toast.error(message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function signOut() {
+    setBusy(true)
+    try {
+      await marketplaceLogout()
+      setOpen(false)
+      setPrompt(null)
+      onChange({ user: null })
     } catch (err) {
       toast.error(errorMessage(err))
     } finally {
@@ -254,23 +424,232 @@ function AccountControl({
     }
   }
 
-  async function signOut() {
-    await marketplaceLogout()
-    onChange({ user: null })
-  }
-
   if (account.user) {
-    return (
-      <Button variant="outline" size="sm" onClick={() => void signOut()}>
-        {account.user.handle} · {t("marketplace.account.signOut")}
-      </Button>
-    )
+    const user = account.user
+    return <MarketplaceAccountMenu busy={busy} user={user} onSignOut={() => void signOut()} />
   }
   return (
-    <Button variant="outline" size="sm" disabled={busy} onClick={() => void signIn()}>
-      {busy ? t("marketplace.account.signingIn") : t("marketplace.account.signIn")}
-    </Button>
+    <>
+      <Button variant="outline" size="sm" disabled={busy} onClick={() => void signIn()}>
+        <Github className="size-4" aria-hidden />
+        {busy ? t("marketplace.account.signingIn") : t("marketplace.account.signIn")}
+      </Button>
+      <MarketplaceLoginDialog
+        open={open}
+        busy={busy}
+        prompt={prompt}
+        error={loginError}
+        onOpenChange={setOpen}
+      />
+    </>
   )
+}
+
+function MarketplaceAccountMenu({
+  busy,
+  user,
+  onSignOut,
+}: {
+  busy: boolean
+  user: NonNullable<MarketplaceAccount["user"]>
+  onSignOut: () => void
+}) {
+  const { t } = useTranslation()
+  const label = t("marketplace.account.menuLabel", { handle: user.handle })
+  return (
+    <HoverCard openDelay={100} closeDelay={120}>
+      <HoverCardTrigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          className="rounded-full outline-none ring-offset-background transition hover:ring-2 hover:ring-ring hover:ring-offset-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        >
+          <MarketplaceAvatar user={user} size="sm" />
+        </button>
+      </HoverCardTrigger>
+      <HoverCardContent align="end" className="w-72 p-3">
+        <div className="flex items-center gap-3">
+          <MarketplaceAvatar user={user} size="lg" />
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium">{user.displayName}</p>
+            <p className="truncate text-xs text-muted-foreground">@{user.handle}</p>
+          </div>
+        </div>
+        <div className="mt-3 border-t pt-3">
+          <Button
+            type="button"
+            variant="ghost"
+            className="w-full justify-start text-destructive hover:bg-destructive/10 hover:text-destructive"
+            disabled={busy}
+            onClick={onSignOut}
+          >
+            <LogOut className="size-4" aria-hidden />
+            {t("marketplace.account.signOut")}
+          </Button>
+        </div>
+      </HoverCardContent>
+    </HoverCard>
+  )
+}
+
+function MarketplaceAvatar({
+  user,
+  size,
+}: {
+  user: NonNullable<MarketplaceAccount["user"]>
+  size: "sm" | "lg"
+}) {
+  return (
+    <Avatar size={size} className="border bg-muted">
+      {user.avatarUrl ? (
+        <img className="aspect-square size-full" src={user.avatarUrl} alt={user.displayName} />
+      ) : (
+        <AvatarFallback>{accountInitial(user)}</AvatarFallback>
+      )}
+    </Avatar>
+  )
+}
+
+function MarketplaceLoginDialog({
+  open,
+  busy,
+  prompt,
+  error,
+  onOpenChange,
+}: {
+  open: boolean
+  busy: boolean
+  prompt: MarketplaceLoginPrompt | null
+  error: string | null
+  onOpenChange: (open: boolean) => void
+}) {
+  const { t } = useTranslation()
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="max-h-[calc(100vh-2rem)] overflow-hidden p-0 sm:max-w-[560px]"
+        showCloseButton={false}
+      >
+        <div className="flex max-h-[calc(100vh-2rem)] min-h-0 w-full flex-col">
+          <div className="border-b bg-foreground px-5 py-4 text-background sm:px-6">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <span className="flex size-11 shrink-0 items-center justify-center rounded-md bg-background/10">
+                <Github className="size-5" aria-hidden />
+              </span>
+              <Badge className="border-background/20 bg-background/10 text-background hover:bg-background/10">
+                GitHub
+              </Badge>
+            </div>
+            <DialogHeader className="space-y-2 text-left">
+              <DialogTitle className="text-xl leading-tight text-background">
+                {t("marketplace.account.dialogTitle")}
+              </DialogTitle>
+              <DialogDescription className="max-w-[46ch] text-background/75">
+                {t("marketplace.account.dialogDescription")}
+              </DialogDescription>
+            </DialogHeader>
+          </div>
+
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4 sm:px-6">
+            {error && (
+              <Alert variant="destructive">
+                <AlertCircle className="size-4" aria-hidden />
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+
+            <div className="rounded-lg border bg-card shadow-sm">
+              <div className="flex items-start gap-4 p-5">
+                <span className="flex size-12 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                  <Loader2 className="size-5 animate-spin" aria-hidden />
+                </span>
+                <div className="min-w-0 space-y-1">
+                  <p className="font-medium">
+                    {prompt
+                      ? t("marketplace.account.browserReady")
+                      : t("marketplace.account.preparing")}
+                  </p>
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    {t("marketplace.account.waiting")}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              <LoginStep
+                index="1"
+                title={t("marketplace.account.stepBrowser")}
+                active={Boolean(prompt) && busy}
+              />
+              <LoginStep
+                index="2"
+                title={t("marketplace.account.stepConnect")}
+                active={!busy && !error}
+              />
+            </div>
+
+            <div className="flex items-start gap-3 rounded-md border bg-muted/30 px-4 py-3">
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                <ShieldCheck className="size-4" aria-hidden />
+              </span>
+              <p className="text-sm leading-6 text-muted-foreground">
+                {t("marketplace.account.secureHint")}
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter className="shrink-0 border-t bg-muted/30 px-5 py-3 sm:px-6">
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              {t("marketplace.account.close")}
+            </Button>
+          </DialogFooter>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function LoginStep({ index, title, active }: { index: string; title: string; active: boolean }) {
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-2 rounded-md border px-3 py-2 text-xs text-muted-foreground",
+        active && "border-primary/40 bg-primary/5 text-foreground"
+      )}
+    >
+      <span
+        className={cn(
+          "flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium",
+          active && "bg-primary text-primary-foreground"
+        )}
+      >
+        {index}
+      </span>
+      <span className="min-w-0 truncate">{title}</span>
+    </div>
+  )
+}
+
+function normalizeLoginPrompt(prompt: MarketplaceLoginPrompt): MarketplaceLoginPrompt {
+  const value = prompt as MarketplaceLoginPrompt & {
+    verification_uri?: unknown
+    user_code?: unknown
+    expires_at?: unknown
+  }
+  return {
+    verificationUri: stringOrEmpty(value.verificationUri) || stringOrEmpty(value.verification_uri),
+    userCode: stringOrEmpty(value.userCode) || stringOrEmpty(value.user_code),
+    expiresAt: stringOrEmpty(value.expiresAt) || stringOrEmpty(value.expires_at),
+  }
+}
+
+function stringOrEmpty(value: unknown): string {
+  return typeof value === "string" ? value : ""
+}
+
+function accountInitial(user: NonNullable<MarketplaceAccount["user"]>): string {
+  return (user.displayName.trim() || user.handle.trim()).slice(0, 1).toUpperCase() || "?"
 }
 
 function MarketplaceCard({
@@ -278,11 +657,13 @@ function MarketplaceCard({
   installed,
   locale,
   onOpen,
+  actions,
 }: {
   entry: MarketplaceSummary
   installed?: PluginRegistryEntry
   locale: string
   onOpen: () => void
+  actions?: ReactNode
 }) {
   const { t } = useTranslation()
   return (
@@ -315,8 +696,113 @@ function MarketplaceCard({
         <Button type="button" variant="outline" className="w-full" onClick={onOpen}>
           {t("marketplace.viewDetails")}
         </Button>
+        {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
       </CardContent>
     </Card>
+  )
+}
+
+function MarketplaceGrid({
+  emptyText,
+  entries,
+  installed,
+  loading,
+  locale,
+  onOpen,
+  renderActions,
+}: {
+  emptyText: string
+  entries: MarketplaceSummary[]
+  installed: Map<string, PluginRegistryEntry>
+  loading: boolean
+  locale: string
+  onOpen: (id: string) => void
+  renderActions?: (entry: MarketplaceSummary) => ReactNode
+}) {
+  const { t } = useTranslation()
+  if (loading) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("marketplace.loading")}</CardTitle>
+          <CardDescription>{t("marketplace.loadingHint")}</CardDescription>
+        </CardHeader>
+      </Card>
+    )
+  }
+  if (entries.length === 0) {
+    return (
+      <Card>
+        <CardContent className="flex min-h-56 items-center justify-center gap-3 text-sm text-muted-foreground">
+          <PackageSearch className="size-4" aria-hidden />
+          {emptyText}
+        </CardContent>
+      </Card>
+    )
+  }
+  return (
+    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      {entries.map((entry) => (
+        <MarketplaceCard
+          key={entry.id}
+          entry={entry}
+          installed={installed.get(entry.id)}
+          locale={locale}
+          onOpen={() => onOpen(entry.id)}
+          actions={renderActions?.(entry)}
+        />
+      ))}
+    </div>
+  )
+}
+
+function GovernanceActions({
+  entry,
+  pending,
+  onToggleVisibility,
+  onYank,
+}: {
+  entry: MarketplaceSummary
+  pending: string | null
+  onToggleVisibility: (entry: MarketplaceSummary) => Promise<void>
+  onYank: (entry: MarketplaceSummary) => Promise<void>
+}) {
+  const { t } = useTranslation()
+  const isPublic = entry.visibility === "public"
+  return (
+    <>
+      <Badge variant={isPublic ? "default" : "secondary"}>
+        {t(
+          isPublic
+            ? "marketplace.governance.visibilityPublic"
+            : "marketplace.governance.visibilityPrivate"
+        )}
+      </Badge>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={pending === `visibility:${entry.id}`}
+        onClick={() => void onToggleVisibility(entry)}
+      >
+        {isPublic ? (
+          <EyeOff className="size-4" aria-hidden />
+        ) : (
+          <Eye className="size-4" aria-hidden />
+        )}
+        {t(isPublic ? "marketplace.governance.makePrivate" : "marketplace.governance.makePublic")}
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={!entry.latestVersion || pending === `yank:${entry.id}`}
+        onClick={() => void onYank(entry)}
+      >
+        <TriangleAlert className="size-4" aria-hidden />
+        {t("marketplace.governance.yank")}
+      </Button>
+    </>
   )
 }
 
@@ -325,6 +811,8 @@ function PluginDetailDialog({
   installed,
   locale,
   canRate,
+  canReport,
+  canInstall,
   onOpenChange,
   onInstalled,
 }: {
@@ -332,26 +820,26 @@ function PluginDetailDialog({
   installed?: PluginRegistryEntry
   locale: string
   canRate: boolean
+  canReport: boolean
+  canInstall: boolean
   onOpenChange: (open: boolean) => void
   onInstalled: (plugin: PluginRegistryEntry) => void
 }) {
   const { t } = useTranslation()
   const [detail, setDetail] = useState<MarketplaceDetail | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(Boolean(pluginId))
   const [installing, setInstalling] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!pluginId) {
-      setDetail(null)
-      setError(null)
-      return
-    }
+    if (!pluginId) return
     let active = true
-    setLoading(true)
-    setError(null)
     getMarketplaceDetail(pluginId)
-      .then((result) => active && setDetail(result))
+      .then((result) => {
+        if (!active) return
+        setDetail(result)
+        setError(null)
+      })
       .catch((err) => active && setError(errorMessage(err)))
       .finally(() => active && setLoading(false))
     return () => {
@@ -400,6 +888,19 @@ function PluginDetailDialog({
     }
   }
 
+  async function report() {
+    if (!detail) return
+    try {
+      await reportMarketplacePlugin(
+        detail.plugin.id,
+        t("marketplace.governance.defaultReportReason")
+      )
+      toast.success(t("marketplace.governance.reported"))
+    } catch (err) {
+      toast.error(errorMessage(err))
+    }
+  }
+
   const myStars = detail?.myRating?.stars ?? 0
 
   return (
@@ -408,6 +909,7 @@ function PluginDetailDialog({
         {loading || !detail ? (
           <DialogHeader>
             <DialogTitle>{t("marketplace.loading")}</DialogTitle>
+            <DialogDescription>{t("marketplace.loadingHint")}</DialogDescription>
           </DialogHeader>
         ) : (
           <>
@@ -487,9 +989,15 @@ function PluginDetailDialog({
             )}
 
             <DialogFooter>
+              {canReport && (
+                <Button type="button" variant="outline" onClick={() => void report()}>
+                  <TriangleAlert className="size-4" aria-hidden />
+                  {t("marketplace.governance.report")}
+                </Button>
+              )}
               <Button
                 type="button"
-                disabled={installing || Boolean(installed) || !latest}
+                disabled={installing || Boolean(installed) || !latest || !canInstall}
                 onClick={() => void install()}
               >
                 <Download className={cn("size-4", installing && "animate-pulse")} aria-hidden />

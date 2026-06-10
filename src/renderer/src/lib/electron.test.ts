@@ -81,6 +81,7 @@ function mockApi() {
       floatingBallEnabled: true,
       floatingBallFeatures: ["appLauncher"],
       lanEnabled: false,
+      trustedSourcePolicy: "official-marketplace",
     }),
     updateSettings: vi.fn().mockResolvedValue({
       hotkey: "CommandOrControl+Space",
@@ -89,6 +90,7 @@ function mockApi() {
       floatingBallEnabled: true,
       floatingBallFeatures: ["appLauncher"],
       lanEnabled: false,
+      trustedSourcePolicy: "official-marketplace",
     }),
     onLauncherFocus: vi.fn().mockReturnValue(() => {}),
     onFloatingBallMenuState: vi.fn().mockReturnValue(() => {}),

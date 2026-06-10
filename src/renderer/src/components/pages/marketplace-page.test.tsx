@@ -1,4 +1,5 @@
 import type { ReactElement } from "react"
+import type { MarketplaceLoginPrompt } from "@/lib/electron"
 import { cleanup, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -30,7 +31,15 @@ const mocks = vi.hoisted(() => ({
   marketplaceLogin: vi.fn(),
   marketplaceLogout: vi.fn(),
   rateMarketplacePlugin: vi.fn(),
-  onMarketplaceLoginPrompt: vi.fn(() => () => undefined),
+  getSettings: vi.fn(),
+  listMyMarketplacePlugins: vi.fn(),
+  setMarketplaceVisibility: vi.fn(),
+  yankMarketplaceVersion: vi.fn(),
+  reportMarketplacePlugin: vi.fn(),
+  removeMarketplacePlugin: vi.fn(),
+  onMarketplaceLoginPrompt: vi.fn(
+    (_handler: (prompt: MarketplaceLoginPrompt) => void) => () => undefined
+  ),
 }))
 
 vi.mock("@/lib/electron", () => ({
@@ -91,6 +100,27 @@ beforeEach(() => {
     },
     stats: { downloads: 7, ratingAvg: 5, ratingCount: 1 },
   })
+  mocks.getSettings.mockResolvedValue({
+    hotkey: "Control+Space",
+    themeMode: "system",
+    accent: "neutral",
+    floatingBallEnabled: false,
+    floatingBallFeatures: ["appLauncher"],
+    lanEnabled: false,
+    trustedSourcePolicy: "official-marketplace",
+  })
+  mocks.listMyMarketplacePlugins.mockResolvedValue({ items: [SUMMARY] })
+  mocks.setMarketplaceVisibility.mockResolvedValue({
+    ...DETAIL,
+    plugin: { ...DETAIL.plugin, visibility: "private" },
+  })
+  mocks.yankMarketplaceVersion.mockResolvedValue({
+    ...DETAIL,
+    plugin: { ...DETAIL.plugin, latestVersion: undefined },
+    versions: [{ ...DETAIL.versions[0], yankedAt: new Date().toISOString() }],
+  })
+  mocks.reportMarketplacePlugin.mockResolvedValue(undefined)
+  mocks.removeMarketplacePlugin.mockResolvedValue(undefined)
   mocks.onMarketplaceLoginPrompt.mockReturnValue(() => undefined)
 })
 
@@ -103,6 +133,73 @@ describe("marketplacePage", () => {
     renderPage(<MarketplacePage />)
     expect(await screen.findByText("Foo Plugin")).toBeInTheDocument()
     expect(mocks.searchMarketplace).toHaveBeenCalled()
+  })
+
+  it("shows a focused GitHub sign-in dialog without exposing the pairing code", async () => {
+    const user = userEvent.setup()
+    let promptHandler:
+      | ((prompt: { verificationUri: string; userCode: string; expiresAt: string }) => void)
+      | undefined
+    let resolveLogin: ((value: unknown) => void) | undefined
+    mocks.onMarketplaceLoginPrompt.mockImplementation((handler) => {
+      promptHandler = handler
+      return () => undefined
+    })
+    mocks.marketplaceLogin.mockReturnValue(
+      new Promise((resolve) => {
+        resolveLogin = resolve
+      })
+    )
+
+    renderPage(<MarketplacePage />)
+    await user.click(await screen.findByRole("button", { name: "marketplace.account.signIn" }))
+    promptHandler?.({
+      verificationUri: "https://github.com/login/oauth/authorize?state=ABCD-1234",
+      userCode: "ABCD-1234",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    })
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument()
+    expect(screen.queryByText("ABCD-1234")).not.toBeInTheDocument()
+    expect(screen.getByText("marketplace.account.dialogTitle")).toBeInTheDocument()
+    expect(screen.getByText("marketplace.account.waiting")).toBeInTheDocument()
+
+    resolveLogin?.({
+      id: "u1",
+      handle: "alice",
+      displayName: "Alice",
+      role: "user",
+      createdAt: new Date().toISOString(),
+    })
+  })
+
+  it("shows the signed-in GitHub avatar and signs out from its hover menu", async () => {
+    const user = userEvent.setup()
+    mocks.getMarketplaceAccount.mockResolvedValue({
+      user: {
+        id: "u1",
+        handle: "alice",
+        displayName: "Alice",
+        avatarUrl: "https://avatars.githubusercontent.com/u/1?v=4",
+        role: "user",
+        createdAt: new Date().toISOString(),
+      },
+    })
+
+    renderPage(<MarketplacePage />)
+
+    const avatarButton = await screen.findByRole("button", {
+      name: "marketplace.account.menuLabel:alice",
+    })
+    expect(screen.getByRole("img", { name: "Alice" })).toHaveAttribute(
+      "src",
+      "https://avatars.githubusercontent.com/u/1?v=4"
+    )
+
+    await user.hover(avatarButton)
+    await user.click(await screen.findByRole("button", { name: "marketplace.account.signOut" }))
+
+    expect(mocks.marketplaceLogout).toHaveBeenCalled()
   })
 
   it("opens detail and discloses permissions and tools before install", async () => {
@@ -126,5 +223,106 @@ describe("marketplacePage", () => {
     await waitFor(() =>
       expect(mocks.installMarketplaceBackendPlugin).toHaveBeenCalledWith("com.alice.foo", "1.0.0")
     )
+  })
+
+  it("shows signed-in owners their marketplace plugins", async () => {
+    const user = userEvent.setup()
+    mocks.getMarketplaceAccount.mockResolvedValue({
+      user: {
+        id: "u1",
+        handle: "alice",
+        displayName: "Alice",
+        role: "user",
+        createdAt: new Date().toISOString(),
+      },
+    })
+
+    renderPage(<MarketplacePage />)
+    await user.click(await screen.findByRole("tab", { name: "marketplace.tabs.mine" }))
+
+    expect(await screen.findByText("Foo Plugin")).toBeInTheDocument()
+    expect(mocks.listMyMarketplacePlugins).toHaveBeenCalled()
+  })
+
+  it("lets owners toggle visibility and yank a version from My plugins", async () => {
+    const user = userEvent.setup()
+    mocks.getMarketplaceAccount.mockResolvedValue({
+      user: {
+        id: "u1",
+        handle: "alice",
+        displayName: "Alice",
+        role: "user",
+        createdAt: new Date().toISOString(),
+      },
+    })
+
+    renderPage(<MarketplacePage />)
+    await user.click(await screen.findByRole("tab", { name: "marketplace.tabs.mine" }))
+    await user.click(
+      await screen.findByRole("button", { name: "marketplace.governance.makePrivate" })
+    )
+    await user.click(await screen.findByRole("button", { name: "marketplace.governance.yank" }))
+
+    expect(mocks.setMarketplaceVisibility).toHaveBeenCalledWith("com.alice.foo", "private")
+    expect(mocks.yankMarketplaceVersion).toHaveBeenCalledWith("com.alice.foo", "1.0.0", undefined)
+  })
+
+  it("lets signed-in users report plugins from the detail dialog", async () => {
+    const user = userEvent.setup()
+    mocks.getMarketplaceAccount.mockResolvedValue({
+      user: {
+        id: "u2",
+        handle: "bob",
+        displayName: "Bob",
+        role: "user",
+        createdAt: new Date().toISOString(),
+      },
+    })
+
+    renderPage(<MarketplacePage />)
+    await user.click(await screen.findByRole("button", { name: "marketplace.viewDetails" }))
+    await user.click(await screen.findByRole("button", { name: "marketplace.governance.report" }))
+
+    expect(mocks.reportMarketplacePlugin).toHaveBeenCalledWith(
+      "com.alice.foo",
+      "marketplace.governance.defaultReportReason"
+    )
+  })
+
+  it("shows an admin takedown control for admin users", async () => {
+    const user = userEvent.setup()
+    mocks.getMarketplaceAccount.mockResolvedValue({
+      user: {
+        id: "u3",
+        handle: "admin",
+        displayName: "Admin",
+        role: "admin",
+        createdAt: new Date().toISOString(),
+      },
+    })
+
+    renderPage(<MarketplacePage />)
+    await user.click(await screen.findByRole("tab", { name: "marketplace.tabs.admin" }))
+    await user.click(await screen.findByRole("button", { name: "marketplace.governance.remove" }))
+
+    expect(mocks.removeMarketplacePlugin).toHaveBeenCalledWith("com.alice.foo")
+  })
+
+  it("disables marketplace install when the trusted source policy is local-only", async () => {
+    const user = userEvent.setup()
+    mocks.getSettings.mockResolvedValue({
+      hotkey: "Control+Space",
+      themeMode: "system",
+      accent: "neutral",
+      floatingBallEnabled: false,
+      floatingBallFeatures: ["appLauncher"],
+      lanEnabled: false,
+      trustedSourcePolicy: "local-syn",
+    })
+
+    renderPage(<MarketplacePage />)
+    await user.click(await screen.findByRole("button", { name: "marketplace.viewDetails" }))
+
+    expect(await screen.findByRole("button", { name: "marketplace.detail.install" })).toBeDisabled()
   })
 })

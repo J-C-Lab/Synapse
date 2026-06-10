@@ -1,6 +1,7 @@
 import type { IpcMainInvokeEvent } from "electron"
 import type { PluginHost } from "../plugins/plugin-host"
 import { describe, expect, it, vi } from "vitest"
+import { MarketplaceApiError } from "../plugins/marketplace-api"
 import { PermissionDenied } from "../plugins/permissions"
 import { PluginHostNotImplementedError, PluginInstallError } from "../plugins/plugin-host"
 import { PluginCrashedError } from "../plugins/plugin-registry"
@@ -220,6 +221,30 @@ describe("plugin ipc handlers", () => {
           expectedSha256: "a",
           actualSha256: "b",
         },
+      },
+    })
+  })
+
+  it("maps marketplace api errors without hiding the real message", async () => {
+    const result = await invokePluginIpcHandler(
+      "marketplace:search",
+      fakeEvent("app://app/index.html"),
+      () => {
+        throw new MarketplaceApiError(
+          0,
+          "network_error",
+          "Could not reach the marketplace: ECONNREFUSED"
+        )
+      },
+      () => true
+    )
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "MARKETPLACE_ERROR",
+        message: "Could not reach the marketplace: ECONNREFUSED",
+        details: { status: 0, code: "network_error" },
       },
     })
   })

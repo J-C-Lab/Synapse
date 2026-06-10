@@ -41,6 +41,86 @@ export function registerMarketplaceIpc(
       options.isTrustedSender
     )
   )
+  ipcMain.handle("market:my-plugins", (event) =>
+    invokePluginIpcHandler(
+      "market:my-plugins",
+      event,
+      () => host.marketplaceMyPlugins(),
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("market:set-visibility", (event, payload: unknown) =>
+    invokePluginIpcHandler(
+      "market:set-visibility",
+      event,
+      () => {
+        const value = coerceRecord(payload, "market:set-visibility")
+        const id = requireStringField(value, "id")
+        const visibility = value.visibility
+        if (visibility !== "public" && visibility !== "private") {
+          throw new TypeError("market:set-visibility visibility must be public or private")
+        }
+        return host.marketplaceSetVisibility(id, visibility)
+      },
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("market:yank", (event, payload: unknown) =>
+    invokePluginIpcHandler(
+      "market:yank",
+      event,
+      () => {
+        const value = coerceRecord(payload, "market:yank")
+        const reason = typeof value.reason === "string" ? value.reason : undefined
+        return host.marketplaceYank(
+          requireStringField(value, "id"),
+          requireStringField(value, "version"),
+          reason
+        )
+      },
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("market:report", (event, payload: unknown) =>
+    invokePluginIpcHandler(
+      "market:report",
+      event,
+      () => {
+        const value = coerceRecord(payload, "market:report")
+        return host.marketplaceReport(
+          requireStringField(value, "id"),
+          requireStringField(value, "reason")
+        )
+      },
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("market:remove", (event, payload: unknown) =>
+    invokePluginIpcHandler(
+      "market:remove",
+      event,
+      () =>
+        host.marketplaceAdminRemove(
+          requireStringField(coerceRecord(payload, "market:remove"), "id")
+        ),
+      options.isTrustedSender
+    )
+  )
+}
+
+function coerceRecord(payload: unknown, channel: string): Record<string, unknown> {
+  if (!payload || typeof payload !== "object") {
+    throw new TypeError(`${channel} payload must be an object`)
+  }
+  return payload as Record<string, unknown>
+}
+
+function requireStringField(value: Record<string, unknown>, field: string): string {
+  const raw = value[field]
+  if (typeof raw !== "string" || raw.length === 0) {
+    throw new TypeError(`${field} must be a non-empty string`)
+  }
+  return raw
 }
 
 function coerceRatePayload(payload: unknown): { id: string; stars: number } {

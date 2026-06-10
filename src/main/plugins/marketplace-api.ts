@@ -1,11 +1,13 @@
 import type {
   DeviceCodePollResponse,
   DeviceCodeStartResponse,
+  MyPluginsResponse,
   PluginDetailResponse,
   RateResponse,
   ResolveDownloadResponse,
   SearchPluginsResponse,
   SessionResponse,
+  Visibility,
 } from "@synapse/marketplace-types"
 import process from "node:process"
 
@@ -41,6 +43,11 @@ export interface MarketplaceApi {
   detail: (pluginId: string) => Promise<PluginDetailResponse>
   resolveDownload: (pluginId: string, version: string) => Promise<ResolveDownloadResponse>
   rate: (pluginId: string, stars: number) => Promise<RateResponse>
+  myPlugins: () => Promise<MyPluginsResponse>
+  setVisibility: (pluginId: string, visibility: Visibility) => Promise<PluginDetailResponse>
+  yank: (pluginId: string, version: string, reason?: string) => Promise<PluginDetailResponse>
+  report: (pluginId: string, reason: string) => Promise<void>
+  adminRemove: (pluginId: string) => Promise<void>
   session: () => Promise<SessionResponse>
   deviceStart: () => Promise<DeviceCodeStartResponse>
   devicePoll: (deviceCode: string) => Promise<DeviceCodePollResponse>
@@ -120,6 +127,30 @@ export function createMarketplaceApi(options: MarketplaceApiOptions = {}): Marke
     },
     rate(pluginId: string, stars: number) {
       return send<RateResponse>(`/plugins/${encodeURIComponent(pluginId)}/rating`, "PUT", { stars })
+    },
+    myPlugins() {
+      return get<MyPluginsResponse>("/plugins/mine")
+    },
+    setVisibility(pluginId: string, visibility: Visibility) {
+      return send<PluginDetailResponse>(
+        `/plugins/${encodeURIComponent(pluginId)}/visibility`,
+        "PATCH",
+        { visibility }
+      )
+    },
+    yank(pluginId: string, version: string, reason?: string) {
+      return send<PluginDetailResponse>(`/plugins/${encodeURIComponent(pluginId)}/yank`, "POST", {
+        version,
+        ...(reason ? { reason } : {}),
+      })
+    },
+    async report(pluginId: string, reason: string) {
+      await send<{ status: string }>(`/plugins/${encodeURIComponent(pluginId)}/report`, "POST", {
+        reason,
+      })
+    },
+    async adminRemove(pluginId: string) {
+      await send<{ status: string }>(`/plugins/${encodeURIComponent(pluginId)}/remove`, "POST", {})
     },
     session() {
       return get<SessionResponse>("/session")

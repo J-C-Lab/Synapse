@@ -1,6 +1,7 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { PluginHost } from "../plugins/plugin-host"
 import type { PluginInvokePhase, PluginInvokeRequest } from "../plugins/types"
+import { MarketplaceApiError } from "../plugins/marketplace-api"
 import { PermissionDenied } from "../plugins/permissions"
 import {
   PluginHostNotImplementedError,
@@ -12,6 +13,7 @@ import { PluginCrashedError } from "../plugins/plugin-registry"
 export type PluginIpcErrorCode =
   | "IPC_FORBIDDEN"
   | "IPC_INVALID_PAYLOAD"
+  | "MARKETPLACE_ERROR"
   | "PLUGIN_NOT_FOUND"
   | "PLUGIN_NOT_ACTIVE"
   | "PLUGIN_PERMISSION_DENIED"
@@ -389,6 +391,14 @@ function toPluginIpcError(err: unknown): PluginIpcError {
       code: "PLUGIN_INSTALL_ERROR",
       message: err.message,
       details: err.details,
+    }
+  }
+
+  if (err instanceof MarketplaceApiError) {
+    return {
+      code: "MARKETPLACE_ERROR",
+      message: err.message,
+      details: { status: err.status, code: err.code },
     }
   }
 

@@ -1,11 +1,12 @@
 import process from "node:process"
 import { buildApp } from "./app"
 import { createGitHubIdentityProvider } from "./auth/github"
-import { loadConfig } from "./config"
+import { loadConfig, loadDotEnvFile } from "./config"
 import { createDb } from "./db/client"
 import { createStorage } from "./storage/factory"
 
 async function main(): Promise<void> {
+  loadDotEnvFile()
   const config = loadConfig()
   if (!config.DATABASE_URL) {
     throw new Error("DATABASE_URL is required")
