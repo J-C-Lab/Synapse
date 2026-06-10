@@ -1,6 +1,6 @@
 import type { AutoUpdaterPort } from "./update-service"
 import { describe, expect, it, vi } from "vitest"
-import { UpdateService } from "./update-service"
+import { shouldAutoCheckOnStartup, UpdateService } from "./update-service"
 
 // A fake of electron-updater's autoUpdater: records handlers so the test can
 // drive the lifecycle, and counts the action calls.
@@ -103,5 +103,21 @@ describe("updateService", () => {
     const { svc } = service(updater)
     svc.install()
     expect(updater.quitAndInstall).toHaveBeenCalledOnce()
+  })
+})
+
+describe("shouldAutoCheckOnStartup", () => {
+  it("checks on packaged Windows and Linux", () => {
+    expect(shouldAutoCheckOnStartup("win32", true)).toBe(true)
+    expect(shouldAutoCheckOnStartup("linux", true)).toBe(true)
+  })
+
+  it("never checks on macOS (we ship it unsigned, so updates can't install)", () => {
+    expect(shouldAutoCheckOnStartup("darwin", true)).toBe(false)
+  })
+
+  it("never checks in dev (unpackaged)", () => {
+    expect(shouldAutoCheckOnStartup("win32", false)).toBe(false)
+    expect(shouldAutoCheckOnStartup("darwin", false)).toBe(false)
   })
 })

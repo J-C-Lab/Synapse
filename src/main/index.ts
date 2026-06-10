@@ -74,7 +74,7 @@ import {
 } from "./search-window"
 import { bindGlobalShortcut, unbindGlobalShortcut } from "./shortcut"
 import { createTray, defaultTrayIcon, destroyTray, refreshTrayMenu } from "./tray"
-import { UpdateService } from "./updates/update-service"
+import { shouldAutoCheckOnStartup, UpdateService } from "./updates/update-service"
 import { attachWindowSecurity, isSameOrigin } from "./window-security"
 
 const isDev = !app.isPackaged
@@ -807,9 +807,10 @@ if (isMcpStdioMode) {
       ensureSearchWindow(searchWindowDeps())
       void launcher.refreshApps()
 
-      // Check for updates once on startup. Only packaged builds have an update
-      // feed (app-update.yml); in dev electron-updater would throw, so skip it.
-      if (app.isPackaged) {
+      // Check for updates once on startup — but only where we can actually
+      // deliver one: packaged Windows/Linux. macOS is shipped unsigned, and
+      // Squirrel.Mac rejects unsigned updates, so we don't offer them there.
+      if (shouldAutoCheckOnStartup(process.platform, app.isPackaged)) {
         void updateService
           ?.check()
           .catch((err) => console.error("[synapse] update check failed", err))

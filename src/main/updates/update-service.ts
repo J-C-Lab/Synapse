@@ -34,6 +34,17 @@ export interface AutoUpdaterPort {
   quitAndInstall: () => void
 }
 
+/**
+ * Whether to run the startup update check on this platform. macOS auto-update
+ * needs a Developer ID signature (Squirrel.Mac rejects unsigned packages), and
+ * we ship macOS unsigned — so we never offer updates there rather than surface a
+ * banner for an update that cannot install. Dev (unpackaged) never checks.
+ */
+export function shouldAutoCheckOnStartup(platform: NodeJS.Platform, isPackaged: boolean): boolean {
+  if (!isPackaged) return false
+  return platform !== "darwin"
+}
+
 export interface UpdateServiceOptions {
   updater: AutoUpdaterPort
   currentVersion: string
