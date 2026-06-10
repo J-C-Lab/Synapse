@@ -1,5 +1,7 @@
+import type { ChunkOptions } from "./chunk-text"
 import type { MemoryEntry, MemoryStore } from "./memory-store"
 import type { Embedder } from "./openai-embedding-provider"
+import { chunkText } from "./chunk-text"
 
 // Long-term memory: save facts and recall them across conversations. Recall is
 // semantic — the query and entries are embedded and ranked by cosine similarity
@@ -14,6 +16,18 @@ export interface MemorySearchHit {
 export interface SaveMemoryInput {
   text: string
   tags?: string[]
+}
+
+export interface IngestDocumentInput {
+  /** Label identifying the document; recorded as a `source:<source>` tag. */
+  source: string
+  text: string
+  tags?: string[]
+}
+
+export interface IngestDocumentResult {
+  source: string
+  chunks: number
 }
 
 export class MemoryService {
@@ -37,6 +51,37 @@ export class MemoryService {
     }
     await this.store.add(entry)
     return entry
+  }
+
+  /**
+   * Chunk a document into overlapping pieces, embed them in one batched call,
+   * and store each as a memory entry tagged `source:<source>` so it can be
+   * recalled by {@link search}. Returns how many chunks were stored.
+   */
+  async ingestDocument(
+    input: IngestDocumentInput,
+    chunkOptions?: ChunkOptions
+  ): Promise<IngestDocumentResult> {
+    const source = input.source.trim()
+    if (!source) throw new Error("Document source is required.")
+    const chunks = chunkText(input.text, chunkOptions)
+    if (chunks.length === 0) throw new Error("Cannot ingest an empty document.")
+
+    const embeddings = await this.safeEmbed(chunks)
+    const tags = [
+      `source:${source}`,
+      ...(input.tags ?? []).map((tag) => tag.trim()).filter(Boolean),
+    ]
+    const entries: MemoryEntry[] = chunks.map((text, index) => ({
+      id: this.newId(),
+      text,
+      tags,
+      createdAt: this.now(),
+      embedding: embeddings?.[index],
+    }))
+
+    await this.store.addMany(entries)
+    return { source, chunks: chunks.length }
   }
 
   async search(query: string, limit = 5): Promise<MemorySearchHit[]> {

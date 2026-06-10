@@ -88,6 +88,37 @@ describe("memoryService", () => {
     const svc = service({ embed: async () => null })
     await expect(svc.save({ text: "   " })).rejects.toThrow(/empty/)
   })
+
+  it("ingests a document as overlapping chunks tagged with its source", async () => {
+    const svc = service({ embed: async (texts) => texts.map(() => [1, 0, 0]) })
+    const result = await svc.ingestDocument(
+      { source: "guide.md", text: "abcdefghij" },
+      { size: 4, overlap: 2 }
+    )
+
+    expect(result).toEqual({ source: "guide.md", chunks: 4 })
+    const list = await svc.list()
+    expect(list).toHaveLength(4)
+    expect(list.every((entry) => entry.tags.includes("source:guide.md"))).toBe(true)
+    expect(list.every((entry) => entry.embedding?.length)).toBe(true)
+  })
+
+  it("embeds all chunks of a document in a single batched call", async () => {
+    let calls = 0
+    const svc = service({
+      embed: async (texts) => {
+        calls++
+        return texts.map(() => [1, 0, 0])
+      },
+    })
+    await svc.ingestDocument({ source: "d", text: "abcdefghij" }, { size: 4, overlap: 2 })
+    expect(calls).toBe(1)
+  })
+
+  it("rejects an empty document", async () => {
+    const svc = service({ embed: async () => null })
+    await expect(svc.ingestDocument({ source: "d", text: "   " })).rejects.toThrow(/empty/)
+  })
 })
 
 describe("cosineSimilarity", () => {

@@ -25,16 +25,36 @@ function source(): MemoryToolSource {
 }
 
 describe("memoryToolSource", () => {
-  it("owns the memory: namespace and lists four tools", () => {
+  it("owns the memory: namespace and lists five tools", () => {
     const src = source()
     expect(src.ownsTool("memory:core/memory_save")).toBe(true)
     expect(src.ownsTool("com.x/a")).toBe(false)
     expect(src.listTools().map((tool) => tool.manifestTool.name)).toEqual([
       "memory_save",
+      "memory_ingest",
       "memory_search",
       "memory_list",
       "memory_delete",
     ])
+  })
+
+  it("ingests a document into searchable chunks through the tool", async () => {
+    const src = source()
+    const result = await src.invokeTool("memory:core/memory_ingest", {
+      source: "notes.md",
+      text: "the deploy script lives in scripts/deploy.sh and runs nightly",
+    })
+    expect(result.isError).toBeFalsy()
+    expect(JSON.stringify(result.structured)).toContain("notes.md")
+
+    const found = await src.invokeTool("memory:core/memory_search", { query: "deploy script" })
+    expect(JSON.stringify(found.structured)).toContain("deploy")
+  })
+
+  it("reports a missing document source/text as an error", async () => {
+    const src = source()
+    expect((await src.invokeTool("memory:core/memory_ingest", { text: "x" })).isError).toBe(true)
+    expect((await src.invokeTool("memory:core/memory_ingest", { source: "s" })).isError).toBe(true)
   })
 
   it("saves then recalls a memory through the tools", async () => {
@@ -61,6 +81,7 @@ describe("memoryToolSource", () => {
     expect(decideApproval(byName.memory_search)).toBe("allow")
     expect(decideApproval(byName.memory_list)).toBe("allow")
     expect(decideApproval(byName.memory_save)).toBe("ask")
+    expect(decideApproval(byName.memory_ingest)).toBe("ask")
     expect(decideApproval(byName.memory_delete)).toBe("ask")
   })
 })

@@ -32,6 +32,17 @@ describe("memoryStore", () => {
     expect(await new MemoryStore(file).remove("1")).toBe(true)
   })
 
+  it("adds many entries in one write", async () => {
+    const file = path.join(dir, "memory.json")
+    const store = new MemoryStore(file)
+    await store.addMany([
+      { id: "1", text: "a", tags: [], createdAt: 1 },
+      { id: "2", text: "b", tags: [], createdAt: 2 },
+    ])
+    const reloaded = await new MemoryStore(file).all()
+    expect(reloaded.map((entry) => entry.id)).toEqual(["1", "2"])
+  })
+
   it("drops malformed entries when loading", async () => {
     const file = path.join(dir, "memory.json")
     await fs.writeFile(

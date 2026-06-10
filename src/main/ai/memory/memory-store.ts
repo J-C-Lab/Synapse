@@ -34,6 +34,14 @@ export class MemoryStore {
     await this.persist(entries)
   }
 
+  /** Append several entries with a single write (used by document ingest). */
+  async addMany(newEntries: MemoryEntry[]): Promise<void> {
+    if (newEntries.length === 0) return
+    const entries = await this.load()
+    entries.push(...newEntries)
+    await this.persist(entries)
+  }
+
   async remove(id: string): Promise<boolean> {
     const entries = await this.load()
     const next = entries.filter((entry) => entry.id !== id)

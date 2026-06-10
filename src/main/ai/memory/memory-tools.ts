@@ -37,6 +37,25 @@ const TOOLS: RegisteredToolDescriptor[] = [
     },
   },
   {
+    fqName: `${MEMORY_PLUGIN_ID}/memory_ingest`,
+    pluginId: MEMORY_PLUGIN_ID,
+    manifestTool: {
+      name: "memory_ingest",
+      title: "Ingest document",
+      description:
+        "Split a longer document into overlapping chunks and save them to long-term memory so its passages can be recalled semantically later. Use for reference text the user wants searchable, not single facts (use memory_save for those).",
+      inputSchema: objectSchema(
+        {
+          source: { type: "string", description: "A label identifying the document." },
+          text: { type: "string", description: "The full document text to ingest." },
+          tags: { type: "array", items: { type: "string" }, description: "Optional labels." },
+        },
+        ["source", "text"]
+      ),
+      annotations: { readOnlyHint: false },
+    },
+  },
+  {
     fqName: `${MEMORY_PLUGIN_ID}/memory_search`,
     pluginId: MEMORY_PLUGIN_ID,
     manifestTool: {
@@ -98,6 +117,8 @@ export class MemoryToolSource implements ToolHostSource {
       switch (toolName) {
         case "memory_save":
           return await this.save(args)
+        case "memory_ingest":
+          return await this.ingest(args)
         case "memory_search":
           return await this.search(args)
         case "memory_list":
@@ -119,6 +140,18 @@ export class MemoryToolSource implements ToolHostSource {
       : undefined
     const entry = await this.memory.save({ text: args.text, tags })
     return json({ saved: { id: entry.id, text: entry.text, tags: entry.tags } })
+  }
+
+  private async ingest(args: Record<string, unknown>): Promise<ToolResult> {
+    if (typeof args.source !== "string" || !args.source.trim()) {
+      return errorResult("source is required.")
+    }
+    if (typeof args.text !== "string" || !args.text.trim()) return errorResult("text is required.")
+    const tags = Array.isArray(args.tags)
+      ? args.tags.filter((tag): tag is string => typeof tag === "string")
+      : undefined
+    const result = await this.memory.ingestDocument({ source: args.source, text: args.text, tags })
+    return json({ ingested: result })
   }
 
   private async search(args: Record<string, unknown>): Promise<ToolResult> {
