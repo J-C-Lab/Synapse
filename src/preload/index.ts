@@ -103,6 +103,11 @@ const electronAPI = {
   reportMarketplacePlugin: (id: string, reason: string) =>
     ipcRenderer.invoke("market:report", { id, reason }),
   removeMarketplacePlugin: (id: string) => ipcRenderer.invoke("market:remove", { id }),
+  restoreMarketplacePlugin: (id: string) => ipcRenderer.invoke("market:restore", { id }),
+  listMarketplaceReports: (status?: "open" | "reviewed" | "dismissed") =>
+    ipcRenderer.invoke("market:admin-reports", { status }),
+  resolveMarketplaceReport: (reportId: string, status: "reviewed" | "dismissed") =>
+    ipcRenderer.invoke("market:resolve-report", { reportId, status }),
   onMarketplaceLoginPrompt: (handler: (prompt: unknown) => void): (() => void) => {
     const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
     ipcRenderer.on("market:login-prompt", listener)

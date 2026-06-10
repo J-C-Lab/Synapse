@@ -106,6 +106,45 @@ export function registerMarketplaceIpc(
       options.isTrustedSender
     )
   )
+  ipcMain.handle("market:restore", (event, payload: unknown) =>
+    invokePluginIpcHandler(
+      "market:restore",
+      event,
+      () =>
+        host.marketplaceAdminRestore(
+          requireStringField(coerceRecord(payload, "market:restore"), "id")
+        ),
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("market:admin-reports", (event, payload: unknown) =>
+    invokePluginIpcHandler(
+      "market:admin-reports",
+      event,
+      () => {
+        const status = (payload as { status?: unknown } | null)?.status
+        const valid =
+          status === "open" || status === "reviewed" || status === "dismissed" ? status : undefined
+        return host.marketplaceAdminReports(valid)
+      },
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("market:resolve-report", (event, payload: unknown) =>
+    invokePluginIpcHandler(
+      "market:resolve-report",
+      event,
+      () => {
+        const value = coerceRecord(payload, "market:resolve-report")
+        const status = value.status
+        if (status !== "reviewed" && status !== "dismissed") {
+          throw new TypeError("market:resolve-report status must be reviewed or dismissed")
+        }
+        return host.marketplaceResolveReport(requireStringField(value, "reportId"), status)
+      },
+      options.isTrustedSender
+    )
+  )
 }
 
 function coerceRecord(payload: unknown, channel: string): Record<string, unknown> {

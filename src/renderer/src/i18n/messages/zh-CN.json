@@ -251,7 +251,19 @@
       "reported": "举报已提交。",
       "defaultReportReason": "通过 Synapse 桌面端提交举报。",
       "remove": "下架",
-      "removed": "插件已下架。"
+      "removed": "插件已下架。",
+      "reportResolved": "举报已处理。"
+    },
+    "review": {
+      "title": "审核队列",
+      "subtitle": "待处理的举报——来自用户与上传自动扫描。",
+      "empty": "暂无待处理举报，一切正常。",
+      "markReviewed": "标记已处理",
+      "dismiss": "忽略",
+      "kind": {
+        "user": "用户举报",
+        "auto": "自动扫描"
+      }
     },
     "account": {
       "signIn": "登录",

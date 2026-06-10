@@ -1,9 +1,11 @@
 import type {
+  AdminReportsResponse,
   DeviceCodePollResponse,
   DeviceCodeStartResponse,
   MyPluginsResponse,
   PluginDetailResponse,
   RateResponse,
+  ReportStatus,
   ResolveDownloadResponse,
   SearchPluginsResponse,
   SessionResponse,
@@ -48,6 +50,9 @@ export interface MarketplaceApi {
   yank: (pluginId: string, version: string, reason?: string) => Promise<PluginDetailResponse>
   report: (pluginId: string, reason: string) => Promise<void>
   adminRemove: (pluginId: string) => Promise<void>
+  adminRestore: (pluginId: string) => Promise<void>
+  adminReports: (status?: ReportStatus) => Promise<AdminReportsResponse>
+  resolveReport: (reportId: string, status: "reviewed" | "dismissed") => Promise<void>
   session: () => Promise<SessionResponse>
   deviceStart: () => Promise<DeviceCodeStartResponse>
   devicePoll: (deviceCode: string) => Promise<DeviceCodePollResponse>
@@ -151,6 +156,20 @@ export function createMarketplaceApi(options: MarketplaceApiOptions = {}): Marke
     },
     async adminRemove(pluginId: string) {
       await send<{ status: string }>(`/plugins/${encodeURIComponent(pluginId)}/remove`, "POST", {})
+    },
+    async adminRestore(pluginId: string) {
+      await send<{ status: string }>(`/plugins/${encodeURIComponent(pluginId)}/restore`, "POST", {})
+    },
+    adminReports(status?: ReportStatus) {
+      const suffix = status ? `?status=${encodeURIComponent(status)}` : ""
+      return get<AdminReportsResponse>(`/admin/reports${suffix}`)
+    },
+    async resolveReport(reportId: string, status: "reviewed" | "dismissed") {
+      await send<{ status: string }>(
+        `/admin/reports/${encodeURIComponent(reportId)}/resolve`,
+        "POST",
+        { status }
+      )
     },
     session() {
       return get<SessionResponse>("/session")

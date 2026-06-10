@@ -1,7 +1,9 @@
 import type {
+  AdminReportsResponse,
   MyPluginsResponse,
   PluginDetailResponse,
   RateResponse,
+  ReportStatus,
   SearchPluginsResponse,
   Visibility,
 } from "@synapse/marketplace-types"
@@ -275,6 +277,24 @@ export class PluginHost {
   /** Admin takedown of a plugin. */
   async marketplaceAdminRemove(pluginId: string): Promise<void> {
     await this.marketplaceApi.adminRemove(pluginId)
+  }
+
+  /** Admin restore — undo a takedown. */
+  async marketplaceAdminRestore(pluginId: string): Promise<void> {
+    await this.marketplaceApi.adminRestore(pluginId)
+  }
+
+  /** Admin review queue, by report status. */
+  async marketplaceAdminReports(status?: ReportStatus): Promise<AdminReportsResponse> {
+    return this.marketplaceApi.adminReports(status)
+  }
+
+  /** Admin resolves a report. */
+  async marketplaceResolveReport(
+    reportId: string,
+    status: "reviewed" | "dismissed"
+  ): Promise<void> {
+    await this.marketplaceApi.resolveReport(reportId, status)
   }
 
   /**

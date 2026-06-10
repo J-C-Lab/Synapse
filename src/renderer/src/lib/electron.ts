@@ -1,8 +1,10 @@
 import type {
+  AdminReportsResponse,
   MyPluginsResponse,
   PluginDetailResponse,
   PluginSummary,
   RateResponse,
+  Report,
   SearchPluginsResponse,
   User,
 } from "@synapse/marketplace-types"
@@ -37,6 +39,8 @@ export type MarketplaceSummary = PluginSummary
 export type MarketplaceDetail = PluginDetailResponse
 export type MarketplaceSearchResponse = SearchPluginsResponse
 export type MarketplaceUser = User
+export type MarketplaceReport = Report
+export type MarketplaceReportsResponse = AdminReportsResponse
 export interface MarketplaceAccount {
   user: User | null
 }
@@ -318,6 +322,23 @@ export async function reportMarketplacePlugin(id: string, reason: string): Promi
 
 export async function removeMarketplacePlugin(id: string): Promise<void> {
   unwrapIpcResult(await api().removeMarketplacePlugin(id))
+}
+
+export async function restoreMarketplacePlugin(id: string): Promise<void> {
+  unwrapIpcResult(await api().restoreMarketplacePlugin(id))
+}
+
+export async function listMarketplaceReports(
+  status?: "open" | "reviewed" | "dismissed"
+): Promise<AdminReportsResponse> {
+  return unwrapIpcResult(await api().listMarketplaceReports(status))
+}
+
+export async function resolveMarketplaceReport(
+  reportId: string,
+  status: "reviewed" | "dismissed"
+): Promise<void> {
+  unwrapIpcResult(await api().resolveMarketplaceReport(reportId, status))
 }
 
 export function onMarketplaceLoginPrompt(

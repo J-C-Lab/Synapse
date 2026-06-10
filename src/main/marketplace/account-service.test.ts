@@ -51,6 +51,9 @@ function fakeApi(overrides: Partial<MarketplaceApi> = {}): MarketplaceApi {
     },
     report: async () => undefined,
     adminRemove: async () => undefined,
+    adminRestore: async () => undefined,
+    adminReports: async () => ({ items: [] }),
+    resolveReport: async () => undefined,
     ...overrides,
   }
 }

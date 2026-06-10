@@ -3,6 +3,7 @@ import type {
   MarketplaceAccount,
   MarketplaceDetail,
   MarketplaceLoginPrompt,
+  MarketplaceReport,
   MarketplaceSummary,
   PluginRegistryEntry,
 } from "@/lib/electron"
@@ -49,6 +50,7 @@ import {
   getSettings,
   installMarketplaceBackendPlugin,
   isElectron,
+  listMarketplaceReports,
   listMyMarketplacePlugins,
   listPlugins,
   marketplaceLogin,
@@ -58,6 +60,7 @@ import {
   rateMarketplacePlugin,
   removeMarketplacePlugin,
   reportMarketplacePlugin,
+  resolveMarketplaceReport,
   searchMarketplace,
   setMarketplaceVisibility,
   yankMarketplaceVersion,
@@ -79,6 +82,8 @@ export function MarketplacePage() {
   const [mineLoading, setMineLoading] = useState(false)
   const [mineError, setMineError] = useState<string | null>(null)
   const [governancePending, setGovernancePending] = useState<string | null>(null)
+  const [reports, setReports] = useState<MarketplaceReport[]>([])
+  const [reportsLoading, setReportsLoading] = useState(false)
   const [trustedSourcePolicy, setTrustedSourcePolicy] =
     useState<SynapseTrustedSourcePolicy>("official-marketplace")
 
@@ -143,6 +148,36 @@ export function MarketplacePage() {
   useEffect(() => {
     if (tab === "mine") void loadMine()
   }, [loadMine, tab])
+
+  const loadReports = useCallback(async () => {
+    if (!electronReady || account.user?.role !== "admin") return
+    setReportsLoading(true)
+    try {
+      const result = await listMarketplaceReports("open")
+      setReports(result.items)
+    } catch (err) {
+      toast.error(errorMessage(err))
+    } finally {
+      setReportsLoading(false)
+    }
+  }, [account.user?.role, electronReady])
+
+  useEffect(() => {
+    if (tab === "admin") void loadReports()
+  }, [loadReports, tab])
+
+  async function resolveReport(report: MarketplaceReport, status: "reviewed" | "dismissed") {
+    setGovernancePending(`report:${report.id}`)
+    try {
+      await resolveMarketplaceReport(report.id, status)
+      setReports((current) => current.filter((item) => item.id !== report.id))
+      toast.success(t("marketplace.governance.reportResolved"))
+    } catch (err) {
+      toast.error(errorMessage(err))
+    } finally {
+      setGovernancePending(null)
+    }
+  }
 
   async function toggleVisibility(entry: MarketplaceSummary) {
     const next = entry.visibility === "public" ? "private" : "public"
@@ -290,7 +325,14 @@ export function MarketplacePage() {
           )}
         </TabsContent>
 
-        <TabsContent value="admin" className="mt-4">
+        <TabsContent value="admin" className="mt-4 space-y-6">
+          <ReviewQueue
+            reports={reports}
+            loading={reportsLoading}
+            pending={governancePending}
+            onResolve={resolveReport}
+            onOpen={setSelectedId}
+          />
           <MarketplaceGrid
             emptyText={t("marketplace.governance.emptyAdmin")}
             entries={entries}
@@ -650,6 +692,79 @@ function stringOrEmpty(value: unknown): string {
 
 function accountInitial(user: NonNullable<MarketplaceAccount["user"]>): string {
   return (user.displayName.trim() || user.handle.trim()).slice(0, 1).toUpperCase() || "?"
+}
+
+function ReviewQueue({
+  reports,
+  loading,
+  pending,
+  onResolve,
+  onOpen,
+}: {
+  reports: MarketplaceReport[]
+  loading: boolean
+  pending: string | null
+  onResolve: (report: MarketplaceReport, status: "reviewed" | "dismissed") => void
+  onOpen: (pluginId: string) => void
+}) {
+  const { t } = useTranslation()
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">{t("marketplace.review.title")}</CardTitle>
+        <CardDescription>{t("marketplace.review.subtitle")}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <p className="text-sm text-muted-foreground">{t("marketplace.loading")}</p>
+        ) : reports.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t("marketplace.review.empty")}</p>
+        ) : (
+          <ul className="divide-y">
+            {reports.map((report) => (
+              <li key={report.id} className="flex flex-wrap items-start gap-3 py-3">
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="truncate font-mono text-sm hover:underline"
+                      onClick={() => onOpen(report.pluginId)}
+                    >
+                      {report.pluginId}
+                    </button>
+                    <Badge variant={report.kind === "auto" ? "destructive" : "secondary"}>
+                      {t(`marketplace.review.kind.${report.kind}`)}
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground">{report.reason}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={pending === `report:${report.id}`}
+                    onClick={() => onResolve(report, "reviewed")}
+                  >
+                    {t("marketplace.review.markReviewed")}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={pending === `report:${report.id}`}
+                    onClick={() => onResolve(report, "dismissed")}
+                  >
+                    {t("marketplace.review.dismiss")}
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  )
 }
 
 function MarketplaceCard({

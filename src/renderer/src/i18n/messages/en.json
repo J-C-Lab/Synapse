@@ -251,7 +251,19 @@
       "reported": "Report submitted.",
       "defaultReportReason": "Reported from the Synapse desktop app.",
       "remove": "Takedown",
-      "removed": "Plugin removed."
+      "removed": "Plugin removed.",
+      "reportResolved": "Report resolved."
+    },
+    "review": {
+      "title": "Review queue",
+      "subtitle": "Open reports — from users and the automated upload scan.",
+      "empty": "No open reports. All clear.",
+      "markReviewed": "Mark reviewed",
+      "dismiss": "Dismiss",
+      "kind": {
+        "user": "user report",
+        "auto": "auto scan"
+      }
     },
     "account": {
       "signIn": "Sign in",

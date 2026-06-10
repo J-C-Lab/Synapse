@@ -37,6 +37,9 @@ const mocks = vi.hoisted(() => ({
   yankMarketplaceVersion: vi.fn(),
   reportMarketplacePlugin: vi.fn(),
   removeMarketplacePlugin: vi.fn(),
+  restoreMarketplacePlugin: vi.fn(),
+  listMarketplaceReports: vi.fn(),
+  resolveMarketplaceReport: vi.fn(),
   onMarketplaceLoginPrompt: vi.fn(
     (_handler: (prompt: MarketplaceLoginPrompt) => void) => () => undefined
   ),
@@ -121,6 +124,9 @@ beforeEach(() => {
   })
   mocks.reportMarketplacePlugin.mockResolvedValue(undefined)
   mocks.removeMarketplacePlugin.mockResolvedValue(undefined)
+  mocks.restoreMarketplacePlugin.mockResolvedValue(undefined)
+  mocks.listMarketplaceReports.mockResolvedValue({ items: [] })
+  mocks.resolveMarketplaceReport.mockResolvedValue(undefined)
   mocks.onMarketplaceLoginPrompt.mockReturnValue(() => undefined)
 })
 
@@ -306,6 +312,43 @@ describe("marketplacePage", () => {
     await user.click(await screen.findByRole("button", { name: "marketplace.governance.remove" }))
 
     expect(mocks.removeMarketplacePlugin).toHaveBeenCalledWith("com.alice.foo")
+  })
+
+  it("lists the review queue and resolves a report (admin)", async () => {
+    const user = userEvent.setup()
+    mocks.getMarketplaceAccount.mockResolvedValue({
+      user: {
+        id: "u3",
+        handle: "admin",
+        displayName: "Admin",
+        role: "admin",
+        createdAt: new Date().toISOString(),
+      },
+    })
+    mocks.listMarketplaceReports.mockResolvedValue({
+      items: [
+        {
+          id: "rep_1",
+          pluginId: "com.alice.foo",
+          reporterUserId: null,
+          kind: "auto",
+          reason: "Automated scan: sensitive permission: system:open",
+          status: "open",
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    })
+
+    renderPage(<MarketplacePage />)
+    await user.click(await screen.findByRole("tab", { name: "marketplace.tabs.admin" }))
+
+    expect(await screen.findByText(/sensitive permission: system:open/)).toBeInTheDocument()
+    expect(mocks.listMarketplaceReports).toHaveBeenCalledWith("open")
+
+    await user.click(await screen.findByRole("button", { name: "marketplace.review.markReviewed" }))
+    await waitFor(() =>
+      expect(mocks.resolveMarketplaceReport).toHaveBeenCalledWith("rep_1", "reviewed")
+    )
   })
 
   it("disables marketplace install when the trusted source policy is local-only", async () => {

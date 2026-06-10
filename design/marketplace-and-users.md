@@ -212,7 +212,7 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 | **M4 下载量 + 评分 + 评级** | 下载计数(防刷)、评分写入与聚合、排行算法(Wilson+衰减)、排行榜/精选位                                  | ✅ **已完成**(见 §15)——下载计数(authed 窗口去重)+ 评分 upsert/聚合 + 评论 + relevance 排行评分;桌面端只读展示 ★。评分提交 UI 待桌面登录   |
 | **M5 私人/公开治理**        | app 内可见性切换、yank、举报、admin 下架;可信源开关                                                   | ✅ **已完成**(见 §17 + §18)——后端治理 + 桌面 UI(我的/管理标签、可见性切换/yank/举报/下架)+ 可信源开关                                     |
 | **M6 Web 门户**             | 浏览器端市场门户(复用现有 Fumadocs/Next 工作流)、SEO、可分享插件详情链接、Web 端浏览/搜索/详情        | 非桌面用户也能逛市场;插件有公开可索引页面                                                                                                 |
-| **M7 审核流水线**           | 上传自动扫描 + 人工审核队列、敏感权限分级、审核状态机(pending/approved/rejected)、admin 控制台        | ✅ **后端已完成**(见 §19)——自动扫描(敏感权限)自动入队、admin 审核队列 + 报告状态机、下架/恢复 + 测试。admin 控制台 UI 待续                |
+| **M7 审核流水线**           | 上传自动扫描 + 人工审核队列、敏感权限分级、审核状态机(pending/approved/rejected)、admin 控制台        | ✅ **已完成**(见 §19 + §20)——后端(自动扫描/队列/状态机/下架恢复)+ 桌面 admin 控制台(审核队列接「管理」标签)                               |
 | **M8 组织 / 协作者**        | Organization 实体、团队命名空间、Collaborator 角色与权限、转移所有权                                  | 多人共同维护一个插件 / 组织发布                                                                                                           |
 | **M9 付费 / 分成(可选)**    | 付费插件、结算(Stripe 等)、开发者收入分成、发票                                                       | 形态 C 完整体;插件可商业化                                                                                                                |
 
@@ -554,3 +554,27 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 - `pnpm lint` ✅(0 error)· `pnpm typecheck` ✅ · `pnpm test` **501 passed**(M5 UI 后 493 + M7 新增 8);连跑两次稳定。
 
 > 第二波剩 **M6 Web 门户**;M7 的 admin 控制台 UI 可作为 M7 续作。第三波 M8 组织 / M9 付费按需。
+
+---
+
+## 20. M7 admin 控制台 UI(已落地,2026-06-11)
+
+把 §19 的审核队列接进桌面端「管理」标签,闭合 M7。
+
+| 区域                                          | 内容                                                                                                                                              |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| main api/host/ipc/preload + `lib/electron.ts` | `adminReports(status?)` / `resolveReport(id,status)` / `adminRestore` 直通(登录态带 token);`market:admin-reports`/`resolve-report`/`restore` 通道 |
+| `pages/marketplace-page.tsx`                  | 「管理」标签顶部新增 `ReviewQueue`:列 open 报告(插件 id 可点开详情、`user`/`auto` 徽章、原因)+ **标记已处理 / 忽略** 按钮;下方保留下架网格        |
+| i18n                                          | `marketplace.review.*` + `governance.reportResolved`(en/zh-CN)                                                                                    |
+| 测试                                          | 页面新增 1 条:admin 进「管理」→ 看到自动扫描报告 → 标记已处理调用 `resolveReport(id,"reviewed")`                                                  |
+
+**说明**
+
+- 队列只拉 `status=open`;解决后从列表移除(后端转 reviewed/dismissed)。报告里的插件 id 可点开详情弹窗,admin 可在那里直接下架。
+- `adminRestore` 通道也接好了(撤销下架),UI 入口可后续按需加。
+
+**质量基线**
+
+- `pnpm lint` ✅(0 error)· `pnpm typecheck` ✅ · `pnpm test` **502 passed**(M7 后端后 501 + 审核队列 UI 1)。
+
+> **M7 全部完成。** 第二波只剩 **M6 Web 门户**(复用 docs 的 Next/Fumadocs 栈);第三波 M8 组织 / M9 付费按需。

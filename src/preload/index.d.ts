@@ -449,6 +449,16 @@ declare global {
       >
       reportMarketplacePlugin: (id: string, reason: string) => Promise<SynapsePluginIpcResult<void>>
       removeMarketplacePlugin: (id: string) => Promise<SynapsePluginIpcResult<void>>
+      restoreMarketplacePlugin: (id: string) => Promise<SynapsePluginIpcResult<void>>
+      listMarketplaceReports: (
+        status?: "open" | "reviewed" | "dismissed"
+      ) => Promise<
+        SynapsePluginIpcResult<import("@synapse/marketplace-types").AdminReportsResponse>
+      >
+      resolveMarketplaceReport: (
+        reportId: string,
+        status: "reviewed" | "dismissed"
+      ) => Promise<SynapsePluginIpcResult<void>>
       onMarketplaceLoginPrompt: (
         handler: (prompt: { verificationUri: string; userCode: string; expiresAt: string }) => void
       ) => () => void
