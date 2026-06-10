@@ -506,12 +506,12 @@ function MarketplaceAccountMenu({
           aria-label={label}
           className="rounded-full outline-none ring-offset-background transition hover:ring-2 hover:ring-ring hover:ring-offset-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
         >
-          <MarketplaceAvatar user={user} size="sm" />
+          <MarketplaceAvatar key={user.avatarUrl ?? "none"} user={user} size="sm" />
         </button>
       </HoverCardTrigger>
       <HoverCardContent align="end" className="w-72 p-3">
         <div className="flex items-center gap-3">
-          <MarketplaceAvatar user={user} size="lg" />
+          <MarketplaceAvatar key={user.avatarUrl ?? "none"} user={user} size="lg" />
           <div className="min-w-0">
             <p className="truncate text-sm font-medium">{user.displayName}</p>
             <p className="truncate text-xs text-muted-foreground">@{user.handle}</p>
@@ -541,19 +541,29 @@ function MarketplaceAvatar({
   user: NonNullable<MarketplaceAccount["user"]>
   size: "sm" | "lg"
 }) {
-  const [failed, setFailed] = useState(false)
+  // loading → show the neutral circle (no initials flash); loaded → the image;
+  // fallback → initials (no avatar URL, or the image failed to load). The
+  // parent keys this component on the avatar URL, so a new URL remounts it and
+  // re-initializes the status cleanly.
+  const [status, setStatus] = useState<"loading" | "loaded" | "fallback">(
+    user.avatarUrl ? "loading" : "fallback"
+  )
+
   return (
     <Avatar size={size} className="border bg-muted">
-      {user.avatarUrl && !failed ? (
+      {user.avatarUrl && status !== "fallback" && (
         <img
-          className="aspect-square size-full"
+          className={cn(
+            "aspect-square size-full transition-opacity",
+            status === "loaded" ? "opacity-100" : "opacity-0"
+          )}
           src={user.avatarUrl}
           alt={user.displayName}
-          onError={() => setFailed(true)}
+          onLoad={() => setStatus("loaded")}
+          onError={() => setStatus("fallback")}
         />
-      ) : (
-        <AvatarFallback>{accountInitial(user)}</AvatarFallback>
       )}
+      {status === "fallback" && <AvatarFallback>{accountInitial(user)}</AvatarFallback>}
     </Avatar>
   )
 }

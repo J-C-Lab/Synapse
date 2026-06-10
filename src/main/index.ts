@@ -119,9 +119,9 @@ protocol.registerSchemesAsPrivileged([
   },
 ])
 
-// Marketplace user avatars are served by GitHub. Allowlist that specific host
-// in img-src rather than opening it to all https.
-const AVATAR_IMG_SRC = "https://avatars.githubusercontent.com"
+// Marketplace user avatars are served by GitHub (avatars + camo redirects).
+// Allowlist GitHub's image hosts in img-src rather than opening it to all https.
+const AVATAR_IMG_SRC = "https://*.githubusercontent.com"
 
 const PROD_CSP =
   "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
