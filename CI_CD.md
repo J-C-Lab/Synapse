@@ -61,6 +61,55 @@ Review the draft release on GitHub, check the generated notes and artifacts, the
 
 Do not create `v0.3.0` as a branch. Version-like names are reserved for tags.
 
+### Cutting a release — step-by-step checklist
+
+Replace `X.Y.Z` with the new version throughout. The tag must be `vX.Y.Z` and must match
+`package.json`'s `version`.
+
+**1. Pre-flight (on `main`)**
+
+- [ ] `main` is green: `pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
+- [ ] If the AI layer changed, the AI smoke checklist in [TESTING.md](TESTING.md) passed.
+- [ ] `package.json` `version` is bumped to `X.Y.Z` (via a release PR) and merged to `main`.
+- [ ] Locally: `git switch main && git pull`, working tree clean.
+
+**2. Tag and build**
+
+- [ ] Tag and push (see the example below).
+- [ ] The **Release** workflow run for the tag is green (quality → test → build-electron →
+      create-release).
+
+```bash
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+**3. Review and publish the draft**
+
+- [ ] Open the **draft** GitHub Release. Confirm the generated notes look right.
+- [ ] Confirm the assets include, per platform, the installers **and** the electron-updater feed
+      metadata:
+  - Windows: `*.exe`, `*.exe.blockmap`, `latest.yml`
+  - macOS: `*.dmg`, `*.zip`, `*.zip.blockmap`, `latest-mac.yml`
+  - Linux: `*.AppImage`, `*.deb`, `latest-linux.yml`
+- [ ] **Publish** the release (remove draft). Auto-update only reads **published** releases, so it
+      stays invisible to users until this step.
+
+**4. Post-publish verification**
+
+- [ ] Download the installer for your platform onto a clean machine and confirm the app launches.
+- [ ] **Auto-update upgrade smoke**: with the _previous_ version installed and running, confirm it
+      shows the update banner → **Download** → **Restart to update** → relaunches on `X.Y.Z`. (Easiest
+      to verify on the release _after_ the first one that shipped the feed metadata.)
+- [ ] For signed builds, confirm no SmartScreen (Windows) / Gatekeeper (macOS) block on a clean
+      machine.
+
+**Rollback**
+
+- [ ] If a release is bad, **unpublish or delete it** (including its `latest*.yml`) so the updater
+      stops offering it, then ship a fixed, higher version. electron-updater never moves users
+      backwards, so you cannot "downgrade" via a lower tag — always roll forward.
+
 ## Auto-update (electron-updater)
 
 The app checks for updates on startup (packaged builds only) and surfaces an in-app banner:
