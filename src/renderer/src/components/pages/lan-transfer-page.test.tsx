@@ -145,6 +145,34 @@ describe("lan transfer security guide", () => {
     expect(electron.disconnectLanDevice).toHaveBeenCalledWith("peer")
   })
 
+  it("allows sending to a paired device restored from a trusted reachable endpoint", async () => {
+    const user = userEvent.setup()
+    window.localStorage.setItem(securityGuideSeenKey, "true")
+    electron.listLanDevices.mockResolvedValue([
+      {
+        deviceId: "peer",
+        name: "Peer",
+        host: "peer.local",
+        addresses: ["127.0.0.1"],
+        port: 4000,
+        platform: "unknown",
+        capabilities: ["pair", "https-chunks"],
+        discoverySource: "trusted-cache",
+        lastSeenAt: 1,
+        online: false,
+        paired: true,
+        reachable: true,
+      },
+    ])
+    electron.sendLanFile.mockResolvedValueOnce(undefined)
+    renderPage()
+
+    expect(await screen.findByText("lan.status.reachable")).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "lan.actions.sendFile" }))
+
+    expect(electron.sendLanFile).toHaveBeenCalledWith("peer")
+  })
+
   it("confirms an outgoing pairing once the initiator enters the code", async () => {
     const user = userEvent.setup()
     window.localStorage.setItem(securityGuideSeenKey, "true")

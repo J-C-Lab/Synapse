@@ -489,6 +489,12 @@ function DeviceCard({
   onSend: () => void
 }) {
   const { t } = useTranslation()
+  const reachable = isDeviceReachable(device)
+  const statusKey = device.online
+    ? "lan.status.online"
+    : device.reachable
+      ? "lan.status.reachable"
+      : "lan.status.offline"
   return (
     <Card>
       <CardHeader>
@@ -498,8 +504,8 @@ function DeviceCard({
         </div>
         <CardDescription>{device.addresses[0] ?? device.host}</CardDescription>
         <CardAction>
-          <Badge variant={device.online ? "default" : "outline"}>
-            {t(device.online ? "lan.status.online" : "lan.status.offline")}
+          <Badge variant={device.online ? "default" : device.reachable ? "secondary" : "outline"}>
+            {t(statusKey)}
           </Badge>
         </CardAction>
       </CardHeader>
@@ -509,17 +515,18 @@ function DeviceCard({
           <span>{t(device.paired ? "lan.status.paired" : "lan.status.unpaired")}</span>
         </div>
         <p>{t("lan.devices.platform", { platform: device.platform })}</p>
+        {device.discoverySource && <p>{t(`lan.devices.source.${device.discoverySource}`)}</p>}
         <div className="flex gap-2 pt-2">
           {device.paired ? (
             <>
-              <Button size="sm" disabled={disabled || !device.online} onClick={onSend}>
+              <Button size="sm" disabled={disabled || !reachable} onClick={onSend}>
                 <FileUp className="size-4" aria-hidden />
                 {t("lan.actions.sendFile")}
               </Button>
               <Button
                 size="sm"
                 variant="outline"
-                disabled={disabled || !device.online}
+                disabled={disabled || !reachable}
                 onClick={onDisconnect}
               >
                 <Unplug className="size-4" aria-hidden />
@@ -527,7 +534,7 @@ function DeviceCard({
               </Button>
             </>
           ) : (
-            <Button size="sm" disabled={disabled || !device.online} onClick={onPair}>
+            <Button size="sm" disabled={disabled || !reachable} onClick={onPair}>
               <ShieldCheck className="size-4" aria-hidden />
               {t("lan.actions.pair")}
             </Button>
@@ -536,6 +543,10 @@ function DeviceCard({
       </CardContent>
     </Card>
   )
+}
+
+function isDeviceReachable(device: LanDevice): boolean {
+  return Boolean(device.online || device.reachable)
 }
 
 function IncomingPairingCard({

@@ -5,7 +5,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { lanCredentialFilePath, LanCredentialStore } from "./credential-store"
-import { LanSecureServer } from "./lan-secure-server"
+import { candidateHosts, LanSecureServer } from "./lan-secure-server"
 import { IncomingTransferStore, OutgoingTransferStore } from "./transfer-store"
 import { trustedDevicesFilePath, TrustedDeviceStore } from "./trusted-device-store"
 
@@ -36,6 +36,11 @@ describe("lanSecureServer", () => {
     await alice.server.confirmPairing(outgoingPairing.id, outgoingPairing.sas)
     expect(bob.trustedDevices.has("alice")).toBe(true)
     expect(alice.trustedDevices.has("bob")).toBe(true)
+    expect(alice.trustedDevices.get("bob")).toMatchObject({
+      addresses: ["127.0.0.1"],
+      host: "localhost",
+      port: bob.server.port(),
+    })
 
     const sourcePath = path.join(alice.dir, "payload.bin")
     const payload = Buffer.alloc(1024 * 1024 + 37, 7)
@@ -62,6 +67,41 @@ describe("lanSecureServer", () => {
     // Self-signed TLS keygen + handshake + chunked transfer is CPU-bound and runs
     // markedly slower on shared CI runners than locally; allow generous headroom.
   }, 30_000)
+
+  it("orders LAN request candidates by likely reachability and removes duplicates", () => {
+    expect(
+      candidateHosts({
+        deviceId: "peer",
+        name: "Peer",
+        host: "peer.local",
+        addresses: ["fe80::1", "10.0.0.8", "192.168.1.8", "10.0.0.8", "127.0.0.1"],
+        port: 4000,
+        platform: "linux",
+        capabilities: ["https-chunks"],
+        lastSeenAt: 1,
+        online: true,
+        paired: true,
+      })
+    ).toEqual(["127.0.0.1", "192.168.1.8", "10.0.0.8", "peer.local", "fe80::1"])
+  })
+
+  it("announces presence so a blind-side peer can learn the announcer", async () => {
+    const alice = await createPeer("alice", "Alice desktop")
+    const bob = await createPeer("bob", "Bob laptop")
+    const learned = new Promise<LanDevice>((resolve) => {
+      bob.server.once("device-learned", (device) => resolve(device as LanDevice))
+    })
+
+    await alice.server.announcePresence(deviceFor(bob))
+
+    await expect(learned).resolves.toMatchObject({
+      deviceId: "alice",
+      name: "Alice desktop",
+      host: "127.0.0.1",
+      addresses: ["127.0.0.1"],
+      port: alice.server.port(),
+    })
+  })
 
   it("rejects a server whose certificate no longer matches the pinned fingerprint", async () => {
     const alice = await createPeer("alice", "Alice desktop")

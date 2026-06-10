@@ -8,6 +8,7 @@ import type {
   PairingCommitment,
   PairingIdentity,
   PairingReveal,
+  PresenceAnnouncement,
 } from "./sas-pairing"
 import type {
   IncomingTransferRequest,
@@ -16,16 +17,25 @@ import type {
   OutgoingTransferStore,
 } from "./transfer-store"
 import type { TrustedDeviceStore } from "./trusted-device-store"
-import type { LanDevice, LanPairing, LanTransfer, StoredLanIdentity } from "./types"
+import type {
+  DiscoveredLanDevice,
+  LanDevice,
+  LanPairing,
+  LanTransfer,
+  StoredLanIdentity,
+} from "./types"
 import { Buffer } from "node:buffer"
 import { EventEmitter } from "node:events"
 import { createServer, request } from "node:https"
+import { isIP } from "node:net"
 import { certificateFingerprint } from "./credential-store"
 import { SasPairingManager } from "./sas-pairing"
 import { readChunk, sha256Buffer } from "./transfer-store"
+import { trustedDeviceWithEndpoint } from "./trusted-device-store"
 
 const JSON_LIMIT = 64 * 1024
 const CHUNK_LIMIT = 2 * 1024 * 1024
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 
 export interface LanSecureServerOptions {
   identity: StoredLanIdentity
@@ -33,12 +43,14 @@ export interface LanSecureServerOptions {
   trustedDevices: TrustedDeviceStore
   incomingTransfers: IncomingTransferStore
   outgoingTransfers: OutgoingTransferStore
+  requestTimeoutMs?: number
   resolveDevice: (deviceId: string) => LanDevice | null
 }
 
 export class LanSecureServer extends EventEmitter {
   private readonly pairing: SasPairingManager
   private readonly pairingPeerFingerprints = new Map<string, string>()
+  private readonly pairingPeerDevices = new Map<string, DiscoveredLanDevice>()
   private server: Server | null = null
 
   constructor(private readonly options: LanSecureServerOptions) {
@@ -99,7 +111,7 @@ export class LanSecureServer extends EventEmitter {
   }
 
   async pair(device: LanDevice): Promise<LanPairing> {
-    const draft = this.pairing.createOutgoingDraft()
+    const draft = this.pairing.createOutgoingDraft({ endpointPort: this.port() })
     const challenge = await this.requestJson<PairingChallenge>(
       device,
       "POST",
@@ -115,10 +127,17 @@ export class LanSecureServer extends EventEmitter {
     return pairing
   }
 
+  async announcePresence(device: LanDevice): Promise<void> {
+    await this.requestJson(device, "POST", "/v1/presence", {
+      endpointPort: this.port(),
+      identity: this.localPairingIdentity(),
+    } satisfies PresenceAnnouncement)
+  }
+
   async confirmPairing(id: string, sas: string): Promise<LanPairing[]> {
     const trusted = this.pairing.prepareOutgoingConfirmation(id, sas)
-    const device = this.options.resolveDevice(trusted.deviceId)
-    if (!device?.online) throw new Error("Target device is offline.")
+    const device = this.resolvePairingDevice(id, trusted.deviceId)
+    if (!isReachableDevice(device)) throw new Error("Target device is not reachable.")
     await this.requestJson(
       device,
       "POST",
@@ -128,7 +147,8 @@ export class LanSecureServer extends EventEmitter {
         expectedFingerprint: trusted.certificateFingerprint,
       }
     )
-    await this.options.trustedDevices.trust(trusted)
+    await this.options.trustedDevices.trust(trustedDeviceWithEndpoint(trusted, device, Date.now()))
+    this.pairingPeerDevices.delete(id)
     this.pairing.markConfirmed(id, "outgoing")
     this.emitTrustedDevicesChanged()
     this.emitPairingsChanged()
@@ -140,9 +160,10 @@ export class LanSecureServer extends EventEmitter {
     if (!pairing || pairing.state !== "awaiting-confirmation") return this.listPairings()
     const fingerprint = this.pairing.peerFingerprint(id)
     this.pairing.reject(id)
+    this.pairingPeerDevices.delete(id)
     this.emitPairingsChanged()
     const device = this.options.resolveDevice(pairing.deviceId)
-    if (device?.online) {
+    if (isReachableDevice(device)) {
       try {
         await this.requestJson(
           device,
@@ -189,7 +210,7 @@ export class LanSecureServer extends EventEmitter {
     const transfer = this.options.outgoingTransfers.get(id)
     if (!transfer) throw new Error("Outgoing transfer was not found.")
     const device = this.options.resolveDevice(transfer.deviceId)
-    if (!device?.online) throw new Error("Target device is offline.")
+    if (!isReachableDevice(device)) throw new Error("Target device is not reachable.")
     return this.upload(device, id)
   }
 
@@ -284,11 +305,29 @@ export class LanSecureServer extends EventEmitter {
   }
 
   private async handleRequest(req: import("node:http").IncomingMessage, res: ServerResponse) {
+    if (req.method === "POST" && req.url === "/v1/presence") {
+      const fingerprint = peerFingerprint(req)
+      const announcement = await readJson<PresenceAnnouncement>(req)
+      assertPeerFingerprint(fingerprint, announcement.identity)
+      const device = deviceFromRemote(announcement.identity, announcement.endpointPort, req)
+      if (device && this.canLearnDevice(device.deviceId, fingerprint)) {
+        this.emit("device-learned", device)
+      }
+      sendJson(res, 200, {})
+      return
+    }
+
     if (req.method === "POST" && req.url === "/v1/pairing/requests") {
       const commitment = await readJson<PairingCommitment>(req)
-      assertPeerFingerprint(peerFingerprint(req), commitment.identity)
+      const fingerprint = peerFingerprint(req)
+      assertPeerFingerprint(fingerprint, commitment.identity)
+      const device = deviceFromRemote(commitment.identity, commitment.endpointPort, req)
       const challenge = this.pairing.acceptIncomingCommitment(commitment)
       this.pairingPeerFingerprints.set(challenge.id, commitment.identity.certificateFingerprint)
+      if (device) {
+        this.pairingPeerDevices.set(challenge.id, device)
+        if (this.canLearnDevice(device.deviceId, fingerprint)) this.emit("device-learned", device)
+      }
       sendJson(res, 200, challenge)
       return
     }
@@ -309,7 +348,14 @@ export class LanSecureServer extends EventEmitter {
       const id = confirmMatch[1]
       assertFingerprint(peerFingerprint(req), this.pairing.peerFingerprint(id))
       await readJson(req)
-      await this.options.trustedDevices.trust(this.pairing.prepareIncomingConfirmation(id))
+      await this.options.trustedDevices.trust(
+        trustedDeviceWithEndpoint(
+          this.pairing.prepareIncomingConfirmation(id),
+          this.pairingPeerDevices.get(id),
+          Date.now()
+        )
+      )
+      this.pairingPeerDevices.delete(id)
       this.pairing.markConfirmed(id, "incoming")
       this.emitTrustedDevicesChanged()
       this.emitPairingsChanged()
@@ -323,6 +369,7 @@ export class LanSecureServer extends EventEmitter {
       assertFingerprint(peerFingerprint(req), this.pairing.peerFingerprint(id))
       await readJson(req)
       this.pairing.reject(id)
+      this.pairingPeerDevices.delete(id)
       this.emitPairingsChanged()
       sendJson(res, 200, {})
       return
@@ -387,7 +434,7 @@ export class LanSecureServer extends EventEmitter {
   }
 
   private requestJson<T = unknown>(
-    device: LanDevice,
+    device: DiscoveredLanDevice,
     method: string,
     requestPath: string,
     body: unknown,
@@ -403,7 +450,7 @@ export class LanSecureServer extends EventEmitter {
   }
 
   private requestBuffer(
-    device: LanDevice,
+    device: DiscoveredLanDevice,
     method: string,
     requestPath: string,
     body: Buffer,
@@ -418,7 +465,45 @@ export class LanSecureServer extends EventEmitter {
   }
 
   private request(
-    device: LanDevice,
+    device: DiscoveredLanDevice,
+    method: string,
+    requestPath: string,
+    body: Buffer,
+    headers: Record<string, string | undefined> & { expectedFingerprint?: string }
+  ): Promise<{ body: Buffer; peerFingerprint: string }> {
+    return this.requestCandidates(
+      candidateHosts(device),
+      device.port,
+      method,
+      requestPath,
+      body,
+      headers
+    )
+  }
+
+  private async requestCandidates(
+    hosts: string[],
+    port: number,
+    method: string,
+    requestPath: string,
+    body: Buffer,
+    headers: Record<string, string | undefined> & { expectedFingerprint?: string }
+  ): Promise<{ body: Buffer; peerFingerprint: string }> {
+    let lastNetworkError: unknown
+    for (const hostname of hosts) {
+      try {
+        return await this.requestHost(hostname, port, method, requestPath, body, headers)
+      } catch (err) {
+        if (!isRetryableNetworkError(err)) throw err
+        lastNetworkError = err
+      }
+    }
+    throw asError(lastNetworkError ?? new Error("No LAN device address is available."))
+  }
+
+  private requestHost(
+    hostname: string,
+    port: number,
     method: string,
     requestPath: string,
     body: Buffer,
@@ -428,8 +513,8 @@ export class LanSecureServer extends EventEmitter {
     return new Promise((resolve, reject) => {
       const client = request(
         {
-          hostname: device.addresses.find((address) => !address.includes(":")) ?? device.host,
-          port: device.port,
+          hostname,
+          port,
           path: requestPath,
           method,
           key: this.options.credential.privateKeyPem,
@@ -458,6 +543,9 @@ export class LanSecureServer extends EventEmitter {
           }
         }
       )
+      client.setTimeout(this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, () => {
+        client.destroy(networkError("LAN request timed out.", "ETIMEDOUT"))
+      })
       client.once("error", reject)
       if (expectedFingerprint) {
         client.once("socket", (socket) => {
@@ -485,6 +573,19 @@ export class LanSecureServer extends EventEmitter {
       certificatePem: this.options.credential.certificatePem,
       certificateFingerprint: this.options.credential.certificateFingerprint,
     }
+  }
+
+  private canLearnDevice(deviceId: string, fingerprint: string): boolean {
+    if (deviceId === this.options.identity.deviceId) return false
+    const trusted = this.options.trustedDevices.get(deviceId)
+    return !trusted || trusted.certificateFingerprint === fingerprint
+  }
+
+  private resolvePairingDevice(
+    id: string,
+    deviceId: string
+  ): LanDevice | DiscoveredLanDevice | null {
+    return this.options.resolveDevice(deviceId) ?? this.pairingPeerDevices.get(id) ?? null
   }
 
   private emitPairingsChanged(): void {
@@ -557,6 +658,85 @@ function requiredHeader(headers: IncomingHttpHeaders, name: string): string {
   const value = headers[name]
   if (typeof value !== "string" || !value.trim()) throw new Error(`Missing ${name} header.`)
   return value
+}
+
+export function candidateHosts(device: DiscoveredLanDevice | LanDevice): string[] {
+  const hosts = new Set<string>()
+  for (const host of [...device.addresses, device.host]) {
+    const normalized = host.trim()
+    if (normalized) hosts.add(normalized)
+  }
+  return [...hosts].sort((left, right) => addressPriority(left) - addressPriority(right))
+}
+
+function addressPriority(host: string): number {
+  if (isIP(host) === 4) {
+    const [first, second] = host.split(".").map(Number)
+    if (first === 127) return 0
+    if (first === 192 && second === 168) return 10
+    if (first === 10) return 20
+    if (first === 172 && second >= 16 && second <= 31) return 40
+    if (first === 169 && second === 254) return 90
+    return 30
+  }
+  if (isIP(host) === 6) return host.toLowerCase().startsWith("fe80:") ? 100 : 80
+  return 30
+}
+
+function isRetryableNetworkError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false
+  const code = (err as { code?: unknown }).code
+  return (
+    code === "ECONNREFUSED" ||
+    code === "ETIMEDOUT" ||
+    code === "EHOSTUNREACH" ||
+    code === "ENETUNREACH" ||
+    code === "EADDRNOTAVAIL"
+  )
+}
+
+function networkError(message: string, code: string): Error {
+  const err = new Error(message) as Error & { code?: string }
+  err.code = code
+  return err
+}
+
+function isReachableDevice(
+  device: (DiscoveredLanDevice & { online?: boolean; reachable?: boolean }) | null | undefined
+): device is DiscoveredLanDevice & { online?: boolean; reachable?: boolean } {
+  return Boolean(device?.port && (device.online !== false || device.reachable === true))
+}
+
+function deviceFromRemote(
+  identity: PairingIdentity,
+  endpointPort: number | undefined,
+  req: import("node:http").IncomingMessage
+): DiscoveredLanDevice | null {
+  const host = normalizeRemoteAddress(req.socket.remoteAddress)
+  if (
+    !host ||
+    typeof endpointPort !== "number" ||
+    !Number.isInteger(endpointPort) ||
+    endpointPort <= 0 ||
+    endpointPort > 65535
+  ) {
+    return null
+  }
+  return {
+    deviceId: identity.deviceId,
+    name: identity.name,
+    host,
+    addresses: [host],
+    port: endpointPort,
+    platform: "unknown",
+    capabilities: ["pair", "https-chunks"],
+  }
+}
+
+function normalizeRemoteAddress(address: string | undefined): string | null {
+  if (!address) return null
+  if (address.startsWith("::ffff:")) return address.slice("::ffff:".length)
+  return address
 }
 
 function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {

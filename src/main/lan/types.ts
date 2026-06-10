@@ -16,10 +16,14 @@ export interface DiscoveredLanDevice extends LocalLanIdentity {
   addresses: string[]
 }
 
+export type LanDiscoverySource = "bonjour" | "presence" | "trusted-cache"
+
 export interface LanDevice extends DiscoveredLanDevice {
+  discoverySource?: LanDiscoverySource
   lastSeenAt: number
   online: boolean
   paired: boolean
+  reachable?: boolean
 }
 
 export interface TrustedLanDevice {
@@ -28,6 +32,17 @@ export interface TrustedLanDevice {
   certificatePem: string
   certificateFingerprint: string
   pairedAt: number
+  host?: string
+  addresses?: string[]
+  port?: number
+  lastEndpointSeenAt?: number
+}
+
+export interface TrustedLanDeviceEndpoint {
+  host: string
+  addresses: string[]
+  port: number
+  lastEndpointSeenAt: number
 }
 
 export type LanPairingDirection = "incoming" | "outgoing"

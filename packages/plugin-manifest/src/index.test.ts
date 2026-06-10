@@ -60,6 +60,16 @@ describe("parseManifest", () => {
       )
     ).toThrow(ManifestValidationError)
   })
+
+  it("rejects unknown top-level permissions", () => {
+    expect(() =>
+      parseManifest(
+        manifest({
+          permissions: ["storage:plugin", "network:http"],
+        })
+      )
+    ).toThrow(ManifestValidationError)
+  })
 })
 
 function tool(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -107,6 +117,20 @@ describe("parseManifest — tools", () => {
             tools: [tool({ permissions: ["clipboard:write"] })],
           },
           permissions: ["storage:plugin"],
+        })
+      )
+    ).toThrow(ManifestValidationError)
+  })
+
+  it("rejects an unknown tool permission even when declared at the top level", () => {
+    expect(() =>
+      parseManifest(
+        manifest({
+          contributes: {
+            commands: [{ id: "test.run", title: "Run", mode: "view" }],
+            tools: [tool({ permissions: ["network:http"] })],
+          },
+          permissions: ["network:http"],
         })
       )
     ).toThrow(ManifestValidationError)

@@ -20,6 +20,16 @@ const relativePathSchema = z.string().min(1).refine(isSafeRelativePath, {
   message: "Path must be relative and stay inside the plugin directory",
 })
 
+const permissionSchema = z.enum([
+  "storage:plugin",
+  "clipboard:read",
+  "clipboard:write",
+  "notification",
+  "system:open-url",
+  "system:open-path",
+  "system:capture-screen",
+])
+
 const commandSchema = z
   .object({
     id: commandIdSchema,
@@ -91,7 +101,7 @@ const toolSchema = z
     inputSchema: jsonSchemaSchema,
     outputSchema: jsonSchemaSchema.optional(),
     annotations: toolAnnotationsSchema.optional(),
-    permissions: z.array(z.string().min(1)).optional(),
+    permissions: z.array(permissionSchema).optional(),
   })
   .strict()
 
@@ -115,7 +125,7 @@ export const manifestSchema = z
         tools: z.array(toolSchema).optional(),
       })
       .strict(),
-    permissions: z.array(z.string().min(1)).default([]),
+    permissions: z.array(permissionSchema).default([]),
   })
   .strict()
   .superRefine((value, ctx) => {

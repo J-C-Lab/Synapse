@@ -173,6 +173,10 @@
     "emptyTitle": "未发现插件",
     "emptyBody": "当前还没有注册内置、已安装或开发插件。",
     "installedCount": "已安装 {{count}} 个插件",
+    "visibleCount": "显示 {{visible}} / {{total}} 个插件",
+    "filteredEmptyTitle": "没有符合筛选的插件",
+    "filteredEmptyBody": "试试其他搜索词、来源或状态筛选。",
+    "searchPlaceholder": "搜索插件、作者、命令或权限…",
     "pluginErrorTitle": "插件错误",
     "status": {
       "active": "已启用",
@@ -187,10 +191,17 @@
       "dev": "开发插件"
     },
     "meta": {
+      "id": "插件 ID",
       "version": "版本",
       "author": "作者",
       "commands": "命令",
       "path": "路径"
+    },
+    "filters": {
+      "source": "来源",
+      "status": "状态",
+      "allSources": "全部来源",
+      "allStatuses": "全部状态"
     },
     "actions": {
       "enable": "启用",
@@ -208,6 +219,10 @@
       "body": "修改会保存到插件偏好设置存储中。",
       "invalidNumber": "请输入有效数字。"
     },
+    "permissions": {
+      "title": "权限",
+      "none": "未请求权限"
+    },
     "toasts": {
       "enabled": "插件已启用。",
       "disabled": "插件已停用。",
@@ -215,6 +230,17 @@
       "uninstalled": "插件已卸载。",
       "preferenceSaved": "偏好设置已保存。",
       "imported": "插件已导入。"
+    }
+  },
+  "permissions": {
+    "items": {
+      "storage:plugin": "插件存储",
+      "clipboard:read": "读取剪贴板",
+      "clipboard:write": "写入剪贴板",
+      "notification": "显示通知",
+      "system:open-url": "打开 URL",
+      "system:open-path": "打开文件或文件夹",
+      "system:capture-screen": "截取屏幕"
     }
   },
   "marketplace": {
@@ -292,12 +318,18 @@
       "online": "{{count}} 台在线",
       "emptyTitle": "暂未发现附近设备",
       "emptyBody": "请确保其他设备已连接同一网络，并在 Synapse 中开启“发现附近设备”。",
-      "platform": "平台：{{platform}}"
+      "platform": "平台：{{platform}}",
+      "source": {
+        "bonjour": "通过附近发现找到",
+        "presence": "通过在线声明获知",
+        "trusted-cache": "正在使用已记住的安全端点"
+      }
     },
     "status": {
       "browsing": "正在查找附近设备",
       "stopped": "附近设备发现已关闭",
       "online": "在线",
+      "reachable": "可达",
       "offline": "离线",
       "paired": "已安全连接",
       "unpaired": "待确认"

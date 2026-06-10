@@ -3,6 +3,7 @@ import type {
   LanDiscoveryAdapter,
   LocalLanIdentity,
   StoredLanIdentity,
+  TrustedLanDevice,
 } from "./types"
 import { describe, expect, it, vi } from "vitest"
 import { LanDiscoveryService } from "./lan-discovery-service"
@@ -93,9 +94,11 @@ describe("lanDiscoveryService", () => {
         ...remoteDevice,
         addresses: ["192.168.1.42"],
         capabilities: ["discover"],
+        discoverySource: "bonjour",
         lastSeenAt: 1234,
         online: true,
         paired: false,
+        reachable: false,
       },
     ])
     expect(service.getStatus().deviceCount).toBe(1)
@@ -116,5 +119,66 @@ describe("lanDiscoveryService", () => {
     adapter.onDeviceDown?.("remote-device")
 
     expect(service.listDevices()[0]?.online).toBe(false)
+  })
+
+  it("learns a presence-announced device without duplicating discovery state", async () => {
+    const { adapter, service } = createService()
+    const onDevicesChanged = vi.fn()
+    service.on("devices-changed", onDevicesChanged)
+    await service.start()
+
+    service.learnDevice({ ...remoteDevice, host: "192.168.1.42", port: 49152 })
+    adapter.onDeviceDown?.("remote-device")
+
+    expect(service.listDevices()).toEqual([
+      expect.objectContaining({
+        deviceId: "remote-device",
+        discoverySource: "presence",
+        online: true,
+        reachable: true,
+      }),
+    ])
+    expect(onDevicesChanged).toHaveBeenCalledTimes(1)
+
+    adapter.onDeviceUp?.({ ...remoteDevice, host: "remote.local", port: 49152 })
+
+    expect(service.listDevices()).toEqual([
+      expect.objectContaining({
+        deviceId: "remote-device",
+        discoverySource: "bonjour",
+        host: "remote.local",
+        online: true,
+        reachable: true,
+      }),
+    ])
+  })
+
+  it("restores trusted endpoints as paired reachable cache entries", async () => {
+    const { service } = createService()
+    const trusted: TrustedLanDevice = {
+      deviceId: "trusted-device",
+      name: "Trusted laptop",
+      certificatePem: "cert",
+      certificateFingerprint: "fingerprint",
+      pairedAt: 1000,
+      host: "trusted.local",
+      addresses: ["192.168.1.99"],
+      port: 49200,
+      lastEndpointSeenAt: 4321,
+    }
+    await service.init(false)
+
+    service.restoreTrustedDevices([trusted])
+
+    expect(service.listDevices()).toEqual([
+      expect.objectContaining({
+        deviceId: "trusted-device",
+        discoverySource: "trusted-cache",
+        lastSeenAt: 4321,
+        online: false,
+        paired: true,
+        reachable: true,
+      }),
+    ])
   })
 })

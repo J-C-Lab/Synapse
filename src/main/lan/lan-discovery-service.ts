@@ -6,6 +6,7 @@ import type {
   LanStatus,
   LocalLanIdentity,
   StoredLanIdentity,
+  TrustedLanDevice,
 } from "./types"
 import { EventEmitter } from "node:events"
 import process from "node:process"
@@ -27,6 +28,8 @@ export class LanDiscoveryService extends EventEmitter {
   private readonly endpointPort: () => number
   private readonly isPaired: (deviceId: string) => boolean
   private readonly devices = new Map<string, LanDevice>()
+  private readonly learnedDeviceIds = new Set<string>()
+  private readonly bonjourSeenDeviceIds = new Set<string>()
   private identity: LocalLanIdentity | null = null
   private discovering = false
 
@@ -63,9 +66,12 @@ export class LanDiscoveryService extends EventEmitter {
     for (const device of this.devices.values()) {
       if (device.online) {
         device.online = false
+        device.reachable = Boolean(device.port)
         devicesChanged = true
       }
     }
+    this.learnedDeviceIds.clear()
+    this.bonjourSeenDeviceIds.clear()
     if (devicesChanged) this.emitDevicesChanged()
     this.emitStatusChanged()
     return this.getStatus()
@@ -95,24 +101,74 @@ export class LanDiscoveryService extends EventEmitter {
     this.emitDevicesChanged()
   }
 
+  learnDevice(device: DiscoveredLanDevice): void {
+    if (!this.identity || device.deviceId === this.identity.deviceId) return
+    this.learnedDeviceIds.add(device.deviceId)
+    this.upsertDevice(device, { discoverySource: "presence" })
+  }
+
+  restoreTrustedDevices(trustedDevices: TrustedLanDevice[]): void {
+    for (const trusted of trustedDevices) {
+      if (!trusted.host?.trim() || !trusted.port) continue
+      this.upsertDevice(
+        {
+          deviceId: trusted.deviceId,
+          name: trusted.name,
+          host: trusted.host,
+          addresses: trusted.addresses?.length ? [...trusted.addresses] : [trusted.host],
+          port: trusted.port,
+          platform: "unknown",
+          capabilities: ["pair", "https-chunks"],
+        },
+        {
+          discoverySource: "trusted-cache",
+          lastSeenAt: trusted.lastEndpointSeenAt ?? this.now(),
+          online: false,
+          paired: true,
+          reachable: true,
+        }
+      )
+    }
+  }
+
   private readonly handleDeviceUp = (device: DiscoveredLanDevice): void => {
+    if (!this.identity || device.deviceId === this.identity.deviceId) return
+    this.bonjourSeenDeviceIds.add(device.deviceId)
+    this.upsertDevice(device, { discoverySource: "bonjour" })
+    this.emit("device-discovered", device)
+  }
+
+  private readonly handleDeviceDown = (deviceId: string): void => {
+    if (this.learnedDeviceIds.has(deviceId) && !this.bonjourSeenDeviceIds.has(deviceId)) return
+    const device = this.devices.get(deviceId)
+    if (!device || !device.online) return
+    device.online = false
+    device.reachable = Boolean(device.port)
+    this.emitDevicesChanged()
+    this.emitStatusChanged()
+  }
+
+  private upsertDevice(
+    device: DiscoveredLanDevice,
+    options?: {
+      discoverySource?: LanDevice["discoverySource"]
+      lastSeenAt?: number
+      online?: boolean
+      paired?: boolean
+      reachable?: boolean
+    }
+  ): void {
     if (!this.identity || device.deviceId === this.identity.deviceId) return
     this.devices.set(device.deviceId, {
       ...device,
       addresses: [...device.addresses],
       capabilities: [...device.capabilities],
-      lastSeenAt: this.now(),
-      online: true,
-      paired: this.isPaired(device.deviceId),
+      discoverySource: options?.discoverySource,
+      lastSeenAt: options?.lastSeenAt ?? this.now(),
+      online: options?.online ?? true,
+      paired: options?.paired ?? this.isPaired(device.deviceId),
+      reachable: options?.reachable ?? device.port > 0,
     })
-    this.emitDevicesChanged()
-    this.emitStatusChanged()
-  }
-
-  private readonly handleDeviceDown = (deviceId: string): void => {
-    const device = this.devices.get(deviceId)
-    if (!device || !device.online) return
-    device.online = false
     this.emitDevicesChanged()
     this.emitStatusChanged()
   }

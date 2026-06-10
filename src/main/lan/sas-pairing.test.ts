@@ -52,4 +52,13 @@ describe("sasPairingManager", () => {
       })
     ).toThrow("Pairing commitment does not match reveal.")
   })
+
+  it("carries the initiator endpoint port in the pairing commitment", () => {
+    const initiator = new SasPairingManager(alice)
+
+    expect(initiator.createOutgoingDraft({ endpointPort: 49200 }).commitment).toMatchObject({
+      endpointPort: 49200,
+      identity: alice,
+    })
+  })
 })

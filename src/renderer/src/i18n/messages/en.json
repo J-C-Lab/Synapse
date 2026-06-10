@@ -173,6 +173,10 @@
     "emptyTitle": "No plugins found",
     "emptyBody": "No built-in, installed, or development plugins are registered yet.",
     "installedCount": "{{count}} plugins installed",
+    "visibleCount": "Showing {{visible}} / {{total}} plugins",
+    "filteredEmptyTitle": "No plugins match these filters",
+    "filteredEmptyBody": "Try another search term, source, or status filter.",
+    "searchPlaceholder": "Search plugins, authors, commands, or permissions…",
     "pluginErrorTitle": "Plugin error",
     "status": {
       "active": "Active",
@@ -187,10 +191,17 @@
       "dev": "Development"
     },
     "meta": {
+      "id": "Plugin ID",
       "version": "Version",
       "author": "Author",
       "commands": "Commands",
       "path": "Path"
+    },
+    "filters": {
+      "source": "Source",
+      "status": "Status",
+      "allSources": "All sources",
+      "allStatuses": "All statuses"
     },
     "actions": {
       "enable": "Enable",
@@ -208,6 +219,10 @@
       "body": "Changes are saved to the plugin preference store.",
       "invalidNumber": "Please enter a valid number."
     },
+    "permissions": {
+      "title": "Permissions",
+      "none": "No permissions requested"
+    },
     "toasts": {
       "enabled": "Plugin enabled.",
       "disabled": "Plugin disabled.",
@@ -215,6 +230,17 @@
       "uninstalled": "Plugin uninstalled.",
       "preferenceSaved": "Preference saved.",
       "imported": "Plugin imported."
+    }
+  },
+  "permissions": {
+    "items": {
+      "storage:plugin": "Plugin storage",
+      "clipboard:read": "Read clipboard",
+      "clipboard:write": "Write clipboard",
+      "notification": "Show notifications",
+      "system:open-url": "Open URLs",
+      "system:open-path": "Open files or folders",
+      "system:capture-screen": "Capture screen"
     }
   },
   "marketplace": {
@@ -292,12 +318,18 @@
       "online": "{{count}} online",
       "emptyTitle": "No nearby devices found",
       "emptyBody": "Make sure the other device is on the same network and has “Find nearby devices” enabled in Synapse.",
-      "platform": "Platform: {{platform}}"
+      "platform": "Platform: {{platform}}",
+      "source": {
+        "bonjour": "Discovered nearby",
+        "presence": "Learned from presence announce",
+        "trusted-cache": "Using remembered secure endpoint"
+      }
     },
     "status": {
       "browsing": "Looking for nearby devices",
       "stopped": "Nearby device discovery is off",
       "online": "Online",
+      "reachable": "Reachable",
       "offline": "Offline",
       "paired": "Connected securely",
       "unpaired": "Confirmation needed"

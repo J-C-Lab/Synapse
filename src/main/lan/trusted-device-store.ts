@@ -1,4 +1,4 @@
-import type { TrustedLanDevice } from "./types"
+import type { DiscoveredLanDevice, TrustedLanDevice, TrustedLanDeviceEndpoint } from "./types"
 import * as path from "node:path"
 import { readJsonFile, writeJsonFile } from "./atomic-json-store"
 
@@ -41,6 +41,13 @@ export class TrustedDeviceStore {
     await this.save()
   }
 
+  async updateEndpoint(deviceId: string, endpoint: TrustedLanDeviceEndpoint): Promise<void> {
+    const device = this.devices.get(deviceId)
+    if (!device) return
+    this.devices.set(deviceId, { ...device, ...endpoint })
+    await this.save()
+  }
+
   async remove(deviceId: string): Promise<void> {
     this.devices.delete(deviceId)
     await this.save()
@@ -48,6 +55,33 @@ export class TrustedDeviceStore {
 
   private async save(): Promise<void> {
     await writeJsonFile(this.filePath, this.list())
+  }
+}
+
+export function trustedDeviceWithEndpoint(
+  trusted: TrustedLanDevice,
+  device: DiscoveredLanDevice | null | undefined,
+  now: number
+): TrustedLanDevice {
+  if (!device?.host.trim() || !device.port) return trusted
+  return {
+    ...trusted,
+    host: device.host,
+    addresses: [...device.addresses],
+    port: device.port,
+    lastEndpointSeenAt: now,
+  }
+}
+
+export function endpointFromDiscoveredDevice(
+  device: DiscoveredLanDevice,
+  now: number
+): TrustedLanDeviceEndpoint {
+  return {
+    host: device.host,
+    addresses: [...device.addresses],
+    port: device.port,
+    lastEndpointSeenAt: now,
   }
 }
 
@@ -63,11 +97,24 @@ function normalizeTrustedDevice(value: unknown): TrustedLanDevice | null {
   ) {
     return null
   }
-  return {
+  const normalized: TrustedLanDevice = {
     deviceId: device.deviceId,
     name: device.name,
     certificatePem: device.certificatePem,
     certificateFingerprint: device.certificateFingerprint,
     pairedAt: device.pairedAt,
   }
+  if (typeof device.host === "string" && device.host.trim()) normalized.host = device.host
+  if (Array.isArray(device.addresses)) {
+    normalized.addresses = device.addresses.filter(
+      (address): address is string => typeof address === "string" && address.trim().length > 0
+    )
+  }
+  if (typeof device.port === "number" && Number.isInteger(device.port) && device.port > 0) {
+    normalized.port = device.port
+  }
+  if (typeof device.lastEndpointSeenAt === "number") {
+    normalized.lastEndpointSeenAt = device.lastEndpointSeenAt
+  }
+  return normalized
 }

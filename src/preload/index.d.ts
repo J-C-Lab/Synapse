@@ -37,6 +37,7 @@ declare global {
   }
 
   type SynapseLanPlatform = "win32" | "darwin" | "linux" | "unknown"
+  type SynapseLanDiscoverySource = "bonjour" | "presence" | "trusted-cache"
 
   interface SynapseLanDevice {
     deviceId: string
@@ -46,9 +47,11 @@ declare global {
     port: number
     platform: SynapseLanPlatform
     capabilities: string[]
+    discoverySource?: SynapseLanDiscoverySource
     lastSeenAt: number
     online: boolean
     paired: boolean
+    reachable?: boolean
   }
 
   interface SynapseLanStatus {
