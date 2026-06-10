@@ -1,11 +1,14 @@
+import type { SecretProtector } from "../lan/credential-store"
 import * as path from "node:path"
 import { readJsonFile, writeJsonFile } from "../lan/atomic-json-store"
 
-// Persists the user's external MCP server definitions as plain JSON (decision
-// §11.1 — no native deps), reusing the LAN atomic-json helpers for crash-safe
-// writes. These are launch instructions only; no secret material lives here
-// (provider keys stay in the encrypted AiCredentialStore). `env` values are
-// stored verbatim, so the UI should steer users away from putting secrets here.
+// Persists the user's external MCP server definitions as JSON (decision §11.1 —
+// no native deps), reusing the LAN atomic-json helpers for crash-safe writes.
+// Launch instructions (command/args/cwd/url) are stored verbatim; secret-bearing
+// fields (env values and request headers) are encrypted at rest with the OS
+// keychain via a SecretProtector and decrypted on read, so no plaintext tokens
+// sit on disk. Legacy plaintext values (written before encryption) are tolerated
+// and re-encrypted the next time the server is saved.
 
 export type McpTransport = "stdio" | "http"
 
@@ -45,7 +48,10 @@ export class McpServerConfigError extends Error {
 export class McpServerConfigStore {
   private configs: McpServerConfig[] | null = null
 
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    private readonly protector?: SecretProtector
+  ) {}
 
   async list(): Promise<McpServerConfig[]> {
     return [...(await this.load())]
@@ -70,14 +76,55 @@ export class McpServerConfigStore {
 
   private async load(): Promise<McpServerConfig[]> {
     if (this.configs) return this.configs
-    this.configs = normalizeStored(await readJsonFile(this.filePath))
+    const stored = normalizeStored(await readJsonFile(this.filePath))
+    this.configs = stored.map((config) => this.decryptSecrets(config))
     return this.configs
   }
 
   private async persist(configs: McpServerConfig[]): Promise<void> {
+    // Cache the decrypted view; write ciphertext to disk.
     this.configs = configs
-    await writeJsonFile(this.filePath, configs)
+    await writeJsonFile(
+      this.filePath,
+      configs.map((config) => this.encryptSecrets(config))
+    )
   }
+
+  private encryptSecrets(config: McpServerConfig): McpServerConfig {
+    if (!this.protector) return config
+    return this.mapSecrets(config, (value) => this.protector!.encrypt(value))
+  }
+
+  private decryptSecrets(config: McpServerConfig): McpServerConfig {
+    if (!this.protector) return config
+    return this.mapSecrets(config, (value) => {
+      try {
+        return this.protector!.decrypt(value)
+      } catch {
+        // Legacy plaintext (pre-encryption) — keep as-is; re-encrypted on save.
+        return value
+      }
+    })
+  }
+
+  private mapSecrets(
+    config: McpServerConfig,
+    transform: (value: string) => string
+  ): McpServerConfig {
+    const out: McpServerConfig = { ...config }
+    if (config.env) out.env = mapValues(config.env, transform)
+    if (config.headers) out.headers = mapValues(config.headers, transform)
+    return out
+  }
+}
+
+function mapValues(
+  record: Record<string, string>,
+  transform: (value: string) => string
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(record)) out[key] = transform(value)
+  return out
 }
 
 function normalizeConfig(config: McpServerConfig): McpServerConfig {

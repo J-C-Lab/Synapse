@@ -1,3 +1,4 @@
+import type { SecretProtector } from "../lan/credential-store"
 import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -16,6 +17,16 @@ afterEach(async () => {
 
 function store(): McpServerConfigStore {
   return new McpServerConfigStore(path.join(dir, "mcp-servers.json"))
+}
+
+// Reversible stand-in for the OS keychain protector.
+const fakeProtector: SecretProtector = {
+  encrypt: (plain) => `enc(${plain})`,
+  decrypt: (cipher) => {
+    const match = /^enc\(([\s\S]*)\)$/.exec(cipher)
+    if (!match) throw new Error("not encrypted")
+    return match[1]
+  },
 }
 
 describe("mcpServerConfigStore", () => {
@@ -83,6 +94,48 @@ describe("mcpServerConfigStore", () => {
     expect(await s.list()).toHaveLength(1)
     await s.delete("a")
     expect(await s.list()).toHaveLength(0)
+  })
+
+  it("encrypts env and header values at rest but returns them decrypted", async () => {
+    const file = path.join(dir, "mcp-servers.json")
+    const s = new McpServerConfigStore(file, fakeProtector)
+    await s.save({ id: "fs", command: "npx", env: { TOKEN: "s3cret" } })
+    await s.save({
+      id: "remote",
+      transport: "http",
+      url: "https://example.com/mcp",
+      headers: { Authorization: "Bearer abc" },
+    })
+
+    // On disk the secret values are ciphertext, not plaintext.
+    const raw = await fs.readFile(file, "utf-8")
+    expect(raw).toContain("enc(s3cret)")
+    expect(raw).not.toContain('s3cret"')
+    expect(raw).toContain("enc(Bearer abc)")
+
+    // A fresh instance decrypts them back for use.
+    const reloaded = await new McpServerConfigStore(file, fakeProtector).list()
+    expect(reloaded.find((c) => c.id === "fs")?.env).toEqual({ TOKEN: "s3cret" })
+    expect(reloaded.find((c) => c.id === "remote")?.headers).toEqual({
+      Authorization: "Bearer abc",
+    })
+  })
+
+  it("tolerates legacy plaintext secrets and re-encrypts them on next save", async () => {
+    const file = path.join(dir, "mcp-servers.json")
+    await fs.writeFile(
+      file,
+      JSON.stringify([{ id: "fs", transport: "stdio", command: "npx", env: { TOKEN: "plain" } }]),
+      "utf-8"
+    )
+
+    const s = new McpServerConfigStore(file, fakeProtector)
+    // Plaintext that cannot be decrypted is passed through unchanged.
+    expect((await s.list())[0]?.env).toEqual({ TOKEN: "plain" })
+
+    // Saving migrates it to ciphertext at rest.
+    await s.save({ id: "fs", command: "npx", env: { TOKEN: "plain" } })
+    expect(await fs.readFile(file, "utf-8")).toContain("enc(plain)")
   })
 
   it("drops malformed entries and duplicates when loading", async () => {

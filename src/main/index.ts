@@ -564,7 +564,8 @@ function createAgentService(): AgentService {
     approvals: new ApprovalStore(aiApprovalsFilePath(userDataDir)),
     sendEvent: broadcastAiChatEvent,
     mcp: {
-      configs: new McpServerConfigStore(aiMcpServersFilePath(userDataDir)),
+      // Encrypt env/header secrets at rest with the OS keychain.
+      configs: new McpServerConfigStore(aiMcpServersFilePath(userDataDir), osSecretProtector()),
       manager,
     },
   })
