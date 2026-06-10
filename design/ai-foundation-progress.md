@@ -218,14 +218,19 @@ MVP 目标范围:**P0–P3** 端到端「插件工具被内置智能体调用」
 计划内 P0–P6 + 5 项增强全部完成。下一阶段分两条线推进:
 
 - **发布就绪**:AI 真实 key 端到端冒烟、对外 MCP 接 Claude Desktop 验证、代码签名 + `electron-updater` 自动更新、打包发布走查 + CI 产物。
-- **AI 深化**:✅ 代码块语法高亮(`shiki`)、✅ token 预算上限、RAG 文档分块 ingest(P6b)、MCP 明文密钥下沉到加密 `AiCredentialStore`。
+- **AI 深化**:✅ 代码块语法高亮(`shiki`)、✅ token 预算上限、✅ RAG 文档分块 ingest(P6b)、✅ MCP 密钥加密落盘。
 
 ### M4 已落地(AI 深化第一批)
 
 - **token 预算上限**(提交 `b15a2d3`):`AgentRuntime.budgetTokens` + 新停止原因 `budget_exceeded`(累计用量达上限即在下一次 provider 调用前停);`AiSettingsStore.budgetTokens`(0=不限,持久化)→ `AgentService` status / `ai:set-budget` IPC → AI 设置弹窗输入框 + Chat 用量行显示「已用/上限」。`totalTokens()` 助手在 `providers/types.ts`。
 - **代码块语法高亮**(提交 `5605a02`):`shiki` 用 **JavaScript RegExp 引擎**(非 oniguruma WASM)以兼容严格 CSP(`script-src 'self'`);grammar/theme 懒加载分包(主包几乎不变,产物无 `.wasm`);双主题经 `globals.css` 切换暗色。`lib/shiki.ts`(`highlightToHtml`)+ `lib/code-lang.ts`(`extractLanguage`)+ `components/code-block.tsx`(异步高亮,未知语言/失败回退纯 `<pre>`)。未知语言安全降级。
 
-剩余 AI 深化项:RAG 文档分块 ingest(P6b)、MCP 明文密钥下沉到加密 `AiCredentialStore`。
+### M4 第二批已落地(AI 深化收尾)
+
+- **RAG 文档分块 ingest(P6b)**(提交 `58db6d2`):新 `memory_ingest` 工具把长文档按字符滑窗(默认 size 1000 / overlap 150)切块,一次批量 embed,各块作 `source:<source>` 标签的记忆条目落盘,经既有语义 `memory_search` 召回。底层新增 `chunk-text.ts`(`chunkText` 纯函数,防 overlap≥size 死循环)+ `MemoryStore.addMany`(单次写)+ `MemoryService.ingestDocument`。无 embedder/key 时仍走词法回退。
+- **MCP 密钥加密落盘**(提交 `6f2178c`):`McpServerConfigStore` 接 `SecretProtector`,持久化前用 OS keychain 加密 `env` 值与请求 `headers`,读取时解密(连接逻辑不变);启动指令(command/args/cwd/url)仍明文。旧明文密钥兼容,下次保存时自动迁移为密文。**磁盘上不再留明文 token**。index.ts 装配处传入 `osSecretProtector()`。
+
+AI 深化两批(token 预算、shiki、P6b、MCP 密钥加密)全部完成。后续可选:发布就绪线(M1–M3)、对外 MCP 接 Claude Desktop 验证。
 
 仍未做的手动验证(发布前必须补):配真实 key 让模型调用脚手架 `greet` 闭环;`Synapse --mcp-stdio` 接 Claude Desktop 列出/调用只读工具。
 
