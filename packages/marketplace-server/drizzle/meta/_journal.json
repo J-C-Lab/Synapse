@@ -15,6 +15,13 @@
       "when": 1781108665764,
       "tag": "0001_mature_daredevil",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1781120972650,
+      "tag": "0002_zippy_zemo",
+      "breakpoints": true
     }
   ]
 }

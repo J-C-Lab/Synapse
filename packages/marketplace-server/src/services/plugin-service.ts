@@ -8,6 +8,7 @@ import { and, avg, count, desc, eq, gt, ilike, isNull, or, sql } from "drizzle-o
 import { downloads, plugins, pluginVersions, ratings, reports, reviews, users } from "../db/schema"
 import { newId } from "../lib/crypto"
 import { badRequest, conflict, forbidden, notFound } from "../lib/errors"
+import { assessManifestRisk } from "../lib/risk"
 import { compareVersions } from "../lib/semver"
 
 /** A download by the same user inside this window does not re-count. */
@@ -17,6 +18,7 @@ export type PluginRow = typeof plugins.$inferSelect
 export type PluginVersionRow = typeof pluginVersions.$inferSelect
 export type RatingRow = typeof ratings.$inferSelect
 export type ReviewRow = typeof reviews.$inferSelect
+export type ReportRow = typeof reports.$inferSelect
 
 export interface PluginStats {
   downloads: number
@@ -141,9 +143,32 @@ export class PluginService {
       .set({ role: "developer" })
       .where(and(eq(users.id, input.ownerUserId), eq(users.role, "user")))
 
+    await this.autoFlag(pluginId, input.manifest)
+
     const detail = await this.getDetail(pluginId, input.ownerUserId)
     if (!detail) throw notFound(`Plugin "${pluginId}" not found after publish`)
     return detail
+  }
+
+  /** Upload scan: flag a high-risk publish into the admin queue (deduped). */
+  private async autoFlag(pluginId: string, manifest: PublishInput["manifest"]): Promise<void> {
+    const risk = assessManifestRisk(manifest)
+    if (risk.level !== "high") return
+    const open = await this.db
+      .select({ id: reports.id })
+      .from(reports)
+      .where(
+        and(eq(reports.pluginId, pluginId), eq(reports.kind, "auto"), eq(reports.status, "open"))
+      )
+      .limit(1)
+    if (open.length > 0) return
+    await this.db.insert(reports).values({
+      id: newId(),
+      pluginId,
+      reporterUserId: null,
+      kind: "auto",
+      reason: `Automated scan: ${risk.reasons.join("; ")}`,
+    })
   }
 
   /** Public catalog search. Only public, active plugins are returned. */
@@ -434,6 +459,45 @@ export class PluginService {
       .update(plugins)
       .set({ status: "removed", updatedAt: new Date() })
       .where(eq(plugins.id, pluginId))
+  }
+
+  /** Admin restore — undo a takedown (back to active). */
+  async adminRestore(pluginId: string, role: string): Promise<void> {
+    if (role !== "admin") throw forbidden("Admin role required")
+    const plugin = await this.getPluginRow(pluginId)
+    if (!plugin) throw notFound(`Plugin "${pluginId}" not found`)
+    await this.db
+      .update(plugins)
+      .set({ status: "active", updatedAt: new Date() })
+      .where(eq(plugins.id, pluginId))
+  }
+
+  /** The admin review queue, by report status (newest first). */
+  async listReports(
+    role: string,
+    status: "open" | "reviewed" | "dismissed" = "open"
+  ): Promise<ReportRow[]> {
+    if (role !== "admin") throw forbidden("Admin role required")
+    return this.db
+      .select()
+      .from(reports)
+      .where(eq(reports.status, status))
+      .orderBy(desc(reports.createdAt))
+  }
+
+  /** Resolve a report — mark it actioned or dismissed. */
+  async resolveReport(
+    role: string,
+    reportId: string,
+    status: "reviewed" | "dismissed"
+  ): Promise<void> {
+    if (role !== "admin") throw forbidden("Admin role required")
+    const updated = await this.db
+      .update(reports)
+      .set({ status })
+      .where(eq(reports.id, reportId))
+      .returning({ id: reports.id })
+    if (updated.length === 0) throw notFound("Report not found")
   }
 
   private async requireOwned(pluginId: string, ownerUserId: string): Promise<PluginRow> {

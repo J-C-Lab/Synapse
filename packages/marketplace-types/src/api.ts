@@ -12,6 +12,7 @@ import {
   pluginSummarySchema,
   pluginVersionSchema,
   ratingSchema,
+  reportSchema,
   reviewSchema,
   userSchema,
 } from "./domain"
@@ -135,6 +136,16 @@ export const yankRequestSchema = z
 /** A user-submitted abuse/quality report against a plugin. */
 export const reportRequestSchema = z.object({ reason: z.string().min(1).max(1000) }).strict()
 
+// ── Admin moderation ──────────────────────────────────────────────────────────
+
+/** The admin review queue. */
+export const adminReportsResponseSchema = z.object({ items: z.array(reportSchema) }).strict()
+
+/** Resolve a report: mark it actioned or dismissed. */
+export const resolveReportRequestSchema = z
+  .object({ status: z.enum(["reviewed", "dismissed"]) })
+  .strict()
+
 // ── Download ──────────────────────────────────────────────────────────────────
 
 /** A short-lived, signed URL plus the digest the client must verify post-download. */
@@ -195,6 +206,8 @@ export type PublishResponse = z.infer<typeof publishResponseSchema>
 export type SetVisibilityRequest = z.infer<typeof setVisibilityRequestSchema>
 export type YankRequest = z.infer<typeof yankRequestSchema>
 export type ReportRequest = z.infer<typeof reportRequestSchema>
+export type AdminReportsResponse = z.infer<typeof adminReportsResponseSchema>
+export type ResolveReportRequest = z.infer<typeof resolveReportRequestSchema>
 export type ResolveDownloadResponse = z.infer<typeof resolveDownloadResponseSchema>
 export type RateRequest = z.infer<typeof rateRequestSchema>
 export type RateResponse = z.infer<typeof rateResponseSchema>

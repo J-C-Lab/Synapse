@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Buffer } from "node:buffer"
 import type { Services } from "../services/context"
 import {
+  adminReportsResponseSchema,
   createReviewRequestSchema,
   listReviewsResponseSchema,
   myPluginsResponseSchema,
@@ -13,6 +14,7 @@ import {
   rateResponseSchema,
   reportRequestSchema,
   resolveDownloadResponseSchema,
+  resolveReportRequestSchema,
   searchPluginsQuerySchema,
   searchPluginsResponseSchema,
   setVisibilityRequestSchema,
@@ -25,6 +27,7 @@ import {
   toPluginSummaryDto,
   toPluginVersionDto,
   toRatingDto,
+  toReportDto,
   toReviewDto,
 } from "../mappers"
 import { authenticate, resolveOptionalUser } from "./middleware"
@@ -259,6 +262,41 @@ export function registerPluginRoutes(app: FastifyInstance, services: Services): 
       if (!request.user) throw unauthorized("Not authenticated")
       const { id } = request.params as { id: string }
       await services.plugins.adminRemove(id, request.user.role)
+      return reply.send({ status: "ok" as const })
+    }
+  )
+
+  // Admin restore — undo a takedown.
+  app.post(
+    "/plugins/:id/restore",
+    { preHandler: authenticate(services) },
+    async (request, reply) => {
+      if (!request.user) throw unauthorized("Not authenticated")
+      const { id } = request.params as { id: string }
+      await services.plugins.adminRestore(id, request.user.role)
+      return reply.send({ status: "ok" as const })
+    }
+  )
+
+  // Admin review queue.
+  app.get("/admin/reports", { preHandler: authenticate(services) }, async (request, reply) => {
+    if (!request.user) throw unauthorized("Not authenticated")
+    const statusRaw = (request.query as Record<string, unknown>).status
+    const status =
+      statusRaw === "reviewed" || statusRaw === "dismissed" ? statusRaw : ("open" as const)
+    const items = await services.plugins.listReports(request.user.role, status)
+    return reply.send(adminReportsResponseSchema.parse({ items: items.map(toReportDto) }))
+  })
+
+  // Admin resolves a report.
+  app.post(
+    "/admin/reports/:reportId/resolve",
+    { preHandler: authenticate(services) },
+    async (request, reply) => {
+      if (!request.user) throw unauthorized("Not authenticated")
+      const { reportId } = request.params as { reportId: string }
+      const body = parseBody(resolveReportRequestSchema, request.body)
+      await services.plugins.resolveReport(request.user.role, reportId, body.status)
       return reply.send({ status: "ok" as const })
     }
   )

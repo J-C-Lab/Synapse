@@ -3,16 +3,24 @@ import type {
   PluginSummary,
   PluginVersion,
   Rating,
+  Report,
   Review,
   User,
 } from "@synapse/marketplace-types"
-import type { PluginRow, PluginVersionRow, RatingRow, ReviewRow } from "./services/plugin-service"
+import type {
+  PluginRow,
+  PluginVersionRow,
+  RatingRow,
+  ReportRow,
+  ReviewRow,
+} from "./services/plugin-service"
 import type { UserRow } from "./services/user-service"
 import {
   pluginSchema,
   pluginSummarySchema,
   pluginVersionSchema,
   ratingSchema,
+  reportSchema,
   reviewSchema,
   userSchema,
 } from "@synapse/marketplace-types"
@@ -79,6 +87,18 @@ export function toRatingDto(row: RatingRow): Rating {
     userId: row.userId,
     stars: row.stars,
     updatedAt: row.updatedAt.toISOString(),
+  })
+}
+
+export function toReportDto(row: ReportRow): Report {
+  return reportSchema.parse({
+    id: row.id,
+    pluginId: row.pluginId,
+    reporterUserId: row.reporterUserId,
+    kind: row.kind,
+    reason: row.reason,
+    status: row.status,
+    createdAt: row.createdAt.toISOString(),
   })
 }
 

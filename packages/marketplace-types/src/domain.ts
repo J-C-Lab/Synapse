@@ -7,6 +7,8 @@ import {
   localizedStringSchema,
   pluginIdSchema,
   pluginStatusSchema,
+  reportKindSchema,
+  reportStatusSchema,
   semverSchema,
   sha256Schema,
   timestampSchema,
@@ -139,6 +141,23 @@ export const reviewSchema = z
   })
   .strict()
 
+/**
+ * An abuse/quality report against a plugin. Filed by a user, or by the
+ * automated upload scan (`kind: "auto"`, `reporterUserId` null). Moves through
+ * the review state machine: open → reviewed | dismissed.
+ */
+export const reportSchema = z
+  .object({
+    id: z.string().min(1),
+    pluginId: pluginIdSchema,
+    reporterUserId: z.string().min(1).nullable(),
+    kind: reportKindSchema,
+    reason: z.string().min(1),
+    status: reportStatusSchema,
+    createdAt: timestampSchema,
+  })
+  .strict()
+
 // ── Projections ───────────────────────────────────────────────────────────────
 
 /**
@@ -168,4 +187,5 @@ export type PluginVersion = z.infer<typeof pluginVersionSchema>
 export type Download = z.infer<typeof downloadSchema>
 export type Rating = z.infer<typeof ratingSchema>
 export type Review = z.infer<typeof reviewSchema>
+export type Report = z.infer<typeof reportSchema>
 export type PluginSummary = z.infer<typeof pluginSummarySchema>

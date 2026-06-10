@@ -60,9 +60,17 @@ export const pluginStatusSchema = z.enum(["active", "deprecated", "unlisted", "r
 /** Sort order for marketplace listings. */
 export const pluginSortSchema = z.enum(["relevance", "downloads", "rating", "recent"])
 
+/** Who/what filed a report: a `user` or the automated upload scan. */
+export const reportKindSchema = z.enum(["user", "auto"])
+
+/** Moderation state of a report (the review state machine). */
+export const reportStatusSchema = z.enum(["open", "reviewed", "dismissed"])
+
 export type Visibility = z.infer<typeof visibilitySchema>
 export type UserRole = z.infer<typeof userRoleSchema>
 export type AuthProvider = z.infer<typeof authProviderSchema>
 export type PluginStatus = z.infer<typeof pluginStatusSchema>
 export type PluginSort = z.infer<typeof pluginSortSchema>
+export type ReportKind = z.infer<typeof reportKindSchema>
+export type ReportStatus = z.infer<typeof reportStatusSchema>
 export type LocalizedString = z.infer<typeof localizedStringSchema>

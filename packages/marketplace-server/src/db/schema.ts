@@ -158,15 +158,17 @@ export const reviews = pgTable(
   (table) => [primaryKey({ columns: [table.pluginId, table.userId] })]
 )
 
-/** Abuse/quality reports filed by users; triaged by admins (M7 pipeline). */
+/**
+ * Abuse/quality reports triaged by admins (M7 pipeline). Filed by a user, or
+ * by the automated upload scan (`kind: "auto"`, `reporterUserId` null).
+ */
 export const reports = pgTable("reports", {
   id: text("id").primaryKey(),
   pluginId: text("plugin_id")
     .notNull()
     .references(() => plugins.id),
-  reporterUserId: text("reporter_user_id")
-    .notNull()
-    .references(() => users.id),
+  reporterUserId: text("reporter_user_id").references(() => users.id),
+  kind: text("kind").$type<"user" | "auto">().notNull().default("user"),
   reason: text("reason").notNull(),
   status: text("status").$type<"open" | "reviewed" | "dismissed">().notNull().default("open"),
   createdAt,

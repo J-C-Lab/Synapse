@@ -212,7 +212,7 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 | **M4 下载量 + 评分 + 评级** | 下载计数(防刷)、评分写入与聚合、排行算法(Wilson+衰减)、排行榜/精选位                                  | ✅ **已完成**(见 §15)——下载计数(authed 窗口去重)+ 评分 upsert/聚合 + 评论 + relevance 排行评分;桌面端只读展示 ★。评分提交 UI 待桌面登录   |
 | **M5 私人/公开治理**        | app 内可见性切换、yank、举报、admin 下架;可信源开关                                                   | ✅ **已完成**(见 §17 + §18)——后端治理 + 桌面 UI(我的/管理标签、可见性切换/yank/举报/下架)+ 可信源开关                                     |
 | **M6 Web 门户**             | 浏览器端市场门户(复用现有 Fumadocs/Next 工作流)、SEO、可分享插件详情链接、Web 端浏览/搜索/详情        | 非桌面用户也能逛市场;插件有公开可索引页面                                                                                                 |
-| **M7 审核流水线**           | 上传自动扫描 + 人工审核队列、敏感权限分级、审核状态机(pending/approved/rejected)、admin 控制台        | 公开插件经审核后上架;治理可规模化                                                                                                         |
+| **M7 审核流水线**           | 上传自动扫描 + 人工审核队列、敏感权限分级、审核状态机(pending/approved/rejected)、admin 控制台        | ✅ **后端已完成**(见 §19)——自动扫描(敏感权限)自动入队、admin 审核队列 + 报告状态机、下架/恢复 + 测试。admin 控制台 UI 待续                |
 | **M8 组织 / 协作者**        | Organization 实体、团队命名空间、Collaborator 角色与权限、转移所有权                                  | 多人共同维护一个插件 / 组织发布                                                                                                           |
 | **M9 付费 / 分成(可选)**    | 付费插件、结算(Stripe 等)、开发者收入分成、发票                                                       | 形态 C 完整体;插件可商业化                                                                                                                |
 
@@ -525,3 +525,32 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 - `pnpm lint` ✅(0 error)· `pnpm typecheck` ✅ · `pnpm test` **493 passed**(治理后 478 + 桌面 UI/可信源/设置重构相关 +15);连跑两次稳定。
 
 > M5 全部完成。第二波继续:**M6 Web 门户** 或 **M7 审核流水线**(消费 `reports` 表)。
+
+---
+
+## 19. M7 审核流水线(后端已落地,2026-06-11)
+
+**审核后端**:上传自动扫描(敏感权限分级)→ 自动入队、admin 审核队列 + 报告状态机、下架/恢复。后端为主、pglite 全测、零新凭据。
+
+| 区域                                       | 内容                                                                                                                                                     |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `marketplace-types`                        | `reportKind`(user\|auto)/`reportStatus`(open\|reviewed\|dismissed)枚举、`reportSchema` 实体、`adminReportsResponseSchema` / `resolveReportRequestSchema` |
+| `db/schema.ts` + 迁移 0002                 | `reports` 表加 `kind`,`reporterUserId` 改可空(支持系统自动报告);已对 Neon 应用                                                                           |
+| `lib/risk.ts` (新)                         | `assessManifestRisk`(纯函数,只读 manifest):`system:*` 前缀 / `clipboard:write` / 工具 `destructiveHint` → high + 原因列表。3 条单测                      |
+| `plugin-service.ts`                        | 发布后 `autoFlag`(high → 建一条 `kind:"auto"` open 报告,按插件去重);`listReports`/`resolveReport`(admin)、`adminRestore`(admin)                          |
+| `routes/plugins.ts`                        | `GET /admin/reports?status=`、`POST /admin/reports/:id/resolve`、`POST /plugins/:id/restore`(均 admin 校验)                                              |
+| `mappers.ts`                               | `toReportDto`                                                                                                                                            |
+| `risk.test.ts` + `moderation.test.ts` (新) | **8 条**:风险分级(low/system/destructive)、高风险发布自动入队 + 普通不入队、队列需 admin(403)、解决报告后从 open 队列移除/转 reviewed、下架后恢复可见    |
+
+**状态机映射 / 说明**
+
+- 设计的「pending/approved/rejected」落到:**报告 open = 待审**;`reviewed`/`dismissed` = 已处理;**下架** = plugin `status=removed`(可 `restore` 回 active)。「先发后审」:发布即上架,自动扫描只把高风险**入队**,不阻断上架。
+- **自动报告**:`reporterUserId` 为空、`kind:"auto"`、`reason` 含触发的敏感项;同插件已有 open 自动报告则不重复建。
+- **admin 双重校验**:所有 admin 端点服务层再校验 `role==="admin"`。
+- **遗留**:桌面/Web 的 **admin 控制台 UI**(审核队列页)待续;扫描规则可继续扩充(目前是保守的权限/注解启发式)。
+
+**质量基线**
+
+- `pnpm lint` ✅(0 error)· `pnpm typecheck` ✅ · `pnpm test` **501 passed**(M5 UI 后 493 + M7 新增 8);连跑两次稳定。
+
+> 第二波剩 **M6 Web 门户**;M7 的 admin 控制台 UI 可作为 M7 续作。第三波 M8 组织 / M9 付费按需。

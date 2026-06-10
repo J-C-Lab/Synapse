@@ -7,6 +7,7 @@
 // validated on the client matches what the server parses.
 
 export {
+  adminReportsResponseSchema,
   apiErrorSchema,
   createReviewRequestSchema,
   deviceCodePollRequestSchema,
@@ -22,6 +23,7 @@ export {
   rateResponseSchema,
   reportRequestSchema,
   resolveDownloadResponseSchema,
+  resolveReportRequestSchema,
   searchPluginsQuerySchema,
   searchPluginsResponseSchema,
   sessionResponseSchema,
@@ -30,6 +32,7 @@ export {
 } from "./api"
 
 export type {
+  AdminReportsResponse,
   ApiError,
   CreateReviewRequest,
   DeviceCodePollRequest,
@@ -45,6 +48,7 @@ export type {
   RateResponse,
   ReportRequest,
   ResolveDownloadResponse,
+  ResolveReportRequest,
   SearchPluginsQuery,
   SearchPluginsResponse,
   SessionResponse,
@@ -60,6 +64,8 @@ export {
   pluginIdSchema,
   pluginSortSchema,
   pluginStatusSchema,
+  reportKindSchema,
+  reportStatusSchema,
   semverSchema,
   sha256Schema,
   timestampSchema,
@@ -72,6 +78,8 @@ export type {
   LocalizedString,
   PluginSort,
   PluginStatus,
+  ReportKind,
+  ReportStatus,
   UserRole,
   Visibility,
 } from "./common"
@@ -84,6 +92,7 @@ export {
   pluginSummarySchema,
   pluginVersionSchema,
   ratingSchema,
+  reportSchema,
   reviewSchema,
   userSchema,
 } from "./domain"
@@ -96,6 +105,7 @@ export type {
   PluginSummary,
   PluginVersion,
   Rating,
+  Report,
   Review,
   User,
 } from "./domain"
