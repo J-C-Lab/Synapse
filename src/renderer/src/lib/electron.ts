@@ -1,7 +1,9 @@
 import type {
   PluginDetailResponse,
   PluginSummary,
+  RateResponse,
   SearchPluginsResponse,
+  User,
 } from "@synapse/marketplace-types"
 
 /**
@@ -33,6 +35,15 @@ export type MarketplaceEntry = SynapseMarketplaceEntry
 export type MarketplaceSummary = PluginSummary
 export type MarketplaceDetail = PluginDetailResponse
 export type MarketplaceSearchResponse = SearchPluginsResponse
+export type MarketplaceUser = User
+export interface MarketplaceAccount {
+  user: User | null
+}
+export interface MarketplaceLoginPrompt {
+  verificationUri: string
+  userCode: string
+  expiresAt: string
+}
 export type PluginCommandResult = SynapsePluginCommandResult
 export type PluginInvokePhase = SynapsePluginInvokePhase
 export type PluginView = SynapsePluginView
@@ -263,6 +274,28 @@ export async function installMarketplaceBackendPlugin(
   version: string
 ): Promise<PluginRegistryEntry> {
   return unwrapIpcResult(await api().installMarketplaceBackendPlugin(id, version))
+}
+
+export async function getMarketplaceAccount(): Promise<MarketplaceAccount> {
+  return unwrapIpcResult(await api().getMarketplaceAccount())
+}
+
+export async function marketplaceLogin(): Promise<MarketplaceUser> {
+  return unwrapIpcResult(await api().marketplaceLogin())
+}
+
+export async function marketplaceLogout(): Promise<void> {
+  unwrapIpcResult(await api().marketplaceLogout())
+}
+
+export async function rateMarketplacePlugin(id: string, stars: number): Promise<RateResponse> {
+  return unwrapIpcResult(await api().rateMarketplacePlugin(id, stars))
+}
+
+export function onMarketplaceLoginPrompt(
+  handler: (prompt: MarketplaceLoginPrompt) => void
+): () => void {
+  return api().onMarketplaceLoginPrompt(handler)
 }
 
 export function onLauncherFocus(handler: () => void): () => void {

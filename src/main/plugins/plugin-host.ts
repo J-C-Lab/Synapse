@@ -1,4 +1,8 @@
-import type { PluginDetailResponse, SearchPluginsResponse } from "@synapse/marketplace-types"
+import type {
+  PluginDetailResponse,
+  RateResponse,
+  SearchPluginsResponse,
+} from "@synapse/marketplace-types"
 import type { ClipboardContent, ToolResult } from "@synapse/plugin-sdk"
 import type { MarketplaceApi } from "./marketplace-api"
 import type { MarketplaceEntry } from "./marketplace-registry"
@@ -35,10 +39,12 @@ export interface PluginHostOptions {
   userDataDir: string
   resourcesDir: string
   adapters?: PluginBridgeAdapters
-  fetch?: (url: string) => Promise<Response>
+  fetch?: (url: string, init?: RequestInit) => Promise<Response>
   marketplaceRegistryUrl?: string
   /** Base URL of the marketplace backend (authoritative source). */
   marketplaceBaseUrl?: string
+  /** Supplies the signed-in session token so browse/install can see private plugins. */
+  marketplaceGetToken?: () => Promise<string | undefined> | string | undefined
   runtime?: () => PluginRuntimeSnapshot
   clipboardPollMs?: number
 }
@@ -110,6 +116,7 @@ export class PluginHost {
     this.marketplaceApi = createMarketplaceApi({
       baseUrl: options.marketplaceBaseUrl,
       fetch: options.fetch ?? globalThis.fetch,
+      getToken: options.marketplaceGetToken,
     })
     this.preferences = new PluginPreferenceStore(pluginPreferenceFilePath(options.userDataDir))
     this.bridge = new PluginBridge({
@@ -229,6 +236,11 @@ export class PluginHost {
   /** Full plugin detail (incl. version history + manifest snapshot) from the backend. */
   async marketplaceDetail(pluginId: string): Promise<PluginDetailResponse> {
     return this.marketplaceApi.detail(pluginId)
+  }
+
+  /** Submit the signed-in user's star rating for a plugin. */
+  async rateMarketplace(pluginId: string, stars: number): Promise<RateResponse> {
+    return this.marketplaceApi.rate(pluginId, stars)
   }
 
   /**

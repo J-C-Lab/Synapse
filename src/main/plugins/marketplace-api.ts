@@ -1,14 +1,19 @@
 import type {
+  DeviceCodePollResponse,
+  DeviceCodeStartResponse,
   PluginDetailResponse,
+  RateResponse,
   ResolveDownloadResponse,
   SearchPluginsResponse,
+  SessionResponse,
 } from "@synapse/marketplace-types"
 import process from "node:process"
 
 // Client for the Synapse marketplace backend (the authoritative source).
-// The desktop app browses public plugins and resolves signed download URLs
-// through this; the legacy static registry (marketplace-registry.ts) remains a
-// read-only fallback for offline/degraded operation.
+// The desktop app browses plugins, resolves signed download URLs, and — when
+// signed in — sends a bearer token so owners see private plugins and can rate.
+// The legacy static registry (marketplace-registry.ts) remains a read-only
+// fallback for offline/degraded operation.
 
 export const DEFAULT_MARKETPLACE_API_URL = "http://localhost:8787"
 
@@ -26,14 +31,19 @@ export class MarketplaceApiError extends Error {
 
 export interface MarketplaceApiOptions {
   baseUrl?: string
-  /** GET-only fetch; the host's narrowed `(url) => Promise<Response>` fits. */
-  fetch?: (url: string) => Promise<Response>
+  fetch?: (url: string, init?: RequestInit) => Promise<Response>
+  /** Supplies the current session token for authenticated requests, if any. */
+  getToken?: () => Promise<string | undefined> | string | undefined
 }
 
 export interface MarketplaceApi {
   search: (query?: string) => Promise<SearchPluginsResponse>
   detail: (pluginId: string) => Promise<PluginDetailResponse>
   resolveDownload: (pluginId: string, version: string) => Promise<ResolveDownloadResponse>
+  rate: (pluginId: string, stars: number) => Promise<RateResponse>
+  session: () => Promise<SessionResponse>
+  deviceStart: () => Promise<DeviceCodeStartResponse>
+  devicePoll: (deviceCode: string) => Promise<DeviceCodePollResponse>
 }
 
 export function resolveMarketplaceBaseUrl(explicit?: string): string {
@@ -47,17 +57,12 @@ export function createMarketplaceApi(options: MarketplaceApiOptions = {}): Marke
   const doFetch = options.fetch ?? globalThis.fetch
   const base = resolveMarketplaceBaseUrl(options.baseUrl)
 
-  async function getJson<T>(path: string): Promise<T> {
-    let response: Response
-    try {
-      response = await doFetch(`${base}${path}`)
-    } catch (err) {
-      throw new MarketplaceApiError(
-        0,
-        "network_error",
-        `Could not reach the marketplace: ${err instanceof Error ? err.message : String(err)}`
-      )
-    }
+  async function authHeader(): Promise<Record<string, string>> {
+    const token = options.getToken ? await options.getToken() : undefined
+    return token ? { authorization: `Bearer ${token}` } : {}
+  }
+
+  async function handle<T>(response: Response): Promise<T> {
     if (!response.ok) {
       let code = "http_error"
       let message = `Marketplace request failed (${response.status})`
@@ -73,18 +78,66 @@ export function createMarketplaceApi(options: MarketplaceApiOptions = {}): Marke
     return (await response.json()) as T
   }
 
+  async function get<T>(path: string): Promise<T> {
+    const headers = await authHeader()
+    try {
+      const response =
+        Object.keys(headers).length > 0
+          ? await doFetch(`${base}${path}`, { headers })
+          : await doFetch(`${base}${path}`)
+      return await handle<T>(response)
+    } catch (err) {
+      throw asApiError(err)
+    }
+  }
+
+  async function send<T>(path: string, method: string, body: unknown): Promise<T> {
+    const headers = { "content-type": "application/json", ...(await authHeader()) }
+    try {
+      const response = await doFetch(`${base}${path}`, {
+        method,
+        headers,
+        body: JSON.stringify(body),
+      })
+      return await handle<T>(response)
+    } catch (err) {
+      throw asApiError(err)
+    }
+  }
+
   return {
     search(query?: string) {
       const suffix = query && query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ""
-      return getJson<SearchPluginsResponse>(`/plugins${suffix}`)
+      return get<SearchPluginsResponse>(`/plugins${suffix}`)
     },
     detail(pluginId: string) {
-      return getJson<PluginDetailResponse>(`/plugins/${encodeURIComponent(pluginId)}`)
+      return get<PluginDetailResponse>(`/plugins/${encodeURIComponent(pluginId)}`)
     },
     resolveDownload(pluginId: string, version: string) {
-      return getJson<ResolveDownloadResponse>(
+      return get<ResolveDownloadResponse>(
         `/plugins/${encodeURIComponent(pluginId)}/versions/${encodeURIComponent(version)}/download`
       )
     },
+    rate(pluginId: string, stars: number) {
+      return send<RateResponse>(`/plugins/${encodeURIComponent(pluginId)}/rating`, "PUT", { stars })
+    },
+    session() {
+      return get<SessionResponse>("/session")
+    },
+    deviceStart() {
+      return send<DeviceCodeStartResponse>("/auth/device/start", "POST", {})
+    },
+    devicePoll(deviceCode: string) {
+      return send<DeviceCodePollResponse>("/auth/device/poll", "POST", { deviceCode })
+    },
   }
+}
+
+function asApiError(err: unknown): MarketplaceApiError {
+  if (err instanceof MarketplaceApiError) return err
+  return new MarketplaceApiError(
+    0,
+    "network_error",
+    `Could not reach the marketplace: ${err instanceof Error ? err.message : String(err)}`
+  )
 }

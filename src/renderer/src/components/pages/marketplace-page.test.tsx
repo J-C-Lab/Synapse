@@ -17,7 +17,7 @@ vi.mock("react-i18next", () => ({
   }),
 }))
 
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), message: vi.fn() } }))
 
 const mocks = vi.hoisted(() => ({
   isElectron: vi.fn(() => true),
@@ -26,6 +26,11 @@ const mocks = vi.hoisted(() => ({
   getMarketplaceDetail: vi.fn(),
   installMarketplaceBackendPlugin: vi.fn(),
   onPluginRegistryChanged: vi.fn(() => () => undefined),
+  getMarketplaceAccount: vi.fn(),
+  marketplaceLogin: vi.fn(),
+  marketplaceLogout: vi.fn(),
+  rateMarketplacePlugin: vi.fn(),
+  onMarketplaceLoginPrompt: vi.fn(() => () => undefined),
 }))
 
 vi.mock("@/lib/electron", () => ({
@@ -74,6 +79,19 @@ beforeEach(() => {
   mocks.getMarketplaceDetail.mockResolvedValue(DETAIL)
   mocks.installMarketplaceBackendPlugin.mockResolvedValue({ pluginId: "com.alice.foo" })
   mocks.onPluginRegistryChanged.mockReturnValue(() => undefined)
+  mocks.getMarketplaceAccount.mockResolvedValue({ user: null })
+  mocks.marketplaceLogin.mockResolvedValue({ handle: "alice" })
+  mocks.marketplaceLogout.mockResolvedValue(undefined)
+  mocks.rateMarketplacePlugin.mockResolvedValue({
+    rating: {
+      pluginId: "com.alice.foo",
+      userId: "u1",
+      stars: 5,
+      updatedAt: new Date().toISOString(),
+    },
+    stats: { downloads: 7, ratingAvg: 5, ratingCount: 1 },
+  })
+  mocks.onMarketplaceLoginPrompt.mockReturnValue(() => undefined)
 })
 
 afterEach(() => {

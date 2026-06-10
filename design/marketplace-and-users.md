@@ -437,3 +437,32 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 - `pnpm lint` ✅(0 error,4 个 M3 遗留 warning)· `pnpm typecheck` ✅ · `pnpm test` **463 passed**(M3 后 455 + M4 新增 8);连跑两次稳定。
 
 > 第一波内核(M0–M4)完成。下一步可选:**桌面端账户登录**(解锁私人插件浏览 + app 内评分提交),或进入**第二波**——M5 治理(可见性切换/yank/举报/下架)、M6 Web 门户、M7 审核流水线。
+
+---
+
+## 16. 桌面端账户登录(已落地,2026-06-11)
+
+补齐 M3/M4 在 app 内的体验缺口:桌面端可**登录**(复用 device-flow)、**浏览私人插件**(请求自动带 token)、**app 内提交评分**。凭据无关(复用已验证的后端鉴权),account-service 纯逻辑单测。
+
+| 区域                                                    | 内容                                                                                                                                           |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `marketplace/token-store.ts` (新)                       | 会话 token 加密落盘(复用 `SecretProtector`/safeStorage),**仅主进程**,renderer 永不接触                                                         |
+| `marketplace/account-service.ts` (新)                   | `login`(deviceStart → 开系统浏览器 → 轮询 → 存 token → 返回 user;`onPrompt` 回推 URL+码)、`logout`、`status`(401 自动清 stale token)。7 条单测 |
+| `plugins/marketplace-api.ts`                            | 加 `getToken`(每请求带 `Authorization`)+ `session`/`rate`/`deviceStart`/`devicePoll`;host 的 `fetch` 拓宽支持 `init`(POST/headers)             |
+| `plugin-host.ts`                                        | `marketplaceGetToken` 注入到 api(登录态下 browse/detail/install 自动带 token,owner 可见私有)+ `rateMarketplace`                                |
+| `ipc/marketplace.ts` (新) + preload + `lib/electron.ts` | `market:status`/`login`/`logout`/`rate` + `market:login-prompt` 事件;index 装配 `accountService`、`marketplaceGetToken`、广播                  |
+| `pages/marketplace-page.tsx`                            | 头部 `AccountControl`(登录/退出 + 登录时 toast 提示 URL/码);详情 Dialog 在登录态显示 `RatingControl`(★ 提交,即时刷新 stats/myRating)           |
+| i18n                                                    | `marketplace.account.*` / `marketplace.rate.*`(en/zh-CN)                                                                                       |
+
+**关键不变量 / 说明**
+
+- **token 仅主进程**:加密落盘,IPC 只回 `{user}` / 操作结果,token 永不过桥到 renderer(与 AI key 同基线)。
+- **登录态自动透传**:host 的 marketplace api 用 `marketplaceGetToken`,故登录后 detail 自动含 `myRating`、私有插件对 owner 可见、下载归属到用户(参与窗口去重)。
+- **device-flow 复用**:桌面端与 CLI 共用后端 `/auth/device/*` + `/auth/github/callback`;主进程用 `shell.openExternal` 开系统浏览器,`market:login-prompt` 把 URL+码回推给 renderer 兜底显示。
+- **真实端到端**:GitHub 浏览器授权那一步仍需人工点一次(代码就绪);account-service 逻辑 + 后端鉴权均已分别测过。
+
+**质量基线**
+
+- `pnpm lint` ✅(0 error,4 个 M3 遗留 warning)· `pnpm typecheck` ✅ · `pnpm test` **470 passed**(M4 后 463 + 账户 7);连跑两次稳定。
+
+> 第一波内核 + 桌面端账户全部就绪。下一步进入**第二波**:M5 治理(可见性切换 / yank / 举报 / admin 下架 / 可信源开关)、M6 Web 门户、M7 审核流水线。

@@ -49,6 +49,7 @@ import {
 import { registerAiIpc } from "./ipc/ai"
 import { registerLanIpc } from "./ipc/lan"
 import { LauncherService } from "./ipc/launcher-service"
+import { registerMarketplaceIpc } from "./ipc/marketplace"
 import { registerPluginIpc } from "./ipc/plugins"
 import { registerUpdatesIpc } from "./ipc/updates"
 import { BonjourLanDiscoveryAdapter } from "./lan/bonjour-discovery-adapter"
@@ -59,8 +60,11 @@ import {
   resolveDevLanSimulation,
 } from "./lan/dev-simulation"
 import { LanService } from "./lan/lan-service"
+import { MarketplaceAccountService } from "./marketplace/account-service"
+import { marketplaceTokenFilePath, MarketplaceTokenStore } from "./marketplace/token-store"
 import { runSynapseMcpStdioServer } from "./mcp/synapse-mcp-server"
 import { defaultNotificationIcon, showStartupNotification } from "./notifications"
+import { createMarketplaceApi } from "./plugins/marketplace-api"
 import { PluginHost } from "./plugins/plugin-host"
 import { getContentType, resolveStaticPath } from "./protocol/resolve-static-path"
 import {
@@ -179,6 +183,8 @@ const launcher = new LauncherService()
 let plugins: PluginHost
 let lan: LanService
 let agent: AgentService
+let accountService: MarketplaceAccountService
+let marketplaceTokens: MarketplaceTokenStore | undefined
 // External MCP servers feeding tools to the built-in agent (P5). Held at module
 // scope so shutdown can disconnect the child processes.
 let mcpClients: McpClientManager | null = null
@@ -284,6 +290,10 @@ function registerIpc(): void {
   registerAiIpc(ipcMain, agent, { isTrustedSender: isTrustedIpcSender })
   updateService = setupAutoUpdates()
   registerUpdatesIpc(ipcMain, updateService, { isTrustedSender: isTrustedIpcSender })
+  registerMarketplaceIpc(ipcMain, accountService, plugins, {
+    isTrustedSender: isTrustedIpcSender,
+    onLoginPrompt: broadcastMarketLoginPrompt,
+  })
   registerLanIpc(ipcMain, lan, {
     isTrustedSender: isTrustedIpcSender,
     onDevicesChanged: broadcastLanDevicesChanged,
@@ -458,6 +468,32 @@ function setupAutoUpdates(): UpdateService {
   })
 }
 
+function broadcastMarketLoginPrompt(prompt: unknown): void {
+  broadcast("market:login-prompt", prompt)
+}
+
+function marketplaceTokenStore(): MarketplaceTokenStore {
+  marketplaceTokens ??= new MarketplaceTokenStore({
+    filePath: marketplaceTokenFilePath(app.getPath("userData")),
+    protector: osSecretProtector(),
+  })
+  return marketplaceTokens
+}
+
+function createMarketplaceAccountService(): MarketplaceAccountService {
+  const api = createMarketplaceApi({
+    fetch: (url, init) => net.fetch(url, init),
+    getToken: () => marketplaceTokenStore().get(),
+  })
+  return new MarketplaceAccountService({
+    api,
+    store: marketplaceTokenStore(),
+    openBrowser: (url) => {
+      void shell.openExternal(url)
+    },
+  })
+}
+
 function osSecretProtector(): SecretProtector {
   return {
     encrypt: (plainText) => {
@@ -527,7 +563,8 @@ function searchWindowDeps(): SearchWindowDeps {
 
 function createPluginHost(): PluginHost {
   return new PluginHost({
-    fetch: (url) => net.fetch(url),
+    fetch: (url, init) => net.fetch(url, init),
+    marketplaceGetToken: () => marketplaceTokenStore().get(),
     userDataDir: app.getPath("userData"),
     resourcesDir: pluginResourcesDir(),
     runtime: () => {
@@ -773,6 +810,7 @@ if (isMcpStdioMode) {
         },
       })
       agent = createAgentService()
+      accountService = createMarketplaceAccountService()
       registerIpc()
 
       // Remove the default File/Edit/View… menu bar — the app uses a tray icon

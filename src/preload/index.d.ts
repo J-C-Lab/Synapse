@@ -417,6 +417,20 @@ declare global {
         id: string,
         version: string
       ) => Promise<SynapsePluginIpcResult<SynapsePluginRegistryEntry>>
+      getMarketplaceAccount: () => Promise<
+        SynapsePluginIpcResult<{ user: import("@synapse/marketplace-types").User | null }>
+      >
+      marketplaceLogin: () => Promise<
+        SynapsePluginIpcResult<import("@synapse/marketplace-types").User>
+      >
+      marketplaceLogout: () => Promise<SynapsePluginIpcResult<void>>
+      rateMarketplacePlugin: (
+        id: string,
+        stars: number
+      ) => Promise<SynapsePluginIpcResult<import("@synapse/marketplace-types").RateResponse>>
+      onMarketplaceLoginPrompt: (
+        handler: (prompt: { verificationUri: string; userCode: string; expiresAt: string }) => void
+      ) => () => void
       onLauncherFocus: (handler: () => void) => () => void
       onFloatingBallMenuState: (handler: (expanded: boolean) => void) => () => void
       onFloatingBallFeatures: (

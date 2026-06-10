@@ -218,6 +218,18 @@
     "protectedSource": "This plugin is provided by {{source}} and cannot be reinstalled from the marketplace.",
     "by": "by {{handle}}",
     "viewDetails": "Details",
+    "account": {
+      "signIn": "Sign in",
+      "signingIn": "Check your browser…",
+      "signOut": "Sign out",
+      "signedIn": "Signed in as {{handle}}",
+      "prompt": "Authorize in your browser (code {{code}})."
+    },
+    "rate": {
+      "label": "Your rating",
+      "star": "Rate {{stars}} stars",
+      "thanks": "Thanks for rating!"
+    },
     "detail": {
       "permissionsTitle": "Permissions requested",
       "permissionsNone": "No special permissions requested.",

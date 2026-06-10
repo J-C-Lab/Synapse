@@ -88,6 +88,18 @@ const electronAPI = {
   installMarketplaceBackendPlugin: (id: string, version: string) =>
     ipcRenderer.invoke("marketplace:backend-install", { id, version }),
 
+  // ---- Marketplace account ----
+  getMarketplaceAccount: () => ipcRenderer.invoke("market:status"),
+  marketplaceLogin: () => ipcRenderer.invoke("market:login"),
+  marketplaceLogout: () => ipcRenderer.invoke("market:logout"),
+  rateMarketplacePlugin: (id: string, stars: number) =>
+    ipcRenderer.invoke("market:rate", { id, stars }),
+  onMarketplaceLoginPrompt: (handler: (prompt: unknown) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
+    ipcRenderer.on("market:login-prompt", listener)
+    return () => ipcRenderer.removeListener("market:login-prompt", listener)
+  },
+
   // ---- AI assistant ----
   getAiStatus: () => ipcRenderer.invoke("ai:status"),
   setAiKey: (providerId: string, key: string) =>

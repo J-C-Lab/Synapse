@@ -218,6 +218,18 @@
     "protectedSource": "该插件来自{{source}}，不能从应用市场重新安装。",
     "by": "作者 {{handle}}",
     "viewDetails": "详情",
+    "account": {
+      "signIn": "登录",
+      "signingIn": "请在浏览器中完成…",
+      "signOut": "退出",
+      "signedIn": "已登录为 {{handle}}",
+      "prompt": "请在浏览器中授权（验证码 {{code}}）。"
+    },
+    "rate": {
+      "label": "我的评分",
+      "star": "评 {{stars}} 星",
+      "thanks": "感谢评分！"
+    },
     "detail": {
       "permissionsTitle": "请求的权限",
       "permissionsNone": "不请求任何特殊权限。",

@@ -1,5 +1,10 @@
 import type { ReactNode } from "react"
-import type { MarketplaceDetail, MarketplaceSummary, PluginRegistryEntry } from "@/lib/electron"
+import type {
+  MarketplaceAccount,
+  MarketplaceDetail,
+  MarketplaceSummary,
+  PluginRegistryEntry,
+} from "@/lib/electron"
 import {
   AlertCircle,
   Download,
@@ -29,11 +34,16 @@ import { Input } from "@/components/ui/input"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   ElectronIpcError,
+  getMarketplaceAccount,
   getMarketplaceDetail,
   installMarketplaceBackendPlugin,
   isElectron,
   listPlugins,
+  marketplaceLogin,
+  marketplaceLogout,
+  onMarketplaceLoginPrompt,
   onPluginRegistryChanged,
+  rateMarketplacePlugin,
   searchMarketplace,
 } from "@/lib/electron"
 import { cn } from "@/lib/utils"
@@ -47,6 +57,7 @@ export function MarketplacePage() {
   const [loading, setLoading] = useState(electronReady)
   const [error, setError] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [account, setAccount] = useState<MarketplaceAccount>({ user: null })
 
   const load = useCallback(
     async (search: string) => {
@@ -78,6 +89,17 @@ export function MarketplacePage() {
     return onPluginRegistryChanged((plugins) => setInstalled(installedPluginMap(plugins)))
   }, [electronReady])
 
+  useEffect(() => {
+    if (!electronReady) return
+    let active = true
+    void getMarketplaceAccount()
+      .then((value) => active && setAccount(value))
+      .catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [electronReady])
+
   if (!electronReady) {
     return (
       <MarketplaceFrame>
@@ -93,10 +115,13 @@ export function MarketplacePage() {
   return (
     <MarketplaceFrame
       action={
-        <Button variant="outline" size="sm" disabled={loading} onClick={() => void load(query)}>
-          <RefreshCw className={cn("size-4", loading && "animate-spin")} aria-hidden />
-          {t("marketplace.actions.refresh")}
-        </Button>
+        <>
+          <AccountControl account={account} onChange={setAccount} />
+          <Button variant="outline" size="sm" disabled={loading} onClick={() => void load(query)}>
+            <RefreshCw className={cn("size-4", loading && "animate-spin")} aria-hidden />
+            {t("marketplace.actions.refresh")}
+          </Button>
+        </>
       }
     >
       <div className="rounded-lg border bg-card p-3">
@@ -151,6 +176,7 @@ export function MarketplacePage() {
         pluginId={selectedId}
         installed={selectedId ? installed.get(selectedId) : undefined}
         locale={i18n.language}
+        canRate={Boolean(account.user)}
         onOpenChange={(open) => !open && setSelectedId(null)}
         onInstalled={(plugin) => {
           setInstalled((current) => new Map(current).set(plugin.pluginId, plugin))
@@ -194,6 +220,56 @@ function SubmitPluginButton() {
       </TooltipTrigger>
       <TooltipContent>{t("marketplace.submitTooltip")}</TooltipContent>
     </Tooltip>
+  )
+}
+
+function AccountControl({
+  account,
+  onChange,
+}: {
+  account: MarketplaceAccount
+  onChange: (account: MarketplaceAccount) => void
+}) {
+  const { t } = useTranslation()
+  const [busy, setBusy] = useState(false)
+
+  useEffect(
+    () =>
+      onMarketplaceLoginPrompt((prompt) =>
+        toast.message(t("marketplace.account.prompt", { code: prompt.userCode }))
+      ),
+    [t]
+  )
+
+  async function signIn() {
+    setBusy(true)
+    try {
+      const user = await marketplaceLogin()
+      onChange({ user })
+      toast.success(t("marketplace.account.signedIn", { handle: user.handle }))
+    } catch (err) {
+      toast.error(errorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function signOut() {
+    await marketplaceLogout()
+    onChange({ user: null })
+  }
+
+  if (account.user) {
+    return (
+      <Button variant="outline" size="sm" onClick={() => void signOut()}>
+        {account.user.handle} · {t("marketplace.account.signOut")}
+      </Button>
+    )
+  }
+  return (
+    <Button variant="outline" size="sm" disabled={busy} onClick={() => void signIn()}>
+      {busy ? t("marketplace.account.signingIn") : t("marketplace.account.signIn")}
+    </Button>
   )
 }
 
@@ -248,12 +324,14 @@ function PluginDetailDialog({
   pluginId,
   installed,
   locale,
+  canRate,
   onOpenChange,
   onInstalled,
 }: {
   pluginId: string | null
   installed?: PluginRegistryEntry
   locale: string
+  canRate: boolean
   onOpenChange: (open: boolean) => void
   onInstalled: (plugin: PluginRegistryEntry) => void
 }) {
@@ -303,6 +381,27 @@ function PluginDetailDialog({
     }
   }
 
+  async function rate(stars: number) {
+    if (!detail) return
+    try {
+      const result = await rateMarketplacePlugin(detail.plugin.id, stars)
+      setDetail((current) =>
+        current
+          ? {
+              ...current,
+              plugin: { ...current.plugin, stats: result.stats },
+              myRating: result.rating,
+            }
+          : current
+      )
+      toast.success(t("marketplace.rate.thanks"))
+    } catch (err) {
+      toast.error(errorMessage(err))
+    }
+  }
+
+  const myStars = detail?.myRating?.stars ?? 0
+
   return (
     <Dialog open={Boolean(pluginId)} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-lg">
@@ -332,6 +431,8 @@ function PluginDetailDialog({
                 </>
               )}
             </div>
+
+            {canRate && <RatingControl myStars={myStars} onRate={rate} />}
 
             <section className="space-y-2">
               <h3 className="flex items-center gap-2 text-sm font-medium">
@@ -403,6 +504,46 @@ function PluginDetailDialog({
         )}
       </DialogContent>
     </Dialog>
+  )
+}
+
+function RatingControl({
+  myStars,
+  onRate,
+}: {
+  myStars: number
+  onRate: (stars: number) => Promise<void>
+}) {
+  const { t } = useTranslation()
+  const [busy, setBusy] = useState(false)
+
+  async function choose(stars: number) {
+    setBusy(true)
+    try {
+      await onRate(stars)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-sm font-medium">{t("marketplace.rate.label")}</span>
+      <div className="flex items-center">
+        {[1, 2, 3, 4, 5].map((stars) => (
+          <button
+            key={stars}
+            type="button"
+            disabled={busy}
+            aria-label={t("marketplace.rate.star", { stars })}
+            className="px-0.5 text-lg leading-none text-amber-500 disabled:opacity-50"
+            onClick={() => void choose(stars)}
+          >
+            {stars <= myStars ? "★" : "☆"}
+          </button>
+        ))}
+      </div>
+    </div>
   )
 }
 
