@@ -118,6 +118,19 @@
     "title": "设置",
     "subtitle": "调整外观和功能行为。"
   },
+  "trustedSources": {
+    "title": "可信插件来源",
+    "subtitle": "选择桌面端展示哪些插件包来源。",
+    "saved": "可信来源策略已更新。",
+    "policy": {
+      "officialMarketplace": "仅官方市场",
+      "officialMarketplaceHint": "只展示由 Synapse 应用市场后端解析的插件包。",
+      "anyUrl": "任意 URL",
+      "anyUrlHint": "允许客户端暴露应用市场与 URL 包来源。",
+      "localSyn": "仅本地 .syn",
+      "localSynHint": "只允许从本机文件导入 .syn 插件包。"
+    }
+  },
   "appearance": {
     "title": "外观",
     "subtitle": "在浅色与深色间切换，或挑选一个主题配色。",
@@ -256,6 +269,73 @@
     "submit": "提交插件",
     "submitTooltip": "敬请期待",
     "protectedSource": "该插件来自{{source}}，不能从应用市场重新安装。",
+    "by": "作者 {{handle}}",
+    "viewDetails": "详情",
+    "tabs": {
+      "browse": "浏览",
+      "mine": "我的插件",
+      "admin": "Admin"
+    },
+    "governance": {
+      "emptyMine": "当前账号尚未发布插件。",
+      "emptyAdmin": "暂无市场插件。",
+      "signInRequired": "登录后即可管理你发布的市场插件。",
+      "visibilityPublic": "公开",
+      "visibilityPrivate": "私有",
+      "makePublic": "设为公开",
+      "makePrivate": "设为私有",
+      "yank": "撤回最新版",
+      "yanked": "版本已撤回。",
+      "visibilityUpdated": "可见性已更新。",
+      "report": "举报",
+      "reported": "举报已提交。",
+      "defaultReportReason": "通过 Synapse 桌面端提交举报。",
+      "remove": "下架",
+      "removed": "插件已下架。",
+      "reportResolved": "举报已处理。"
+    },
+    "review": {
+      "title": "审核队列",
+      "subtitle": "待处理的举报——来自用户与上传自动扫描。",
+      "empty": "暂无待处理举报，一切正常。",
+      "markReviewed": "标记已处理",
+      "dismiss": "忽略",
+      "kind": {
+        "user": "用户举报",
+        "auto": "自动扫描"
+      }
+    },
+    "account": {
+      "signIn": "登录",
+      "signingIn": "请在浏览器中完成…",
+      "signOut": "退出",
+      "signedIn": "已登录为 {{handle}}",
+      "menuLabel": "应用市场账号 {{handle}}",
+      "prompt": "请在浏览器中完成 GitHub 授权。",
+      "dialogTitle": "使用 GitHub 登录",
+      "dialogDescription": "Synapse 已在浏览器中打开 GitHub 授权页面。完成授权后，这里会自动继续。",
+      "preparing": "正在准备 GitHub 授权请求…",
+      "browserReady": "请在浏览器中完成授权",
+      "waiting": "授权完成后，Synapse 会自动连接你的应用市场账号。",
+      "secureHint": "只有 GitHub 确认后，应用才会获得应用市场会话。",
+      "stepBrowser": "浏览器授权",
+      "stepConnect": "自动连接",
+      "close": "关闭"
+    },
+    "rate": {
+      "label": "我的评分",
+      "star": "评 {{stars}} 星",
+      "thanks": "感谢评分！"
+    },
+    "detail": {
+      "permissionsTitle": "请求的权限",
+      "permissionsNone": "不请求任何特殊权限。",
+      "toolsTitle": "暴露的 AI 工具",
+      "versions": "版本历史",
+      "install": "安装",
+      "installing": "安装中…",
+      "close": "关闭"
+    },
     "actions": {
       "refresh": "刷新",
       "install": "安装",

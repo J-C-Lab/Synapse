@@ -217,7 +217,9 @@ module.exports = {
   tools: { hang() { return new Promise(() => {}) } }
 }
 `)
-    const sandbox = sandboxForTest(100, 100, 5)
+    // Only the tool-invoke budget (5ms) is under test; keep load/invoke generous
+    // so the load step does not flake under CPU load.
+    const sandbox = sandboxForTest(2000, 2000, 5)
     await sandbox.loadPlugin(entry)
 
     await expect(
@@ -299,10 +301,13 @@ module.exports = {
   })
 })
 
+// Default budgets are generous so normal (non-timeout) cases stay reliable when
+// the test run saturates the CPU; the timeout-behavior tests pass explicit
+// small values to trigger the timeouts they assert.
 function sandboxForTest(
-  invokeTimeoutMs = 100,
-  loadTimeoutMs = 100,
-  toolInvokeTimeoutMs = 100
+  invokeTimeoutMs = 2000,
+  loadTimeoutMs = 2000,
+  toolInvokeTimeoutMs = 2000
 ): PluginSandbox {
   const bridge = new PluginBridge({
     userDataDir: dir,

@@ -1,4 +1,14 @@
+import type {
+  AdminReportsResponse,
+  MyPluginsResponse,
+  PluginDetailResponse,
+  RateResponse,
+  ReportStatus,
+  SearchPluginsResponse,
+  Visibility,
+} from "@synapse/marketplace-types"
 import type { ClipboardContent, ToolResult } from "@synapse/plugin-sdk"
+import type { MarketplaceApi } from "./marketplace-api"
 import type { MarketplaceEntry } from "./marketplace-registry"
 import type { PluginBridgeAdapters, PluginRuntimeSnapshot } from "./plugin-bridge"
 import type {
@@ -16,6 +26,7 @@ import * as path from "node:path"
 import { createElectronPluginAdapters } from "./electron-adapters"
 import { extractSynapsePackage } from "./install-from-package"
 import { loadPluginManifest } from "./manifest-loader"
+import { createMarketplaceApi } from "./marketplace-api"
 import {
   DEFAULT_MARKETPLACE_REGISTRY_URL,
   fetchMarketplaceRegistry,
@@ -32,8 +43,12 @@ export interface PluginHostOptions {
   userDataDir: string
   resourcesDir: string
   adapters?: PluginBridgeAdapters
-  fetch?: (url: string) => Promise<Response>
+  fetch?: (url: string, init?: RequestInit) => Promise<Response>
   marketplaceRegistryUrl?: string
+  /** Base URL of the marketplace backend (authoritative source). */
+  marketplaceBaseUrl?: string
+  /** Supplies the signed-in session token so browse/install can see private plugins. */
+  marketplaceGetToken?: () => Promise<string | undefined> | string | undefined
   runtime?: () => PluginRuntimeSnapshot
   clipboardPollMs?: number
 }
@@ -91,6 +106,7 @@ export class PluginHost {
   private readonly builtinDir: string
   private readonly userDir: string
   private readonly devFilePath: string
+  private readonly marketplaceApi: MarketplaceApi
   private clipboardTimer?: ReturnType<typeof setInterval>
   private lastClipboardSnapshot?: string
   private readonly handleRegistryChanged = (): void => {
@@ -101,6 +117,11 @@ export class PluginHost {
     this.builtinDir = path.join(options.resourcesDir, "builtin-plugins")
     this.userDir = path.join(options.userDataDir, "plugins")
     this.devFilePath = path.join(options.userDataDir, "dev-plugins.json")
+    this.marketplaceApi = createMarketplaceApi({
+      baseUrl: options.marketplaceBaseUrl,
+      fetch: options.fetch ?? globalThis.fetch,
+      getToken: options.marketplaceGetToken,
+    })
     this.preferences = new PluginPreferenceStore(pluginPreferenceFilePath(options.userDataDir))
     this.bridge = new PluginBridge({
       userDataDir: options.userDataDir,
@@ -205,6 +226,94 @@ export class PluginHost {
       return await this.installPackageFile(packagePath, {
         expectedPluginId: entry.id,
         expectedVersion: entry.version,
+      })
+    } finally {
+      await removeDirectoryIfExists(path.dirname(packagePath))
+    }
+  }
+
+  /** Search the marketplace backend (authoritative source) for public plugins. */
+  async searchMarketplace(query?: string): Promise<SearchPluginsResponse> {
+    return this.marketplaceApi.search(query)
+  }
+
+  /** Full plugin detail (incl. version history + manifest snapshot) from the backend. */
+  async marketplaceDetail(pluginId: string): Promise<PluginDetailResponse> {
+    return this.marketplaceApi.detail(pluginId)
+  }
+
+  /** Submit the signed-in user's star rating for a plugin. */
+  async rateMarketplace(pluginId: string, stars: number): Promise<RateResponse> {
+    return this.marketplaceApi.rate(pluginId, stars)
+  }
+
+  /** The signed-in user's own plugins (any visibility). */
+  async marketplaceMyPlugins(): Promise<MyPluginsResponse> {
+    return this.marketplaceApi.myPlugins()
+  }
+
+  /** Owner toggles a plugin's public/private visibility. */
+  async marketplaceSetVisibility(
+    pluginId: string,
+    visibility: Visibility
+  ): Promise<PluginDetailResponse> {
+    return this.marketplaceApi.setVisibility(pluginId, visibility)
+  }
+
+  /** Owner withdraws (yanks) a published version. */
+  async marketplaceYank(
+    pluginId: string,
+    version: string,
+    reason?: string
+  ): Promise<PluginDetailResponse> {
+    return this.marketplaceApi.yank(pluginId, version, reason)
+  }
+
+  /** File an abuse/quality report against a plugin. */
+  async marketplaceReport(pluginId: string, reason: string): Promise<void> {
+    await this.marketplaceApi.report(pluginId, reason)
+  }
+
+  /** Admin takedown of a plugin. */
+  async marketplaceAdminRemove(pluginId: string): Promise<void> {
+    await this.marketplaceApi.adminRemove(pluginId)
+  }
+
+  /** Admin restore — undo a takedown. */
+  async marketplaceAdminRestore(pluginId: string): Promise<void> {
+    await this.marketplaceApi.adminRestore(pluginId)
+  }
+
+  /** Admin review queue, by report status. */
+  async marketplaceAdminReports(status?: ReportStatus): Promise<AdminReportsResponse> {
+    return this.marketplaceApi.adminReports(status)
+  }
+
+  /** Admin resolves a report. */
+  async marketplaceResolveReport(
+    reportId: string,
+    status: "reviewed" | "dismissed"
+  ): Promise<void> {
+    await this.marketplaceApi.resolveReport(reportId, status)
+  }
+
+  /**
+   * Install a plugin from the marketplace backend: resolve a signed download
+   * URL, fetch the package, verify it against the backend's sha256, then run
+   * the same staged install + id/version checks as every other install path.
+   */
+  async installFromMarketplace(pluginId: string, version: string): Promise<PluginRegistryEntry> {
+    const resolved = await this.marketplaceApi.resolveDownload(pluginId, version)
+    const packagePath = await this.downloadVerifiedPackage(
+      pluginId,
+      version,
+      resolved.downloadUrl,
+      resolved.sha256
+    )
+    try {
+      return await this.installPackageFile(packagePath, {
+        expectedPluginId: pluginId,
+        expectedVersion: version,
       })
     } finally {
       await removeDirectoryIfExists(path.dirname(packagePath))
@@ -334,6 +443,51 @@ export class PluginHost {
     )
     await fs.mkdir(tempDir, { recursive: true })
     const packagePath = path.join(tempDir, `${safePluginFileName(entry.id)}-${entry.version}.syn`)
+    await fs.writeFile(packagePath, buffer)
+    return packagePath
+  }
+
+  /** Fetch a package from an (already resolved) URL and verify its digest. */
+  private async downloadVerifiedPackage(
+    pluginId: string,
+    version: string,
+    url: string,
+    expectedSha256: string
+  ): Promise<string> {
+    let buffer: NodeBuffer
+    try {
+      const response = await (this.options.fetch ?? globalThis.fetch)(url)
+      if (!response.ok) {
+        throw new PluginInstallError("Marketplace package download failed.", {
+          pluginId,
+          status: response.status,
+        })
+      }
+      buffer = NodeBuffer.from(await response.arrayBuffer())
+    } catch (err) {
+      if (err instanceof PluginInstallError) throw err
+      throw new PluginInstallError("Marketplace package download failed.", {
+        pluginId,
+        reason: err instanceof Error ? err.message : String(err),
+      })
+    }
+
+    const actualSha256 = createHash("sha256").update(buffer).digest("hex")
+    if (actualSha256 !== expectedSha256) {
+      throw new PluginInstallError("Marketplace package checksum mismatch.", {
+        pluginId,
+        expectedSha256,
+        actualSha256,
+      })
+    }
+
+    const tempDir = path.join(
+      this.options.userDataDir,
+      "marketplace-downloads",
+      `.download-${safePluginFileName(pluginId)}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    )
+    await fs.mkdir(tempDir, { recursive: true })
+    const packagePath = path.join(tempDir, `${safePluginFileName(pluginId)}-${version}.syn`)
     await fs.writeFile(packagePath, buffer)
     return packagePath
   }

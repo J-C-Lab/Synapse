@@ -2,6 +2,8 @@
 
 This document defines how the Synapse team works in this repository. It is written for contributors with different Git and GitHub experience levels, so please follow it even when a shortcut looks faster.
 
+Synapse is a pnpm monorepo: an Electron desktop app at the repo root, shared plugin/marketplace packages and the marketplace backend under `packages/`, and the docs site plus web portal under `docs/`. See the [README](./README.md#monorepo-layout) for the full layout. The rules below apply across all of them; some sections call out the desktop app or the backend specifically.
+
 ## Core Rules
 
 - Do not push directly to `main`.
@@ -15,14 +17,14 @@ This document defines how the Synapse team works in this repository. It is writt
 
 Install the required tools:
 
-- Node.js 20+
+- Node.js 22.13+
 - pnpm 11.x
 - Git
 
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/WiIIiamWei/Synapse.git
+git clone https://github.com/J-C-Lab/Synapse.git
 cd Synapse
 pnpm install
 ```
@@ -31,6 +33,14 @@ Start the app:
 
 ```bash
 pnpm dev
+```
+
+Work on a single package with pnpm's workspace filter, for example:
+
+```bash
+pnpm -F @synapse/marketplace-server dev    # run the marketplace backend
+pnpm -F @synapse/marketplace-server test   # test just that package
+pnpm docs:dev                              # docs site + web portal
 ```
 
 ## Branch Workflow
@@ -185,6 +195,17 @@ When adding IPC:
 - add tests for pure business logic
 - expose the smallest renderer API possible
 
+## Backend & Marketplace Rules
+
+The marketplace backend (`packages/marketplace-server`) and its shared contract follow a few extra rules:
+
+- The contract is the single source of truth. Add or change request/response shapes in `@synapse/marketplace-types` (zod schemas) first; the server, CLI, desktop app, and web portal all derive their types from it.
+- Validate every request body and query against a schema at the route boundary. Enforce authorization in the service layer too, not only in the route — defense in depth.
+- Never commit real secrets. Keep credentials in `packages/marketplace-server/.env` (gitignored); document new variables in `.env.example`.
+- Schema changes require a migration. Run `pnpm -F @synapse/marketplace-server db:generate` and commit the generated SQL under `drizzle/`.
+- Keep the backend testable without credentials. Tests run against in-process Postgres (PGlite) with injected ports (storage, identity, clock); do not introduce hard dependencies on a live database, network, or object store in unit tests.
+- Treat auth, sessions, rate limiting, and signed URLs as security-sensitive — flag changes for review.
+
 ## UI Rules
 
 - Use existing components from `src/renderer/src/components/ui/`.
@@ -203,6 +224,10 @@ Public project documentation belongs in tracked files such as:
 - `CI_CD.md`
 - `CONTRIBUTING.md`
 - `docs/`
+- `design/` — architecture and milestone plans (AI foundation, marketplace & users)
+- per-package `README.md` under `packages/*`
+
+Keep these in sync with the code. When a change alters setup, scripts, the repository layout, or a package's public surface, update the relevant docs in the same pull request.
 
 The `Synapse/` directory is for local planning and development discussion. It is ignored by Git and should not be linked as required public documentation.
 

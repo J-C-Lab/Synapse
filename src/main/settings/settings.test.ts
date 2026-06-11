@@ -72,6 +72,18 @@ describe("normalizeSettings", () => {
     expect(normalizeSettings({ lanEnabled: "yes" })).toEqual(defaultSettings)
   })
 
+  it("normalizes the trusted plugin source policy", () => {
+    expect(normalizeSettings({ trustedSourcePolicy: "local-syn" })).toEqual({
+      ...defaultSettings,
+      trustedSourcePolicy: "local-syn",
+    })
+    expect(normalizeSettings({ trustedSourcePolicy: "any-url" })).toEqual({
+      ...defaultSettings,
+      trustedSourcePolicy: "any-url",
+    })
+    expect(normalizeSettings({ trustedSourcePolicy: "unknown" })).toEqual(defaultSettings)
+  })
+
   it("keeps a default floating ball feature when the configured list is empty", () => {
     expect(normalizeSettings({ floatingBallFeatures: ["floatingBall"] })).toEqual(defaultSettings)
   })

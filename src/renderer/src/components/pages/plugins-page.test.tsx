@@ -1,10 +1,21 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { PluginsPage } from "./plugins-page"
+import { PluginsPage } from "@/components/pages/plugins-page"
 
-const electron = vi.hoisted(() => ({
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    i18n: { language: "en" },
+    t: (key: string, options?: { count?: number; defaultValue?: string }) =>
+      options?.defaultValue ?? (options?.count ? `${key}:${String(options.count)}` : key),
+  }),
+}))
+
+vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
+
+const mocks = vi.hoisted(() => ({
   droppedFilePath: vi.fn((file: File) => `/dropped/${file.name}`),
+  getSettings: vi.fn(),
   importPluginFromFile: vi.fn(),
   installPluginPackage: vi.fn(),
   isElectron: vi.fn(() => true),
@@ -16,13 +27,9 @@ const electron = vi.hoisted(() => ({
   uninstallPlugin: vi.fn(),
 }))
 
-vi.mock("@/lib/electron", () => electron)
-vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
-vi.mock("react-i18next", () => ({
-  useTranslation: () => ({
-    i18n: { language: "en" },
-    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
-  }),
+vi.mock("@/lib/electron", () => ({
+  ...mocks,
+  ElectronIpcError: class extends Error {},
 }))
 
 function plugin(overrides: Record<string, unknown> = {}) {
@@ -49,31 +56,42 @@ function plugin(overrides: Record<string, unknown> = {}) {
   }
 }
 
+beforeEach(() => {
+  vi.clearAllMocks()
+  mocks.isElectron.mockReturnValue(true)
+  mocks.listPlugins.mockResolvedValue([
+    plugin(),
+    plugin({
+      pluginId: "com.synapse.notes",
+      rootDir: "C:/plugins/notes",
+      status: "disabled",
+      manifest: {
+        ...plugin().manifest,
+        id: "com.synapse.notes",
+        name: "Notes",
+        displayName: "Notes",
+        description: "Simple notes",
+        permissions: [],
+      },
+    }),
+  ])
+  mocks.onPluginRegistryChanged.mockReturnValue(() => undefined)
+  mocks.getSettings.mockResolvedValue({
+    hotkey: "Control+Space",
+    themeMode: "system",
+    accent: "neutral",
+    floatingBallEnabled: false,
+    floatingBallFeatures: ["appLauncher"],
+    lanEnabled: false,
+    trustedSourcePolicy: "official-marketplace",
+  })
+})
+
+afterEach(() => {
+  cleanup()
+})
+
 describe("pluginsPage", () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    electron.listPlugins.mockResolvedValue([
-      plugin(),
-      plugin({
-        pluginId: "com.synapse.notes",
-        rootDir: "C:/plugins/notes",
-        status: "disabled",
-        manifest: {
-          ...plugin().manifest,
-          id: "com.synapse.notes",
-          name: "Notes",
-          displayName: "Notes",
-          description: "Simple notes",
-          permissions: [],
-        },
-      }),
-    ])
-  })
-
-  afterEach(() => {
-    cleanup()
-  })
-
   it("shows manifest permissions and filters by permission search text", async () => {
     const user = userEvent.setup()
     render(<PluginsPage />)
@@ -95,5 +113,14 @@ describe("pluginsPage", () => {
     await user.click(screen.getByRole("button", { name: "plugins.source.builtin" }))
 
     expect(screen.getByText("plugins.filteredEmptyTitle")).toBeInTheDocument()
+  })
+})
+
+describe("plugins page trusted source policy", () => {
+  it("disables local .syn import when only the official marketplace is trusted", async () => {
+    mocks.listPlugins.mockResolvedValueOnce([])
+    render(<PluginsPage />)
+
+    expect(await screen.findByRole("button", { name: "plugins.actions.import" })).toBeDisabled()
   })
 })
