@@ -10,8 +10,8 @@
     "validate": "synapse-plugin validate"
   },
   "devDependencies": {
-    "@synapse/plugin-cli": "^0.1.0",
-    "@synapse/plugin-sdk": "^0.3.0",
+    "@synapsepkg/plugin-cli": "^0.1.0",
+    "@synapsepkg/plugin-sdk": "^0.3.0",
     "typescript": "^5.9.0"
   }
 }

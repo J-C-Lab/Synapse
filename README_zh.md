@@ -106,7 +106,7 @@ synapse/
 密钥（AI provider key、市场会话 token、MCP server 的 env / headers）经 Electron `safeStorage`
 用系统钥匙串加密落盘，且永不进入渲染端。
 
-**市场契约。** `@synapse/marketplace-types` 是单一数据源——带 `z.infer` 类型的 zod schema，
+**市场契约。** `@synapsepkg/marketplace-types` 是单一数据源——带 `z.infer` 类型的 zod schema，
 由后端、CLI、桌面应用与 Web 门户共享。后端完全依赖注入（db、对象存储、身份 provider、时钟），
 因此测试可跑在进程内 Postgres（PGlite/WASM）上，无需任何真实凭据。
 
@@ -137,7 +137,7 @@ pnpm dev                # 启动桌面应用（渲染端 Vite HMR + main/preload
 ```bash
 cp packages/marketplace-server/.env.example packages/marketplace-server/.env
 # 填入 DATABASE_URL + GITHUB_CLIENT_ID/SECRET（R2 变量可选 → 缺省回退到内存存储）
-pnpm -F @synapse/marketplace-server dev
+pnpm -F @synapsepkg/marketplace-server dev
 ```
 
 ### 浏览市场 Web 门户
@@ -163,12 +163,17 @@ pnpm dev:lan:b          # 显示为 “Synapse Sim B”
 ## 开发一个插件
 
 ```bash
-pnpm dlx create-synapse-plugin my-plugin   # 脚手架
+pnpm dlx create-synapse-plugin my-plugin   # 从 npm 拉取脚手架
 cd my-plugin
+pnpm install
 pnpm synapse-plugin build                  # → my-plugin-<version>.syn
 pnpm synapse-plugin login                  # 设备流登录市场
 pnpm synapse-plugin publish                # 发布（默认私人）
 ```
+
+生成的插件项目依赖已发布的 `@synapsepkg/plugin-sdk` 与
+`@synapsepkg/plugin-cli`，并包含一份 `AGENT.md`，用于给代码代理和协作者说明本地插件开发规则。
+旧的 `create-deskit-plugin` 已弃用，新插件请使用 `create-synapse-plugin`。
 
 本地安装：在桌面应用的「插件」页打开一个 `.syn` 文件即可。
 
@@ -189,7 +194,7 @@ pnpm typecheck          # 类型检查 packages + node(main/preload) + web(rende
 pnpm test               # Vitest            （pnpm test:watch / pnpm test:coverage）
 
 # 市场后端 & 文档
-pnpm -F @synapse/marketplace-server dev
+pnpm -F @synapsepkg/marketplace-server dev
 pnpm docs:dev           # 文档站 + Web 门户（端口 3001）
 ```
 

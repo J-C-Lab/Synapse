@@ -1,4 +1,4 @@
-// @synapse/plugin-manifest
+// @synapsepkg/plugin-manifest
 //
 // Shared plugin-manifest contract for Synapse. Owns the manifest TypeScript
 // types, the zod validation schema, and engine-compatibility logic so the

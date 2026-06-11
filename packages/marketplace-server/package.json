@@ -1,5 +1,5 @@
 {
-  "name": "@synapse/marketplace-server",
+  "name": "@synapsepkg/marketplace-server",
   "version": "0.1.0",
   "private": true,
   "description": "Synapse marketplace backend — Fastify + Drizzle (Postgres) API for users, plugins, publishing, downloads, and ratings",
@@ -18,7 +18,7 @@
     "@aws-sdk/s3-request-presigner": "^3.726.0",
     "@fastify/multipart": "^9.0.3",
     "@fastify/rate-limit": "^10.3.0",
-    "@synapse/marketplace-types": "workspace:*",
+    "@synapsepkg/marketplace-types": "workspace:*",
     "drizzle-orm": "^0.38.3",
     "fastify": "^5.2.1",
     "pg": "^8.13.1",

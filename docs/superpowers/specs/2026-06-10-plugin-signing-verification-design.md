@@ -23,7 +23,7 @@
 1. **信任模型**:注册表锚定发布者密钥 + 本地信任库(本地导入遇未知发布者走 TOFU)。
 2. **范围**:两条安装路径都覆盖;签名**内嵌**进 `.syn` 包。
 3. **未签名策略**:invalid 永远拒;市场要求已签名;本地未签名→警告+显式确认;valid 但发布者未知(本地)→TOFU;dev 来源豁免。
-4. **发布者锚来源**:**后端 API**(Neon 存发布者公钥,经 `@synapse/marketplace-types` 契约下发)。**无静态 git 注册表、无 v1/v2 版本开关、无 legacy 兼容**。签名纯核心(Phase 1)可独立合入;市场接线依赖后端(PR #1)落地。
+4. **发布者锚来源**:**后端 API**(Neon 存发布者公钥,经 `@synapsepkg/marketplace-types` 契约下发)。**无静态 git 注册表、无 v1/v2 版本开关、无 legacy 兼容**。签名纯核心(Phase 1)可独立合入;市场接线依赖后端(PR #1)落地。
 5. **加密**:Ed25519,经 Node 内置 `crypto`,零新原生依赖。
 
 ## 3. 加密与编码
@@ -190,7 +190,7 @@ decidePluginInstall(
 
 注册表是**后端 API**(PR #1:Fastify + Neon + R2),不是静态 JSON 文件。签名只需要后端提供一个**锚**:「插件 X 的可信发布者公钥 = K」。
 
-- **后端域模型 / API 契约**(`@synapse/marketplace-types`)在 plugin / version 元数据上携带其发布者的 **公钥(SPKI DER b64)+ publisherId**,存 **Neon**,经 API 下发。签名本身**内嵌在 `.syn`**(自包含验证),后端只下发锚,不传签名。
+- **后端域模型 / API 契约**(`@synapsepkg/marketplace-types`)在 plugin / version 元数据上携带其发布者的 **公钥(SPKI DER b64)+ publisherId**,存 **Neon**,经 API 下发。签名本身**内嵌在 `.syn`**(自包含验证),后端只下发锚,不传签名。
 - `sha256`(下载完整性,后端上传时算 / 客户端下载后校)保留;签名是叠加的**真实性**。
 - **市场安装**:`registryPublisher` = 后端 API 返回的该插件发布者 `{ publisherId, publicKey }`,喂给 §9 的 marketplace 分支。
 - **本地 `.syn` 导入**:与后端无关,始终走签名闸(localPackage 分支 + TOFU)。
@@ -220,7 +220,7 @@ decidePluginInstall(
   - trustStore 已存在:用 trustStore 中的 name。
 - 选原生模态:安全关键步骤放主进程,**渲染层无法伪造/绕过**,且无需 pending-token 状态机。代价:UX 不如内嵌弹窗统一(本地导入低频,可接受)。
 
-## 13. 共享纯模块 `@synapse/plugin-signing`
+## 13. 共享纯模块 `@synapsepkg/plugin-signing`
 
 新 workspace 包,纯 TS、只依赖 `node:crypto`、**无 Electron**。导出:`canonicalJson`、`normalizePackageEntryName`、`fingerprint`、`signPackageDigest`、`verifyPackageSignature`、相关类型。
 
@@ -228,16 +228,16 @@ decidePluginInstall(
 
 代价:多一个 workspace 包 —— 换来 sign/verify 对称性,值得。
 
-## 14. 发布者 CLI(`@synapse/plugin-cli` 加三命令)
+## 14. 发布者 CLI(`@synapsepkg/plugin-cli` 加三命令)
 
 - `synapse-plugin keygen` → Ed25519 keypair;私钥写 `synapse-private-key.pem`(PKCS8,提示加 `.gitignore`)+ 打印公钥(SPKI DER b64)+ fingerprint(供提交注册表)。
 - `synapse-plugin sign [dir]` → 复用 `zip.ts`/`build.ts` 算文件摘要 → 构造 `signedPayload` → 私钥签名 → 内嵌 `META-INF/synapse-signature.json` → 产出已签 `.syn`(已存在签名条目则拒)。
-- `synapse-plugin verify <pkg>` → 调 `@synapse/plugin-signing` 的 `verifyPackageSignature`,作者自检。
+- `synapse-plugin verify <pkg>` → 调 `@synapsepkg/plugin-signing` 的 `verifyPackageSignature`,作者自检。
 - `create-synapse-plugin` 模板 + 新 `SIGNING.md` 文档。
 
 ## 15. 测试矩阵(TDD)
 
-- **`@synapse/plugin-signing`**:
+- **`@synapsepkg/plugin-signing`**:
   - `canonicalJson` 确定性(key 序无关;拒 `NaN`/`Infinity`/`undefined`;**拒非 ASCII key**)。
   - `normalizePackageEntryName`:接受合法;拒 `..`/绝对/反斜杠/盘符/`\0`/非 ASCII/目录项/签名文件本身。
   - 集合级:**规范化后重复路径 → invalid**;**大小写折叠碰撞(`dist/index.js` vs `dist/INDEX.js`)→ invalid**。
@@ -250,7 +250,7 @@ decidePluginInstall(
   - **symlink / 非普通文件**:ZIP 含 symlink/设备文件 → 拒;hash 阶段 `lstat` 不 follow symlink。
 - **`decidePluginInstall`**:§9 矩阵**每一行**;显式覆盖 C1–C5(尤其 **C3 拿不到后端锚→reject 不降级**、C4 TOFU 后 key-mismatch、key-mismatch 两条路径都 reject);**devDirectory 不写 trustStore、不参与 TOFU**。
 - **PublisherTrustStore**:从后端发布者列表 seed、TOFU 追加、跨实例持久、key-mismatch 冲突标记、损坏项丢弃;**local unsigned confirm 通过后不写 trustStore**(未签名包不得变成隐式可信发布者)。
-- **后端锚契约**:`@synapse/marketplace-types` 的 plugin/version 元数据带发布者公钥字段(校验);市场安装在**后端无锚**(离线/插件无登记发布者)时 → reject,**不降级**为不验签。
+- **后端锚契约**:`@synapsepkg/marketplace-types` 的 plugin/version 元数据带发布者公钥字段(校验);市场安装在**后端无锚**(离线/插件无登记发布者)时 → reject,**不降级**为不验签。
 - **CLI**:keygen/sign/verify 往返;sign 拒已签包。
 - **Host 集成**:已签 fixture 装得上;未签 fixture 市场 reject / 本地走 confirm;`registryPublisher` 不匹配 reject。
 - **TOFU 弹窗内容**:确认展示 `fingerprint`(不只 `publisherName`)。
@@ -264,8 +264,8 @@ decidePluginInstall(
 
 设计较大,分 5 阶段实现,每阶段先测后码、可独立合入:
 
-- **Phase 1 — 纯核心**(`@synapse/plugin-signing`):`canonicalJson`(ASCII-key)、`normalizePackageEntryName`、集合级冲突检测、`fingerprint`、`verifyPackageSignature`(签名/篡改/未知字段)+ 单测。
+- **Phase 1 — 纯核心**(`@synapsepkg/plugin-signing`):`canonicalJson`(ASCII-key)、`normalizePackageEntryName`、集合级冲突检测、`fingerprint`、`verifyPackageSignature`(签名/篡改/未知字段)+ 单测。
 - **Phase 2 — 安全解压与 staging 校验**:ZIP entry 规范化、重复路径拒、大小写碰撞拒、symlink/特殊文件拒、`lstat` 哈希、文件集合相等性 + 单测(含前述「最关键的前 3 类」)。
 - **Phase 3 — 主进程策略层**:`PublisherTrustStore`、`decidePluginInstall`(全矩阵 + C1–C5 + 全局不变量)、`PluginSignatureError`、接入 `installPackage` / `installMarketplacePlugin`、§12 原生确认弹窗。
 - **Phase 4 — 发布者 CLI**:`keygen` / `sign` / `verify`;`create-synapse-plugin` 模板 + `SIGNING.md`。
-- **Phase 5 — 后端发布者锚接线**(依赖 PR #1 落地):后端 plugin 元数据加发布者公钥字段 + `@synapse/marketplace-types` 契约;桌面端 marketplace 安装从后端取 `registryPublisher` 接入 §9;后端无锚 → reject(C3)。此阶段**针对后端 API 重写**,不再面向静态 registry。
+- **Phase 5 — 后端发布者锚接线**(依赖 PR #1 落地):后端 plugin 元数据加发布者公钥字段 + `@synapsepkg/marketplace-types` 契约;桌面端 marketplace 安装从后端取 `registryPublisher` 接入 §9;后端无锚 → reject(C3)。此阶段**针对后端 API 重写**,不再面向静态 registry。

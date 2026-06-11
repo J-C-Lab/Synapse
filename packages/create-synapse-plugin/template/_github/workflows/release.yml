@@ -37,4 +37,4 @@ jobs:
         with:
           files: |
             *.syn
-            *.synapse.sha256
+            *.syn.sha256

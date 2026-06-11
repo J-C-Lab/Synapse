@@ -6,7 +6,7 @@ import type {
   Report,
   Review,
   User,
-} from "@synapse/marketplace-types"
+} from "@synapsepkg/marketplace-types"
 import type {
   PluginRow,
   PluginVersionRow,
@@ -23,7 +23,7 @@ import {
   reportSchema,
   reviewSchema,
   userSchema,
-} from "@synapse/marketplace-types"
+} from "@synapsepkg/marketplace-types"
 
 // Map DB rows to API DTOs. Timestamps become ISO strings here; parsing through
 // the marketplace-types schema guarantees the response matches the contract

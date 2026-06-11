@@ -1,4 +1,4 @@
-import type { PluginManifest } from "@synapse/plugin-manifest"
+import type { PluginManifest } from "@synapsepkg/plugin-manifest"
 import { describe, expect, it } from "vitest"
 import { assessManifestRisk } from "./risk"
 

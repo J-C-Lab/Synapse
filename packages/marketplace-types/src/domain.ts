@@ -1,4 +1,4 @@
-import { manifestSchema } from "@synapse/plugin-manifest"
+import { manifestSchema } from "@synapsepkg/plugin-manifest"
 import { z } from "zod"
 import {
   authProviderSchema,

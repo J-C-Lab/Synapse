@@ -4,8 +4,8 @@ import type {
   PublishResponse,
   SessionResponse,
   Visibility,
-} from "@synapse/marketplace-types"
-import type { PluginManifest } from "@synapse/plugin-manifest"
+} from "@synapsepkg/marketplace-types"
+import type { PluginManifest } from "@synapsepkg/plugin-manifest"
 import type { Buffer } from "node:buffer"
 
 /** Error carrying the marketplace API's status + machine code. */

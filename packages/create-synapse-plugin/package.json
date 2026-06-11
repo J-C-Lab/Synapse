@@ -20,8 +20,8 @@
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
-    "@synapse/plugin-cli": "workspace:*",
-    "@synapse/plugin-manifest": "workspace:*"
+    "@synapsepkg/plugin-cli": "workspace:*",
+    "@synapsepkg/plugin-manifest": "workspace:*"
   },
   "publishConfig": {
     "access": "public"

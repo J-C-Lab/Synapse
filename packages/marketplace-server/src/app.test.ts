@@ -1,5 +1,5 @@
 // @vitest-environment node
-import type { User } from "@synapse/marketplace-types"
+import type { User } from "@synapsepkg/marketplace-types"
 import type { ExternalProfile } from "./auth/github"
 import type { TestHarness } from "./test/harness"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"

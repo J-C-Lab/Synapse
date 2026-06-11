@@ -5,8 +5,8 @@
     "module": "CommonJS",
     "moduleResolution": "node",
     "paths": {
-      "@synapse/plugin-sdk": ["../plugin-sdk/src/index.ts"],
-      "@synapse/plugin-manifest": ["../plugin-manifest/src/index.ts"]
+      "@synapsepkg/plugin-sdk": ["../plugin-sdk/src/index.ts"],
+      "@synapsepkg/plugin-manifest": ["../plugin-manifest/src/index.ts"]
     },
     "strict": true,
     "noImplicitOverride": true,

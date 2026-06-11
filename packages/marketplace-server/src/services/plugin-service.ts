@@ -1,5 +1,5 @@
-import type { PluginSort, Visibility } from "@synapse/marketplace-types"
-import type { PluginManifest } from "@synapse/plugin-manifest"
+import type { PluginSort, Visibility } from "@synapsepkg/marketplace-types"
+import type { PluginManifest } from "@synapsepkg/plugin-manifest"
 import type { Buffer } from "node:buffer"
 import type { MarketplaceDb } from "../db/client"
 import type { StorageProvider } from "../storage/types"

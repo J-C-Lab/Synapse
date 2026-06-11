@@ -37,6 +37,8 @@ git tag v0.1.0 && git push --tags
   build; the `$schema` reference gives editor autocomplete against the same
   contract the Synapse host enforces.
 - `src/index.ts` — your plugin entry. Register commands that return declarative
-  views; the host renders them. You author against `@synapse/plugin-sdk` types
+  views; the host renders them. You author against `@synapsepkg/plugin-sdk` types
   and the host-injected runtime — avoid Node built-ins (the sandbox has no
   `require`).
+- `AGENT.md` — local guidance for coding agents and contributors working on
+  this plugin.

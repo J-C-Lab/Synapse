@@ -4,7 +4,7 @@ import {
   deviceCodePollRequestSchema,
   deviceCodePollResponseSchema,
   deviceCodeStartResponseSchema,
-} from "@synapse/marketplace-types"
+} from "@synapsepkg/marketplace-types"
 import { z } from "zod"
 import { githubAuthorizeUrl } from "../auth/github"
 import { parseBody } from "../lib/http"

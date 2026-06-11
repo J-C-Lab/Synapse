@@ -5,8 +5,8 @@
     "module": "CommonJS",
     "moduleResolution": "node",
     "paths": {
-      "@synapse/plugin-manifest": ["../plugin-manifest/src/index.ts"],
-      "@synapse/plugin-cli": ["../plugin-cli/src/index.ts"]
+      "@synapsepkg/plugin-manifest": ["../plugin-manifest/src/index.ts"],
+      "@synapsepkg/plugin-cli": ["../plugin-cli/src/index.ts"]
     },
     "resolveJsonModule": true,
     "types": ["node"],

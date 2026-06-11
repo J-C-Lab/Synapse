@@ -1,12 +1,12 @@
 // @vitest-environment node
-// Builds the scaffolded project with esbuild (via @synapse/plugin-cli), which
+// Builds the scaffolded project with esbuild (via @synapsepkg/plugin-cli), which
 // fails under jsdom's TextEncoder — so this suite runs in the node env.
 import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import process from "node:process"
-import { buildPlugin } from "@synapse/plugin-cli"
-import { parseManifest } from "@synapse/plugin-manifest"
+import { buildPlugin } from "@synapsepkg/plugin-cli"
+import { parseManifest } from "@synapsepkg/plugin-manifest"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { defaultCommandId, ScaffoldError, scaffoldPlugin } from "./scaffold"
 
@@ -40,12 +40,19 @@ describe("scaffoldPlugin", () => {
 
     expect(await exists(path.join(targetDir, "synapse.json"))).toBe(true)
     expect(await exists(path.join(targetDir, "package.json"))).toBe(true)
+    expect(await exists(path.join(targetDir, "AGENT.md"))).toBe(true)
     expect(await exists(path.join(targetDir, "src", "index.ts"))).toBe(true)
     // _gitignore / _github must land as their dotfile names
     expect(await exists(path.join(targetDir, ".gitignore"))).toBe(true)
     expect(await exists(path.join(targetDir, "_gitignore"))).toBe(false)
     expect(await exists(path.join(targetDir, ".github", "workflows", "release.yml"))).toBe(true)
     expect(await exists(path.join(targetDir, "_github"))).toBe(false)
+    const releaseWorkflow = await fs.readFile(
+      path.join(targetDir, ".github", "workflows", "release.yml"),
+      "utf-8"
+    )
+    expect(releaseWorkflow).toContain("*.syn.sha256")
+    expect(releaseWorkflow).not.toContain("*.synapse.sha256")
 
     const manifest = parseManifest(
       JSON.parse(await fs.readFile(path.join(targetDir, "synapse.json"), "utf-8"))
@@ -54,12 +61,18 @@ describe("scaffoldPlugin", () => {
     expect(manifest.author).toBe("Alice")
     expect(manifest.contributes.commands[0]?.id).toBe("timer.run")
 
+    const agentGuide = await fs.readFile(path.join(targetDir, "AGENT.md"), "utf-8")
+    expect(agentGuide).toContain("Synapse Plugin Development")
+    expect(agentGuide).toContain("synapse.json")
+    expect(agentGuide).toContain("@synapsepkg/plugin-sdk")
+    expect(agentGuide).toContain("npm run build")
+
     const pkg = JSON.parse(await fs.readFile(path.join(targetDir, "package.json"), "utf-8"))
     expect(pkg.name).toBe("timer")
     // Hard constraint: the template must use published versions, never workspace:*
     const deps = JSON.stringify(pkg.devDependencies)
     expect(deps).not.toContain("workspace:")
-    expect(deps).toContain("@synapse/plugin-cli")
+    expect(deps).toContain("@synapsepkg/plugin-cli")
 
     // The patched entry references the new command id.
     const entry = await fs.readFile(path.join(targetDir, "src", "index.ts"), "utf-8")

@@ -1,4 +1,4 @@
-// @synapse/marketplace-types
+// @synapsepkg/marketplace-types
 //
 // The marketplace domain model and HTTP API contract as a single source of
 // truth. zod schemas are authoritative; TypeScript types are inferred from them

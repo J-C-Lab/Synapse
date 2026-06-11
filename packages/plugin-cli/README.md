@@ -1,4 +1,4 @@
-# @synapse/plugin-cli
+# @synapsepkg/plugin-cli
 
 Build tool for [Synapse](../../README.md) plugins. Bundles a plugin project
 into an installable `.syn` package and manages dev-mode hot loading.
@@ -42,8 +42,8 @@ entry at the path named by `manifest.main` (plus any declared icon assets):
 The Synapse sandbox executes the entry in a `vm` context **without `require`**,
 so `build` bundles every runtime import inline (esbuild, `platform: node`,
 `format: cjs`). Author plugins against the host-injected `synapse` runtime and
-`@synapse/plugin-sdk` types — avoid Node built-ins, which cannot be required in
+`@synapsepkg/plugin-sdk` types — avoid Node built-ins, which cannot be required in
 the sandbox.
 
-Manifests are validated with [`@synapse/plugin-manifest`](../plugin-manifest),
+Manifests are validated with [`@synapsepkg/plugin-manifest`](../plugin-manifest),
 the same schema the Synapse host uses at install time.

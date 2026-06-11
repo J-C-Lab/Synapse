@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify"
 import type { Services } from "../services/context"
-import { sessionResponseSchema } from "@synapse/marketplace-types"
+import { sessionResponseSchema } from "@synapsepkg/marketplace-types"
 import { unauthorized } from "../lib/errors"
 import { toUserDto } from "../mappers"
 import { authenticate } from "./middleware"

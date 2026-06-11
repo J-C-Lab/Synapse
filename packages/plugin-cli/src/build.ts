@@ -1,4 +1,4 @@
-import type { PluginManifest } from "@synapse/plugin-manifest"
+import type { PluginManifest } from "@synapsepkg/plugin-manifest"
 import type { PackageFile } from "./zip"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
@@ -84,7 +84,7 @@ async function bundle(entryAbs: string, outFile: string, minify: boolean): Promi
     target: "node18",
     minify,
     logLevel: "silent",
-    // The sandbox injects the `synapse` runtime as a global and the @synapse/*
+    // The sandbox injects the `synapse` runtime as a global and the @synapsepkg/*
     // packages are type-only, so nothing should be marked external; everything
     // a plugin actually pulls in at runtime must be inlined.
   })

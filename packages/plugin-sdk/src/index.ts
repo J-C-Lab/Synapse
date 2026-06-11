@@ -1,9 +1,9 @@
-// @synapse/plugin-sdk
+// @synapsepkg/plugin-sdk
 //
 // Public surface for Synapse plugin authors. P0 ships pure type contracts;
 // no runtime symbols. The host (Synapse main process) injects an object that
 // satisfies `PluginContext` into each command invocation, so plugins can
-// `import type { PluginModule, PluginContext } from "@synapse/plugin-sdk"`
+// `import type { PluginModule, PluginContext } from "@synapsepkg/plugin-sdk"`
 // without paying any runtime cost.
 //
 // See ./README.md for author-facing usage notes.

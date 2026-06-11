@@ -1,9 +1,9 @@
-# @synapse/plugin-manifest
+# @synapsepkg/plugin-manifest
 
 Shared manifest contract for [Synapse](../../README.md) plugins.
 
 This package owns the `synapse.json` schema and validation so that both the
-Synapse host (main process) and the [`@synapse/plugin-cli`](../plugin-cli) build
+Synapse host (main process) and the [`@synapsepkg/plugin-cli`](../plugin-cli) build
 tool validate manifests against a single source of truth — no schema drift
 between "what the CLI accepts" and "what the app loads".
 

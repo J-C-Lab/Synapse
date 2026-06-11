@@ -1,4 +1,4 @@
-# @synapse/plugin-sdk
+# @synapsepkg/plugin-sdk
 
 TypeScript types and runtime contract for [Synapse](../../README.md) plugins.
 
@@ -8,7 +8,7 @@ unified shadcn-based UI — plugin code never touches the DOM, never embeds
 an iframe, and never imports React.
 
 ```ts
-import type { PluginModule } from "@synapse/plugin-sdk"
+import type { PluginModule } from "@synapsepkg/plugin-sdk"
 
 const plugin: PluginModule = {
   commands: {

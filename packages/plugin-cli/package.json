@@ -1,5 +1,5 @@
 {
-  "name": "@synapse/plugin-cli",
+  "name": "@synapsepkg/plugin-cli",
   "version": "0.1.0",
   "description": "Synapse plugin build tool — bundles a plugin project into an installable .syn package",
   "license": "MIT",
@@ -23,8 +23,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@synapse/marketplace-types": "workspace:*",
-    "@synapse/plugin-manifest": "workspace:*",
+    "@synapsepkg/marketplace-types": "workspace:*",
+    "@synapsepkg/plugin-manifest": "workspace:*",
     "esbuild": "^0.25.0",
     "yazl": "^3.3.1"
   },

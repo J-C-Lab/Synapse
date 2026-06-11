@@ -1,4 +1,4 @@
-import type { AuthProvider } from "@synapse/marketplace-types"
+import type { AuthProvider } from "@synapsepkg/marketplace-types"
 import type { MarketplaceDb } from "../db/client"
 import { eq } from "drizzle-orm"
 import { authIdentities, users } from "../db/schema"

@@ -1,5 +1,5 @@
-import type { Visibility } from "@synapse/marketplace-types"
-import type { PluginManifest } from "@synapse/plugin-manifest"
+import type { Visibility } from "@synapsepkg/marketplace-types"
+import type { PluginManifest } from "@synapsepkg/plugin-manifest"
 import type { CredentialStore } from "./credentials-store"
 import type { MarketplaceClient } from "./marketplace-client"
 import { Buffer } from "node:buffer"

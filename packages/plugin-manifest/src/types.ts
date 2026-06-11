@@ -1,4 +1,4 @@
-import type { LocalizedString } from "@synapse/plugin-sdk"
+import type { LocalizedString } from "@synapsepkg/plugin-sdk"
 
 export type CommandMode = "view" | "no-view"
 

@@ -1,4 +1,4 @@
-// @synapse/plugin-cli
+// @synapsepkg/plugin-cli
 //
 // Programmatic API behind the `synapse-plugin` command. Bundles a plugin
 // project into an installable `.syn` package and manages dev-mode links

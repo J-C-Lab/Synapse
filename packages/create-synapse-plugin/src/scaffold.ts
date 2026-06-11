@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 
-/** Manifest plugin-id shape, mirrored from @synapse/plugin-manifest. */
+/** Manifest plugin-id shape, mirrored from @synapsepkg/plugin-manifest. */
 export const PLUGIN_ID_PATTERN = /^[a-z0-9][a-z0-9-]*(?:\.[a-z0-9][a-z0-9-]*)+$/
 
 const DEFAULT_COMMAND_ID = "hello.world"

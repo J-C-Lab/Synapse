@@ -19,7 +19,7 @@ import {
   searchPluginsResponseSchema,
   setVisibilityRequestSchema,
   yankRequestSchema,
-} from "@synapse/marketplace-types"
+} from "@synapsepkg/marketplace-types"
 import { badRequest, notFound, unauthorized } from "../lib/errors"
 import { parseBody } from "../lib/http"
 import {

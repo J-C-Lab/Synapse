@@ -1,4 +1,4 @@
-# @synapse/marketplace-types
+# @synapsepkg/marketplace-types
 
 The Synapse marketplace **domain model** and **HTTP API contract** as a single
 source of truth — shared by the marketplace server, the plugin CLI, the desktop
@@ -27,13 +27,13 @@ request validated on a client matches exactly what the server parses.
 - **Versions are immutable**: a bad release is _yanked_ (`yankedAt`), never
   deleted, so existing installs stay reproducible.
 - **The manifest is the single source of truth for `manifestSnapshot`**: it
-  reuses `@synapse/plugin-manifest`'s `manifestSchema`, so publish validation and
+  reuses `@synapsepkg/plugin-manifest`'s `manifestSchema`, so publish validation and
   install-time permission disclosure agree with what the plugin host enforces.
 
 ## Usage
 
 ```ts
-import { searchPluginsQuerySchema, type Plugin } from "@synapse/marketplace-types"
+import { searchPluginsQuerySchema, type Plugin } from "@synapsepkg/marketplace-types"
 
 const query = searchPluginsQuerySchema.parse(req.query) // throws on invalid input
 ```

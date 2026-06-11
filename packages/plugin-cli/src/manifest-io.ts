@@ -1,7 +1,7 @@
-import type { PluginManifest } from "@synapse/plugin-manifest"
+import type { PluginManifest } from "@synapsepkg/plugin-manifest"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
-import { ManifestValidationError, parseManifest } from "@synapse/plugin-manifest"
+import { ManifestValidationError, parseManifest } from "@synapsepkg/plugin-manifest"
 
 export const MANIFEST_FILENAME = "synapse.json"
 

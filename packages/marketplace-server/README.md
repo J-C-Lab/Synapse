@@ -1,8 +1,8 @@
-# @synapse/marketplace-server
+# @synapsepkg/marketplace-server
 
 The Synapse marketplace backend — a **Fastify + Drizzle (Postgres)** API and the
 authoritative source for users, plugins, publishing, downloads, and ratings.
-Request/response bodies validate against `@synapse/marketplace-types`, the
+Request/response bodies validate against `@synapsepkg/marketplace-types`, the
 contract shared with the CLI, desktop app, and web portal.
 
 > Status: **M1** — server skeleton, schema, and authentication (GitHub OAuth via
@@ -47,11 +47,11 @@ drizzle/                 # generated SQL migrations (committed)
 ## Commands
 
 ```bash
-pnpm -F @synapse/marketplace-server dev          # tsx watch (needs .env)
-pnpm -F @synapse/marketplace-server typecheck
-pnpm -F @synapse/marketplace-server db:generate  # regenerate SQL after schema edits
-pnpm -F @synapse/marketplace-server db:migrate    # apply migrations (needs DATABASE_URL)
-pnpm -F @synapse/marketplace-server build
+pnpm -F @synapsepkg/marketplace-server dev          # tsx watch (needs .env)
+pnpm -F @synapsepkg/marketplace-server typecheck
+pnpm -F @synapsepkg/marketplace-server db:generate  # regenerate SQL after schema edits
+pnpm -F @synapsepkg/marketplace-server db:migrate    # apply migrations (needs DATABASE_URL)
+pnpm -F @synapsepkg/marketplace-server build
 ```
 
 Tests run from the repo root (`pnpm test`) against pglite — **no database or

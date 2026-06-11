@@ -20,7 +20,7 @@ importers:
       '@radix-ui/react-slot':
         specifier: ^1.2.4
         version: 1.2.4(@types/react@19.2.15)(react@19.2.6)
-      '@synapse/plugin-manifest':
+      '@synapsepkg/plugin-manifest':
         specifier: workspace:*
         version: link:packages/plugin-manifest
       bonjour-service:
@@ -225,7 +225,7 @@ importers:
 
   docs:
     dependencies:
-      '@synapse/marketplace-types':
+      '@synapsepkg/marketplace-types':
         specifier: workspace:*
         version: link:../packages/marketplace-types
       fumadocs-core:
@@ -278,10 +278,10 @@ importers:
         specifier: ^1.1.1
         version: 1.1.1
     devDependencies:
-      '@synapse/plugin-cli':
+      '@synapsepkg/plugin-cli':
         specifier: workspace:*
         version: link:../plugin-cli
-      '@synapse/plugin-manifest':
+      '@synapsepkg/plugin-manifest':
         specifier: workspace:*
         version: link:../plugin-manifest
 
@@ -299,7 +299,7 @@ importers:
       '@fastify/rate-limit':
         specifier: ^10.3.0
         version: 10.3.0
-      '@synapse/marketplace-types':
+      '@synapsepkg/marketplace-types':
         specifier: workspace:*
         version: link:../marketplace-types
       drizzle-orm:
@@ -333,10 +333,10 @@ importers:
 
   packages/marketplace-types:
     dependencies:
-      '@synapse/plugin-manifest':
+      '@synapsepkg/plugin-manifest':
         specifier: workspace:*
         version: link:../plugin-manifest
-      '@synapse/plugin-sdk':
+      '@synapsepkg/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
       zod:
@@ -345,10 +345,10 @@ importers:
 
   packages/plugin-cli:
     dependencies:
-      '@synapse/marketplace-types':
+      '@synapsepkg/marketplace-types':
         specifier: workspace:*
         version: link:../marketplace-types
-      '@synapse/plugin-manifest':
+      '@synapsepkg/plugin-manifest':
         specifier: workspace:*
         version: link:../plugin-manifest
       esbuild:
@@ -370,7 +370,7 @@ importers:
 
   packages/plugin-manifest:
     dependencies:
-      '@synapse/plugin-sdk':
+      '@synapsepkg/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
       zod:

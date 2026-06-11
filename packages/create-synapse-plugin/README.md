@@ -21,8 +21,8 @@ Interactive by default; pass `--yes` to accept defaults. Options:
 | `--force`             | Scaffold into a non-empty directory     |
 | `--yes`               | Skip prompts                            |
 
-The generated project depends on **published** `@synapse/plugin-sdk` and
-`@synapse/plugin-cli`, so it builds standalone outside this monorepo. Its
+The generated project depends on **published** `@synapsepkg/plugin-sdk` and
+`@synapsepkg/plugin-cli`, so it builds standalone outside this monorepo. Its
 `template/` directory doubles as a GitHub template repo — keep template
 dependencies on published versions (never `workspace:*`).
 

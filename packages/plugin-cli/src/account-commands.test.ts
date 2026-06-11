@@ -1,5 +1,5 @@
 // @vitest-environment node
-import type { PluginManifest } from "@synapse/plugin-manifest"
+import type { PluginManifest } from "@synapsepkg/plugin-manifest"
 import type { CommandIo } from "./account-commands"
 import type { CredentialStore } from "./credentials-store"
 import type { MarketplaceClient, PublishMetadata } from "./marketplace-client"

@@ -111,7 +111,7 @@ strict CSP is applied to every response. Secrets (AI provider keys, the marketpl
 token, MCP server env/headers) are encrypted at rest with the OS keychain via Electron
 `safeStorage` and never reach the renderer.
 
-**Marketplace contract.** `@synapse/marketplace-types` is the single source of truth — zod
+**Marketplace contract.** `@synapsepkg/marketplace-types` is the single source of truth — zod
 schemas with `z.infer` types shared by the backend, the CLI, the desktop app, and the web
 portal. The backend is fully dependency-injected (db, object storage, identity provider, clock),
 so it runs against in-process Postgres (PGlite/WASM) in tests with no real credentials.
@@ -144,7 +144,7 @@ credentials (in-process Postgres via PGlite).
 ```bash
 cp packages/marketplace-server/.env.example packages/marketplace-server/.env
 # fill DATABASE_URL + GITHUB_CLIENT_ID/SECRET (R2 vars optional → falls back to in-memory storage)
-pnpm -F @synapse/marketplace-server dev
+pnpm -F @synapsepkg/marketplace-server dev
 ```
 
 ### Browse the marketplace web portal
@@ -172,12 +172,18 @@ security codes.
 ## Build a plugin
 
 ```bash
-pnpm dlx create-synapse-plugin my-plugin   # scaffold
+pnpm dlx create-synapse-plugin my-plugin   # scaffold from npm
 cd my-plugin
+pnpm install
 pnpm synapse-plugin build                  # → my-plugin-<version>.syn
 pnpm synapse-plugin login                  # device-flow sign-in to the marketplace
 pnpm synapse-plugin publish                # publish (private by default)
 ```
+
+The scaffolded project uses the published `@synapsepkg/plugin-sdk` and
+`@synapsepkg/plugin-cli` packages, and includes an `AGENT.md` with local guidance
+for coding agents and contributors. The old `create-deskit-plugin` package is
+deprecated; use `create-synapse-plugin` for new plugins.
 
 Install a `.syn` locally by opening it from the desktop app's Plugins page.
 
@@ -198,7 +204,7 @@ pnpm typecheck          # Typecheck packages + node (main/preload) + web (render
 pnpm test               # Vitest            (pnpm test:watch / pnpm test:coverage)
 
 # Marketplace backend & docs
-pnpm -F @synapse/marketplace-server dev
+pnpm -F @synapsepkg/marketplace-server dev
 pnpm docs:dev           # docs site + web portal (port 3001)
 ```
 

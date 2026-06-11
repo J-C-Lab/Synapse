@@ -4,12 +4,12 @@ import type {
   PluginStatus,
   UserRole,
   Visibility,
-} from "@synapse/marketplace-types"
-import type { PluginManifest } from "@synapse/plugin-manifest"
+} from "@synapsepkg/marketplace-types"
+import type { PluginManifest } from "@synapsepkg/plugin-manifest"
 import { integer, jsonb, pgTable, primaryKey, real, text, timestamp } from "drizzle-orm/pg-core"
 
 // Postgres schema for the marketplace. Column shapes mirror
-// `@synapse/marketplace-types` so DB rows map cleanly onto the API contract.
+// `@synapsepkg/marketplace-types` so DB rows map cleanly onto the API contract.
 // Timestamps are stored as `timestamptz` and surface as JS `Date`; the mapping
 // layer serializes them to ISO strings at the API boundary.
 

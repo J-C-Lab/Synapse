@@ -2,7 +2,7 @@ import type {
   LocalizedString,
   PluginDetailResponse,
   SearchPluginsResponse,
-} from "@synapse/marketplace-types"
+} from "@synapsepkg/marketplace-types"
 
 // Read-only client for the marketplace public API, used by the web portal's
 // server components. Only public, active plugins are returned by these

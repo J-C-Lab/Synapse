@@ -1,5 +1,5 @@
 {
-  "name": "@synapse/marketplace-types",
+  "name": "@synapsepkg/marketplace-types",
   "version": "0.1.0",
   "description": "Synapse marketplace domain model and API contract — shared zod schemas and inferred types for the marketplace server, the plugin CLI, the desktop app, and the web portal",
   "license": "MIT",
@@ -22,8 +22,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@synapse/plugin-manifest": "workspace:*",
-    "@synapse/plugin-sdk": "workspace:*",
+    "@synapsepkg/plugin-manifest": "workspace:*",
+    "@synapsepkg/plugin-sdk": "workspace:*",
     "zod": "^4.4.3"
   },
   "publishConfig": {

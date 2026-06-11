@@ -1,4 +1,4 @@
-import type { PluginManifest } from "@synapse/plugin-manifest"
+import type { PluginManifest } from "@synapsepkg/plugin-manifest"
 
 // Automated upload scan: classify a plugin's declared capabilities so risky
 // publishes can be auto-flagged into the admin review queue (post-review;

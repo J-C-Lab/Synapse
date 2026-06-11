@@ -7,7 +7,8 @@ import { z } from "zod"
 // eslint-disable-next-line antfu/no-import-dist
 import mod from "../dist/index.js"
 
-const SCHEMA_URL = "https://unpkg.com/@synapse/plugin-manifest/schema/synapse-manifest.schema.json"
+const SCHEMA_URL =
+  "https://unpkg.com/@synapsepkg/plugin-manifest/schema/synapse-manifest.schema.json"
 
 const jsonSchema = z.toJSONSchema(mod.manifestSchema, { target: "draft-7" })
 jsonSchema.$id = SCHEMA_URL
