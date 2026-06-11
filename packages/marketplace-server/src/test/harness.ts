@@ -62,16 +62,24 @@ export interface TestHarness {
  * re-instantiating — this keeps the broader test run from starving wall-clock
  * timers in sibling workers.
  */
-export async function createTestHarness(options: { now?: () => Date } = {}): Promise<TestHarness> {
+export async function createTestHarness(
+  options: { now?: () => Date; env?: NodeJS.ProcessEnv } = {}
+): Promise<TestHarness> {
   const client = new PGlite()
   const db = drizzle(client, { schema })
   await migrate(db, { migrationsFolder: path.join(__dirname, "..", "..", "drizzle") })
 
   const github = new FakeIdentityProvider()
   const storage = new InMemoryStorageProvider()
+  // Defaults suit the suite: the programmatic approve endpoint is the test
+  // sign-in helper, and per-IP rate limiting is off so repeated `inject` calls
+  // stay deterministic. A test can override either via `options.env`.
   const config = loadConfig({
     PUBLIC_BASE_URL: "https://market.test",
     GITHUB_CLIENT_ID: "test-client-id",
+    ENABLE_DEVICE_APPROVE_ENDPOINT: "true",
+    RATE_LIMIT_ENABLED: "false",
+    ...options.env,
   } as NodeJS.ProcessEnv)
   const marketplaceDb = db as unknown as MarketplaceDb
   const app = buildApp({ db: marketplaceDb, github, storage, config, now: options.now })

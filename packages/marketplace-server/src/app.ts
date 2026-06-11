@@ -6,6 +6,7 @@ import type { Services } from "./services/context"
 import type { UserRow } from "./services/user-service"
 import type { StorageProvider } from "./storage/types"
 import multipart from "@fastify/multipart"
+import rateLimit from "@fastify/rate-limit"
 import Fastify from "fastify"
 import { HttpError, sendError } from "./lib/errors"
 import { registerAuthRoutes } from "./routes/auth"
@@ -58,20 +59,41 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
   const app = Fastify({ logger: deps.logger ?? false })
   app.decorateRequest("user", null)
+  // Throttle per IP before routes load, so per-route `config.rateLimit`
+  // overrides (auth/publish) are honored. The plugin throws on exceed; the
+  // error handler below normalizes it into the standard envelope.
+  if (deps.config.RATE_LIMIT_ENABLED) {
+    app.register(rateLimit, {
+      global: true,
+      max: deps.config.RATE_LIMIT_MAX,
+      timeWindow: "1 minute",
+    })
+  }
   app.register(multipart, { limits: { fileSize: MAX_PACKAGE_BYTES, files: 1 } })
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof HttpError) {
       return sendError(reply, error)
     }
+    // @fastify/rate-limit throws a 429 with its own statusCode; surface it in
+    // our envelope rather than masking it as a 500.
+    if ((error as { statusCode?: number }).statusCode === 429) {
+      return sendError(reply, new HttpError(429, "rate_limited", "Rate limit exceeded"))
+    }
     request.log.error(error)
     return sendError(reply, new HttpError(500, "internal", "Internal server error"))
   })
 
-  registerHealthRoutes(app, services)
-  registerAuthRoutes(app, services)
-  registerSessionRoutes(app, services)
-  registerPluginRoutes(app, services)
+  // Routes load inside a child plugin so they register *after* rate-limit has
+  // finished loading — only then does its onRoute hook see them and apply the
+  // global + per-route limits. (Decorators, the error handler, and multipart
+  // are set on the root instance above and inherited here.)
+  app.register(async (instance) => {
+    registerHealthRoutes(instance, services)
+    registerAuthRoutes(instance, services)
+    registerSessionRoutes(instance, services)
+    registerPluginRoutes(instance, services)
+  })
 
   return app
 }

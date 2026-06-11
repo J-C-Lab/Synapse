@@ -85,29 +85,36 @@ function parseSearchQuery(query: Record<string, unknown>): {
 
 export function registerPluginRoutes(app: FastifyInstance, services: Services): void {
   // Publish a new version (auth + multipart: `metadata` JSON + `package` file).
-  app.post("/plugins", { preHandler: authenticate(services) }, async (request, reply) => {
-    if (!request.user) throw unauthorized("Not authenticated")
-    const upload = await readPublishUpload(request)
-    const meta = parseBody(publishRequestSchema, upload.metadata)
+  app.post(
+    "/plugins",
+    {
+      preHandler: authenticate(services),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      if (!request.user) throw unauthorized("Not authenticated")
+      const upload = await readPublishUpload(request)
+      const meta = parseBody(publishRequestSchema, upload.metadata)
 
-    const detail = await services.plugins.publish({
-      ownerUserId: request.user.id,
-      manifest: meta.manifest,
-      sha256: meta.sha256,
-      sizeBytes: meta.sizeBytes,
-      packageBytes: upload.packageBytes,
-      visibility: meta.visibility,
-    })
-
-    const published = detail.versions.find((v) => v.version === meta.manifest.version)
-    if (!published) throw notFound("Published version not found")
-    return reply.status(201).send(
-      publishResponseSchema.parse({
-        plugin: toPluginDto(detail.plugin),
-        version: toPluginVersionDto(published),
+      const detail = await services.plugins.publish({
+        ownerUserId: request.user.id,
+        manifest: meta.manifest,
+        sha256: meta.sha256,
+        sizeBytes: meta.sizeBytes,
+        packageBytes: upload.packageBytes,
+        visibility: meta.visibility,
       })
-    )
-  })
+
+      const published = detail.versions.find((v) => v.version === meta.manifest.version)
+      if (!published) throw notFound("Published version not found")
+      return reply.status(201).send(
+        publishResponseSchema.parse({
+          plugin: toPluginDto(detail.plugin),
+          version: toPluginVersionDto(published),
+        })
+      )
+    }
+  )
 
   // Public catalog search.
   app.get("/plugins", async (request, reply) => {
@@ -244,7 +251,10 @@ export function registerPluginRoutes(app: FastifyInstance, services: Services): 
   // Any signed-in user files an abuse/quality report.
   app.post(
     "/plugins/:id/report",
-    { preHandler: authenticate(services) },
+    {
+      preHandler: authenticate(services),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+    },
     async (request, reply) => {
       if (!request.user) throw unauthorized("Not authenticated")
       const { id } = request.params as { id: string }

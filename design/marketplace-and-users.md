@@ -603,3 +603,22 @@ OwnershipClaim / Collaborator  { pluginId, userId, role }  # 多人协作(后期
 - `pnpm lint` ✅(0 error)· `pnpm -F docs typecheck` ✅ · `pnpm -F docs build` ✅ · `pnpm test` **510 passed**(M7 后 502 + 门户 8)。
 
 > **第二波(M5–M7)+ M6 全部完成。** 整个市场平台:契约→后端→CLI 发布→桌面端(浏览/账户/评分/治理/审核)→Web 门户。第三波 **M8 组织 / M9 付费** 按商业化节奏再上;运维待 §7 域名/部署落地。
+
+---
+
+## 22. PR #1 审查 + 安全加固(2026-06-11)
+
+合并前对 PR #1 做了完整审查(鉴权/治理/存储/桌面端逐行)。结论可合并;按审查里的两条"中等"建议在分支上直接补掉:
+
+| 加固                            | 实现                                                                                                                                                                                                                                                                                    |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **全局 + 路由级限流**           | 引入 `@fastify/rate-limit`,`buildApp` 内按 IP 限流。全局上限 `RATE_LIMIT_MAX`(默认 300/min);auth/写接口收紧:device `start`/`approve` 20、`poll` 60(容纳 5s 轮询 15min)、`publish` 30、`report` 20。路由在子插件内注册以保证 onRoute hook 生效;超限统一走 `rate_limited` 错误信封(429)。 |
+| **关闭 `/auth/device/approve`** | 该编程审批端点绕过浏览器/CSRF,仅供测试与非浏览器流。新增 `ENABLE_DEVICE_APPROVE_ENDPOINT`(默认 **false**),生产不注册 → 404;真实登录只走 GitHub 回调。harness 默认开启以复用为测试登录助手。                                                                                             |
+
+**配置**:`config.ts` 新增 `RATE_LIMIT_ENABLED`(默认 true)、`RATE_LIMIT_MAX`(300)、`ENABLE_DEVICE_APPROVE_ENDPOINT`(false);`envBool` 正确解析字符串布尔(规避 `z.coerce.boolean("false")===true` 坑)。`.env.example` 已补注释。
+
+**测试**:`routes/security.test.ts`(approve 未启用→404 / 启用→200;超限→429 且 `error.code==="rate_limited"`;harness 默认不限流)+ `config.test.ts` 新增 2 条标志解析。
+
+**质量基线**:`pnpm lint` ✅(0 error)· `pnpm typecheck` ✅ · marketplace-server **55 passed**(+5)。
+
+> 审查里"低/信息"项(下载/举报无索引、search 全表扫、resolveDownload 先记后签)留作后续性能债;运维仍待轮换聊天里贴过的 OAuth secret / Neon 密码 + §7 域名部署。

@@ -2,7 +2,27 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { loadDotEnvFile } from "./config"
+import { loadConfig, loadDotEnvFile } from "./config"
+
+describe("loadConfig security flags", () => {
+  it("defaults to rate limiting on and the approve endpoint off", () => {
+    const config = loadConfig({} as NodeJS.ProcessEnv)
+    expect(config.RATE_LIMIT_ENABLED).toBe(true)
+    expect(config.RATE_LIMIT_MAX).toBe(300)
+    expect(config.ENABLE_DEVICE_APPROVE_ENDPOINT).toBe(false)
+  })
+
+  it("parses string booleans from the environment", () => {
+    const config = loadConfig({
+      RATE_LIMIT_ENABLED: "false",
+      RATE_LIMIT_MAX: "25",
+      ENABLE_DEVICE_APPROVE_ENDPOINT: "true",
+    } as NodeJS.ProcessEnv)
+    expect(config.RATE_LIMIT_ENABLED).toBe(false)
+    expect(config.RATE_LIMIT_MAX).toBe(25)
+    expect(config.ENABLE_DEVICE_APPROVE_ENDPOINT).toBe(true)
+  })
+})
 
 describe("loadDotEnvFile", () => {
   let dir: string

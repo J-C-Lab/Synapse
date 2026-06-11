@@ -8,6 +8,21 @@ import { z } from "zod"
 // local dev without them; the entrypoint (index.ts) requires DATABASE_URL
 // before actually connecting.
 
+/**
+ * A boolean drawn from the environment. Env values arrive as strings, so this
+ * accepts the usual truthy/falsy spellings (z.coerce.boolean would treat the
+ * string "false" as true).
+ */
+const envBool = (defaultValue: boolean) =>
+  z
+    .union([z.boolean(), z.string()])
+    .optional()
+    .transform((value) => {
+      if (value === undefined) return defaultValue
+      if (typeof value === "boolean") return value
+      return value === "true" || value === "1"
+    })
+
 const configSchema = z.object({
   PORT: z.coerce.number().int().positive().default(8787),
   HOST: z.string().default("0.0.0.0"),
@@ -22,6 +37,15 @@ const configSchema = z.object({
   R2_BUCKET: z.string().min(1).optional(),
   R2_ACCESS_KEY_ID: z.string().min(1).optional(),
   R2_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+  // Per-IP request throttling (@fastify/rate-limit). On by default; tests turn
+  // it off for determinism. RATE_LIMIT_MAX is the global per-minute ceiling —
+  // auth and publish routes apply their own tighter limits on top.
+  RATE_LIMIT_ENABLED: envBool(true),
+  RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
+  // The programmatic device-approval endpoint (/auth/device/approve) bypasses
+  // the browser leg; it exists for tests and non-browser flows and is OFF in
+  // production, where the GitHub callback is the only way to approve a grant.
+  ENABLE_DEVICE_APPROVE_ENDPOINT: envBool(false),
 })
 
 export type ServerConfig = z.infer<typeof configSchema>

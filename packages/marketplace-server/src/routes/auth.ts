@@ -32,23 +32,27 @@ function htmlPage(title: string, body: string): string {
 export function registerAuthRoutes(app: FastifyInstance, services: Services): void {
   // The CLI starts a grant; the verification URL is the GitHub authorize URL
   // with the user code carried in `state`, so opening it completes the grant.
-  app.post("/auth/device/start", async (_request, reply) => {
-    const grant = await services.deviceCodes.start()
-    const verificationUri = githubAuthorizeUrl({
-      clientId: services.config.GITHUB_CLIENT_ID ?? "",
-      redirectUri: new URL("/auth/github/callback", services.config.PUBLIC_BASE_URL).toString(),
-      state: grant.userCode,
-    })
-    return reply.send(
-      deviceCodeStartResponseSchema.parse({
-        deviceCode: grant.deviceCode,
-        userCode: grant.userCode,
-        verificationUri,
-        interval: grant.interval,
-        expiresAt: grant.expiresAt.toISOString(),
+  app.post(
+    "/auth/device/start",
+    { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
+    async (_request, reply) => {
+      const grant = await services.deviceCodes.start()
+      const verificationUri = githubAuthorizeUrl({
+        clientId: services.config.GITHUB_CLIENT_ID ?? "",
+        redirectUri: new URL("/auth/github/callback", services.config.PUBLIC_BASE_URL).toString(),
+        state: grant.userCode,
       })
-    )
-  })
+      return reply.send(
+        deviceCodeStartResponseSchema.parse({
+          deviceCode: grant.deviceCode,
+          userCode: grant.userCode,
+          verificationUri,
+          interval: grant.interval,
+          expiresAt: grant.expiresAt.toISOString(),
+        })
+      )
+    }
+  )
 
   // GitHub redirects here after the user authorizes; resolve the identity and
   // approve the pending device grant identified by `state`.
@@ -66,31 +70,45 @@ export function registerAuthRoutes(app: FastifyInstance, services: Services): vo
     return reply.type("text/html").send(htmlPage("Signed in", "You can return to your terminal."))
   })
 
-  // Programmatic approval (used by tests / non-browser flows).
-  app.post("/auth/device/approve", async (request, reply) => {
-    const body = parseBody(approveBodySchema, request.body)
-    const profile = await services.github.exchangeCodeForProfile(body.code)
-    const user = await services.users.upsertFromIdentity({ provider: "github", ...profile })
-    await services.deviceCodes.approve(body.userCode, user.id)
-    return reply.send({ status: "ok" as const })
-  })
+  // Programmatic approval that skips the browser leg. Registered only when
+  // explicitly enabled (tests / non-browser flows); in production the GitHub
+  // callback above is the sole approval path, so this surface is not exposed.
+  if (services.config.ENABLE_DEVICE_APPROVE_ENDPOINT) {
+    app.post(
+      "/auth/device/approve",
+      { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
+      async (request, reply) => {
+        const body = parseBody(approveBodySchema, request.body)
+        const profile = await services.github.exchangeCodeForProfile(body.code)
+        const user = await services.users.upsertFromIdentity({ provider: "github", ...profile })
+        await services.deviceCodes.approve(body.userCode, user.id)
+        return reply.send({ status: "ok" as const })
+      }
+    )
+  }
 
   // The CLI polls until the grant is approved, then receives a session token.
-  app.post("/auth/device/poll", async (request, reply) => {
-    const body = parseBody(deviceCodePollRequestSchema, request.body)
-    const result = await services.deviceCodes.poll(body.deviceCode)
-    if (result.status === "pending") {
-      return reply.send(deviceCodePollResponseSchema.parse({ status: "pending" }))
-    }
+  // Real clients poll every `interval` (5s) for up to 15 min, so the ceiling is
+  // generous relative to the global default.
+  app.post(
+    "/auth/device/poll",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const body = parseBody(deviceCodePollRequestSchema, request.body)
+      const result = await services.deviceCodes.poll(body.deviceCode)
+      if (result.status === "pending") {
+        return reply.send(deviceCodePollResponseSchema.parse({ status: "pending" }))
+      }
 
-    const session = await services.sessions.issue(result.user.id)
-    return reply.send(
-      deviceCodePollResponseSchema.parse({
-        status: "authorized",
-        accessToken: session.token,
-        expiresAt: session.expiresAt.toISOString(),
-        user: toUserDto(result.user),
-      })
-    )
-  })
+      const session = await services.sessions.issue(result.user.id)
+      return reply.send(
+        deviceCodePollResponseSchema.parse({
+          status: "authorized",
+          accessToken: session.token,
+          expiresAt: session.expiresAt.toISOString(),
+          user: toUserDto(result.user),
+        })
+      )
+    }
+  )
 }
