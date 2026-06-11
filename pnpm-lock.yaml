@@ -195,12 +195,18 @@ importers:
       lint-staged:
         specifier: ^15.5.2
         version: 15.5.2
+      png2icons:
+        specifier: ^2.0.1
+        version: 2.0.1
       prettier:
         specifier: ^3.8.3
         version: 3.8.3
       shadcn:
         specifier: ^4.7.0
         version: 4.8.0(@types/node@22.19.19)(typescript@5.9.3)
+      sharp:
+        specifier: ^0.34.5
+        version: 0.34.5
       tailwindcss:
         specifier: ^4.2.4
         version: 4.3.0
@@ -7029,6 +7035,10 @@ packages:
     resolution: {integrity: sha512-Nc3IT5yHzflTfbjgqWcCPpo7DaKy4FnpB0l/zCAW0Tc7jxAiuqSxHasntB3D7887LSrA93kDJ9IXovxJYxyLCA==}
     engines: {node: '>=4'}
 
+  png2icons@2.0.1:
+    resolution: {integrity: sha512-GDEQJr8OG4e6JMp7mABtXFSEpgJa1CCpbQiAR+EjhkHJHnUL9zPPtbOrjsMD8gUbikgv3j7x404b0YJsV3aVFA==}
+    hasBin: true
+
   pnpm-workspace-yaml@1.6.1:
     resolution: {integrity: sha512-yTeZntGWi8m9WNuhoVsP0DpFc4sC1U0+rr/qR6Zi9n2g3sxXY+JfccjXjjruNz96tM8I09yaJUA86doRnNLkbg==}
 
@@ -9908,8 +9918,7 @@ snapshots:
 
   '@humanwhocodes/retry@0.4.3': {}
 
-  '@img/colour@1.1.0':
-    optional: true
+  '@img/colour@1.1.0': {}
 
   '@img/sharp-darwin-arm64@0.34.5':
     optionalDependencies:
@@ -15675,6 +15684,8 @@ snapshots:
 
   pluralize@8.0.0: {}
 
+  png2icons@2.0.1: {}
+
   pnpm-workspace-yaml@1.6.1:
     dependencies:
       yaml: 2.9.0
@@ -16404,7 +16415,6 @@ snapshots:
       '@img/sharp-win32-arm64': 0.34.5
       '@img/sharp-win32-ia32': 0.34.5
       '@img/sharp-win32-x64': 0.34.5
-    optional: true
 
   shebang-command@2.0.0:
     dependencies:

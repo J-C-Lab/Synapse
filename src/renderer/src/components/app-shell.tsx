@@ -10,7 +10,7 @@ import {
 } from "lucide-react"
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
-import logoUrl from "@/assets/logo.svg"
+import logoUrl from "@/assets/logo.png"
 import { AppLauncherPage } from "@/components/pages/app-launcher-page"
 import { ChatPage } from "@/components/pages/chat-page"
 import { FloatingBallPage } from "@/components/pages/floating-ball-page"

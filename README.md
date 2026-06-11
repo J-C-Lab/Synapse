@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="resources/logo.svg" alt="Synapse Logo" width="120" />
+  <img src="resources/logo.png" alt="Synapse Logo" width="120" />
 </p>
 <h1 align="center">Synapse</h1>
 
@@ -219,12 +219,13 @@ pnpm build
 
 ## Assets
 
-The system-tray icons (`resources/tray.png`, `tray@2x.png`, `tray@3x.png`) are generated from
-[resources/logo.svg](resources/logo.svg) using the bundled Electron as a headless Chromium —
-re-run the rasterizer whenever the logo changes:
+All product icons — the app icons (`icon.png`, `icon.ico`, `icon.icns`), the system-tray icons
+(`tray.png`, `tray@2x.png`, `tray@3x.png`), and the notification icon — are generated from the
+master logo [`resources/logo.png`](resources/logo.png). Replace that file and re-run the
+generator whenever the brand changes:
 
 ```bash
-pnpm exec electron scripts/build-tray-icons.cjs
+pnpm icons
 ```
 
 ## Documentation
