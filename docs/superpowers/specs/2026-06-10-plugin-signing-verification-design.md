@@ -2,7 +2,8 @@
 
 > 创建于 2026-06-10。仓库:`sunzrnobug/Synapse`,单 `main` 分支。
 > 范围:为插件安装引入**发布者真实性**(authenticity)。当前只有完整性(`sha256`)。
-> 本设计**只覆盖签名/校验**;市场后端(真服务器 vs 形式化 git 注册表)与渲染层代码分割(B3)是独立后续,见末尾「范围外」。
+> 本设计**只覆盖签名/校验**;市场后端**已定为后端 API**(Fastify + Neon + R2,见 PR #1),与渲染层代码分割(B3)是独立后续,见末尾「范围外」。
+> **关键前提:注册表 = 后端 API,没有静态 git 注册表。** 发布者公钥锚由后端 API 下发(存 Neon);本文里「registry」一律指后端的插件目录,不是某个静态 JSON 文件。
 
 ## 1. 目标与威胁模型
 
@@ -10,11 +11,11 @@
 - **防御的威胁**:
   - 篡改包内代码(已签名包被改一个文件)。
   - 冒名(包自声明 `publisherId=com.acme` 但用攻击者的密钥)。
-  - 借市场渠道凭空建立信任(上传自签名包绕过注册表锚)。
+  - 借市场渠道凭空建立信任(上传自签名包绕过后端发布者锚)。
   - 夹带未签名文件(包里多塞一个不在签名清单里的文件)。
   - 路径绕过(签名清单里的路径与解压落盘路径不一致;`..`/绝对路径/盘符/反斜杠)。
   - **ZIP/文件系统层绕过**:重复条目、symlink/hardlink/设备文件等非普通文件、大小写折叠碰撞(Windows 不敏感)、同一规范化路径被多条目写入。
-  - **降级攻击**:客户端被诱导读到 v1 注册表,回退到仅 sha256 的旧逻辑、绕过签名。
+  - **降级绕过**:后端不可用/被屏蔽时,不得静默退回到「无锚的不验签安装」。市场安装的发布者锚**只来自后端 API**;拿不到锚 = 不可安装(而非放行)。本地 `.syn` 始终走签名闸。
 - **不在威胁模型内**:运行时沙箱逃逸(已有 vm 沙箱处理)、供应链攻击发布者自己的私钥泄露(发布者责任)。
 
 ## 2. 锁定的决策
@@ -22,7 +23,7 @@
 1. **信任模型**:注册表锚定发布者密钥 + 本地信任库(本地导入遇未知发布者走 TOFU)。
 2. **范围**:两条安装路径都覆盖;签名**内嵌**进 `.syn` 包。
 3. **未签名策略**:invalid 永远拒;市场要求已签名;本地未签名→警告+显式确认;valid 但发布者未知(本地)→TOFU;dev 来源豁免。
-4. **rollout**:方案 A —— registry v1 维持 legacy(仅 sha256)行为,registry v2 起强制 publisher 签名。签名体系可独立合入,不阻塞现有 mock marketplace。
+4. **发布者锚来源**:**后端 API**(Neon 存发布者公钥,经 `@synapse/marketplace-types` 契约下发)。**无静态 git 注册表、无 v1/v2 版本开关、无 legacy 兼容**。签名纯核心(Phase 1)可独立合入;市场接线依赖后端(PR #1)落地。
 5. **加密**:Ed25519,经 Node 内置 `crypto`,零新原生依赖。
 
 ## 3. 加密与编码
@@ -166,7 +167,7 @@ decidePluginInstall(
 **全局不变量(优先级最高,先于矩阵其它分支判定;仅 `marketplace` + `localPackage`):**
 
 - **一个 `publisherId` 全局只对应一个 `publicKey`**。在 `marketplace` / `localPackage` 下,若 `trustStore` 已有该 `publisherId` 且其 key 与包内 `publicKey` 不同 → **reject**("publisher key mismatch"),不 TOFU、不 confirm。这把「已知发布者被冒充」的防护对两条信任路径生效(含 marketplace:即使 `registryPublisher` 匹配,但本地 trustStore 与包不一致仍 reject —— registry 与 trustStore 必须对该 id 达成一致)。
-- 推论:`seedFromRegistry` 遇「同 id 已存在但 key 不同」时不覆盖、返回冲突标记;该 id 的 marketplace 安装因上面的不变量被 reject,需人工核查(撤销旧信任或修正注册表)。
+- 推论:`seedFromRegistry`(从后端下发的发布者列表 seed)遇「同 id 已存在但 key 不同」时不覆盖、返回冲突标记;该 id 的 marketplace 安装因上面的不变量被 reject,需人工核查(撤销旧信任或修正后端的发布者记录)。
 
 **devDirectory 与不变量无冲突(消歧):** `devDirectory` **不读、不写、不信任、不持久化**任何签名身份 —— 它压根不调用 `verifyPackageSignature` 做信任判断,也不碰 `trustStore`,更不参与 TOFU、不作为 marketplace 信任依据。因此「key mismatch → reject」对它**不适用**(它从不进入信任判定)。dev 包带不带签名、key 是否冲突,都只是「显式开发来源,直接放行运行」。
 
@@ -181,34 +182,28 @@ decidePluginInstall(
 
 - **C1**:marketplace 严格模式必须以 `registryPublisher` 为锚,**不得仅依赖本地 trustStore**(否则 TOFU 信任会污染市场判断)。注:这与上面的全局不变量并不冲突 —— 锚是 `registryPublisher`,trustStore 仅作为「冲突即拒」的额外约束,不作为「批准」的依据。
 - **C2**:`registryPublisher.publisherId` 与 `registryPublisher.publicKey` 必须与包内 `signedPayload` 的对应字段**完全一致**,否则 reject。
-- **C3**:registry v1 宽松路径命名为 **legacy compatibility**(见 §10),**必须有测试覆盖**,防止长期沦为隐性后门。
+- **C3**:市场安装的 `registryPublisher` **只来自后端 API**;后端拿不到锚(离线/插件无登记发布者)→ **reject**(不可安装),**绝不**降级为不验签放行。
 - **C4**:TOFU 只允许 `localPackage`;TOFU 成功后,同一 `publisherId` 出现不同 key 必须 reject(走「已知但 key 不同」分支)。
 - **C5**:`devDirectory` 豁免只限显式开发目录(discovery 的 `dev` 源 / 文件夹安装),**不适用**于普通 `.syn` 包,也不适用于自动更新包。
 
-## 10. 注册表 v2 与 rollout(方案 A)
+## 10. 发布者锚 = 后端 API(无静态 git 注册表)
 
-- `marketplace-registry.ts` 的 `registrySchema` 支持 `version: 1 | 2`。
-- **v2** 新增顶层 `publishers: [{ id, name, publicKey(SPKI DER b64) }]`,每个 plugin 条目加 `publisherId`(zod 校验必须 ∈ `publishers` 的 id 集)。
-- `sha256`(下载完整性)保留;签名是叠加的真实性。
-- **enforcement 由 registry version 决定**:
-  - **registry v1(legacy compatibility)**:沿用今天 —— 仅 sha256,**不**走签名闸。命名清晰、测试覆盖(C3)。
-  - **registry v2**:市场安装强制走 §9 的 marketplace 严格分支,锚 `publishers` 里该 plugin 的 publisher。
-- 本地 `.syn` 导入**始终**走签名闸(与 registry version 无关)。
-- 迁移:把仓库里的 mock 注册表升 v2 + 给 mock 插件签名,是**后续(市场后端)**的事,不阻塞本设计合入。
+注册表是**后端 API**(PR #1:Fastify + Neon + R2),不是静态 JSON 文件。签名只需要后端提供一个**锚**:「插件 X 的可信发布者公钥 = K」。
 
-**防降级收敛(避免 legacy 变长期后门,评审采纳):**
+- **后端域模型 / API 契约**(`@synapse/marketplace-types`)在 plugin / version 元数据上携带其发布者的 **公钥(SPKI DER b64)+ publisherId**,存 **Neon**,经 API 下发。签名本身**内嵌在 `.syn`**(自包含验证),后端只下发锚,不传签名。
+- `sha256`(下载完整性,后端上传时算 / 客户端下载后校)保留;签名是叠加的**真实性**。
+- **市场安装**:`registryPublisher` = 后端 API 返回的该插件发布者 `{ publisherId, publicKey }`,喂给 §9 的 marketplace 分支。
+- **本地 `.syn` 导入**:与后端无关,始终走签名闸(localPackage 分支 + TOFU)。
+- **没有 v1/v2、没有 legacy、没有静态 fallback**。因此也没有「版本降级 / 反回滚」问题——取而代之的是 C3:**拿不到后端锚就不可安装**(离线时市场装不了,但绝不降级为不验签)。
 
-- legacy(v1)宽松路径**只对内置 mock 注册表 / 显式 legacy 源生效**;生产默认 `DEFAULT_MARKETPLACE_REGISTRY_URL` 必须是 v2。
-- **反回滚(anti-rollback)**:持久化「曾见过的最高 registry version」;一旦见过 v2,后续读到 v1 → **拒绝并告警**(视为降级攻击),不静默回退。
-- 配置开关 `allowLegacyRegistry` 默认仅开发环境开启;生产开启需显式配置并记 warning + 设定 sunset 时间。
-- C3 的「测试覆盖」防的是 legacy 变成**隐性**后门;这里的收敛防的是它变成**长期显性**后门。
+> **依赖与边界**:本设计依赖后端在 plugin 元数据里**新增发布者公钥字段**(那是市场后端那条线的活)。删除现有 `src/main/plugins/marketplace-registry.ts`(GitHub raw 静态注册表)同样属于市场那条线,**不在签名 spec 的实现范围**;本 spec 只假定「锚由后端 API 提供」。
 
 ## 11. 集成接入点
 
 - **校验闸位置**:`PluginHost` 的 `installMarketplacePlugin` 与 `installPackage` 都「解压到 staging → `installDirectory` 提升」。闸插在**解压之后、提升之前**:
   - `verifyPackageSignature(stagingDir)` → `decidePluginInstall(...)`。
   - `allow` → 提升;`reject` → 抛 `PluginSignatureError(reason)` 并清理 staging;`confirm`/`tofu` → 走 §12 确认,通过才提升(TOFU 通过再 `trustStore.add`)。
-  - 市场安装传 `installMode:"marketplace"` + `registryPublisher`(从 v2 注册表查该 plugin 的 publisher);v1 注册表不进闸(legacy)。
+  - 市场安装传 `installMode:"marketplace"` + `registryPublisher`(**从后端 API 查**该 plugin 的发布者公钥);后端拿不到锚 → 直接 reject(C3),不进入「无锚放行」。
   - 本地导入传 `installMode:"localPackage"`。
   - 文件夹/dev 安装传 `installMode:"devDirectory"`。
 - **安装与更新共用同一签名闸**:任何插件更新包(将来若引入插件自动更新)必须重新跑 `verifyPackageSignature` + `decidePluginInstall`,**不得**走 `devDirectory` 豁免,且受同 `publisherId` key 一致约束。杜绝「更新路径绕过安装校验」。(当前尚无插件级自动更新机制,此为前置不变量。)
@@ -220,7 +215,7 @@ decidePluginInstall(
   - `kind:"unsigned"`:「该插件未签名,无法验证来源,是否仍要安装?」
   - `kind:"tofu"`:「首次见到发布者 `<publisherId>`(指纹 `<fingerprint>`),是否信任并安装?」
 - **`publisherName` 展示优先级**(防 `publisherName:"Microsoft"` + `publisherId:"evil.plugin"` 的视觉冒名):
-  - marketplace:用 registry 中该 publisher 的 name;
+  - marketplace:用后端返回的该 publisher 的 name;
   - localPackage 首次 TOFU:可显示包内 `publisherName`,但**必须标注「自声明名称」**,且不作为视觉主体;
   - trustStore 已存在:用 trustStore 中的 name。
 - 选原生模态:安全关键步骤放主进程,**渲染层无法伪造/绕过**,且无需 pending-token 状态机。代价:UX 不如内嵌弹窗统一(本地导入低频,可接受)。
@@ -253,16 +248,16 @@ decidePluginInstall(
   - **ZIP 重复条目**:两个 `dist/index.js`;两个 `META-INF/synapse-signature.json` → 整包拒。
   - **大小写碰撞**:ZIP 含 `dist/index.js` 与 `dist/INDEX.js` → 拒。
   - **symlink / 非普通文件**:ZIP 含 symlink/设备文件 → 拒;hash 阶段 `lstat` 不 follow symlink。
-- **`decidePluginInstall`**:§9 矩阵**每一行**;显式覆盖 C1–C5(尤其 C3 legacy、C4 TOFU 后 key-mismatch、key-mismatch 两条路径都 reject);**devDirectory 不写 trustStore、不参与 TOFU**。
-- **PublisherTrustStore**:注册表 seed、TOFU 追加、跨实例持久、key-mismatch 冲突标记、损坏项丢弃;**local unsigned confirm 通过后不写 trustStore**(未签名包不得变成隐式可信发布者)。
-- **注册表 schema / 防降级**:v1 解析(legacy,无 publishers)、v2 解析(publisherId 必须 ∈ publishers)、v2 校验失败用例;**已见 v2 后读到 v1 → reject/warning(anti-rollback)**;生产 mode 下 v1 被拒。
+- **`decidePluginInstall`**:§9 矩阵**每一行**;显式覆盖 C1–C5(尤其 **C3 拿不到后端锚→reject 不降级**、C4 TOFU 后 key-mismatch、key-mismatch 两条路径都 reject);**devDirectory 不写 trustStore、不参与 TOFU**。
+- **PublisherTrustStore**:从后端发布者列表 seed、TOFU 追加、跨实例持久、key-mismatch 冲突标记、损坏项丢弃;**local unsigned confirm 通过后不写 trustStore**(未签名包不得变成隐式可信发布者)。
+- **后端锚契约**:`@synapse/marketplace-types` 的 plugin/version 元数据带发布者公钥字段(校验);市场安装在**后端无锚**(离线/插件无登记发布者)时 → reject,**不降级**为不验签。
 - **CLI**:keygen/sign/verify 往返;sign 拒已签包。
 - **Host 集成**:已签 fixture 装得上;未签 fixture 市场 reject / 本地走 confirm;`registryPublisher` 不匹配 reject。
 - **TOFU 弹窗内容**:确认展示 `fingerprint`(不只 `publisherName`)。
 
 ## 16. 范围外(独立后续)
 
-- **市场后端**:真服务器 vs 形式化 git 注册表 + 发布流水线(含把 mock 注册表升 v2、给内置插件签名)。本设计为其提供了 v2 schema 与验证地基。
+- **市场后端(PR #1)**:已定为后端 API(Fastify + Neon + R2),不是本 spec 的实现范围。本设计**依赖**它在 plugin 元数据里下发**发布者公钥**(锚),并由它**移除静态 git 注册表**(`marketplace-registry.ts`)。签名为其提供「验签 + 信任决策」地基。
 - **B3 渲染层代码分割**:主 bundle 1.8MB 单块按路由懒加载(recharts、chat/markdown/shiki 栈)。纯构建优化,与本设计无关。
 
 ## 17. 实施顺序(TDD 友好,分阶段落地)
@@ -273,4 +268,4 @@ decidePluginInstall(
 - **Phase 2 — 安全解压与 staging 校验**:ZIP entry 规范化、重复路径拒、大小写碰撞拒、symlink/特殊文件拒、`lstat` 哈希、文件集合相等性 + 单测(含前述「最关键的前 3 类」)。
 - **Phase 3 — 主进程策略层**:`PublisherTrustStore`、`decidePluginInstall`(全矩阵 + C1–C5 + 全局不变量)、`PluginSignatureError`、接入 `installPackage` / `installMarketplacePlugin`、§12 原生确认弹窗。
 - **Phase 4 — 发布者 CLI**:`keygen` / `sign` / `verify`;`create-synapse-plugin` 模板 + `SIGNING.md`。
-- **Phase 5 — 注册表 v2**:`publishers` schema + `publisherId` 锚、marketplace `registryPublisher` 接线、v1 legacy 收敛 + 反回滚。
+- **Phase 5 — 后端发布者锚接线**(依赖 PR #1 落地):后端 plugin 元数据加发布者公钥字段 + `@synapse/marketplace-types` 契约;桌面端 marketplace 安装从后端取 `registryPublisher` 接入 §9;后端无锚 → reject(C3)。此阶段**针对后端 API 重写**,不再面向静态 registry。
