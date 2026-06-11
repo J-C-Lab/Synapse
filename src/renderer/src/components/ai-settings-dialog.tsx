@@ -2,6 +2,7 @@ import type { AiStatus } from "@/lib/electron"
 import { Check, Gauge, KeyRound, Loader2, ShieldOff } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
+import { ProviderLogo } from "@/components/provider-logo"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -13,6 +14,13 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   deleteAiKey,
   getAiStatus,
@@ -121,18 +129,26 @@ export function AiSettingsDialog({
 
         <div className="space-y-1">
           <Label className="text-xs">{t("providers.provider")}</Label>
-          <NativeSelect
+          <Select
             value={status?.provider ?? ""}
             disabled={busy}
-            onChange={(event) => void changeProvider(event.target.value)}
+            onValueChange={(value) => void changeProvider(value)}
           >
-            {status?.providers.map((provider) => (
-              <NativeSelectOption key={provider.id} value={provider.id}>
-                {provider.label}
-                {provider.hasKey ? " ✓" : ""}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder={t("providers.provider")} />
+            </SelectTrigger>
+            <SelectContent>
+              {status?.providers.map((provider) => (
+                <SelectItem key={provider.id} value={provider.id}>
+                  <span className="flex items-center gap-2">
+                    <ProviderLogo id={provider.id} label={provider.label} className="size-4" />
+                    <span className="truncate">{provider.label}</span>
+                    {provider.hasKey && <Check className="size-3.5 text-emerald-500" />}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         {active && (

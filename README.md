@@ -36,7 +36,7 @@ rating, and moderating plugins.
 ### 🧠 AI foundation
 
 - Built-in **agent runtime** with streaming chat, tool-calling, and per-turn token budgeting
-- **Multi-provider BYOK** — Claude by default, OpenAI and other providers via a provider abstraction; keys are yours, encrypted at rest
+- **Multi-provider BYOK** — Claude by default, plus OpenAI and OpenAI-compatible vendors (智谱/GLM, 硅基流动/SiliconFlow, 阿里百炼/Qwen) via a provider abstraction; keys are yours, encrypted at rest
 - **Bidirectional MCP** — plugin tools are exposed as [Model Context Protocol](https://modelcontextprotocol.io) tools, and Synapse can also act as an MCP **client** consuming external servers
 - **Long-term memory** — documents ingested into chunked, searchable memory (RAG) with encrypted MCP server secrets
 
