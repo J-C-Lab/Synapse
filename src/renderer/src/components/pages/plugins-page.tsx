@@ -30,6 +30,7 @@ import { Switch } from "@/components/ui/switch"
 import {
   droppedFilePath,
   ElectronIpcError,
+  getSettings,
   importPluginFromFile,
   installPluginPackage,
   isElectron,
@@ -55,6 +56,8 @@ export function PluginsPage() {
   const [pending, setPending] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
   const [dragActive, setDragActive] = useState(false)
+  const [trustedSourcePolicy, setTrustedSourcePolicy] =
+    useState<SynapseTrustedSourcePolicy>("official-marketplace")
 
   const load = useCallback(async () => {
     if (!electronReady) return
@@ -72,8 +75,13 @@ export function PluginsPage() {
   useEffect(() => {
     if (!electronReady) return
     void load()
+    void getSettings()
+      .then((settings) => setTrustedSourcePolicy(settings.trustedSourcePolicy))
+      .catch(() => undefined)
     return onPluginRegistryChanged((nextPlugins) => setPlugins(nextPlugins))
   }, [electronReady, load])
+
+  const localImportAllowed = trustedSourcePolicy !== "official-marketplace"
 
   // The host broadcasts a registry change after every install, so the plugin
   // list refreshes itself via onPluginRegistryChanged — these handlers only
@@ -93,6 +101,7 @@ export function PluginsPage() {
   }
 
   async function onImportClick() {
+    if (!localImportAllowed) return
     await runImport(async () => {
       const plugin = await importPluginFromFile()
       // null = user cancelled the picker; nothing to report.
@@ -103,7 +112,7 @@ export function PluginsPage() {
   async function onDrop(event: React.DragEvent) {
     event.preventDefault()
     setDragActive(false)
-    if (importing) return
+    if (importing || !localImportAllowed) return
     const files = Array.from(event.dataTransfer.files)
     const synapseFiles = files.filter((file) => file.name.toLowerCase().endsWith(".syn"))
     if (synapseFiles.length === 0) {
@@ -218,7 +227,11 @@ export function PluginsPage() {
         subtitle={t("plugins.subtitle")}
         action={
           <div className="flex items-center gap-2">
-            <Button size="sm" disabled={importing} onClick={() => void onImportClick()}>
+            <Button
+              size="sm"
+              disabled={importing || !localImportAllowed}
+              onClick={() => void onImportClick()}
+            >
               <Download className={cn("size-4", importing && "animate-pulse")} aria-hidden />
               {t(importing ? "plugins.actions.importing" : "plugins.actions.import")}
             </Button>

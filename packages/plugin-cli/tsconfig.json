@@ -5,6 +5,7 @@
     "module": "CommonJS",
     "moduleResolution": "node",
     "paths": {
+      "@synapse/marketplace-types": ["../marketplace-types/src/index.ts"],
       "@synapse/plugin-manifest": ["../plugin-manifest/src/index.ts"],
       "@synapse/plugin-sdk": ["../plugin-sdk/src/index.ts"]
     },

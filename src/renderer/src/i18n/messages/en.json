@@ -104,6 +104,19 @@
     "title": "Settings",
     "subtitle": "Tune appearance and feature behavior."
   },
+  "trustedSources": {
+    "title": "Trusted plugin sources",
+    "subtitle": "Choose which plugin package sources Synapse exposes in the desktop app.",
+    "saved": "Trusted source policy updated.",
+    "policy": {
+      "officialMarketplace": "Official marketplace",
+      "officialMarketplaceHint": "Show only packages resolved by the Synapse marketplace backend.",
+      "anyUrl": "Any URL",
+      "anyUrlHint": "Allow marketplace and URL-backed package sources exposed by the client.",
+      "localSyn": "Local .syn only",
+      "localSynHint": "Only expose local package import from files on this device."
+    }
+  },
   "appearance": {
     "title": "Appearance",
     "subtitle": "Switch between light and dark, or pick an accent color.",
@@ -216,6 +229,73 @@
     "submit": "Submit plugin",
     "submitTooltip": "Coming soon",
     "protectedSource": "This plugin is provided by {{source}} and cannot be reinstalled from the marketplace.",
+    "by": "by {{handle}}",
+    "viewDetails": "Details",
+    "tabs": {
+      "browse": "Browse",
+      "mine": "My plugins",
+      "admin": "Admin"
+    },
+    "governance": {
+      "emptyMine": "No plugins published by this account.",
+      "emptyAdmin": "No marketplace plugins found.",
+      "signInRequired": "Sign in to manage your marketplace plugins.",
+      "visibilityPublic": "Public",
+      "visibilityPrivate": "Private",
+      "makePublic": "Make public",
+      "makePrivate": "Make private",
+      "yank": "Yank latest",
+      "yanked": "Version yanked.",
+      "visibilityUpdated": "Visibility updated.",
+      "report": "Report",
+      "reported": "Report submitted.",
+      "defaultReportReason": "Reported from the Synapse desktop app.",
+      "remove": "Takedown",
+      "removed": "Plugin removed.",
+      "reportResolved": "Report resolved."
+    },
+    "review": {
+      "title": "Review queue",
+      "subtitle": "Open reports — from users and the automated upload scan.",
+      "empty": "No open reports. All clear.",
+      "markReviewed": "Mark reviewed",
+      "dismiss": "Dismiss",
+      "kind": {
+        "user": "user report",
+        "auto": "auto scan"
+      }
+    },
+    "account": {
+      "signIn": "Sign in",
+      "signingIn": "Check your browser…",
+      "signOut": "Sign out",
+      "signedIn": "Signed in as {{handle}}",
+      "menuLabel": "Marketplace account {{handle}}",
+      "prompt": "Complete GitHub authorization in your browser.",
+      "dialogTitle": "Sign in with GitHub",
+      "dialogDescription": "Synapse opened the GitHub authorization page in your browser. After you authorize, this window will continue automatically.",
+      "preparing": "Preparing the GitHub authorization request…",
+      "browserReady": "Finish authorization in your browser",
+      "waiting": "After approval, Synapse will connect your marketplace account automatically.",
+      "secureHint": "The app only receives a marketplace session after GitHub confirms the request.",
+      "stepBrowser": "Browser approval",
+      "stepConnect": "Auto-connect",
+      "close": "Close"
+    },
+    "rate": {
+      "label": "Your rating",
+      "star": "Rate {{stars}} stars",
+      "thanks": "Thanks for rating!"
+    },
+    "detail": {
+      "permissionsTitle": "Permissions requested",
+      "permissionsNone": "No special permissions requested.",
+      "toolsTitle": "AI tools exposed",
+      "versions": "Version history",
+      "install": "Install",
+      "installing": "Installing…",
+      "close": "Close"
+    },
     "actions": {
       "refresh": "Refresh",
       "install": "Install",

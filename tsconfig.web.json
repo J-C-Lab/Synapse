@@ -9,7 +9,9 @@
     "moduleResolution": "bundler",
     "paths": {
       "@/*": ["./src/renderer/src/*"],
-      "@synapse/plugin-sdk": ["./packages/plugin-sdk/src/index.ts"]
+      "@synapse/plugin-sdk": ["./packages/plugin-sdk/src/index.ts"],
+      "@synapse/marketplace-types": ["./packages/marketplace-types/src/index.ts"],
+      "@synapse/plugin-manifest": ["./packages/plugin-manifest/src/index.ts"]
     },
     "resolveJsonModule": true,
     "types": ["vite/client", "@testing-library/jest-dom"],
@@ -20,6 +22,16 @@
     "isolatedModules": true,
     "skipLibCheck": true
   },
-  "include": ["src/renderer/src/**/*", "src/preload/index.d.ts", "packages/plugin-sdk/src/**/*"],
-  "exclude": ["packages/plugin-sdk/src/__examples__/**"]
+  "include": [
+    "src/renderer/src/**/*",
+    "src/preload/index.d.ts",
+    "packages/plugin-sdk/src/**/*",
+    "packages/plugin-manifest/src/**/*",
+    "packages/marketplace-types/src/**/*"
+  ],
+  "exclude": [
+    "packages/plugin-sdk/src/__examples__/**",
+    "packages/plugin-manifest/src/**/*.test.ts",
+    "packages/marketplace-types/src/**/*.test.ts"
+  ]
 }

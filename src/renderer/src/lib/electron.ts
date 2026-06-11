@@ -1,3 +1,14 @@
+import type {
+  AdminReportsResponse,
+  MyPluginsResponse,
+  PluginDetailResponse,
+  PluginSummary,
+  RateResponse,
+  Report,
+  SearchPluginsResponse,
+  User,
+} from "@synapse/marketplace-types"
+
 /**
  * Detects whether the app is running inside an Electron renderer.
  * Use this to gate any code that calls IPC so the same component
@@ -24,6 +35,20 @@ export type LanPairing = SynapseLanPairing
 export type LanTransfer = SynapseLanTransfer
 export type PluginRegistryEntry = SynapsePluginRegistryEntry
 export type MarketplaceEntry = SynapseMarketplaceEntry
+export type MarketplaceSummary = PluginSummary
+export type MarketplaceDetail = PluginDetailResponse
+export type MarketplaceSearchResponse = SearchPluginsResponse
+export type MarketplaceUser = User
+export type MarketplaceReport = Report
+export type MarketplaceReportsResponse = AdminReportsResponse
+export interface MarketplaceAccount {
+  user: User | null
+}
+export interface MarketplaceLoginPrompt {
+  verificationUri: string
+  userCode: string
+  expiresAt: string
+}
 export type PluginCommandResult = SynapsePluginCommandResult
 export type PluginInvokePhase = SynapsePluginInvokePhase
 export type PluginView = SynapsePluginView
@@ -239,6 +264,87 @@ export async function installMarketplacePlugin(
   version?: string
 ): Promise<PluginRegistryEntry> {
   return unwrapIpcResult(await api().installMarketplacePlugin(id, version))
+}
+
+export async function searchMarketplace(query?: string): Promise<MarketplaceSearchResponse> {
+  return unwrapIpcResult(await api().searchMarketplace(query))
+}
+
+export async function getMarketplaceDetail(pluginId: string): Promise<MarketplaceDetail> {
+  return unwrapIpcResult(await api().getMarketplaceDetail(pluginId))
+}
+
+export async function installMarketplaceBackendPlugin(
+  id: string,
+  version: string
+): Promise<PluginRegistryEntry> {
+  return unwrapIpcResult(await api().installMarketplaceBackendPlugin(id, version))
+}
+
+export async function getMarketplaceAccount(): Promise<MarketplaceAccount> {
+  return unwrapIpcResult(await api().getMarketplaceAccount())
+}
+
+export async function marketplaceLogin(): Promise<MarketplaceUser> {
+  return unwrapIpcResult(await api().marketplaceLogin())
+}
+
+export async function marketplaceLogout(): Promise<void> {
+  unwrapIpcResult(await api().marketplaceLogout())
+}
+
+export async function rateMarketplacePlugin(id: string, stars: number): Promise<RateResponse> {
+  return unwrapIpcResult(await api().rateMarketplacePlugin(id, stars))
+}
+
+export async function listMyMarketplacePlugins(): Promise<MyPluginsResponse> {
+  return unwrapIpcResult(await api().listMyMarketplacePlugins())
+}
+
+export async function setMarketplaceVisibility(
+  id: string,
+  visibility: "public" | "private"
+): Promise<MarketplaceDetail> {
+  return unwrapIpcResult(await api().setMarketplaceVisibility(id, visibility))
+}
+
+export async function yankMarketplaceVersion(
+  id: string,
+  version: string,
+  reason?: string
+): Promise<MarketplaceDetail> {
+  return unwrapIpcResult(await api().yankMarketplaceVersion(id, version, reason))
+}
+
+export async function reportMarketplacePlugin(id: string, reason: string): Promise<void> {
+  unwrapIpcResult(await api().reportMarketplacePlugin(id, reason))
+}
+
+export async function removeMarketplacePlugin(id: string): Promise<void> {
+  unwrapIpcResult(await api().removeMarketplacePlugin(id))
+}
+
+export async function restoreMarketplacePlugin(id: string): Promise<void> {
+  unwrapIpcResult(await api().restoreMarketplacePlugin(id))
+}
+
+export async function listMarketplaceReports(
+  status?: "open" | "reviewed" | "dismissed"
+): Promise<AdminReportsResponse> {
+  return unwrapIpcResult(await api().listMarketplaceReports(status))
+}
+
+export async function resolveMarketplaceReport(
+  reportId: string,
+  status: "reviewed" | "dismissed"
+): Promise<void> {
+  unwrapIpcResult(await api().resolveMarketplaceReport(reportId, status))
+}
+
+export function onMarketplaceLoginPrompt(
+  handler: (prompt: MarketplaceLoginPrompt) => void
+): () => void {
+  return api().onMarketplaceLoginPrompt(handler)
 }
 
 export function onLauncherFocus(handler: () => void): () => void {

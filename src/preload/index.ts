@@ -12,6 +12,7 @@ interface SettingsPatch {
   floatingBallEnabled?: boolean
   floatingBallFeatures?: "appLauncher"[]
   lanEnabled?: boolean
+  trustedSourcePolicy?: "official-marketplace" | "any-url" | "local-syn"
 }
 type Settings = Required<SettingsPatch>
 
@@ -83,6 +84,35 @@ const electronAPI = {
   listMarketplacePlugins: () => ipcRenderer.invoke("marketplace:list"),
   installMarketplacePlugin: (id: string, version?: string) =>
     ipcRenderer.invoke("marketplace:install", { id, version }),
+  searchMarketplace: (query?: string) => ipcRenderer.invoke("marketplace:search", query),
+  getMarketplaceDetail: (pluginId: string) => ipcRenderer.invoke("marketplace:detail", pluginId),
+  installMarketplaceBackendPlugin: (id: string, version: string) =>
+    ipcRenderer.invoke("marketplace:backend-install", { id, version }),
+
+  // ---- Marketplace account ----
+  getMarketplaceAccount: () => ipcRenderer.invoke("market:status"),
+  marketplaceLogin: () => ipcRenderer.invoke("market:login"),
+  marketplaceLogout: () => ipcRenderer.invoke("market:logout"),
+  rateMarketplacePlugin: (id: string, stars: number) =>
+    ipcRenderer.invoke("market:rate", { id, stars }),
+  listMyMarketplacePlugins: () => ipcRenderer.invoke("market:my-plugins"),
+  setMarketplaceVisibility: (id: string, visibility: "public" | "private") =>
+    ipcRenderer.invoke("market:set-visibility", { id, visibility }),
+  yankMarketplaceVersion: (id: string, version: string, reason?: string) =>
+    ipcRenderer.invoke("market:yank", { id, version, reason }),
+  reportMarketplacePlugin: (id: string, reason: string) =>
+    ipcRenderer.invoke("market:report", { id, reason }),
+  removeMarketplacePlugin: (id: string) => ipcRenderer.invoke("market:remove", { id }),
+  restoreMarketplacePlugin: (id: string) => ipcRenderer.invoke("market:restore", { id }),
+  listMarketplaceReports: (status?: "open" | "reviewed" | "dismissed") =>
+    ipcRenderer.invoke("market:admin-reports", { status }),
+  resolveMarketplaceReport: (reportId: string, status: "reviewed" | "dismissed") =>
+    ipcRenderer.invoke("market:resolve-report", { reportId, status }),
+  onMarketplaceLoginPrompt: (handler: (prompt: unknown) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
+    ipcRenderer.on("market:login-prompt", listener)
+    return () => ipcRenderer.removeListener("market:login-prompt", listener)
+  },
 
   // ---- AI assistant ----
   getAiStatus: () => ipcRenderer.invoke("ai:status"),

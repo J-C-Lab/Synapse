@@ -1,6 +1,7 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { PluginHost } from "../plugins/plugin-host"
 import type { PluginInvokePhase, PluginInvokeRequest } from "../plugins/types"
+import { MarketplaceApiError } from "../plugins/marketplace-api"
 import { PermissionDenied } from "../plugins/permissions"
 import {
   PluginHostNotImplementedError,
@@ -12,6 +13,7 @@ import { PluginCrashedError } from "../plugins/plugin-registry"
 export type PluginIpcErrorCode =
   | "IPC_FORBIDDEN"
   | "IPC_INVALID_PAYLOAD"
+  | "MARKETPLACE_ERROR"
   | "PLUGIN_NOT_FOUND"
   | "PLUGIN_NOT_ACTIVE"
   | "PLUGIN_PERMISSION_DENIED"
@@ -58,6 +60,9 @@ export interface PluginIpcHandlers {
   disposeCommand: (payload: unknown) => Promise<void>
   marketplaceList: () => unknown[] | Promise<unknown[]>
   marketplaceInstall: (payload: unknown) => Promise<unknown>
+  marketplaceSearch: (query: unknown) => Promise<unknown>
+  marketplaceDetail: (pluginId: unknown) => Promise<unknown>
+  marketplaceBackendInstall: (payload: unknown) => Promise<unknown>
 }
 
 export interface PluginIpcDeps {
@@ -146,6 +151,22 @@ export function createPluginIpcHandlers(
       return host.installMarketplacePlugin(
         requireString(value.id, "id"),
         typeof value.version === "string" ? value.version : undefined
+      )
+    },
+
+    marketplaceSearch(query) {
+      return host.searchMarketplace(typeof query === "string" ? query : undefined)
+    },
+
+    marketplaceDetail(pluginId) {
+      return host.marketplaceDetail(requireString(pluginId, "pluginId"))
+    },
+
+    marketplaceBackendInstall(payload) {
+      const value = requireRecord(payload, "marketplace:backend-install payload")
+      return host.installFromMarketplace(
+        requireString(value.id, "id"),
+        requireString(value.version, "version")
       )
     },
   }
@@ -265,6 +286,30 @@ export function registerPluginIpc(
       options.isTrustedSender
     )
   )
+  ipcMain.handle("marketplace:search", (event, query: unknown) =>
+    invokePluginIpcHandler(
+      "marketplace:search",
+      event,
+      () => handlers.marketplaceSearch(query),
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("marketplace:detail", (event, pluginId: unknown) =>
+    invokePluginIpcHandler(
+      "marketplace:detail",
+      event,
+      () => handlers.marketplaceDetail(pluginId),
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("marketplace:backend-install", (event, payload: unknown) =>
+    invokePluginIpcHandler(
+      "marketplace:backend-install",
+      event,
+      () => handlers.marketplaceBackendInstall(payload),
+      options.isTrustedSender
+    )
+  )
 
   host.registry.on("changed", () => options.onRegistryChanged(host.list()))
 }
@@ -346,6 +391,14 @@ function toPluginIpcError(err: unknown): PluginIpcError {
       code: "PLUGIN_INSTALL_ERROR",
       message: err.message,
       details: err.details,
+    }
+  }
+
+  if (err instanceof MarketplaceApiError) {
+    return {
+      code: "MARKETPLACE_ERROR",
+      message: err.message,
+      details: { status: err.status, code: err.code },
     }
   }
 

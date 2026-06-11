@@ -9,6 +9,7 @@
     "typecheck": "fumadocs-mdx && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@synapse/marketplace-types": "workspace:*",
     "fumadocs-ui": "latest",
     "fumadocs-core": "latest",
     "fumadocs-mdx": "latest",

@@ -1,0 +1,32 @@
+{
+  "name": "@synapse/marketplace-types",
+  "version": "0.1.0",
+  "description": "Synapse marketplace domain model and API contract — shared zod schemas and inferred types for the marketplace server, the plugin CLI, the desktop app, and the web portal",
+  "license": "MIT",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "README.md",
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@synapse/plugin-manifest": "workspace:*",
+    "@synapse/plugin-sdk": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
