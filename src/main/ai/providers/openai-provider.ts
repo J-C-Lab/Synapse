@@ -57,16 +57,24 @@ export interface OpenAiChatClient {
 
 export interface OpenAiProviderOptions {
   apiKey?: string
+  /**
+   * OpenAI-compatible base URL. Omit for OpenAI itself; set it to reuse this
+   * adapter for compatible vendors (Zhipu, SiliconFlow, Alibaba Bailian, …).
+   */
+  baseURL?: string
+  /** Catalog id this instance serves; defaults to "openai". */
+  id?: string
   /** Inject a client for tests; in production it's built from `apiKey`. */
   client?: OpenAiChatClient
 }
 
 export class OpenAiProvider implements ChatProvider {
-  readonly id = "openai"
+  readonly id: string
   private readonly client: OpenAiChatClient
 
   constructor(options: OpenAiProviderOptions) {
-    this.client = options.client ?? defaultClient(options.apiKey)
+    this.id = options.id ?? "openai"
+    this.client = options.client ?? defaultClient(options.apiKey, options.baseURL)
   }
 
   async *stream(req: ProviderRequest): AsyncIterable<ProviderStreamEvent> {
@@ -106,8 +114,8 @@ export class OpenAiProvider implements ChatProvider {
   }
 }
 
-function defaultClient(apiKey: string | undefined): OpenAiChatClient {
-  const client = new OpenAI({ apiKey })
+function defaultClient(apiKey: string | undefined, baseURL?: string): OpenAiChatClient {
+  const client = new OpenAI({ apiKey, baseURL })
   return {
     chat: {
       completions: {
