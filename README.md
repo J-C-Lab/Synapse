@@ -3,123 +3,208 @@
 </p>
 <h1 align="center">Synapse</h1>
 
-Synapse is an extensible desktop productivity toolbox built with Electron, React, and electron-vite.
+<p align="center">
+  An extensible desktop platform that turns an AI agent into a productivity workhorse —
+  with installable plugins as its hands, MCP as the wiring, and a plugin marketplace as the ecosystem.
+</p>
 
-It provides a secure desktop shell for command launching, lightweight utilities, floating interactions, and plugin-driven workflows.
+<p align="center">
+  <a href="#getting-started">Getting Started</a> ·
+  <a href="#monorepo-layout">Layout</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="./README_zh.md">中文</a>
+</p>
 
-## Features
+---
 
-- Electron desktop app with isolated main, preload, and renderer processes
-- Typed IPC boundary through `contextBridge`
-- Custom `app://` protocol and strict CSP baseline
-- React renderer with Tailwind CSS and shadcn/ui
-- English and Chinese i18n foundation
-- Vitest-based unit and component testing
-- Cross-platform packaging with electron-builder
-- Fumadocs documentation workspace
+## What is Synapse?
 
-## Roadmap
+Synapse is an Electron desktop app built around a simple mental model:
 
-- Global shortcut command launcher
-- Floating desktop assistant
-- Theme switching and persisted appearance settings
-- Plugin manifest, registry, permission model, and SDK
-- Built-in tools for timestamp conversion, clipboard history, and screenshots
-- Optional docs site for product and engineering documentation
+- **The AI is the brain / designer.**
+- **Installable skills are knowledge the brain can learn.**
+- **Synapse plugins are the brain's hands** — capabilities the agent (and the user) can invoke.
+- **The marketplace is the society** where those hands are produced, distributed, and peer-reviewed.
 
-## Tech Stack
+In practice that means a single desktop shell that hosts a built-in AI agent, a sandboxed
+plugin runtime that exposes plugin actions as **MCP tools**, encrypted **LAN device-to-device**
+transfer, and a full **plugin marketplace** (backend + web portal) for publishing, browsing,
+rating, and moderating plugins.
 
-- Electron
-- electron-vite
-- Vite
-- React
-- TypeScript
-- Tailwind CSS
-- shadcn/ui
-- Zustand
-- i18next
-- Vitest
-- Testing Library
-- electron-builder
-- Fumadocs
+## Highlights
 
-## Project Structure
+### 🧠 AI foundation
+
+- Built-in **agent runtime** with streaming chat, tool-calling, and per-turn token budgeting
+- **Multi-provider BYOK** — Claude by default, OpenAI and other providers via a provider abstraction; keys are yours, encrypted at rest
+- **Bidirectional MCP** — plugin tools are exposed as [Model Context Protocol](https://modelcontextprotocol.io) tools, and Synapse can also act as an MCP **client** consuming external servers
+- **Long-term memory** — documents ingested into chunked, searchable memory (RAG) with encrypted MCP server secrets
+
+### 🧩 Plugin system
+
+- **Manifest + SDK** — a declarative `synapse.json` plus a typed `{ commands, views, tools }` contract for authors
+- **Scaffold & CLI** — `create-synapse-plugin` to start, `synapse-plugin` to build a project into an installable `.syn` package
+- **Sandboxed host** — capability/permission model, isolated execution, and a tool bridge into the agent
+- **Local install** — open or drop a `.syn` file (registered file association) to install
+
+### 🛒 Plugin marketplace
+
+- Self-managed backend (**Fastify + Drizzle + Postgres/Neon + Cloudflare R2**) — the authoritative source of truth
+- **Accounts** via GitHub device-authorization flow; opaque, revocable sessions hashed at rest
+- **Publish** (private or public), **browse**, **download** (short-lived signed URLs), **rate & review**, **ranking**
+- **Governance & moderation** — visibility toggles, version yanking, abuse reports, automated risk scanning, an admin review queue, and takedown/restore
+- **Web portal** — public, SEO-friendly browsing built on the docs site
+
+### 🖥️ Desktop shell
+
+- Global-shortcut **command launcher** and a **floating ball** quick-access surface
+- Theme switching (light/dark/system) with persisted appearance settings
+- **English & 简体中文** i18n
+- **Auto-update** with an in-app banner (manual download/restart flow)
+
+### 🔐 LAN device sync
+
+- Nearby-device discovery over Bonjour, **pinned-HTTPS encrypted file transfer** with a verifiable security code
+
+## Monorepo layout
+
+A pnpm workspace. The desktop app lives at the repo root; shared libraries, the marketplace
+backend, and the docs/portal live under `packages/` and `docs/`.
 
 ```text
-src/
-├─ main/                  # Electron main process, CSP, app:// protocol, IPC
-├─ preload/               # contextBridge API and renderer-visible types
-└─ renderer/              # React renderer app
-   ├─ index.html
-   └─ src/
-      ├─ App.tsx
-      ├─ components/
-      ├─ hooks/
-      ├─ i18n/
-      └─ lib/
-
-docs/                     # Fumadocs documentation site
-resources/                # electron-builder icons and resources
+synapse/
+├─ src/                              # Electron desktop app
+│  ├─ main/                          # Main process
+│  │  ├─ ai/                         # Agent runtime, providers, MCP client, memory
+│  │  ├─ mcp/                        # Synapse-as-MCP-server
+│  │  ├─ plugins/                    # Plugin host, sandbox, permissions, tool bridge
+│  │  ├─ marketplace/                # Desktop account sign-in + encrypted token store
+│  │  ├─ lan/                        # Bonjour discovery + pinned-HTTPS transfer
+│  │  ├─ launcher/  settings/  updates/  protocol/  ipc/
+│  ├─ preload/                       # contextBridge API + renderer-visible types
+│  └─ renderer/                      # React SPA (home, chat, launcher, plugins, marketplace, LAN, settings)
+│
+├─ packages/
+│  ├─ plugin-manifest/               # synapse.json schema, validation, engine compatibility
+│  ├─ plugin-sdk/                    # Declarative command + view + tool contract for authors
+│  ├─ plugin-cli/                    # Build a plugin project into a .syn package; login/publish
+│  ├─ create-synapse-plugin/         # Project scaffold
+│  ├─ marketplace-types/             # Shared zod schemas + inferred types (server/CLI/app/portal)
+│  └─ marketplace-server/            # Fastify + Drizzle marketplace backend
+│
+├─ docs/                             # Fumadocs site + the public marketplace web portal
+└─ resources/                        # Icons and electron-builder assets
 ```
+
+## Architecture
+
+**Process model.** electron-vite produces three independent bundles in `out/` — `main`,
+`preload`, and `renderer`. The renderer is a Vite-built React SPA loaded by the main process;
+there is no web fallback, so it always assumes Electron and uses IPC for OS-level work.
+
+**Typed IPC.** Every cross-process call follows a four-touchpoint pattern: a pure handler →
+main-process registration → `preload` `contextBridge` exposure → a typed renderer wrapper.
+Senders are validated and payloads are checked at the boundary.
+
+**Security baseline.** A custom, `standard`+`secure` `app://` protocol serves the renderer, and a
+strict CSP is applied to every response. Secrets (AI provider keys, the marketplace session
+token, MCP server env/headers) are encrypted at rest with the OS keychain via Electron
+`safeStorage` and never reach the renderer.
+
+**Marketplace contract.** `@synapse/marketplace-types` is the single source of truth — zod
+schemas with `z.infer` types shared by the backend, the CLI, the desktop app, and the web
+portal. The backend is fully dependency-injected (db, object storage, identity provider, clock),
+so it runs against in-process Postgres (PGlite/WASM) in tests with no real credentials.
+
+## Tech stack
+
+| Area            | Tools                                                                              |
+| --------------- | ---------------------------------------------------------------------------------- |
+| Desktop         | Electron 33 · electron-vite · electron-builder · electron-updater                  |
+| UI              | React 19 · TypeScript 5 (strict) · Tailwind CSS v4 · shadcn/ui · Zustand · i18next |
+| AI              | `@anthropic-ai/sdk` · `openai` · `@modelcontextprotocol/sdk`                       |
+| Backend         | Fastify 5 · Drizzle ORM · Postgres (Neon) · Cloudflare R2 (S3) · zod               |
+| Web portal/docs | Next.js · Fumadocs                                                                 |
+| Tooling         | pnpm workspaces · Vitest · Testing Library · ESLint · Prettier · Husky             |
 
 ## Getting Started
 
-Requirements:
-
-- Node.js 22.13+
-- pnpm 11.x
-
-Install dependencies:
+**Requirements:** Node.js 22.13+ and pnpm 11.x.
 
 ```bash
-pnpm install
+pnpm install            # install all workspace deps
+pnpm dev                # start the desktop app (Vite HMR + main/preload hot-restart)
 ```
 
-Start the desktop app in development mode:
+### Run the marketplace backend (optional)
+
+Only needed if you want the live publish/browse/rating flows locally. Tests run without any
+credentials (in-process Postgres via PGlite).
 
 ```bash
-pnpm dev
+cp packages/marketplace-server/.env.example packages/marketplace-server/.env
+# fill DATABASE_URL + GITHUB_CLIENT_ID/SECRET (R2 vars optional → falls back to in-memory storage)
+pnpm -F @synapse/marketplace-server dev
 ```
 
-### LAN Transfer Simulation
+### Browse the marketplace web portal
 
-To test LAN transfer workflows on one computer, start two isolated development instances in
+```bash
+pnpm docs:dev           # serves the docs site + /marketplace portal (port 3001)
+```
+
+Point the portal at a backend with `MARKETPLACE_URL` (defaults to `http://localhost:8787`).
+
+### LAN transfer simulation
+
+To exercise device-to-device transfer on a single machine, launch two isolated instances in
 separate terminals:
 
 ```bash
-pnpm dev:lan:a
-pnpm dev:lan:b
+pnpm dev:lan:a          # appears as "Synapse Sim A"
+pnpm dev:lan:b          # appears as "Synapse Sim B"
 ```
 
-The instances appear as `Synapse Sim A` and `Synapse Sim B`. Each uses a separate development-only
-profile for its device identity, certificate, trusted devices, settings, and transfers. Enable
-nearby device discovery in both windows, then connect the devices and compare the security codes.
+Each uses a separate dev-only profile (identity, certificate, trusted devices, settings,
+transfers). Enable nearby-device discovery in both windows, connect them, and compare the
+security codes.
+
+## Build a plugin
+
+```bash
+pnpm dlx create-synapse-plugin my-plugin   # scaffold
+cd my-plugin
+pnpm synapse-plugin build                  # → my-plugin-<version>.syn
+pnpm synapse-plugin login                  # device-flow sign-in to the marketplace
+pnpm synapse-plugin publish                # publish (private by default)
+```
+
+Install a `.syn` locally by opening it from the desktop app's Plugins page.
 
 ## Scripts
 
 ```bash
-pnpm dev                # Start Electron dev mode
-pnpm dev:lan:a          # Start isolated LAN simulator device A
-pnpm dev:lan:b          # Start isolated LAN simulator device B
-pnpm build              # Build SDK, then main/preload/renderer into out/
-pnpm build:sdk          # Build workspace SDK declarations and JS output
+# Desktop app
+pnpm dev                # Electron dev mode
+pnpm build              # Build workspace packages, then main/preload/renderer → out/
 pnpm preview            # Preview the production build
-pnpm lint               # Run ESLint
-pnpm lint:fix           # Fix ESLint issues
-pnpm format             # Format files with Prettier
-pnpm format:check       # Check Prettier formatting
-pnpm typecheck          # Run SDK, main/preload, and renderer TypeScript checks
-pnpm typecheck:native   # Run tsgo native-preview checks
-pnpm test               # Run Vitest
-pnpm test:watch         # Run Vitest in watch mode
-pnpm test:coverage      # Run Vitest with coverage
-pnpm electron:build     # Package the current platform
-pnpm docs:dev           # Start the docs site on port 3001
+pnpm electron:build     # Package the current platform (electron-builder)
+pnpm electron:build:win # Windows: NSIS + MSI  (also :mac / :linux)
+
+# Quality
+pnpm lint               # ESLint            (pnpm lint:fix to autofix)
+pnpm format:check       # Prettier          (pnpm format to write)
+pnpm typecheck          # Typecheck packages + node (main/preload) + web (renderer)
+pnpm test               # Vitest            (pnpm test:watch / pnpm test:coverage)
+
+# Marketplace backend & docs
+pnpm -F @synapse/marketplace-server dev
+pnpm docs:dev           # docs site + web portal (port 3001)
 ```
 
 ## Validation
 
-Run the full local check before committing:
+Run the full local check before committing — this mirrors CI:
 
 ```bash
 pnpm format:check
@@ -129,9 +214,14 @@ pnpm test
 pnpm build
 ```
 
+> CI (GitHub Actions) runs the same quality gates, the test suite with coverage, and unsigned
+> Electron builds for Windows, macOS (x64 + arm64), and Linux on every PR to `main`.
+
 ## Assets
 
-The system-tray icon (`resources/tray.png`, `tray@2x.png`, `tray@3x.png`) is generated from [resources/logo.svg](resources/logo.svg). Re-run the rasterizer whenever the logo changes — it uses the bundled Electron as a headless Chromium, no extra dependencies:
+The system-tray icons (`resources/tray.png`, `tray@2x.png`, `tray@3x.png`) are generated from
+[resources/logo.svg](resources/logo.svg) using the bundled Electron as a headless Chromium —
+re-run the rasterizer whenever the logo changes:
 
 ```bash
 pnpm exec electron scripts/build-tray-icons.cjs
@@ -142,6 +232,7 @@ pnpm exec electron scripts/build-tray-icons.cjs
 - [Contributing Guide](./CONTRIBUTING.md)
 - [Testing Guide](./TESTING.md)
 - [CI/CD Guide](./CI_CD.md)
+- Design docs: [`design/`](./design) — AI foundation, AI enhancements, and the marketplace & users plan
 
 ## License
 
