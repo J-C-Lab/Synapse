@@ -89,8 +89,8 @@ export function prettyHotkey(accelerator: string): string {
 }
 
 export function defaultNotificationIcon(): string {
-  // 256x256 PNG rasterized from resources/logo.svg by
-  // scripts/build-tray-icons.cjs. Resides next to icon.{ico,icns,png}
+  // 384x384 PNG generated from resources/logo.png by
+  // scripts/build-icons.cjs. Resides next to icon.{ico,icns,png}
   // so electron-builder packages it.
   return path.join(__dirname, "../../resources/notification.png")
 }

@@ -2,7 +2,7 @@ import type { PointerEvent } from "react"
 import { Search } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
-import logoUrl from "@/assets/logo.svg"
+import logoUrl from "@/assets/logo.png"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   getSettings,

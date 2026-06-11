@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="resources/logo.svg" alt="Synapse Logo" width="120" />
+  <img src="resources/logo.png" alt="Synapse Logo" width="120" />
 </p>
 <h1 align="center">Synapse</h1>
 
@@ -210,12 +210,12 @@ pnpm build
 
 ## 资源
 
-系统托盘图标（`resources/tray.png`、`tray@2x.png`、`tray@3x.png`）由
-[resources/logo.svg](resources/logo.svg) 生成——用内置 Electron 作为无头 Chromium，
-logo 变更后重跑栅格化脚本即可：
+所有产品图标——应用图标（`icon.png`、`icon.ico`、`icon.icns`）、系统托盘图标
+（`tray.png`、`tray@2x.png`、`tray@3x.png`）与通知图标——都由主 logo
+[`resources/logo.png`](resources/logo.png) 生成。更换该文件后重跑生成器即可：
 
 ```bash
-pnpm exec electron scripts/build-tray-icons.cjs
+pnpm icons
 ```
 
 ## 文档
