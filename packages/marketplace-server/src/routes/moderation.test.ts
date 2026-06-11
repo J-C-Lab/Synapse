@@ -72,12 +72,14 @@ async function publish(token: string, pluginManifest: Record<string, unknown>) {
     })
   )
   form.append("package", bytes, { filename: "plugin.syn", contentType: "application/zip" })
-  return harness.app.inject({
+  const response = await harness.app.inject({
     method: "POST",
     url: "/plugins",
     payload: form.getBuffer(),
     headers: { ...form.getHeaders(), authorization: `Bearer ${token}` },
   })
+  expect(response.statusCode).toBe(201)
+  return response
 }
 
 const auth = (token: string) => ({ authorization: `Bearer ${token}` })
@@ -91,7 +93,7 @@ async function adminToken(): Promise<string> {
 describe("automated upload scan", () => {
   it("flags a high-risk publish into the admin queue", async () => {
     const alice = await authToken(ALICE)
-    await publish(alice, manifest({ permissions: ["system:open"] }))
+    await publish(alice, manifest({ permissions: ["system:open-url"] }))
 
     const admin = await adminToken()
     const queue = await harness.app.inject({

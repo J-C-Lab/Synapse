@@ -25,9 +25,9 @@ describe("assessManifestRisk", () => {
   })
 
   it("flags a system permission as high", () => {
-    const risk = assessManifestRisk(manifest({ permissions: ["system:open"] }))
+    const risk = assessManifestRisk(manifest({ permissions: ["system:open-url"] }))
     expect(risk.level).toBe("high")
-    expect(risk.reasons.join(" ")).toContain("system:open")
+    expect(risk.reasons.join(" ")).toContain("system:open-url")
   })
 
   it("flags a destructive tool as high", () => {
