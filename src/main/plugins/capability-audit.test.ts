@@ -9,8 +9,9 @@ function memorySink(): LogSink & { lines: string[] } {
 }
 
 function entry(overrides: Partial<CapabilityAuditEntry> = {}): CapabilityAuditEntry {
-  return {
+  const base: CapabilityAuditEntry = {
     pluginId: "com.example.hello",
+    identityFingerprint: "abcdef123456",
     capability: "clipboard:watch",
     tier: "elevated",
     actor: "agent",
@@ -19,8 +20,8 @@ function entry(overrides: Partial<CapabilityAuditEntry> = {}): CapabilityAuditEn
     decision: "allow",
     grantedNow: false,
     why: "permitted",
-    ...overrides,
   }
+  return { ...base, ...overrides }
 }
 
 describe("createCapabilityAudit", () => {
@@ -46,5 +47,35 @@ describe("createCapabilityAudit", () => {
     expect(line).not.toContain("sk-secret")
     expect(line).toContain("api.github.com")
     expect(line).toContain("[redacted]")
+  })
+
+  it("sanitizes urls, paths, reasons, and payload-shaped audit fields", () => {
+    const sink = memorySink()
+    createCapabilityAudit(sink)(
+      entry({
+        operation: "POST https://api.example.com/v1/messages?token=query-secret&cursor=abc123",
+        requestedScope: {
+          url: "https://api.example.com/v1/messages?api_key=url-secret",
+          path: "C:\\Users\\Alice\\Documents\\payroll\\secret-file.txt",
+          clipboardContent: { type: "text", text: "clipboard-secret" },
+          body: { prompt: "request-body-secret" },
+        },
+        reason: `token=reason-secret ${"x".repeat(400)}`,
+      })
+    )
+
+    const line = sink.lines[0]
+    expect(line).toContain("https://api.example.com")
+    expect(line).toContain("secret-file.txt")
+    expect(line).not.toContain("query-secret")
+    expect(line).not.toContain("cursor=abc123")
+    expect(line).not.toContain("url-secret")
+    expect(line).not.toContain("C:\\Users\\Alice")
+    expect(line).not.toContain("clipboard-secret")
+    expect(line).not.toContain("request-body-secret")
+    expect(line).not.toContain("reason-secret")
+
+    const record = JSON.parse(line)
+    expect(record.reason.length).toBeLessThanOrEqual(220)
   })
 })

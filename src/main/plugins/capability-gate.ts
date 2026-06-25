@@ -1,4 +1,5 @@
 import type { GrantIdentity, GrantStore } from "./grant-store"
+import { createHash } from "node:crypto"
 import { getCapability } from "@synapse/plugin-manifest"
 
 // The runtime decision engine. A grant is not a one-time pass — it is a
@@ -47,6 +48,7 @@ export interface CapabilityApprover {
 
 export interface CapabilityAuditEntry {
   pluginId: string
+  identityFingerprint: string
   capability: string
   tier: string
   actor: CapabilityActor
@@ -135,6 +137,7 @@ export class CapabilityGate implements CapabilityGatePort {
   ): void {
     this.options.audit({
       pluginId: this.options.identity.pluginId,
+      identityFingerprint: identityFingerprint(this.options.identity),
       capability: request.capability,
       tier,
       actor: request.actor,
@@ -147,4 +150,18 @@ export class CapabilityGate implements CapabilityGatePort {
       why,
     })
   }
+}
+
+function identityFingerprint(identity: GrantIdentity): string {
+  return createHash("sha256")
+    .update(
+      [
+        identity.pluginId,
+        identity.publisherId,
+        identity.signingKeyFingerprint,
+        identity.capabilityDeclarationHash,
+      ].join("\n")
+    )
+    .digest("hex")
+    .slice(0, 12)
 }

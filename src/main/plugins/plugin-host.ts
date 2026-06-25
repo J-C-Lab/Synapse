@@ -28,8 +28,10 @@ import { Buffer as NodeBuffer } from "node:buffer"
 import { createHash } from "node:crypto"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
+import { getCapability } from "@synapse/plugin-manifest"
 import { logger } from "../logging"
-import { createCapabilityGovernance } from "./capability-governance"
+import { CapabilityDenied, CapabilityGate } from "./capability-gate"
+import { buildGrantIdentity, createCapabilityGovernance } from "./capability-governance"
 import { createElectronPluginAdapters } from "./electron-adapters"
 import { createMigrationMarker, migrateGrants } from "./grant-migration"
 import { GrantStore, grantStoreFilePath } from "./grant-store"
@@ -464,6 +466,9 @@ export class PluginHost {
   }
 
   private async readAndDispatchClipboard(): Promise<void> {
+    const allowedPluginIds = await this.authorizedClipboardWatchers()
+    if (allowedPluginIds.length === 0) return
+
     const content = await this.bridge.readClipboardForHost().catch((err) => {
       logger.child("plugin-host").warn("clipboard watch read failed", { err })
       return undefined
@@ -474,9 +479,41 @@ export class PluginHost {
     if (snapshot === this.lastClipboardSnapshot) return
     this.lastClipboardSnapshot = snapshot
 
-    await this.registry.dispatchClipboardChange(content).catch((err) => {
+    await this.registry.dispatchClipboardChange(content, allowedPluginIds).catch((err) => {
       logger.child("plugin-host").warn("clipboard change dispatch failed", { err })
     })
+  }
+
+  private async authorizedClipboardWatchers(): Promise<string[]> {
+    const allowed: string[] = []
+    for (const entry of this.registry.clipboardChangeListenerEntries()) {
+      if (!entry.manifest) continue
+      const identity = buildGrantIdentity(entry.pluginId, entry.manifest, entry.source.kind)
+      const gate = new CapabilityGate({
+        identity,
+        declared: new Set(entry.manifest.permissions),
+        grants: this.capabilityGovernance.grants,
+        prompt: this.capabilityGovernance.prompt,
+        approve: this.capabilityGovernance.approve,
+        audit: this.capabilityGovernance.audit,
+      })
+      try {
+        await gate.ensure({
+          capability: "clipboard:watch",
+          actor: "background",
+          trigger: "clipboard:change",
+          operation: "watch",
+        })
+        allowed.push(entry.pluginId)
+      } catch (err) {
+        if (err instanceof CapabilityDenied) continue
+        logger.child("plugin-host").warn("clipboard watch authorization failed", {
+          pluginId: entry.pluginId,
+          err,
+        })
+      }
+    }
+    return allowed
   }
 
   private async downloadMarketplacePackage(entry: MarketplaceEntry): Promise<string> {
@@ -642,6 +679,7 @@ export class PluginHost {
           status: installed?.status,
         })
       }
+      await this.grantAutoInstallCapabilities(installed)
       if (backupCreated) await removeDirectoryInside(backupDir, path.dirname(backupDir))
       return installed
     } catch (err) {
@@ -657,6 +695,16 @@ export class PluginHost {
           pluginId: manifest.id,
         }
       )
+    }
+  }
+
+  private async grantAutoInstallCapabilities(entry: PluginRegistryEntry): Promise<void> {
+    if (!entry.manifest) return
+    const identity = buildGrantIdentity(entry.pluginId, entry.manifest, entry.source.kind)
+    for (const capability of entry.manifest.permissions) {
+      if (getCapability(capability)?.tier !== "auto") continue
+      if (await this.grants.isGranted(identity, capability)) continue
+      await this.grants.grant(identity, capability, "install")
     }
   }
 }
