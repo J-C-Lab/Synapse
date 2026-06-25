@@ -148,7 +148,7 @@ describe("pluginRegistry", () => {
     })
   })
 
-  it("marks clipboard listeners crashed when clipboard read permission is missing", async () => {
+  it("marks clipboard listeners crashed when clipboard:watch permission is missing", async () => {
     const sandbox = fakeSandbox({
       commands: {
         "clipboard.history": {
@@ -386,6 +386,6 @@ function manifest(
     },
     permissions:
       overrides.permissions ??
-      (overrides.activationEvents?.includes("clipboard:change") ? ["clipboard:read"] : []),
+      (overrides.activationEvents?.includes("clipboard:change") ? ["clipboard:watch"] : []),
   }
 }

@@ -46,13 +46,20 @@ describe("grantStore", () => {
   it("lists a plugin's grants with grantedBy recorded", async () => {
     const store = new GrantStore(file, () => 42)
     await store.grant(identity(), "clipboard:read", "install")
-    const records = await store.list("com.example.hello")
+    const records = await store.list(identity())
     expect(records).toHaveLength(1)
     expect(records[0]).toMatchObject({
       capability: "clipboard:read",
       grantedBy: "install",
       grantedAt: 42,
     })
+  })
+
+  it("excludes grants invalidated by an identity change from list()", async () => {
+    const store = new GrantStore(file)
+    await store.grant(identity(), "clipboard:read", "user")
+    expect(await store.list(identity())).toHaveLength(1)
+    expect(await store.list(identity({ capabilityDeclarationHash: "changed" }))).toHaveLength(0)
   })
 
   it("invalidates a grant when the declaration hash changes", async () => {

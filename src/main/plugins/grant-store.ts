@@ -76,8 +76,13 @@ export class GrantStore {
     await this.persist(records)
   }
 
-  async list(pluginId: string): Promise<GrantRecord[]> {
-    return (await this.load()).filter((record) => record.identity.pluginId === pluginId)
+  /**
+   * Currently-valid grants under this exact identity. Records invalidated by a
+   * publisher / signing-key / declaration-hash change are excluded so callers
+   * (UI, IPC, migration) never present a stale grant as active.
+   */
+  async list(identity: GrantIdentity): Promise<GrantRecord[]> {
+    return (await this.load()).filter((record) => sameIdentity(record.identity, identity))
   }
 
   private async load(): Promise<GrantRecord[]> {

@@ -412,8 +412,10 @@ function validateManifestTools(
 
 function validateActivationEvents(manifest: PluginManifest, module: PluginModule): void {
   if (!manifest.contributes.activationEvents?.includes("clipboard:change")) return
-  if (!manifest.permissions.includes("clipboard:read")) {
-    throw new Error("Manifest activation event clipboard:change requires clipboard:read permission")
+  if (!manifest.permissions.includes("clipboard:watch")) {
+    throw new Error(
+      "Manifest activation event clipboard:change requires clipboard:watch permission"
+    )
   }
   const events = module.events
   if (
