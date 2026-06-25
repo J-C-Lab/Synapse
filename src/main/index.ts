@@ -5,6 +5,7 @@ import type { LanDevice, LanPairing, LanStatus, LanTransfer } from "./lan/types"
 import type { SearchWindowDeps } from "./search-window"
 import type { AutoUpdaterPort } from "./updates/update-service"
 import { Buffer } from "node:buffer"
+import { spawn } from "node:child_process"
 import * as path from "node:path"
 import process from "node:process"
 import { pathToFileURL } from "node:url"
@@ -61,9 +62,9 @@ import {
   resolveDevLanSimulation,
 } from "./lan/dev-simulation"
 import { LanService } from "./lan/lan-service"
+import { configureRootLogger, logger } from "./logging"
 import { MarketplaceAccountService } from "./marketplace/account-service"
 import { marketplaceTokenFilePath, MarketplaceTokenStore } from "./marketplace/token-store"
-import { runSynapseMcpStdioServer } from "./mcp/synapse-mcp-server"
 import { defaultNotificationIcon, showStartupNotification } from "./notifications"
 import { createMarketplaceApi } from "./plugins/marketplace-api"
 import { PluginHost } from "./plugins/plugin-host"
@@ -90,9 +91,13 @@ const lanSimulation = resolveDevLanSimulation({
 })
 if (lanSimulation) {
   app.setPath("userData", lanSimulation.userDataDir)
-  console.warn(
-    `[synapse] LAN simulation profile "${lanSimulation.profile}" uses ${lanSimulation.userDataDir}`
-  )
+}
+configureRootLogger({ userDataDir: app.getPath("userData") })
+if (lanSimulation) {
+  logger.child("synapse").warn("using LAN simulation profile", {
+    profile: lanSimulation.profile,
+    userDataDir: lanSimulation.userDataDir,
+  })
 }
 // electron-vite injects this in dev (Vite dev server URL). Undefined in prod.
 const rendererDevUrl = process.env.ELECTRON_RENDERER_URL
@@ -570,7 +575,7 @@ async function syncLanEnabled(
     }
     return next
   } catch (err) {
-    console.error("[synapse] failed to update LAN discovery state", err)
+    logger.child("synapse").error("failed to update LAN discovery state", { err })
     return launcher.updateSettings({ lanEnabled: previous.lanEnabled })
   }
 }
@@ -721,7 +726,7 @@ function showMainWindow(): void {
 function rebindHotkey(accelerator: string): boolean {
   const ok = bindGlobalShortcut(accelerator, () => toggleSearchWindow(searchWindowDeps()))
   if (!ok) {
-    console.warn(`[synapse] failed to register global shortcut: ${accelerator}`)
+    logger.child("synapse").warn("failed to register global shortcut", { accelerator })
   }
   return ok
 }
@@ -749,17 +754,29 @@ async function initLan(enabled: boolean): Promise<void> {
     await lan.init(enabled)
   } catch (err) {
     if (!lanSimulation || !(err instanceof LanCredentialLoadError)) throw err
-    console.warn("[synapse] resetting unreadable LAN simulation credentials", err)
+    logger.child("synapse").warn("resetting unreadable LAN simulation credentials", { err })
     await resetDevLanSimulationCredentials(lanSimulation)
     await lan.init(enabled)
   }
 }
 
-async function startMcpStdioMode(): Promise<void> {
-  await app.whenReady()
-  plugins = createPluginHost()
-  await plugins.init()
-  await runSynapseMcpStdioServer(plugins, { version: app.getVersion() })
+// `Synapse --mcp-stdio` is the friendly way to launch the MCP server, but a
+// spawned Electron GUI process on Windows never receives piped stdin (which the
+// MCP transport reads), so an in-process GUI server silently hangs. Instead,
+// re-exec this binary as plain Node (ELECTRON_RUN_AS_NODE) pointed at the
+// headless entry, inheriting stdio so the Node child speaks MCP straight to the
+// caller. The heavy Electron/GUI init never runs in this mode.
+function reExecMcpStdioAsNode(): void {
+  const entry = path.join(__dirname, "mcp-stdio.js")
+  const child = spawn(process.execPath, [entry], {
+    stdio: "inherit",
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+  })
+  child.on("exit", (code) => app.exit(code ?? 0))
+  child.on("error", (err) => {
+    logger.child("synapse:mcp").error("failed to launch the stdio entry", { err })
+    app.exit(1)
+  })
 }
 
 // Single-instance lock: focusing the existing packaged app is friendlier than
@@ -768,13 +785,7 @@ async function startMcpStdioMode(): Promise<void> {
 // leave the visible window stuck on only the BrowserWindow background.
 const shouldUseSingleInstanceLock = app.isPackaged
 if (isMcpStdioMode) {
-  app.on("will-quit", () => {
-    plugins?.dispose()
-  })
-  void startMcpStdioMode().catch((err) => {
-    console.error("[synapse:mcp] stdio server failed", err)
-    app.exit(1)
-  })
+  reExecMcpStdioAsNode()
 } else {
   const gotLock = !shouldUseSingleInstanceLock || app.requestSingleInstanceLock()
   if (!gotLock) {
@@ -840,7 +851,7 @@ if (isMcpStdioMode) {
       try {
         await initLan(settings.lanEnabled)
       } catch (err) {
-        console.error("[synapse] failed to initialize LAN discovery", err)
+        logger.child("synapse").error("failed to initialize LAN discovery", { err })
         settings = await launcher.updateSettings({ lanEnabled: false })
       }
       await plugins.init()
@@ -849,7 +860,7 @@ if (isMcpStdioMode) {
       // server must not block the launcher coming up.
       void agent
         .startMcpServers()
-        .catch((err) => console.error("[synapse] failed to start MCP clients", err))
+        .catch((err) => logger.child("synapse").error("failed to start MCP clients", { err }))
 
       // Replay a queued macOS open-file, or a .syn passed on first launch
       // (Windows/Linux "open with"), now that the plugin host is ready.
@@ -870,7 +881,7 @@ if (isMcpStdioMode) {
       if (shouldAutoCheckOnStartup(process.platform, app.isPackaged)) {
         void updateService
           ?.check()
-          .catch((err) => console.error("[synapse] update check failed", err))
+          .catch((err) => logger.child("synapse").error("update check failed", { err }))
       }
 
       createTray(defaultTrayIcon(), trayActions())
@@ -893,10 +904,12 @@ if (isMcpStdioMode) {
     app.on("will-quit", () => {
       setSearchWindowQuitting(true)
       destroyFloatingBallWindow()
-      void lan?.stop().catch((err) => console.error("[synapse] failed to stop LAN discovery", err))
+      void lan
+        ?.stop()
+        .catch((err) => logger.child("synapse").error("failed to stop LAN discovery", { err }))
       void mcpClients
         ?.dispose()
-        .catch((err) => console.error("[synapse] failed to stop MCP clients", err))
+        .catch((err) => logger.child("synapse").error("failed to stop MCP clients", { err }))
       unbindGlobalShortcut()
       destroyTray()
       plugins?.dispose()
@@ -915,7 +928,9 @@ if (isMcpStdioMode) {
       event.preventDefault()
       void plugins
         .flush()
-        .catch((err) => console.error("[synapse] plugin flush failed during shutdown", err))
+        .catch((err) =>
+          logger.child("synapse").error("plugin flush failed during shutdown", { err })
+        )
         .finally(() => {
           pluginsFlushed = true
           app.quit()

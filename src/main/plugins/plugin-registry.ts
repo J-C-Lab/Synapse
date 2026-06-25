@@ -20,6 +20,7 @@ import type {
 } from "./types"
 import { EventEmitter } from "node:events"
 import { fuzzyMatch } from "../launcher/search"
+import { logger } from "../logging"
 import { PermissionDenied } from "./permissions"
 import { toolFqName } from "./types"
 
@@ -78,7 +79,7 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
       try {
         await this.options.sandbox.unloadPlugin(pluginId)
       } catch (err) {
-        console.warn(`[plugin-registry] Failed to unload ${pluginId} before reload`, err)
+        logger.child("plugin-registry").warn("failed to unload before reload", { pluginId, err })
       }
     }
     this.entries.clear()
@@ -364,7 +365,7 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     try {
       await this.options.sandbox.unloadPlugin(pluginId)
     } catch (err) {
-      console.warn(`[plugin-registry] Failed to unload ${pluginId} after load failure`, err)
+      logger.child("plugin-registry").warn("failed to unload after load failure", { pluginId, err })
     }
   }
 

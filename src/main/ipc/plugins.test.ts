@@ -1,5 +1,6 @@
 import type { IpcMainInvokeEvent } from "electron"
 import type { PluginHost } from "../plugins/plugin-host"
+import process from "node:process"
 import { describe, expect, it, vi } from "vitest"
 import { MarketplaceApiError } from "../plugins/marketplace-api"
 import { PermissionDenied } from "../plugins/permissions"
@@ -251,7 +252,7 @@ describe("plugin ipc handlers", () => {
 
   it("rejects untrusted senders without calling the handler", async () => {
     const handler = vi.fn()
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true)
     const result = await invokePluginIpcHandler(
       "plugin:list",
       fakeEvent("https://example.com"),
@@ -260,10 +261,12 @@ describe("plugin ipc handlers", () => {
     )
 
     expect(handler).not.toHaveBeenCalled()
-    expect(warn).toHaveBeenCalledWith("[plugin-ipc] rejected untrusted sender", {
-      channel: "plugin:list",
-      senderUrl: "https://example.com",
-    })
+    const logged = stderr.mock.calls.map((call) => String(call[0])).join("")
+    stderr.mockRestore()
+    expect(logged).toContain("rejected untrusted sender")
+    expect(logged).toContain('"scope":"plugin-ipc"')
+    expect(logged).toContain('"channel":"plugin:list"')
+    expect(logged).toContain('"senderUrl":"https://example.com"')
     expect(result).toEqual({
       ok: false,
       error: {
@@ -272,7 +275,6 @@ describe("plugin ipc handlers", () => {
         details: { channel: "plugin:list" },
       },
     })
-    warn.mockRestore()
   })
 
   it("maps installFolder host stub to PLUGIN_NOT_IMPLEMENTED", async () => {

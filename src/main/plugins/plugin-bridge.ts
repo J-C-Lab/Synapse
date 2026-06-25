@@ -12,6 +12,7 @@ import type { PluginManifest } from "./types"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import process from "node:process"
+import { logger } from "../logging"
 import { createPermissionGate } from "./permissions"
 
 export interface PluginRuntimeSnapshot {
@@ -183,7 +184,7 @@ export class PluginBridge {
         },
       },
       log: (...args) => {
-        console.warn(`[plugin:${pluginId}]`, ...args)
+        logger.child(`plugin:${pluginId}`).warn(args.map((arg) => String(arg)).join(" "))
       },
     }
   }
@@ -314,7 +315,7 @@ export class PluginBridge {
           listener(content)
         })
         .catch((err) => {
-          console.warn(`[plugin:${pluginId}] Clipboard watch read failed`, err)
+          logger.child(`plugin:${pluginId}`).warn("clipboard watch read failed", { err })
         })
     }, this.clipboardPollMs)
 

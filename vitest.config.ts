@@ -1,7 +1,7 @@
 import { availableParallelism } from "node:os"
 import { resolve } from "node:path"
 import react from "@vitejs/plugin-react"
-import { defineConfig } from "vitest/config"
+import { configDefaults, defineConfig } from "vitest/config"
 
 // Cap worker count below the core count so CPU-heavy suites (pglite WASM,
 // LAN TLS handshakes, vm wall-clock timeouts) keep enough scheduling headroom
@@ -26,6 +26,9 @@ export default defineConfig({
     },
   },
   test: {
+    // The e2e/ suite is Playwright (its own runner) — keep it out of Vitest,
+    // which would otherwise pick up *.spec.ts and choke on @playwright/test.
+    exclude: [...configDefaults.exclude, "e2e/**"],
     environment: "jsdom",
     globals: false,
     setupFiles: ["./vitest.setup.ts"],

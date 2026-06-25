@@ -7,6 +7,7 @@ import type {
 } from "./types"
 import { Buffer } from "node:buffer"
 import { Bonjour } from "bonjour-service"
+import { logger } from "../logging"
 
 const SERVICE_TYPE = "synapse"
 const SERVICE_PROTOCOL = "tcp"
@@ -27,7 +28,7 @@ export class BonjourLanDiscoveryAdapter implements LanDiscoveryAdapter {
       throw new Error("LAN HTTPS server port is not available.")
     }
     const bonjour = new Bonjour({}, (err: unknown) => {
-      console.warn("[synapse] LAN mDNS error", err)
+      logger.child("lan").warn("mDNS error", { err })
     })
     try {
       this.publication = bonjour.publish({

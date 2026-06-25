@@ -11,6 +11,7 @@ import type {
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import vm from "node:vm"
+import { logger } from "../logging"
 import { PermissionDenied } from "./permissions"
 import { commandInvocation } from "./types"
 
@@ -420,9 +421,12 @@ function createSandboxGlobals(
 ): vm.Context {
   return {
     console: {
-      log: (...args: unknown[]) => console.warn(`[plugin:${pluginId}]`, ...args),
-      warn: (...args: unknown[]) => console.warn(`[plugin:${pluginId}]`, ...args),
-      error: (...args: unknown[]) => console.error(`[plugin:${pluginId}]`, ...args),
+      log: (...args: unknown[]) =>
+        logger.child(`plugin:${pluginId}`).info(args.map((arg) => String(arg)).join(" ")),
+      warn: (...args: unknown[]) =>
+        logger.child(`plugin:${pluginId}`).warn(args.map((arg) => String(arg)).join(" ")),
+      error: (...args: unknown[]) =>
+        logger.child(`plugin:${pluginId}`).error(args.map((arg) => String(arg)).join(" ")),
     },
     setTimeout: (handler: TimerCallback, timeout?: number, ...args: unknown[]) => {
       const timer = setTimeout(handler, timeout, ...args)

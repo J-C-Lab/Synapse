@@ -4,6 +4,7 @@ import type { ConversationSummary, StoredConversation } from "../ai/conversation
 import type { McpServerStatus } from "../ai/mcp-client-manager"
 import type { McpServerConfig } from "../ai/mcp-server-config-store"
 import type { ProviderToolSchema, TokenUsage } from "../ai/providers/types"
+import { logger } from "../logging"
 
 // IPC surface for the built-in assistant (design §8). Streaming is push-based:
 // `ai:chat` kicks off a turn and resolves when it ends, while text / tool /
@@ -43,7 +44,7 @@ export function registerAiIpc(
 ): void {
   const guard = (event: IpcMainInvokeEvent, channel: string): void => {
     if (options.isTrustedSender(event)) return
-    console.warn("[ai-ipc] rejected untrusted sender", { channel })
+    logger.child("ai-ipc").warn("rejected untrusted sender", { channel })
     throw new Error("Untrusted IPC sender.")
   }
 

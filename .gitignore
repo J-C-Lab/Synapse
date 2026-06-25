@@ -8,6 +8,9 @@ node_modules
 # testing
 /coverage
 junit.xml
+# playwright e2e artifacts
+/test-results/
+/playwright-report/
 *.test.js.snap
 *.test.ts.snap
 *.test.tsx.snap

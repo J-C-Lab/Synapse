@@ -28,6 +28,7 @@ import { Buffer } from "node:buffer"
 import { EventEmitter } from "node:events"
 import { createServer, request } from "node:https"
 import { isIP } from "node:net"
+import { logger } from "../logging"
 import { certificateFingerprint } from "./credential-store"
 import { SasPairingManager } from "./sas-pairing"
 import { readChunk, sha256Buffer } from "./transfer-store"
@@ -70,7 +71,7 @@ export class LanSecureServer extends EventEmitter {
       },
       (req, res) => {
         void this.handleRequest(req, res).catch((err) => {
-          console.warn("[synapse] LAN HTTPS request failed", err)
+          logger.child("lan").warn("HTTPS request failed", { err })
           sendJson(res, 400, { error: errorMessage(err) })
         })
       }
@@ -175,7 +176,7 @@ export class LanSecureServer extends EventEmitter {
           }
         )
       } catch (err) {
-        console.warn("[synapse] Failed to notify rejected LAN pairing", err)
+        logger.child("lan").warn("failed to notify rejected pairing", { err })
       }
     }
     return this.listPairings()
