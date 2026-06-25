@@ -28,7 +28,14 @@ export default defineConfig({
     },
     build: {
       rollupOptions: {
-        input: { index: resolve(__dirname, "src/main/index.ts") },
+        // `index` is the Electron app; `mcp-stdio` is a headless Node entry for
+        // Synapse-as-MCP-server. The latter is launched with
+        // ELECTRON_RUN_AS_NODE=1 so it actually receives piped stdin (a spawned
+        // Electron GUI process on Windows does not) — see src/main/mcp/stdio-entry.ts.
+        input: {
+          index: resolve(__dirname, "src/main/index.ts"),
+          "mcp-stdio": resolve(__dirname, "src/main/mcp/stdio-entry.ts"),
+        },
       },
     },
   },

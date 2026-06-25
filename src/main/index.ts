@@ -5,6 +5,7 @@ import type { LanDevice, LanPairing, LanStatus, LanTransfer } from "./lan/types"
 import type { SearchWindowDeps } from "./search-window"
 import type { AutoUpdaterPort } from "./updates/update-service"
 import { Buffer } from "node:buffer"
+import { spawn } from "node:child_process"
 import * as path from "node:path"
 import process from "node:process"
 import { pathToFileURL } from "node:url"
@@ -63,7 +64,6 @@ import {
 import { LanService } from "./lan/lan-service"
 import { MarketplaceAccountService } from "./marketplace/account-service"
 import { marketplaceTokenFilePath, MarketplaceTokenStore } from "./marketplace/token-store"
-import { runSynapseMcpStdioServer } from "./mcp/synapse-mcp-server"
 import { defaultNotificationIcon, showStartupNotification } from "./notifications"
 import { createMarketplaceApi } from "./plugins/marketplace-api"
 import { PluginHost } from "./plugins/plugin-host"
@@ -755,11 +755,23 @@ async function initLan(enabled: boolean): Promise<void> {
   }
 }
 
-async function startMcpStdioMode(): Promise<void> {
-  await app.whenReady()
-  plugins = createPluginHost()
-  await plugins.init()
-  await runSynapseMcpStdioServer(plugins, { version: app.getVersion() })
+// `Synapse --mcp-stdio` is the friendly way to launch the MCP server, but a
+// spawned Electron GUI process on Windows never receives piped stdin (which the
+// MCP transport reads), so an in-process GUI server silently hangs. Instead,
+// re-exec this binary as plain Node (ELECTRON_RUN_AS_NODE) pointed at the
+// headless entry, inheriting stdio so the Node child speaks MCP straight to the
+// caller. The heavy Electron/GUI init never runs in this mode.
+function reExecMcpStdioAsNode(): void {
+  const entry = path.join(__dirname, "mcp-stdio.js")
+  const child = spawn(process.execPath, [entry], {
+    stdio: "inherit",
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+  })
+  child.on("exit", (code) => app.exit(code ?? 0))
+  child.on("error", (err) => {
+    console.error("[synapse:mcp] failed to launch the stdio entry", err)
+    app.exit(1)
+  })
 }
 
 // Single-instance lock: focusing the existing packaged app is friendlier than
@@ -768,13 +780,7 @@ async function startMcpStdioMode(): Promise<void> {
 // leave the visible window stuck on only the BrowserWindow background.
 const shouldUseSingleInstanceLock = app.isPackaged
 if (isMcpStdioMode) {
-  app.on("will-quit", () => {
-    plugins?.dispose()
-  })
-  void startMcpStdioMode().catch((err) => {
-    console.error("[synapse:mcp] stdio server failed", err)
-    app.exit(1)
-  })
+  reExecMcpStdioAsNode()
 } else {
   const gotLock = !shouldUseSingleInstanceLock || app.requestSingleInstanceLock()
   if (!gotLock) {
