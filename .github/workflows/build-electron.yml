@@ -148,14 +148,15 @@ jobs:
             exit 1
           fi
           echo "Smoke-testing $BIN"
-          # timeout exits 124 when it kills the process — that's the success
-          # path here (app stayed alive long enough to render).
+          # The smoke path is successful when the app stays alive long enough
+          # to render. Use SIGKILL at the timeout to avoid flaky headless
+          # Electron teardown crashes on Linux runners.
           set +e
           xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" \
-            timeout --preserve-status 12s "$BIN" --no-sandbox --disable-dev-shm-usage --disable-gpu
+            timeout --preserve-status --signal=KILL 12s "$BIN" --no-sandbox --disable-dev-shm-usage --disable-gpu
           code=$?
           set -e
-          if [ "$code" != "124" ] && [ "$code" != "143" ] && [ "$code" != "0" ]; then
+          if [ "$code" != "124" ] && [ "$code" != "137" ] && [ "$code" != "143" ] && [ "$code" != "0" ]; then
             echo "::error::App crashed during smoke test with exit code $code"
             exit 1
           fi
