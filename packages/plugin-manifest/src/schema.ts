@@ -41,7 +41,11 @@ const capabilityEntrySchema = z
     }
     if (desc.scopeEnforced) {
       if (!desc.scopeAdapter) {
-        ctx.addIssue({ code: "custom", message: `${entry.id} is not available yet`, path: ["id"] })
+        ctx.addIssue({
+          code: "custom",
+          message: `${entry.id} is not available in this version of Synapse`,
+          path: ["id"],
+        })
         return
       }
       try {
@@ -127,6 +131,21 @@ const toolSchema = z
   })
   .strict()
 
+// A tool capability is contained when the plugin declares the same id and, for
+// scope-enforced capabilities, the declared scope contains the tool's scope.
+// A truly-unknown id never reaches here: capabilityEntrySchema's enum gate
+// rejects it first, so `getCapability` is always defined in practice.
+function toolCapabilityContained(
+  toolCap: { id: string; scope?: unknown },
+  declared: Map<string, { id: string; scope?: unknown }>
+): boolean {
+  const top = declared.get(toolCap.id)
+  if (!top) return false
+  const desc = getCapability(toolCap.id)
+  if (!desc?.scopeEnforced) return true
+  return desc.scopeAdapter?.contains(top.scope, toolCap.scope) ?? false
+}
+
 export const manifestSchema = z
   .object({
     $schema: z.string().optional(),
@@ -177,12 +196,7 @@ export const manifestSchema = z
       seen.add(tool.name)
 
       for (const cap of tool.capabilities ?? []) {
-        const top = declared.get(cap.id)
-        const desc = getCapability(cap.id)
-        const contained =
-          !!top &&
-          (!desc?.scopeEnforced || (desc.scopeAdapter?.contains(top.scope, cap.scope) ?? false))
-        if (!contained) {
+        if (!toolCapabilityContained(cap, declared)) {
           ctx.addIssue({
             code: "custom",
             message: `Tool "${tool.name}" requests capability "${cap.id}" not contained by the plugin's capabilities`,
@@ -211,10 +225,8 @@ export class ManifestValidationError extends Error {
  */
 export function parseManifest(raw: unknown): PluginManifest {
   if (raw && typeof raw === "object" && "permissions" in raw) {
-    throw new ManifestValidationError(
-      "permissions has been replaced by capabilities in manifestVersion 2.",
-      ["permissions: permissions has been replaced by capabilities in manifestVersion 2."]
-    )
+    const legacyMsg = "permissions has been replaced by capabilities in manifestVersion 2."
+    throw new ManifestValidationError(legacyMsg, [`permissions: ${legacyMsg}`])
   }
   const parsed = manifestSchema.safeParse(raw)
   if (!parsed.success) {
