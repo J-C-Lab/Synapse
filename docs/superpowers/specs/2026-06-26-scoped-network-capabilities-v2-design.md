@@ -1,7 +1,9 @@
 # Scoped Network + Manifest Capabilities v2 Design
 
 > Date: 2026-06-26
-> Status: design approved in conversation, pending implementation plan
+> Status: design approved in conversation, revised after security review
+> (DNS-rebinding pinning, migration hash continuity, tombstone-across-update,
+> network approval cadence, path normalization), implementation plan drafted.
 
 ## Goal
 
@@ -211,6 +213,23 @@ Any capability or scope change invalidates old grants in the first version,
 including narrower and wider scope edits. This is conservative and easy to
 reason about.
 
+### Migration continuity (v1 → v2)
+
+The v1 hash is computed over `readonly string[]`; the v2 hash is computed over
+normalized capability objects. A plugin whose declared abilities are unchanged
+will therefore still produce a different hash under v2, which would silently
+invalidate every existing grant on the v2 upgrade. This is upgrade noise, not a
+declaration change, and must be handled:
+
+- The grant migration step (`grant-migration.ts`, `grantedBy: "migration"`) must
+  recompute each migrated grant's `GrantIdentity` with the **same v2
+  normalization** the runtime uses, so the migrated record's identity matches
+  what `CapabilityGate` computes at call time. A migration that writes records
+  under a stale hash is equivalent to no migration.
+- The migration must only carry forward grants for unscoped capabilities that
+  existed in v1. It must never synthesize a `network:https` or any scoped grant.
+- After migration, the v1 hash is never recomputed or compared again.
+
 ## Grant Store and Revocation
 
 Grant records and revocation tombstones have separate semantics.
@@ -248,6 +267,22 @@ Tombstone semantics:
 - Tombstones prevent migration/grandfather/auto-install flows from re-granting
   a capability after restart.
 - Tombstones are not active grants and are not shown as granted in UI.
+
+Tombstone matching across plugin updates:
+
+- A plugin update changes `capabilityDeclarationHash`, which changes the
+  `GrantIdentity`. A tombstone written under the old identity would therefore
+  not match the updated identity. For `consent`/`elevated` capabilities this is
+  acceptable — they JIT-prompt again, so the user re-decides.
+- For **`auto`** capabilities this is not acceptable: an auto grant is written on
+  install with no prompt, so an exact-identity tombstone would let a revoked
+  auto capability be silently re-granted on the next plugin update. To close
+  this, the auto-install re-grant check matches a tombstone on the **coarse
+  identity** (`pluginId + publisherId + signingKeyFingerprint`, excluding
+  `capabilityDeclarationHash`). A user revoke of an auto capability therefore
+  survives plugin updates from the same publisher/signing key until the user
+  re-grants it. `consent`/`elevated` revocation continues to use exact-identity
+  matching.
 
 `isGranted(identity, capabilityId, requestedScope)` must verify:
 
@@ -343,12 +378,32 @@ Rules:
 - Paths and reasons are length-limited and token-like strings are redacted.
 - Network operation strings must use the matched declared path pattern where
   possible, not raw request paths.
+- `NetworkHttpsRequestedScope` carries the full `url` (with query) because the
+  fetcher needs it for matching, but that raw shape must never reach an audit
+  record. `sanitizeScope` projects the requested scope to an audit-safe shape
+  (host + method + matched path pattern only) — the audited shape is a separate
+  projection, not the matching shape with fields blanked. Defense in depth: the
+  audit sink should reject a network scope that still contains a `url`/`query`
+  field.
 
 ## `network:https`
 
 `network:https` is the first `scopeEnforced: true` capability.
 
 Tier: `elevated`.
+
+Approval cadence: `elevated` capabilities are per-call re-approved when the actor
+is `agent` or `background` (see Capability Gate step 7). Unlike low-frequency
+elevated capabilities (`system:capture-screen`), an agent-driven plugin can issue
+many network requests in one task, and a literal per-call prompt would be a
+modal flood. The network adapter therefore supports a **session-scoped
+approval**: the first agent/background fetch in an invocation prompts, and the
+approval covers subsequent fetches within the same `(identity, capabilityId,
+invocation context)` until that invocation ends or the grant is revoked. This is
+narrower than a standing grant (it does not survive the invocation) but coarser
+than per-call. Per-call remains the model for other elevated capabilities; the
+batching is a network-adapter concern, not a change to `CapabilityGate`
+semantics.
 
 Manifest scope:
 
@@ -396,12 +451,31 @@ Runtime rules:
 - Request host must match a declared host exactly after punycode/lowercase
   canonicalization.
 - Request method must be in declared methods.
-- Request path must match an exact path or prefix `/**` path.
+- The request path is decoded and dot-segment-normalized (resolve `.`/`..`,
+  collapse `%2e`/`%2f` style encodings) **before** scope matching, so an
+  encoded-traversal path cannot match a prefix pattern it does not actually
+  belong to.
+- Request path must match an exact path or prefix `/**` path after that
+  normalization.
 - DNS resolution is required before each network request and redirect target.
 - All resolved IPs must be public. Reject private, loopback, link-local,
   multicast, unspecified, and other non-public ranges for IPv4 and IPv6.
 - DNS private-IP blocking is part of the first version. The design must not
   claim private-network blocking without this check.
+
+DNS rebinding / TOCTOU pinning (mandatory):
+
+- Resolving and validating the IP set, then letting the HTTP client re-resolve
+  the hostname when it actually connects, is a DNS-rebinding bypass: an attacker
+  with a low-TTL record can flip a validated public IP to a private one between
+  the two lookups.
+- The connection **must be pinned to a validated IP**. `network-fetcher` resolves
+  once, validates every returned address is public, then connects to one of
+  those exact addresses (e.g. a custom agent `lookup` that returns only the
+  pre-validated address) while keeping the original hostname for the `Host`
+  header, TLS SNI, and certificate verification.
+- Every redirect hop repeats resolve → validate → pin. No request may reach the
+  socket on an IP that was not validated in the same step that produced it.
 
 ## Network Runtime API
 
@@ -410,12 +484,18 @@ Plugins cannot perform raw network I/O. All plugin network I/O must go through
 
 Sandbox globals must not expose:
 
-- `fetch`
+- `fetch` — including the Node 18+ global `fetch`/undici, not only a DOM `fetch`
 - `XMLHttpRequest`
 - `WebSocket`
 - `EventSource`
-- `require`
+- `Worker` / `SharedWorker` (can fetch off-thread)
+- `navigator.sendBeacon`
+- `require` and dynamic `import()`
 - Node `http`, `https`, `net`, `tls`, `dns`, `dgram`, or similar modules
+
+The sandbox must be confirmed to deny network egress by test, not by enumeration
+alone — a positive test that a plugin attempting each of the above throws or has
+no such global.
 
 SDK API:
 
@@ -458,13 +538,16 @@ Request policy:
 - Call `CapabilityGate.ensure()` before the request.
 - Request body size limit applies before sending.
 - Request timeout applies to the whole attempt.
+- A per-plugin in-flight concurrency cap applies; requests over the cap queue or
+  reject rather than letting one plugin open unbounded sockets. (Throughput rate
+  limiting beyond a concurrency cap is a non-goal in the first version.)
 - AbortSignal from invocation and revoke must cancel the request.
 - No cookie jar.
 - `Cookie` request header is forbidden in the first version.
 - `Authorization` is allowed, but never audited and never forwarded across
   origin changes.
 
-Header denylist:
+Header denylist (matched case-insensitively):
 
 - `Host`
 - `Connection`
@@ -474,13 +557,17 @@ Header denylist:
 - `Upgrade`
 - `Sec-*`
 - `Cookie`
+- `TE`
+- `Trailer`
+- `Keep-Alive`
 
 Response policy:
 
 - Response body size limit applies while reading.
 - Response timeout applies.
 - Response headers returned to the plugin must omit forbidden or unsafe
-  hop-by-hop headers.
+  hop-by-hop headers, and must strip `Set-Cookie` (there is no cookie jar, so
+  returning it only leaks state to the plugin).
 
 Redirect policy:
 
@@ -574,8 +661,12 @@ Governance tests:
   `grantScope`.
 - Revoke uses `GrantIdentity + capabilityId`, not plugin id alone.
 - Tombstone prevents auto/migration/grandfather re-grant after restart.
+- Auto-capability tombstone survives a plugin update (coarse-identity match);
+  consent/elevated tombstone uses exact-identity match.
+- Migration recomputes `GrantIdentity` with v2 normalization so migrated grants
+  match runtime-computed identity.
 - Audit sanitizes operation, declared scope, grant scope, requested scope, and
-  reason via adapter.
+  reason via adapter, and rejects a network scope still carrying `url`/`query`.
 
 Network tests:
 
@@ -586,7 +677,14 @@ Network tests:
 - URL host outside declared host is denied.
 - Method outside declared method is denied.
 - Path outside declared exact/prefix pattern is denied.
+- Encoded-traversal path (`/repos/..%2f..%2fadmin`) is normalized before
+  matching and denied against `/repos/**`.
 - DNS resolve to private IP is denied.
+- DNS rebinding is blocked: a host that resolves to a public IP at validation and
+  a private IP at connect time does not reach the socket (connection is pinned to
+  the validated IP).
+- Sandbox denies network egress through `fetch` (incl. Node global), `Worker`,
+  `sendBeacon`, dynamic `import()`, and raw node net/http modules.
 - Redirects are manual, bounded, and rechecked each hop.
 - Cross-origin redirect is rejected in the first version.
 - Header denylist is enforced.
@@ -605,6 +703,9 @@ Network tests:
   canonical normalized capabilities.
 - Plugin network I/O is impossible except through `ctx.network.fetch()` and
   `network-fetcher`.
-- `network:https` enforces HTTPS, declared host/method/path scope, DNS private-IP
-  blocking, manual redirects, header policy, size limits, timeout, audit
-  redaction, and revoke aborts.
+- `network:https` enforces HTTPS, declared host/method/path scope, normalized
+  path matching, DNS private-IP blocking with validated-IP connection pinning
+  (DNS-rebinding safe), manual redirects, header policy, size limits, timeout,
+  audit redaction, and revoke aborts.
+- Migration recomputes grant identity under v2 normalization; auto-capability
+  revocation survives same-publisher plugin updates.
