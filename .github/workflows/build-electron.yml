@@ -152,7 +152,7 @@ jobs:
           # path here (app stayed alive long enough to render).
           set +e
           xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" \
-            timeout --preserve-status 12s "$BIN" --no-sandbox --disable-dev-shm-usage
+            timeout --preserve-status 12s "$BIN" --no-sandbox --disable-dev-shm-usage --disable-gpu
           code=$?
           set -e
           if [ "$code" != "124" ] && [ "$code" != "143" ] && [ "$code" != "0" ]; then
