@@ -70,6 +70,7 @@ export const app = {
 }
 export const BrowserWindow = Object.assign(vi.fn(createBrowserWindowMock), {
   getAllWindows: vi.fn(() => []),
+  getFocusedWindow: vi.fn(() => undefined),
   fromWebContents: vi.fn((webContents: object) => windowByWebContents.get(webContents) ?? null),
 })
 export const session = { defaultSession: { webRequest: { onHeadersReceived: vi.fn() } } }

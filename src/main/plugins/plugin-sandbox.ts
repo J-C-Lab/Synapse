@@ -27,10 +27,23 @@ export class PluginSandboxError extends Error {
   }
 }
 
+/** Command/tool hook exceeded its wall-clock budget (not a plugin defect). */
+export class PluginInvocationTimeoutError extends PluginSandboxError {
+  constructor(message: string) {
+    super(message)
+    this.name = "PluginInvocationTimeoutError"
+  }
+}
+
 export interface PluginSandboxOptions {
   bridge: PluginBridge
   loadTimeoutMs?: number
   invokeTimeoutMs?: number
+  /**
+   * `run` may await JIT capability prompts — keep this generous so a slow
+   * user click does not trip the 5s hook budget used by search/action hooks.
+   */
+  commandRunTimeoutMs?: number
   /** Tools may run longer than UI command hooks; defaults to 30s. */
   toolInvokeTimeoutMs?: number
 }
@@ -122,11 +135,13 @@ export class PluginSandbox {
   private readonly loaded = new Map<string, LoadedPlugin>()
   private readonly loadTimeoutMs: number
   private readonly invokeTimeoutMs: number
+  private readonly commandRunTimeoutMs: number
   private readonly toolInvokeTimeoutMs: number
 
   constructor(private readonly options: PluginSandboxOptions) {
     this.loadTimeoutMs = options.loadTimeoutMs ?? 5_000
     this.invokeTimeoutMs = options.invokeTimeoutMs ?? 5_000
+    this.commandRunTimeoutMs = options.commandRunTimeoutMs ?? 120_000
     this.toolInvokeTimeoutMs = options.toolInvokeTimeoutMs ?? 30_000
   }
 
@@ -218,7 +233,8 @@ export class PluginSandbox {
             invocation: commandInvocation(request.commandId, request.payload),
           },
           pluginCtx
-        )
+        ),
+        this.commandRunTimeoutMs
       )
     }
     if (request.phase === "onSearchChange") {
@@ -385,15 +401,18 @@ export class PluginSandbox {
     return { timers: plugin.timers.size, intervals: plugin.intervals.size }
   }
 
-  private async withTimeout<T>(value: Promise<T> | T): Promise<T> {
+  private async withTimeout<T>(
+    value: Promise<T> | T,
+    timeoutMs = this.invokeTimeoutMs
+  ): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       return await Promise.race([
         Promise.resolve(value),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
-            () => reject(new PluginSandboxError(`Plugin call exceeded ${this.invokeTimeoutMs}ms`)),
-            this.invokeTimeoutMs
+            () => reject(new PluginInvocationTimeoutError(`Plugin call exceeded ${timeoutMs}ms`)),
+            timeoutMs
           )
         }),
       ])

@@ -11,6 +11,7 @@ import process from "node:process"
 import { describe, expect, it, vi } from "vitest"
 import { PermissionDenied } from "./permissions"
 import { PluginRegistry } from "./plugin-registry"
+import { PluginInvocationTimeoutError } from "./plugin-sandbox"
 
 describe("pluginRegistry", () => {
   it("loads valid plugins, indexes manifest commands and emits changes", async () => {
@@ -115,6 +116,20 @@ describe("pluginRegistry", () => {
       registry.invoke({ pluginId: "com.synapse.test", commandId: "test.run", phase: "run" })
     ).rejects.toBeInstanceOf(PermissionDenied)
     // Permission denials are policy decisions — the plugin must stay active.
+    expect(registry.get("com.synapse.test")?.status).toBe("active")
+  })
+
+  it("passes invocation timeouts through invoke without crashing the plugin", async () => {
+    const sandbox = fakeSandbox()
+    sandbox.invokeCommand = vi.fn<PluginSandboxRuntime["invokeCommand"]>(() => {
+      throw new PluginInvocationTimeoutError("Plugin call exceeded 120000ms")
+    })
+    const registry = new PluginRegistry({ sandbox })
+    await registry.load([discovered()])
+
+    await expect(
+      registry.invoke({ pluginId: "com.synapse.test", commandId: "test.run", phase: "run" })
+    ).rejects.toBeInstanceOf(PluginInvocationTimeoutError)
     expect(registry.get("com.synapse.test")?.status).toBe("active")
   })
 

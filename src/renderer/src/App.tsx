@@ -36,15 +36,18 @@ export function App() {
     <ThemeProvider>
       <TooltipProvider>
         {route === "launcher" ? (
-          <LauncherPanel />
+          <>
+            <LauncherPanel />
+            <CapabilityPromptHost />
+          </>
         ) : route === "floating-ball" ? (
           <FloatingBallPanel />
         ) : (
           <div data-testid="app-shell" className="h-screen bg-background font-sans text-foreground">
             <AppShell />
+            <CapabilityPromptHost />
           </div>
         )}
-        <CapabilityPromptHost />
         <Toaster />
       </TooltipProvider>
     </ThemeProvider>

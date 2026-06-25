@@ -32,6 +32,13 @@ const plugin: PluginModule = {
 export = plugin
 ```
 
+## Command handlers
+
+The host invokes `run(invocation, ctx)` — **invocation is the first argument,
+`ctx` is the second**. `ctx` is the gated `PluginContext` (storage, clipboard,
+notifications, system). The same order applies to `onSearchChange(text, ctx)`,
+`onAction(actionId, payload, ctx)`, and `dispose(ctx)`.
+
 ## Status
 
 P0 scope is type-first: the package defines the plugin contract, command

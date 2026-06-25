@@ -50,6 +50,7 @@ import {
 import { registerAiIpc } from "./ipc/ai"
 import { CapabilityIpcService, registerCapabilitiesIpc } from "./ipc/capabilities"
 import { attachCapabilityPromptLifecycle } from "./ipc/capability-prompt-lifecycle"
+import { createCapabilityPromptSender } from "./ipc/capability-prompt-router"
 import { registerLanIpc } from "./ipc/lan"
 import { LauncherService } from "./ipc/launcher-service"
 import { registerMarketplaceIpc } from "./ipc/marketplace"
@@ -609,10 +610,10 @@ function initPluginHost(): PluginHost {
     createFileSink(path.join(userDataDir, "logs"), { fileName: "audit.log" })
   )
 
-  capabilityService = new CapabilityIpcService(() => plugins, {
-    sendGrantRequest: (event) => broadcast("capabilities:grant-request", event),
-    sendApprovalRequest: (event) => broadcast("capabilities:approval-request", event),
-  })
+  capabilityService = new CapabilityIpcService(
+    () => plugins,
+    createCapabilityPromptSender(broadcast)
+  )
 
   return new PluginHost({
     fetch: (url, init) => net.fetch(url, init),

@@ -23,6 +23,7 @@ import { fuzzyMatch } from "../launcher/search"
 import { logger } from "../logging"
 import { CapabilityDenied } from "./capability-gate"
 import { PermissionDenied } from "./permissions"
+import { PluginInvocationTimeoutError } from "./plugin-sandbox"
 import { toolFqName } from "./types"
 
 /**
@@ -177,7 +178,12 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
       // Permission denials are policy decisions, not plugin defects —
       // leave the plugin active and surface the original error so the
       // IPC layer can map it to PLUGIN_PERMISSION_DENIED.
-      if (err instanceof PermissionDenied || err instanceof CapabilityDenied) throw err
+      if (
+        err instanceof PermissionDenied ||
+        err instanceof CapabilityDenied ||
+        err instanceof PluginInvocationTimeoutError
+      )
+        throw err
       this.markCrashed(request.pluginId, err)
       throw new PluginCrashedError(request.pluginId, err)
     }
@@ -224,7 +230,12 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     try {
       await this.options.sandbox.disposeCommand(pluginId, commandId)
     } catch (err) {
-      if (err instanceof PermissionDenied || err instanceof CapabilityDenied) throw err
+      if (
+        err instanceof PermissionDenied ||
+        err instanceof CapabilityDenied ||
+        err instanceof PluginInvocationTimeoutError
+      )
+        throw err
       this.markCrashed(pluginId, err)
       throw new PluginCrashedError(pluginId, err)
     }
@@ -266,7 +277,12 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     try {
       await this.options.sandbox.dispatchEvent(request)
     } catch (err) {
-      if (err instanceof PermissionDenied || err instanceof CapabilityDenied) throw err
+      if (
+        err instanceof PermissionDenied ||
+        err instanceof CapabilityDenied ||
+        err instanceof PluginInvocationTimeoutError
+      )
+        throw err
       this.markCrashed(request.pluginId, err)
       throw new PluginCrashedError(request.pluginId, err)
     }
