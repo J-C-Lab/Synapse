@@ -3,6 +3,7 @@ import { isEngineCompatible, ManifestValidationError, parseManifest } from "./in
 
 function manifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    manifestVersion: 2,
     id: "com.synapse.test",
     name: "Test",
     displayName: { en: "Test", "zh-CN": "测试" },
@@ -14,7 +15,7 @@ function manifest(overrides: Record<string, unknown> = {}): Record<string, unkno
     contributes: {
       commands: [{ id: "test.run", title: "Run", mode: "view" }],
     },
-    permissions: ["storage:plugin"],
+    capabilities: [{ id: "storage:plugin" }],
     ...overrides,
   }
 }
@@ -22,10 +23,10 @@ function manifest(overrides: Record<string, unknown> = {}): Record<string, unkno
 describe("parseManifest", () => {
   it("accepts a valid manifest and applies defaults", () => {
     const raw = manifest()
-    delete raw.permissions
+    raw.capabilities = []
     const parsed = parseManifest(raw)
     expect(parsed.id).toBe("com.synapse.test")
-    expect(parsed.permissions).toEqual([])
+    expect(parsed.capabilities).toEqual([])
     expect(parsed.contributes.commands[0]?.mode).toBe("view")
   })
 
@@ -55,7 +56,7 @@ describe("parseManifest", () => {
             activationEvents: ["clipboard:change"],
             commands: [{ id: "test.run", title: "Run", mode: "view" }],
           },
-          permissions: [],
+          capabilities: [],
         })
       )
     ).toThrow(ManifestValidationError)
@@ -69,7 +70,7 @@ describe("parseManifest", () => {
             activationEvents: ["clipboard:change"],
             commands: [{ id: "test.run", title: "Run", mode: "view" }],
           },
-          permissions: ["clipboard:read"],
+          capabilities: [{ id: "clipboard:read" }],
         })
       )
     ).toThrow(ManifestValidationError)
@@ -82,20 +83,98 @@ describe("parseManifest", () => {
           activationEvents: ["clipboard:change"],
           commands: [{ id: "test.run", title: "Run", mode: "view" }],
         },
-        permissions: ["clipboard:watch"],
+        capabilities: [{ id: "clipboard:watch" }],
       })
     )
-    expect(parsed.permissions).toContain("clipboard:watch")
+    expect(parsed.capabilities.some((c) => c.id === "clipboard:watch")).toBe(true)
   })
 
-  it("rejects unknown top-level permissions", () => {
+  it("rejects unknown top-level capabilities", () => {
     expect(() =>
       parseManifest(
         manifest({
-          permissions: ["storage:plugin", "network:http"],
+          capabilities: [{ id: "storage:plugin" }, { id: "network:http" }],
         })
       )
     ).toThrow(ManifestValidationError)
+  })
+})
+
+describe("parseManifest — v2 capabilities", () => {
+  const base = {
+    manifestVersion: 2,
+    id: "com.example.x",
+    name: "x",
+    displayName: "X",
+    description: "d",
+    version: "0.1.0",
+    author: "a",
+    engines: { synapse: "^0.3.0" },
+    main: "dist/index.js",
+    capabilities: [],
+    contributes: { commands: [{ id: "x.open", title: "Open", mode: "view" }] },
+  }
+
+  it("rejects a missing manifestVersion", () => {
+    const { manifestVersion, ...noVersion } = base
+    expect(() => parseManifest(noVersion)).toThrow()
+  })
+
+  it("rejects legacy permissions in a v2 manifest with the exact message", () => {
+    expect(() => parseManifest({ ...base, permissions: ["storage:plugin"] })).toThrow(
+      /permissions has been replaced by capabilities in manifestVersion 2/
+    )
+  })
+
+  it("accepts an empty capabilities array", () => {
+    expect(parseManifest(base).capabilities).toEqual([])
+  })
+
+  it("accepts an object capability entry", () => {
+    const m = parseManifest({ ...base, capabilities: [{ id: "storage:plugin" }] })
+    expect(m.capabilities[0]).toEqual({ id: "storage:plugin" })
+  })
+
+  it("rejects a string-shorthand capability entry", () => {
+    expect(() => parseManifest({ ...base, capabilities: ["storage:plugin"] })).toThrow()
+  })
+
+  it("rejects network:https in phase 1 because no adapter is registered yet", () => {
+    expect(() =>
+      parseManifest({
+        ...base,
+        capabilities: [{ id: "network:https", scope: { hosts: ["api.github.com"] } }],
+      })
+    ).toThrow()
+  })
+
+  it("rejects a tool capability not contained by the plugin's capabilities", () => {
+    expect(() =>
+      parseManifest({
+        ...base,
+        capabilities: [{ id: "storage:plugin" }],
+        contributes: {
+          commands: base.contributes.commands,
+          tools: [
+            {
+              name: "t",
+              description: "d",
+              inputSchema: { type: "object" },
+              capabilities: [{ id: "clipboard:read" }],
+            },
+          ],
+        },
+      })
+    ).toThrow()
+  })
+
+  it("requires clipboard:watch when clipboard:change activation is declared", () => {
+    expect(() =>
+      parseManifest({
+        ...base,
+        contributes: { ...base.contributes, activationEvents: ["clipboard:change"] },
+      })
+    ).toThrow()
   })
 })
 
@@ -135,45 +214,45 @@ describe("parseManifest — tools", () => {
     ).toThrow(ManifestValidationError)
   })
 
-  it("rejects a tool permission not granted at the top level", () => {
+  it("rejects a tool capability not granted at the top level", () => {
     expect(() =>
       parseManifest(
         manifest({
           contributes: {
             commands: [{ id: "test.run", title: "Run", mode: "view" }],
-            tools: [tool({ permissions: ["clipboard:write"] })],
+            tools: [tool({ capabilities: [{ id: "clipboard:write" }] })],
           },
-          permissions: ["storage:plugin"],
+          capabilities: [{ id: "storage:plugin" }],
         })
       )
     ).toThrow(ManifestValidationError)
   })
 
-  it("rejects an unknown tool permission even when declared at the top level", () => {
+  it("rejects an unknown tool capability even when declared at the top level", () => {
     expect(() =>
       parseManifest(
         manifest({
           contributes: {
             commands: [{ id: "test.run", title: "Run", mode: "view" }],
-            tools: [tool({ permissions: ["network:http"] })],
+            tools: [tool({ capabilities: [{ id: "network:http" }] })],
           },
-          permissions: ["network:http"],
+          capabilities: [{ id: "network:http" }],
         })
       )
     ).toThrow(ManifestValidationError)
   })
 
-  it("accepts a tool permission that is a subset of granted permissions", () => {
+  it("accepts a tool capability that is a subset of granted capabilities", () => {
     const parsed = parseManifest(
       manifest({
         contributes: {
           commands: [{ id: "test.run", title: "Run", mode: "view" }],
-          tools: [tool({ permissions: ["storage:plugin"] })],
+          tools: [tool({ capabilities: [{ id: "storage:plugin" }] })],
         },
-        permissions: ["storage:plugin", "clipboard:read"],
+        capabilities: [{ id: "storage:plugin" }, { id: "clipboard:read" }],
       })
     )
-    expect(parsed.contributes.tools?.[0]?.permissions).toEqual(["storage:plugin"])
+    expect(parsed.contributes.tools?.[0]?.capabilities).toEqual([{ id: "storage:plugin" }])
   })
 
   it("rejects a non-object input schema", () => {
