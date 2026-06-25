@@ -19,9 +19,11 @@ const mocks = vi.hoisted(() => ({
   importPluginFromFile: vi.fn(),
   installPluginPackage: vi.fn(),
   isElectron: vi.fn(() => true),
+  listPluginCapabilities: vi.fn(),
   listPlugins: vi.fn(),
   onPluginRegistryChanged: vi.fn(() => () => undefined),
   reloadPlugin: vi.fn(),
+  revokePluginCapability: vi.fn(),
   setPluginEnabled: vi.fn(),
   setPluginPreference: vi.fn(),
   uninstallPlugin: vi.fn(),
@@ -75,6 +77,12 @@ beforeEach(() => {
       },
     }),
   ])
+  mocks.listPluginCapabilities.mockImplementation(async (pluginId: string) => {
+    if (pluginId === "com.synapse.clipboard") {
+      return [{ id: "clipboard:read", tier: "consent", granted: true, scopeEnforced: false }]
+    }
+    return []
+  })
   mocks.onPluginRegistryChanged.mockReturnValue(() => undefined)
   mocks.getSettings.mockResolvedValue({
     hotkey: "Control+Space",
@@ -92,12 +100,52 @@ afterEach(() => {
 })
 
 describe("pluginsPage", () => {
-  it("shows manifest permissions and filters by permission search text", async () => {
+  it("lists plugin capabilities and revokes through the wrapper", async () => {
     const user = userEvent.setup()
     render(<PluginsPage />)
 
     expect(await screen.findByText("Clipboard Helper")).toBeInTheDocument()
-    expect(screen.getByTitle("clipboard:read")).toBeInTheDocument()
+    expect(await screen.findByTestId("capability-row")).toBeInTheDocument()
+    expect(screen.getByText("clipboard:read")).toBeInTheDocument()
+
+    await user.click(screen.getByRole("button", { name: "plugins.capabilities.revoke" }))
+
+    expect(mocks.revokePluginCapability).toHaveBeenCalledWith(
+      "com.synapse.clipboard",
+      "clipboard:read"
+    )
+  })
+
+  it("shows always allowed for auto-tier capabilities", async () => {
+    mocks.listPlugins.mockResolvedValueOnce([
+      plugin({
+        pluginId: "com.synapse.storage",
+        manifest: {
+          ...plugin().manifest,
+          id: "com.synapse.storage",
+          displayName: "Storage",
+          permissions: ["storage:plugin"],
+        },
+      }),
+    ])
+    mocks.listPluginCapabilities.mockResolvedValueOnce([
+      { id: "storage:plugin", tier: "auto", granted: false, scopeEnforced: false },
+    ])
+
+    render(<PluginsPage />)
+
+    expect(await screen.findByText("Storage")).toBeInTheDocument()
+    expect(screen.getByText("plugins.capabilities.alwaysAllowed")).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "plugins.capabilities.revoke" })
+    ).not.toBeInTheDocument()
+  })
+
+  it("filters by permission search text", async () => {
+    const user = userEvent.setup()
+    render(<PluginsPage />)
+
+    expect(await screen.findByText("Clipboard Helper")).toBeInTheDocument()
 
     await user.type(screen.getByPlaceholderText("plugins.searchPlaceholder"), "clipboard:read")
 

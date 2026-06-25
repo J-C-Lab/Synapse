@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { AppShell } from "@/components/app-shell"
+import { CapabilityPromptHost } from "@/components/capability-prompt-host"
 import { FloatingBallPanel } from "@/components/floating-ball-panel"
 import { LauncherPanel } from "@/components/launcher-panel"
 import { Toaster } from "@/components/ui/sonner"
@@ -43,6 +44,7 @@ export function App() {
             <AppShell />
           </div>
         )}
+        <CapabilityPromptHost />
         <Toaster />
       </TooltipProvider>
     </ThemeProvider>

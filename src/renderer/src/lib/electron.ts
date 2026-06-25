@@ -34,6 +34,9 @@ export type LanStatus = SynapseLanStatus
 export type LanPairing = SynapseLanPairing
 export type LanTransfer = SynapseLanTransfer
 export type PluginRegistryEntry = SynapsePluginRegistryEntry
+export type PluginCapabilityRow = SynapsePluginCapabilityRow
+export type CapabilityGrantRequestEvent = SynapseCapabilityGrantRequestEvent
+export type CapabilityApprovalRequestEvent = SynapseCapabilityApprovalRequestEvent
 export type MarketplaceEntry = SynapseMarketplaceEntry
 export type MarketplaceSummary = PluginSummary
 export type MarketplaceDetail = PluginDetailResponse
@@ -184,6 +187,34 @@ export async function removeLanTransferHistory(transferId: string): Promise<LanT
 
 export async function listPlugins(): Promise<PluginRegistryEntry[]> {
   return unwrapIpcResult(await api().listPlugins())
+}
+
+export async function listPluginCapabilities(pluginId: string): Promise<PluginCapabilityRow[]> {
+  return unwrapIpcResult(await api().listPluginCapabilities(pluginId))
+}
+
+export async function revokePluginCapability(pluginId: string, capability: string): Promise<void> {
+  unwrapIpcResult(await api().revokePluginCapability(pluginId, capability))
+}
+
+export async function resolveCapabilityGrant(promptId: string, allow: boolean): Promise<void> {
+  unwrapIpcResult(await api().resolveCapabilityGrant(promptId, allow))
+}
+
+export async function resolveCapabilityApproval(promptId: string, allow: boolean): Promise<void> {
+  unwrapIpcResult(await api().resolveCapabilityApproval(promptId, allow))
+}
+
+export function onCapabilityGrantRequest(
+  handler: (event: CapabilityGrantRequestEvent) => void
+): () => void {
+  return api().onCapabilityGrantRequest(handler)
+}
+
+export function onCapabilityApprovalRequest(
+  handler: (event: CapabilityApprovalRequestEvent) => void
+): () => void {
+  return api().onCapabilityApprovalRequest(handler)
 }
 
 export async function getPlugin(pluginId: string): Promise<PluginRegistryEntry | null> {

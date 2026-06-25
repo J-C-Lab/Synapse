@@ -4,7 +4,7 @@ import { AlertCircle, Download, PackageSearch, RefreshCw, Trash2 } from "lucide-
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
-import { PermissionTagList } from "@/components/plugins/permission-tags"
+import { PluginCapabilityList } from "@/components/plugins/plugin-capability-list"
 import { localize } from "@/components/plugins/view-utils"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -525,8 +525,8 @@ function PluginCard({
 
         <div className="space-y-2">
           <h3 className="text-sm font-medium">{t("plugins.permissions.title")}</h3>
-          <PermissionTagList
-            permissions={manifest?.permissions}
+          <PluginCapabilityList
+            pluginId={plugin.pluginId}
             emptyLabel={t("plugins.permissions.none")}
           />
         </div>
