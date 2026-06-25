@@ -93,13 +93,14 @@ export interface ManifestTool {
   /** Behavioural hints driving approval and UI. */
   annotations?: ToolAnnotations
   /**
-   * Permission strings this tool needs. Must be a subset of the plugin's
-   * top-level `permissions` (enforced at validation and at runtime).
+   * Capabilities this tool needs. Must be a subset (adapter `contains`) of the
+   * plugin's top-level `capabilities` — enforced at validation and at runtime.
    */
-  permissions?: string[]
+  capabilities?: NormalizedCapability[]
 }
 
 export interface PluginManifest {
+  manifestVersion: 2
   $schema?: string
   id: string
   name: string
@@ -116,5 +117,5 @@ export interface PluginManifest {
     preferences?: ManifestPreference[]
     tools?: ManifestTool[]
   }
-  permissions: string[]
+  capabilities: NormalizedCapability[]
 }
