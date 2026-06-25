@@ -1,6 +1,7 @@
 import type { PluginManifest } from "./types"
 import * as path from "node:path"
 import { z } from "zod"
+import { capabilityIds } from "./capabilities"
 
 const idSchema = z
   .string()
@@ -20,15 +21,10 @@ const relativePathSchema = z.string().min(1).refine(isSafeRelativePath, {
   message: "Path must be relative and stay inside the plugin directory",
 })
 
-const permissionSchema = z.enum([
-  "storage:plugin",
-  "clipboard:read",
-  "clipboard:write",
-  "notification",
-  "system:open-url",
-  "system:open-path",
-  "system:capture-screen",
-])
+// Built from the capability registry so the manifest, the host gate, and the UI
+// share one vocabulary. Red-line abilities are absent from the registry and so
+// cannot be declared here.
+const permissionSchema = z.enum(capabilityIds() as [string, ...string[]])
 
 const commandSchema = z
   .object({
@@ -131,11 +127,11 @@ export const manifestSchema = z
   .superRefine((value, ctx) => {
     if (
       value.contributes.activationEvents?.includes("clipboard:change") &&
-      !value.permissions.includes("clipboard:read")
+      !value.permissions.includes("clipboard:watch")
     ) {
       ctx.addIssue({
         code: "custom",
-        message: "clipboard:change activation requires clipboard:read permission",
+        message: "clipboard:change activation requires clipboard:watch permission",
         path: ["permissions"],
       })
     }

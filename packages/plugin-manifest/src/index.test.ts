@@ -47,7 +47,7 @@ describe("parseManifest", () => {
     }
   })
 
-  it("rejects clipboard activation without clipboard:read permission", () => {
+  it("rejects clipboard:change activation without any clipboard permission", () => {
     expect(() =>
       parseManifest(
         manifest({
@@ -59,6 +59,33 @@ describe("parseManifest", () => {
         })
       )
     ).toThrow(ManifestValidationError)
+  })
+
+  it("requires clipboard:watch (not just clipboard:read) for clipboard:change activation", () => {
+    expect(() =>
+      parseManifest(
+        manifest({
+          contributes: {
+            activationEvents: ["clipboard:change"],
+            commands: [{ id: "test.run", title: "Run", mode: "view" }],
+          },
+          permissions: ["clipboard:read"],
+        })
+      )
+    ).toThrow(ManifestValidationError)
+  })
+
+  it("accepts clipboard:change activation when clipboard:watch is declared", () => {
+    const parsed = parseManifest(
+      manifest({
+        contributes: {
+          activationEvents: ["clipboard:change"],
+          commands: [{ id: "test.run", title: "Run", mode: "view" }],
+        },
+        permissions: ["clipboard:watch"],
+      })
+    )
+    expect(parsed.permissions).toContain("clipboard:watch")
   })
 
   it("rejects unknown top-level permissions", () => {
