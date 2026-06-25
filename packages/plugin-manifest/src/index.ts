@@ -18,6 +18,8 @@ export type { CapabilityDescriptor, CapabilityScopeAdapter, CapabilityTier } fro
 
 export { isEngineCompatible } from "./engine"
 
+export { normalizeLegacyCapabilities } from "./normalize-legacy"
+
 export { manifestSchema, ManifestValidationError, parseManifest } from "./schema"
 
 export type {
