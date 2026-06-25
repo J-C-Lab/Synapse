@@ -52,6 +52,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build workspace packages
+        run: pnpm build:packages
+
       - name: Run tests with coverage
         run: pnpm test:coverage
 
