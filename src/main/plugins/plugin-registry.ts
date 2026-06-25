@@ -241,8 +241,20 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     }
   }
 
-  async dispatchClipboardChange(content: ClipboardContent): Promise<void> {
+  clipboardChangeListenerEntries(): PluginRegistryEntry[] {
+    return [...this.clipboardChangeListeners].flatMap((pluginId) => {
+      const entry = this.entries.get(pluginId)
+      return entry?.status === "active" ? [entry] : []
+    })
+  }
+
+  async dispatchClipboardChange(
+    content: ClipboardContent,
+    pluginIds?: readonly string[]
+  ): Promise<void> {
+    const targetIds = pluginIds ? new Set(pluginIds) : undefined
     const entries = [...this.clipboardChangeListeners].flatMap((pluginId) => {
+      if (targetIds && !targetIds.has(pluginId)) return []
       const entry = this.entries.get(pluginId)
       return entry?.status === "active" ? [entry] : []
     })

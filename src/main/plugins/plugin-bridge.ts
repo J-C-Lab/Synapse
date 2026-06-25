@@ -154,10 +154,7 @@ export class PluginBridge {
     manifest: PluginManifest,
     options: ToolContextOptions
   ): ToolContext {
-    const effective = options.permissions
-      ? { ...manifest, permissions: options.permissions }
-      : manifest
-    const gate = this.gateFor(pluginId, effective)
+    const gate = this.gateFor(pluginId, manifest, options.permissions)
     const invocation: InvocationContext = {
       actor: callerToActor(options.caller),
       trigger: `tool:${options.toolName}`,
@@ -174,14 +171,24 @@ export class PluginBridge {
     }
   }
 
-  private gateFor(pluginId: string, manifest: PluginManifest): CapabilityGatePort {
+  private gateFor(
+    pluginId: string,
+    manifest: PluginManifest,
+    declaredPermissions: readonly string[] = manifest.permissions
+  ): CapabilityGatePort {
     const sourceKind = this.sourceKindFor(pluginId)
-    if (this.createGate) return this.createGate(pluginId, manifest, sourceKind)
+    if (this.createGate) {
+      return this.createGate(
+        pluginId,
+        { ...manifest, permissions: [...declaredPermissions] },
+        sourceKind
+      )
+    }
 
     const identity = buildGrantIdentity(pluginId, manifest, sourceKind)
     return new CapabilityGateImpl({
       identity,
-      declared: new Set(manifest.permissions),
+      declared: new Set(declaredPermissions),
       grants: this.governance.grants,
       prompt: this.governance.prompt,
       approve: this.governance.approve,

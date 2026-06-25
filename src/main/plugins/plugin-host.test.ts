@@ -5,7 +5,9 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { CapabilityIpcService } from "../ipc/capabilities"
 import { buildGrantIdentity } from "./capability-governance"
+import { GrantStore } from "./grant-store"
 import {
   PluginHost,
   PluginHostNotImplementedError,
@@ -43,6 +45,15 @@ function hostOptions(
     storageFlushMs: 0,
     adapters: noopAdapters,
     ...overrides,
+  }
+}
+
+function migrationAlreadyDone(): NonNullable<
+  ConstructorParameters<typeof PluginHost>[0]["migrationMarker"]
+> {
+  return {
+    done: async () => true,
+    markDone: async () => {},
   }
 }
 
@@ -351,6 +362,25 @@ describe("pluginHost package installation", () => {
       PluginInstallError
     )
   })
+
+  it("writes install grants only for auto-tier capabilities on new installs", async () => {
+    const host = makeHost()
+    await host.init()
+    const sourceDir = await writeInstallSource({
+      id: "com.synapse.install-auto",
+      permissions: ["storage:plugin", "clipboard:read"],
+    })
+
+    await installDirectoryForTest(host, sourceDir)
+
+    const entry = host.get("com.synapse.install-auto")!
+    const identity = buildGrantIdentity(entry.pluginId, entry.manifest!, entry.source.kind)
+    expect(await host.grants.isGranted(identity, "storage:plugin")).toBe(true)
+    expect(await host.grants.isGranted(identity, "clipboard:read")).toBe(false)
+    expect(await host.grants.list(identity)).toEqual([
+      expect.objectContaining({ capability: "storage:plugin", grantedBy: "install" }),
+    ])
+  })
 })
 
 describe("pluginHost facade forwards to registry", () => {
@@ -565,6 +595,107 @@ describe("pluginHost clipboard watcher", () => {
     }
   })
 
+  it("does not read or dispatch clipboard payloads for an ungranted watcher", async () => {
+    vi.useFakeTimers()
+    const read = vi.fn(async () => ({ type: "text", text: "secret-clipboard" }) as ClipboardContent)
+    const audit = vi.fn()
+    const host = new PluginHost(
+      hostOptions({
+        clipboardPollMs: 10,
+        migrationMarker: migrationAlreadyDone(),
+        adapters: {
+          ...noopAdapters,
+          clipboard: { read, write: async () => {} },
+        },
+        capabilityGovernance: {
+          userDataDir: dir,
+          prompt: async () => false,
+          audit,
+        },
+      })
+    )
+    await writeHostPlugin({
+      activationEvents: ["clipboard:change"],
+      permissions: ["clipboard:watch", "storage:plugin"],
+    })
+
+    try {
+      await host.init()
+      await vi.advanceTimersByTimeAsync(20)
+
+      expect(read).not.toHaveBeenCalled()
+      expect(audit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pluginId: "com.synapse.clipboard",
+          capability: "clipboard:watch",
+          actor: "background",
+          trigger: "clipboard:change",
+          operation: "watch",
+          decision: "deny",
+        })
+      )
+      await expect(
+        fs.readFile(path.join(dir, "plugin-data", "com.synapse.clipboard.json"), "utf-8")
+      ).rejects.toMatchObject({ code: "ENOENT" })
+    } finally {
+      host.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not read or dispatch clipboard payloads when background approval is refused", async () => {
+    vi.useFakeTimers()
+    const read = vi.fn(async () => ({ type: "text", text: "approval-secret" }) as ClipboardContent)
+    const audit = vi.fn()
+    const grants = new GrantStore(path.join(dir, "grants.json"))
+    const host = new PluginHost(
+      hostOptions({
+        clipboardPollMs: 10,
+        migrationMarker: migrationAlreadyDone(),
+        adapters: {
+          ...noopAdapters,
+          clipboard: { read, write: async () => {} },
+        },
+        capabilityGovernance: {
+          userDataDir: dir,
+          grants,
+          approve: async () => false,
+          audit,
+        },
+      })
+    )
+    const pluginId = "com.synapse.clipboard"
+    await writeHostPlugin({
+      activationEvents: ["clipboard:change"],
+      permissions: ["clipboard:watch", "storage:plugin"],
+    })
+
+    try {
+      await host.init()
+      const entry = host.get(pluginId)!
+      const identity = buildGrantIdentity(pluginId, entry.manifest!, entry.source.kind)
+      await host.grants.grant(identity, "clipboard:watch", "user")
+
+      await vi.advanceTimersByTimeAsync(20)
+
+      expect(read).not.toHaveBeenCalled()
+      expect(audit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pluginId,
+          capability: "clipboard:watch",
+          decision: "deny",
+          why: "per-call approval refused",
+        })
+      )
+      await expect(
+        fs.readFile(path.join(dir, "plugin-data", "com.synapse.clipboard.json"), "utf-8")
+      ).rejects.toMatchObject({ code: "ENOENT" })
+    } finally {
+      host.dispose()
+      vi.useRealTimers()
+    }
+  })
+
   it("does not start when clipboard activation lacks read permission", async () => {
     vi.useFakeTimers()
     const read = vi.fn(async () => ({ type: "text", text: "hello" }) as ClipboardContent)
@@ -586,3 +717,149 @@ describe("pluginHost clipboard watcher", () => {
     }
   })
 })
+
+describe("pluginHost tool capability grants", () => {
+  it("stores tool grants under the full plugin capability identity", async () => {
+    const host = new PluginHost(hostOptions({ migrationMarker: migrationAlreadyDone() }))
+    const pluginId = "com.synapse.tool"
+    await writeHostPlugin({
+      id: pluginId,
+      code: `
+module.exports = {
+  commands: {
+    "clipboard.run": {
+      run() { return { type: "toast", level: "info", message: "ok" } }
+    }
+  },
+  tools: {
+    async write(input, ctx) {
+      await ctx.clipboard.writeText("hello")
+      return { content: [{ type: "text", text: "ok" }] }
+    }
+  }
+}
+`,
+      permissions: ["clipboard:write", "storage:plugin"],
+      tools: [
+        {
+          name: "write",
+          description: "Writes text",
+          inputSchema: { type: "object" },
+          permissions: ["clipboard:write"],
+        },
+      ],
+    })
+
+    await host.init()
+    const first = host.get(pluginId)!
+    const firstIdentity = buildGrantIdentity(pluginId, first.manifest!, first.source.kind)
+
+    await host.invokeTool(`${pluginId}/write`, {}, { caller: { kind: "user" } })
+
+    expect(await host.grants.isGranted(firstIdentity, "clipboard:write")).toBe(true)
+    const capabilityUi = new CapabilityIpcService(() => host, {
+      sendGrantRequest: vi.fn(),
+      sendApprovalRequest: vi.fn(),
+    })
+    expect(await capabilityUi.listPluginCapabilities(pluginId)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "clipboard:write", granted: true })])
+    )
+
+    await writeHostPlugin({
+      id: pluginId,
+      code: `
+module.exports = {
+  commands: {
+    "clipboard.run": {
+      run() { return { type: "toast", level: "info", message: "ok" } }
+    }
+  },
+  tools: {
+    async write(input, ctx) {
+      await ctx.clipboard.writeText("hello")
+      return { content: [{ type: "text", text: "ok" }] }
+    }
+  }
+}
+`,
+      permissions: ["clipboard:write", "storage:plugin", "notification"],
+      tools: [
+        {
+          name: "write",
+          description: "Writes text",
+          inputSchema: { type: "object" },
+          permissions: ["clipboard:write"],
+        },
+      ],
+    })
+    await host.reload(pluginId)
+    const updated = host.get(pluginId)!
+    const updatedIdentity = buildGrantIdentity(pluginId, updated.manifest!, updated.source.kind)
+
+    expect(updatedIdentity.capabilityDeclarationHash).not.toBe(
+      firstIdentity.capabilityDeclarationHash
+    )
+    expect(await host.grants.isGranted(updatedIdentity, "clipboard:write")).toBe(false)
+  })
+})
+
+async function installDirectoryForTest(
+  host: PluginHost,
+  sourceDir: string
+): Promise<PluginRegistryEntry> {
+  const installer = host as unknown as {
+    installDirectory: (
+      sourceDir: string,
+      options?: { expectedPluginId?: string; expectedVersion?: string }
+    ) => Promise<PluginRegistryEntry>
+  }
+  return installer.installDirectory(sourceDir)
+}
+
+async function writeInstallSource(options: {
+  id: string
+  permissions: string[]
+  code?: string
+}): Promise<string> {
+  const pluginDir = path.join(dir, "install-sources", options.id)
+  await fs.mkdir(path.join(pluginDir, "dist"), { recursive: true })
+  await fs.writeFile(
+    path.join(pluginDir, "synapse.json"),
+    `${JSON.stringify(
+      {
+        id: options.id,
+        name: options.id.split(".").at(-1) ?? "plugin",
+        displayName: "Install Plugin",
+        description: "Test install plugin",
+        version: "0.1.0",
+        author: "Synapse",
+        engines: { synapse: "^0.2.0" },
+        main: "dist/index.js",
+        contributes: {
+          commands: [{ id: "clipboard.run", title: "Clipboard", mode: "view" }],
+        },
+        permissions: options.permissions,
+      },
+      null,
+      2
+    )}\n`,
+    "utf-8"
+  )
+  await fs.writeFile(
+    path.join(pluginDir, "dist", "index.js"),
+    options.code ??
+      `
+module.exports = {
+  commands: {
+    "clipboard.run": {
+      run() {
+        return { type: "toast", level: "info", message: "ok" }
+      }
+    }
+  }
+}
+`,
+    "utf-8"
+  )
+  return pluginDir
+}

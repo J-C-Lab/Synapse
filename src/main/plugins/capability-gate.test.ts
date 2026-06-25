@@ -69,6 +69,12 @@ describe("capabilityGate.ensure", () => {
     expect(prompt).not.toHaveBeenCalled()
   })
 
+  it("adds a short identity fingerprint to audit records", async () => {
+    const { gate, audit } = makeGate({ declared: ["clipboard:read"], granted: ["clipboard:read"] })
+    await gate.ensure(req())
+    expect(audit.at(-1)?.identityFingerprint).toMatch(/^[a-f0-9]{12}$/)
+  })
+
   it("prompts and persists when an ungranted consent capability is used", async () => {
     const { gate, prompt, grants } = makeGate({ declared: ["clipboard:read"] })
     await gate.ensure(req())
