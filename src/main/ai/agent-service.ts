@@ -12,6 +12,7 @@ import type { McpServerConfig, McpServerConfigStore } from "./mcp-server-config-
 import type { ProviderDescriptor } from "./providers/catalog"
 import type { ChatMessage, ChatProvider, ProviderToolSchema, TokenUsage } from "./providers/types"
 import type { AiToolRegistry } from "./tool-registry"
+import { logger } from "../logging"
 import { AgentRuntime } from "./agent-runtime"
 import { decideApproval } from "./approval-gate"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
@@ -308,7 +309,7 @@ export class AgentService {
       this.permanentAllow.add(pending.fqName)
       void this.options.approvals
         ?.add(pending.fqName)
-        .catch((err) => console.error("[ai] failed to persist always-allow", err))
+        .catch((err) => logger.child("ai").error("failed to persist always-allow", { err }))
     }
     if (allow && remember === "conversation") {
       this.allowSet(pending.conversationId).add(pending.fqName)

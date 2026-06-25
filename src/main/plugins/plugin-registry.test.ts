@@ -7,6 +7,7 @@ import type {
   PluginSandboxRuntime,
   PluginToolInvokeRequest,
 } from "./types"
+import process from "node:process"
 import { describe, expect, it, vi } from "vitest"
 import { PermissionDenied } from "./permissions"
 import { PluginRegistry } from "./plugin-registry"
@@ -43,7 +44,7 @@ describe("pluginRegistry", () => {
   it("continues reload when unloading an old plugin fails", async () => {
     const sandbox = fakeSandbox()
     const registry = new PluginRegistry({ sandbox, now: () => 1 })
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true)
     await registry.load([discovered({ id: "com.synapse.old" })])
     sandbox.unloadPlugin = vi.fn(async () => {
       throw new Error("stuck")

@@ -1,6 +1,7 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { EventEmitter } from "node:events"
 import type { LanDevice, LanPairing, LanStatus, LanTransfer } from "../lan/types"
+import { logger } from "../logging"
 
 export interface LanIpcService {
   getStatus: () => LanStatus
@@ -113,6 +114,6 @@ function requireTrustedSender(
   isTrustedSender: (event: IpcMainInvokeEvent) => boolean
 ): void {
   if (isTrustedSender(event)) return
-  console.warn("[lan-ipc] rejected untrusted sender", { channel })
+  logger.child("lan-ipc").warn("rejected untrusted sender", { channel })
   throw new Error("Untrusted IPC sender.")
 }

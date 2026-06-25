@@ -5,6 +5,7 @@ import type { PluginManifest } from "./types"
 import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import process from "node:process"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { PermissionDenied } from "./permissions"
 import { PluginBridge } from "./plugin-bridge"
@@ -75,7 +76,7 @@ describe("pluginBridge", () => {
 
   it("keeps clipboard watchers alive when adapter reads fail", async () => {
     vi.useFakeTimers()
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true)
     const read = vi
       .fn<() => Promise<ClipboardContent | undefined>>()
       .mockRejectedValueOnce(new Error("busy"))

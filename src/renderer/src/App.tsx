@@ -39,7 +39,7 @@ export function App() {
         ) : route === "floating-ball" ? (
           <FloatingBallPanel />
         ) : (
-          <div className="h-screen bg-background font-sans text-foreground">
+          <div data-testid="app-shell" className="h-screen bg-background font-sans text-foreground">
             <AppShell />
           </div>
         )}

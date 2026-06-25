@@ -23,6 +23,7 @@ import { Buffer as NodeBuffer } from "node:buffer"
 import { createHash } from "node:crypto"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
+import { logger } from "../logging"
 import { createElectronPluginAdapters } from "./electron-adapters"
 import { extractSynapsePackage } from "./install-from-package"
 import { loadPluginManifest } from "./manifest-loader"
@@ -409,7 +410,7 @@ export class PluginHost {
 
   private async readAndDispatchClipboard(): Promise<void> {
     const content = await this.bridge.readClipboardForHost().catch((err) => {
-      console.warn("[plugin-host] Clipboard watch read failed", err)
+      logger.child("plugin-host").warn("clipboard watch read failed", { err })
       return undefined
     })
     if (!content) return
@@ -419,7 +420,7 @@ export class PluginHost {
     this.lastClipboardSnapshot = snapshot
 
     await this.registry.dispatchClipboardChange(content).catch((err) => {
-      console.warn("[plugin-host] Clipboard change dispatch failed", err)
+      logger.child("plugin-host").warn("clipboard change dispatch failed", { err })
     })
   }
 

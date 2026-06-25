@@ -27,6 +27,15 @@ export default antfu(
       "packages/create-synapse-plugin/template/**",
     ],
   },
+  // Main-process code logs through the structured logger (src/main/logging),
+  // never raw console — that keeps output off stdout (the MCP-stdio invariant)
+  // and structured/redacted. The logger module and the headless stdio entry are
+  // the sanctioned places to touch process streams.
+  {
+    files: ["src/main/**/*.ts"],
+    ignores: ["src/main/**/*.test.ts", "src/main/logging/**", "src/main/mcp/stdio-entry.ts"],
+    rules: { "no-console": "error" },
+  },
   // Final layer: silence any ESLint rules that would conflict with Prettier
   // even after stylistic:false (e.g. rules that come from plugin presets).
   prettier

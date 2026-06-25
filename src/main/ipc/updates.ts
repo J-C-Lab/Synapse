@@ -1,5 +1,6 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { UpdateState } from "../updates/update-service"
+import { logger } from "../logging"
 
 // IPC surface for auto-update. Status is pull-based (`updates:status`) plus a
 // push channel (`updates:event`) wired in main via the UpdateService onChange
@@ -24,7 +25,7 @@ export function registerUpdatesIpc(
 ): void {
   const guard = (event: IpcMainInvokeEvent, channel: string): void => {
     if (options.isTrustedSender(event)) return
-    console.warn("[updates-ipc] rejected untrusted sender", { channel })
+    logger.child("updates-ipc").warn("rejected untrusted sender", { channel })
     throw new Error("Untrusted IPC sender.")
   }
 
