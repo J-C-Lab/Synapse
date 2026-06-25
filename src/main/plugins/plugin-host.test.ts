@@ -5,12 +5,14 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { buildGrantIdentity } from "./capability-governance"
 import {
   PluginHost,
   PluginHostNotImplementedError,
   PluginInstallError,
   PluginPreferenceTypeError,
 } from "./plugin-host"
+import { PluginSandboxError } from "./plugin-sandbox"
 
 let dir: string
 
@@ -32,36 +34,39 @@ const noopAdapters = {
   },
 }
 
+function hostOptions(
+  overrides: Partial<ConstructorParameters<typeof PluginHost>[0]> = {}
+): ConstructorParameters<typeof PluginHost>[0] {
+  return {
+    userDataDir: dir,
+    resourcesDir: path.join(dir, "resources"),
+    storageFlushMs: 0,
+    adapters: noopAdapters,
+    ...overrides,
+  }
+}
+
 function makeHostWithClipboard(
   read: () => Promise<ClipboardContent | undefined>,
   clipboardPollMs = 10
 ): PluginHost {
-  return new PluginHost({
-    userDataDir: dir,
-    resourcesDir: path.join(dir, "resources"),
-    clipboardPollMs,
-    adapters: {
-      ...noopAdapters,
-      clipboard: { read, write: async () => {} },
-    },
-  })
+  return new PluginHost(
+    hostOptions({
+      clipboardPollMs,
+      adapters: {
+        ...noopAdapters,
+        clipboard: { read, write: async () => {} },
+      },
+    })
+  )
 }
 
 function makeHost(): PluginHost {
-  return new PluginHost({
-    userDataDir: dir,
-    resourcesDir: path.join(dir, "resources"),
-    adapters: noopAdapters,
-  })
+  return new PluginHost(hostOptions())
 }
 
 function makeHostWithFetch(fetch: (url: string) => Promise<Response>): PluginHost {
-  return new PluginHost({
-    userDataDir: dir,
-    resourcesDir: path.join(dir, "resources"),
-    adapters: noopAdapters,
-    fetch,
-  })
+  return new PluginHost(hostOptions({ fetch, adapters: noopAdapters }))
 }
 
 async function writeHostPlugin(
@@ -70,6 +75,7 @@ async function writeHostPlugin(
     code?: string
     activationEvents?: PluginManifest["contributes"]["activationEvents"]
     permissions?: string[]
+    tools?: PluginManifest["contributes"]["tools"]
   } = {}
 ): Promise<string> {
   const pluginId = options.id ?? "com.synapse.clipboard"
@@ -90,6 +96,7 @@ async function writeHostPlugin(
         contributes: {
           activationEvents: options.activationEvents,
           commands: [{ id: "clipboard.run", title: "Clipboard", mode: "view" }],
+          tools: options.tools,
         },
         permissions: options.permissions ?? ["clipboard:read", "storage:plugin"],
       },
@@ -369,6 +376,161 @@ describe("pluginHost facade forwards to registry", () => {
       .mockReturnValue([] as PluginCommandResult[])
     host.searchCommands("ts", "zh-CN", 5)
     expect(spy).toHaveBeenCalledWith("ts", "zh-CN", 5)
+  })
+})
+
+describe("pluginHost grant migration", () => {
+  it("grandfathers declared permissions into the grant store on init", async () => {
+    await writeHostPlugin({ permissions: ["storage:plugin", "notification"] })
+    const host = makeHost()
+    await host.init()
+
+    const entry = host.get("com.synapse.clipboard")!
+    const identity = buildGrantIdentity(entry.pluginId, entry.manifest!, entry.source.kind)
+    expect(await host.grants.isGranted(identity, "storage:plugin")).toBe(true)
+    expect(await host.grants.isGranted(identity, "notification")).toBe(true)
+    const records = await host.grants.list(identity)
+    expect(records.every((record) => record.grantedBy === "install")).toBe(true)
+  })
+
+  it("does not re-grant a revoked capability on a later boot (epoch marker persists)", async () => {
+    await writeHostPlugin({ permissions: ["clipboard:read", "storage:plugin"] })
+    const pluginId = "com.synapse.clipboard"
+
+    // First boot grandfathers, then the user revokes one capability.
+    const first = makeHost()
+    await first.init()
+    const entry = first.get(pluginId)!
+    const identity = buildGrantIdentity(entry.pluginId, entry.manifest!, entry.source.kind)
+    expect(await first.grants.isGranted(identity, "clipboard:read")).toBe(true)
+    await first.revokeCapability(pluginId, "clipboard:read")
+    expect(await first.grants.isGranted(identity, "clipboard:read")).toBe(false)
+    first.dispose()
+
+    // Restart: a fresh host on the same userDataDir must honor the revoke.
+    const second = makeHost()
+    await second.init()
+    expect(await second.grants.isGranted(identity, "clipboard:read")).toBe(false)
+    expect(await second.grants.isGranted(identity, "storage:plugin")).toBe(true)
+    second.dispose()
+  })
+
+  it("does not grandfather a plugin installed after the epoch (new install → JIT)", async () => {
+    await writeHostPlugin({ id: "com.synapse.old", permissions: ["clipboard:read"] })
+
+    const first = makeHost()
+    await first.init()
+    first.dispose()
+
+    // A new plugin appears only on the second boot — must not be auto-granted.
+    await writeHostPlugin({ id: "com.synapse.new", permissions: ["storage:plugin"] })
+    const second = makeHost()
+    await second.init()
+    const entry = second.get("com.synapse.new")!
+    const identity = buildGrantIdentity(entry.pluginId, entry.manifest!, entry.source.kind)
+    expect(await second.grants.isGranted(identity, "storage:plugin")).toBe(false)
+    second.dispose()
+  })
+})
+
+describe("pluginHost.revokeCapability", () => {
+  it("removes the clipboard:watch grant and stops the host clipboard watcher", async () => {
+    vi.useFakeTimers()
+    const read = vi.fn(async () => ({ type: "text", text: "hello" }) as ClipboardContent)
+    const host = makeHostWithClipboard(read, 10)
+    const pluginId = "com.synapse.clipboard"
+    await writeHostPlugin({
+      activationEvents: ["clipboard:change"],
+      permissions: ["clipboard:watch", "storage:plugin"],
+    })
+
+    try {
+      await host.init()
+      const entry = host.get(pluginId)!
+      const identity = buildGrantIdentity(pluginId, entry.manifest!, entry.source.kind)
+      await host.grants.grant(identity, "clipboard:watch", "user")
+
+      expect(await host.grants.isGranted(identity, "clipboard:watch")).toBe(true)
+      expect(host.registry.hasClipboardChangeListener(pluginId)).toBe(true)
+      expect(host.registry.hasClipboardChangeListeners()).toBe(true)
+
+      await vi.runOnlyPendingTimersAsync()
+      const readsAfterInit = read.mock.calls.length
+      expect(readsAfterInit).toBeGreaterThan(0)
+
+      await host.revokeCapability(pluginId, "clipboard:watch")
+
+      expect(await host.grants.isGranted(identity, "clipboard:watch")).toBe(false)
+      expect(host.registry.hasClipboardChangeListener(pluginId)).toBe(false)
+      expect(host.registry.hasClipboardChangeListeners()).toBe(false)
+
+      await vi.advanceTimersByTimeAsync(50)
+      expect(read.mock.calls.length).toBe(readsAfterInit)
+    } finally {
+      host.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it("clears all sandbox timers and intervals for the plugin (plugin-wide teardown)", async () => {
+    const host = makeHost()
+    const pluginId = "com.synapse.clipboard"
+    await writeHostPlugin({
+      code: `
+setInterval(() => {}, 60_000)
+setTimeout(() => {}, 60_000)
+module.exports = {
+  commands: {
+    "clipboard.run": {
+      run() {
+        return { type: "toast", level: "info", message: "ok" }
+      }
+    }
+  }
+}
+`,
+      permissions: ["storage:plugin"],
+    })
+
+    await host.init()
+    expect(host.sandbox.trackedWorkCounts(pluginId)).toEqual({ timers: 1, intervals: 1 })
+
+    await host.revokeCapability(pluginId, "storage:plugin")
+
+    expect(host.sandbox.trackedWorkCounts(pluginId)).toEqual({ timers: 0, intervals: 0 })
+  })
+
+  it("aborts an in-flight tool via capabilityAbort when any capability is revoked", async () => {
+    const host = makeHost()
+    const pluginId = "com.synapse.clipboard"
+    await writeHostPlugin({
+      code: `
+module.exports = {
+  commands: {
+    "clipboard.run": {
+      run() { return { type: "toast", level: "info", message: "ok" } }
+    }
+  },
+  tools: {
+    hang() { return new Promise(() => {}) }
+  }
+}
+`,
+      permissions: ["storage:plugin"],
+      tools: [
+        {
+          name: "hang",
+          description: "Blocks until the host aborts the invocation",
+          inputSchema: { type: "object" },
+        },
+      ],
+    })
+
+    await host.init()
+    const toolPromise = host.invokeTool(`${pluginId}/hang`, {}, { caller: { kind: "agent" } })
+    await host.revokeCapability(pluginId, "storage:plugin")
+    await expect(toolPromise).rejects.toBeInstanceOf(PluginSandboxError)
+    await expect(toolPromise).rejects.toThrow(/cancelled/)
   })
 })
 

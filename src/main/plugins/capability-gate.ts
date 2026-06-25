@@ -22,6 +22,8 @@ export interface CapabilityRequest {
   requestedScope?: unknown
   /** Human-readable justification — shown in the prompt and audited. */
   reason?: string
+  /** When aborted (tool timeout, capability revoke, renderer reload), pending prompts deny. */
+  signal?: AbortSignal
 }
 
 export class CapabilityDenied extends Error {
@@ -66,7 +68,13 @@ export interface CapabilityGateOptions {
   audit: (entry: CapabilityAuditEntry) => void
 }
 
-export class CapabilityGate {
+/** Minimal gate surface used by {@link PluginBridge} (and tests). */
+export interface CapabilityGatePort {
+  assertDeclared: (capability: string) => void
+  ensure: (request: CapabilityRequest) => Promise<void>
+}
+
+export class CapabilityGate implements CapabilityGatePort {
   constructor(private readonly options: CapabilityGateOptions) {}
 
   /** Synchronous declaration check (load/manifest time + defense in depth). */

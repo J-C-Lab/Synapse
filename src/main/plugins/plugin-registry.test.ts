@@ -303,6 +303,7 @@ function fakeSandbox(pluginModule?: PluginModule): PluginSandboxRuntime {
     }),
     disposeCommand: vi.fn(async () => {}),
     dispatchEvent: vi.fn<PluginSandboxRuntime["dispatchEvent"]>(async () => {}),
+    abortPluginCapability: vi.fn(),
   }
 }
 

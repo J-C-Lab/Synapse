@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { PermissionDenied } from "./permissions"
+import { CapabilityDenied } from "./capability-gate"
 import { PluginBridge } from "./plugin-bridge"
 import { PluginSandbox, PluginSandboxError } from "./plugin-sandbox"
 
@@ -297,7 +297,7 @@ module.exports = {
         permissions: [],
         options: { caller: { kind: "agent" } },
       })
-    ).rejects.toBeInstanceOf(PermissionDenied)
+    ).rejects.toBeInstanceOf(CapabilityDenied)
   })
 })
 

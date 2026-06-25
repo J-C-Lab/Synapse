@@ -2,6 +2,7 @@ import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { PluginHost } from "../plugins/plugin-host"
 import type { PluginInvokePhase, PluginInvokeRequest } from "../plugins/types"
 import { logger } from "../logging"
+import { CapabilityDenied } from "../plugins/capability-gate"
 import { MarketplaceApiError } from "../plugins/marketplace-api"
 import { PermissionDenied } from "../plugins/permissions"
 import {
@@ -420,6 +421,14 @@ function toPluginIpcError(err: unknown): PluginIpcError {
       code: "PLUGIN_PERMISSION_DENIED",
       message: "Plugin permission denied.",
       details: { pluginId: err.pluginId, permission: err.permission },
+    }
+  }
+
+  if (err instanceof CapabilityDenied) {
+    return {
+      code: "PLUGIN_PERMISSION_DENIED",
+      message: "Plugin capability denied.",
+      details: { pluginId: err.pluginId, capability: err.capability, why: err.why },
     }
   }
 
