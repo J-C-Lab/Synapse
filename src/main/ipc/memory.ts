@@ -1,5 +1,6 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { IngestDocumentResult, MemoryService, MemorySource } from "../ai/memory/memory-service"
+import { logger } from "../logging"
 
 // IPC surface for managing long-term memory from the renderer: import a document
 // (chunked + embedded by MemoryService), list the imported documents, and delete
@@ -25,7 +26,7 @@ export function registerMemoryIpc(
 ): void {
   const guard = (event: IpcMainInvokeEvent, channel: string): void => {
     if (options.isTrustedSender(event)) return
-    console.warn("[memory-ipc] rejected untrusted sender", { channel })
+    logger.child("memory-ipc").warn("rejected untrusted sender", { channel })
     throw new Error("Untrusted IPC sender.")
   }
 

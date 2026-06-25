@@ -2,6 +2,7 @@ import type { SecretProtector } from "./credential-store"
 import type { LanDevice, LanDiscoveryAdapter, LanPairing, LanStatus, LanTransfer } from "./types"
 import { EventEmitter } from "node:events"
 import * as path from "node:path"
+import { logger } from "../logging"
 import { lanCredentialFilePath, LanCredentialStore } from "./credential-store"
 import { lanIdentityFilePath, LanIdentityStore } from "./identity-store"
 import { LanDiscoveryService } from "./lan-discovery-service"
@@ -183,7 +184,7 @@ export class LanService extends EventEmitter {
       await this.requireSecure().announcePresence(device)
     } catch (err) {
       this.announcedEndpoints.delete(key)
-      console.warn("[synapse] Failed to announce LAN presence", err)
+      logger.child("lan").warn("failed to announce presence", { err })
     }
   }
 
@@ -194,7 +195,7 @@ export class LanService extends EventEmitter {
         endpointFromDiscoveredDevice(device, this.options.now?.() ?? Date.now())
       )
     } catch (err) {
-      console.warn("[synapse] Failed to persist learned LAN endpoint", err)
+      logger.child("lan").warn("failed to persist learned endpoint", { err })
     }
   }
 

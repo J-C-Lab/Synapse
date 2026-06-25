@@ -1,6 +1,7 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { PluginHost } from "../plugins/plugin-host"
 import type { PluginInvokePhase, PluginInvokeRequest } from "../plugins/types"
+import { logger } from "../logging"
 import { MarketplaceApiError } from "../plugins/marketplace-api"
 import { PermissionDenied } from "../plugins/permissions"
 import {
@@ -321,7 +322,7 @@ export async function invokePluginIpcHandler<T>(
   isTrustedSender: (event: IpcMainInvokeEvent) => boolean
 ): Promise<PluginIpcResult<Awaited<T>>> {
   if (!isTrustedSender(event)) {
-    console.warn("[plugin-ipc] rejected untrusted sender", {
+    logger.child("plugin-ipc").warn("rejected untrusted sender", {
       channel,
       senderUrl: senderUrl(event),
     })
