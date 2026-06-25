@@ -5,6 +5,15 @@
 // Synapse host (main process) and the plugin CLI validate `synapse.json`
 // against a single source of truth.
 
+export {
+  CAPABILITIES,
+  capabilityDeclarationHash,
+  capabilityIds,
+  getCapability,
+} from "./capabilities"
+
+export type { CapabilityDescriptor, CapabilityTier } from "./capabilities"
+
 export { isEngineCompatible } from "./engine"
 
 export { manifestSchema, ManifestValidationError, parseManifest } from "./schema"

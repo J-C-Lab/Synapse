@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { AppShell } from "@/components/app-shell"
+import { CapabilityPromptHost } from "@/components/capability-prompt-host"
 import { FloatingBallPanel } from "@/components/floating-ball-panel"
 import { LauncherPanel } from "@/components/launcher-panel"
 import { Toaster } from "@/components/ui/sonner"
@@ -35,12 +36,16 @@ export function App() {
     <ThemeProvider>
       <TooltipProvider>
         {route === "launcher" ? (
-          <LauncherPanel />
+          <>
+            <LauncherPanel />
+            <CapabilityPromptHost />
+          </>
         ) : route === "floating-ball" ? (
           <FloatingBallPanel />
         ) : (
           <div data-testid="app-shell" className="h-screen bg-background font-sans text-foreground">
             <AppShell />
+            <CapabilityPromptHost />
           </div>
         )}
         <Toaster />

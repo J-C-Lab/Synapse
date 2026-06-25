@@ -6,6 +6,7 @@ import { MarketplaceApiError } from "../plugins/marketplace-api"
 import { PermissionDenied } from "../plugins/permissions"
 import { PluginHostNotImplementedError, PluginInstallError } from "../plugins/plugin-host"
 import { PluginCrashedError } from "../plugins/plugin-registry"
+import { PluginInvocationTimeoutError } from "../plugins/plugin-sandbox"
 import { createPluginIpcHandlers, invokePluginIpcHandler } from "./plugins"
 
 function fakeHost(): PluginHost {
@@ -291,6 +292,26 @@ describe("plugin ipc handlers", () => {
       error: {
         code: "PLUGIN_NOT_IMPLEMENTED",
         message: "This plugin feature is not implemented yet.",
+      },
+    })
+  })
+
+  it("maps PluginInvocationTimeoutError to PLUGIN_INVOCATION_TIMEOUT", async () => {
+    const result = await invokePluginIpcHandler(
+      "plugin:invoke",
+      fakeEvent("app://app/index.html"),
+      () => {
+        throw new PluginInvocationTimeoutError("Plugin call exceeded 120000ms")
+      },
+      () => true
+    )
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "PLUGIN_INVOCATION_TIMEOUT",
+        message: "Plugin call timed out.",
+        details: { message: "Plugin call exceeded 120000ms" },
       },
     })
   })

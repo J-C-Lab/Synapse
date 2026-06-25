@@ -39,7 +39,7 @@ describe("parsePluginManifest", () => {
           activationEvents: ["clipboard:change"],
           commands: [{ id: "test.run", title: "Run", mode: "view" }],
         },
-        permissions: ["clipboard:read"],
+        permissions: ["clipboard:watch"],
       })
     )
     expect(parsed.contributes.activationEvents).toEqual(["clipboard:change"])

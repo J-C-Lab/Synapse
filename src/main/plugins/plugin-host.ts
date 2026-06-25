@@ -8,6 +8,11 @@ import type {
   Visibility,
 } from "@synapse/marketplace-types"
 import type { ClipboardContent, ToolResult } from "@synapse/plugin-sdk"
+import type {
+  CapabilityGovernance,
+  CreateCapabilityGovernanceOptions,
+} from "./capability-governance"
+import type { MigrationMarker } from "./grant-migration"
 import type { MarketplaceApi } from "./marketplace-api"
 import type { MarketplaceEntry } from "./marketplace-registry"
 import type { PluginBridgeAdapters, PluginRuntimeSnapshot } from "./plugin-bridge"
@@ -24,7 +29,10 @@ import { createHash } from "node:crypto"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import { logger } from "../logging"
+import { createCapabilityGovernance } from "./capability-governance"
 import { createElectronPluginAdapters } from "./electron-adapters"
+import { createMigrationMarker, migrateGrants } from "./grant-migration"
+import { GrantStore, grantStoreFilePath } from "./grant-store"
 import { extractSynapsePackage } from "./install-from-package"
 import { loadPluginManifest } from "./manifest-loader"
 import { createMarketplaceApi } from "./marketplace-api"
@@ -52,6 +60,12 @@ export interface PluginHostOptions {
   marketplaceGetToken?: () => Promise<string | undefined> | string | undefined
   runtime?: () => PluginRuntimeSnapshot
   clipboardPollMs?: number
+  /** Passed through to {@link PluginBridge} (storage write batching). */
+  storageFlushMs?: number
+  /** Override capability grant store, prompt, approver, or audit wiring. */
+  capabilityGovernance?: CreateCapabilityGovernanceOptions
+  /** Test seam: override the one-time grandfather-migration epoch marker. */
+  migrationMarker?: MigrationMarker
 }
 
 /**
@@ -104,6 +118,9 @@ export class PluginHost {
   readonly registry: PluginRegistry
   readonly tools: PluginToolBridge
   readonly preferences: PluginPreferenceStore
+  readonly capabilityGovernance: CapabilityGovernance
+  readonly grants: GrantStore
+  private readonly migrationMarker: MigrationMarker
   private readonly builtinDir: string
   private readonly userDir: string
   private readonly devFilePath: string
@@ -124,11 +141,23 @@ export class PluginHost {
       getToken: options.marketplaceGetToken,
     })
     this.preferences = new PluginPreferenceStore(pluginPreferenceFilePath(options.userDataDir))
+    this.grants =
+      options.capabilityGovernance?.grants ??
+      new GrantStore(grantStoreFilePath(options.userDataDir))
+    this.capabilityGovernance = createCapabilityGovernance({
+      userDataDir: options.userDataDir,
+      ...options.capabilityGovernance,
+      grants: this.grants,
+    })
+    this.migrationMarker = options.migrationMarker ?? createMigrationMarker(options.userDataDir)
     this.bridge = new PluginBridge({
       userDataDir: options.userDataDir,
       adapters: options.adapters ?? createElectronPluginAdapters(options.userDataDir),
       runtime: options.runtime,
       preferences: (pluginId, manifest) => this.preferencesFor(pluginId, manifest),
+      governance: this.capabilityGovernance,
+      sourceKindFor: (pluginId) => this.registry?.get(pluginId)?.source.kind ?? "user",
+      storageFlushMs: options.storageFlushMs,
     })
     this.sandbox = new PluginSandbox({ bridge: this.bridge })
     this.registry = new PluginRegistry({ sandbox: this.sandbox })
@@ -144,6 +173,7 @@ export class PluginHost {
       devFilePath: this.devFilePath,
     })
     await this.registry.load(discovered)
+    await migrateGrants(this.registry.list(), this.grants, this.migrationMarker)
   }
 
   list(): PluginRegistryEntry[] {
@@ -361,6 +391,31 @@ export class PluginHost {
   dispose(): void {
     this.registry.off("changed", this.handleRegistryChanged)
     this.stopClipboardWatcher()
+  }
+
+  /**
+   * Revoke a capability grant and tear down in-flight use.
+   *
+   * Capability-specific paths today:
+   * - `clipboard:watch` — registry host watcher + bridge `clipboard.watch` polling
+   *
+   * **Plugin-wide sandbox teardown (any capability):** `abortPluginCapability`
+   * is intentionally coarse — timers/intervals cannot be attributed to a single
+   * capability cheaply, so revoke clears **all** tracked sandbox timers and
+   * intervals for the plugin and aborts **every** in-flight tool invocation,
+   * not only work that used the revoked capability. Example: revoking
+   * `clipboard:watch` also cancels an unrelated `setInterval` and a running
+   * `system:capture-screen` tool call. Per-capability teardown hooks may narrow
+   * this in later specs.
+   */
+  async revokeCapability(pluginId: string, capability: string): Promise<void> {
+    const entry = this.registry.get(pluginId)
+    if (!entry) throw new Error(`Plugin not found: ${pluginId}`)
+
+    await this.grants.revoke(pluginId, capability)
+    this.registry.revokeCapability(pluginId, capability)
+    this.bridge.revokeCapability(pluginId, capability)
+    this.sandbox.abortPluginCapability(pluginId, capability)
   }
 
   private preferencesFor(pluginId: string, manifest: PluginManifest): Record<string, unknown> {

@@ -3,9 +3,9 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { PermissionDenied } from "./permissions"
+import { CapabilityDenied } from "./capability-gate"
 import { PluginBridge } from "./plugin-bridge"
-import { PluginSandbox, PluginSandboxError } from "./plugin-sandbox"
+import { PluginInvocationTimeoutError, PluginSandbox, PluginSandboxError } from "./plugin-sandbox"
 
 let dir: string
 
@@ -101,7 +101,39 @@ module.exports = {
 
     await expect(
       sandbox.invokeCommand({ pluginId: entry.pluginId, commandId: "test.run", phase: "run" })
-    ).rejects.toBeInstanceOf(PluginSandboxError)
+    ).rejects.toBeInstanceOf(PluginInvocationTimeoutError)
+  })
+
+  it("gives command run a longer budget than search/action hooks", async () => {
+    const entry = await writePlugin(`
+module.exports = {
+  commands: {
+    "test.run": {
+      run() {
+        return new Promise((resolve) => setTimeout(() => resolve({ type: "toast", message: "ok" }), 40))
+      },
+      onSearchChange() {
+        return new Promise(() => {})
+      }
+    }
+  }
+}
+`)
+    const sandbox = sandboxForTest(20, 2000, 2000, 100)
+    await sandbox.loadPlugin(entry)
+
+    await expect(
+      sandbox.invokeCommand({
+        pluginId: entry.pluginId,
+        commandId: "test.run",
+        phase: "onSearchChange",
+        payload: "q",
+      })
+    ).rejects.toBeInstanceOf(PluginInvocationTimeoutError)
+
+    await expect(
+      sandbox.invokeCommand({ pluginId: entry.pluginId, commandId: "test.run", phase: "run" })
+    ).resolves.toEqual({ type: "toast", message: "ok" })
   })
 
   it("times out synchronous command loops", async () => {
@@ -297,7 +329,7 @@ module.exports = {
         permissions: [],
         options: { caller: { kind: "agent" } },
       })
-    ).rejects.toBeInstanceOf(PermissionDenied)
+    ).rejects.toBeInstanceOf(CapabilityDenied)
   })
 })
 
@@ -307,7 +339,8 @@ module.exports = {
 function sandboxForTest(
   invokeTimeoutMs = 2000,
   loadTimeoutMs = 2000,
-  toolInvokeTimeoutMs = 2000
+  toolInvokeTimeoutMs = 2000,
+  commandRunTimeoutMs = 2000
 ): PluginSandbox {
   const bridge = new PluginBridge({
     userDataDir: dir,
@@ -322,7 +355,13 @@ function sandboxForTest(
     },
     storageFlushMs: 0,
   })
-  return new PluginSandbox({ bridge, invokeTimeoutMs, loadTimeoutMs, toolInvokeTimeoutMs })
+  return new PluginSandbox({
+    bridge,
+    invokeTimeoutMs,
+    loadTimeoutMs,
+    toolInvokeTimeoutMs,
+    commandRunTimeoutMs,
+  })
 }
 
 async function writePlugin(code: string): Promise<DiscoveredPlugin> {

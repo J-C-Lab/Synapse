@@ -81,6 +81,13 @@ const electronAPI = {
   ) => ipcRenderer.invoke("plugin:invoke", { pluginId, commandId, phase, payload }),
   disposePluginCommand: (pluginId: string, commandId: string) =>
     ipcRenderer.invoke("plugin:dispose-command", { pluginId, commandId }),
+  listPluginCapabilities: (pluginId: string) => ipcRenderer.invoke("capabilities:list", pluginId),
+  revokePluginCapability: (pluginId: string, capability: string) =>
+    ipcRenderer.invoke("capabilities:revoke", { pluginId, capability }),
+  resolveCapabilityGrant: (promptId: string, allow: boolean) =>
+    ipcRenderer.invoke("capabilities:grant-resolve", { promptId, allow }),
+  resolveCapabilityApproval: (promptId: string, allow: boolean) =>
+    ipcRenderer.invoke("capabilities:approval-resolve", { promptId, allow }),
   listMarketplacePlugins: () => ipcRenderer.invoke("marketplace:list"),
   installMarketplacePlugin: (id: string, version?: string) =>
     ipcRenderer.invoke("marketplace:install", { id, version }),
@@ -184,6 +191,18 @@ const electronAPI = {
     const listener = (_event: IpcRendererEvent, plugins: unknown[]): void => handler(plugins)
     ipcRenderer.on("plugins:registry-changed", listener)
     return () => ipcRenderer.removeListener("plugins:registry-changed", listener)
+  },
+
+  onCapabilityGrantRequest: (handler: (event: unknown) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
+    ipcRenderer.on("capabilities:grant-request", listener)
+    return () => ipcRenderer.removeListener("capabilities:grant-request", listener)
+  },
+
+  onCapabilityApprovalRequest: (handler: (event: unknown) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
+    ipcRenderer.on("capabilities:approval-request", listener)
+    return () => ipcRenderer.removeListener("capabilities:approval-request", listener)
   },
 
   // Pushed by main after any settings:update so that windows other than

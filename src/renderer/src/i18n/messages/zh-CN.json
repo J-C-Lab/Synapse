@@ -236,6 +236,24 @@
       "title": "权限",
       "none": "未请求权限"
     },
+    "capabilities": {
+      "granted": "已授权",
+      "notGranted": "未授权",
+      "alwaysAllowed": "始终允许",
+      "revoke": "撤销",
+      "revoked": "权限已撤销。",
+      "allow": "允许",
+      "deny": "拒绝",
+      "grantTitle": "允许插件权限？",
+      "grantBody": "{{plugin}} 请求 {{capability}}（{{tier}}）。",
+      "approvalTitle": "批准提升权限调用？",
+      "approvalBody": "{{plugin}} 以 {{actor}} 身份请求 {{capability}}，操作：{{operation}}。",
+      "tier": {
+        "auto": "自动",
+        "consent": "需同意",
+        "elevated": "提升"
+      }
+    },
     "toasts": {
       "enabled": "插件已启用。",
       "disabled": "插件已停用。",

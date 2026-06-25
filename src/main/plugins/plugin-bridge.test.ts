@@ -1,5 +1,6 @@
 /* eslint-disable react/naming-convention-context-name */
 import type { ClipboardContent } from "@synapse/plugin-sdk"
+import type { CapabilityRequest } from "./capability-gate"
 import type { PluginBridgeAdapters } from "./plugin-bridge"
 import type { PluginManifest } from "./types"
 import { promises as fs } from "node:fs"
@@ -7,7 +8,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import process from "node:process"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { PermissionDenied } from "./permissions"
+import { CapabilityDenied } from "./capability-gate"
 import { PluginBridge } from "./plugin-bridge"
 
 let dir: string
@@ -20,24 +21,98 @@ afterEach(async () => {
   await fs.rm(dir, { recursive: true, force: true })
 })
 
-describe("pluginBridge", () => {
-  it("denies undeclared permissions", async () => {
-    const bridge = new PluginBridge({
-      userDataDir: dir,
-      adapters: adapters(),
-      storageFlushMs: 0,
-    })
-    const pluginCtx = bridge.createContext("com.synapse.test", manifest({ permissions: [] }))
+describe("pluginBridge capability ensure", () => {
+  it("clipboard.readText() invokes ensure with read context and proceeds when allowed", async () => {
+    const ensure = vi.fn(async () => {})
+    const read = vi.fn<() => Promise<ClipboardContent | undefined>>(() =>
+      Promise.resolve({ type: "text", text: "hello" })
+    )
+    const bridge = bridgeWithGate(
+      { ensure, declared: ["clipboard:read"] },
+      { clipboard: { read, write: async () => {} } }
+    )
+    const pluginCtx = bridge.createContext(
+      "com.synapse.test",
+      manifest({ permissions: ["clipboard:read"] }),
+      { actor: "user", trigger: "command:test.run" }
+    )
 
-    await expect(pluginCtx.storage.set("key", "value")).rejects.toBeInstanceOf(PermissionDenied)
+    await expect(pluginCtx.clipboard.readText()).resolves.toBe("hello")
+    expect(ensure).toHaveBeenCalledWith({
+      capability: "clipboard:read",
+      actor: "user",
+      trigger: "command:test.run",
+      operation: "read",
+    })
+    expect(read).toHaveBeenCalledTimes(1)
   })
 
-  it("persists per-plugin storage as JSON", async () => {
-    const bridge = new PluginBridge({
-      userDataDir: dir,
-      adapters: adapters(),
-      storageFlushMs: 0,
+  it("rejects with CapabilityDenied and does not call the adapter when denied", async () => {
+    const ensure = vi.fn(async () => {
+      throw new CapabilityDenied("com.synapse.test", "clipboard:read", "grant refused")
     })
+    const read = vi.fn<() => Promise<ClipboardContent | undefined>>(() =>
+      Promise.resolve({ type: "text", text: "hello" })
+    )
+    const bridge = bridgeWithGate(
+      { ensure, declared: ["clipboard:read"] },
+      { clipboard: { read, write: async () => {} } }
+    )
+    const pluginCtx = bridge.createContext(
+      "com.synapse.test",
+      manifest({ permissions: ["clipboard:read"] })
+    )
+
+    await expect(pluginCtx.clipboard.readText()).rejects.toBeInstanceOf(CapabilityDenied)
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it("clipboard.watch invokes ensure with clipboard:watch", async () => {
+    vi.useFakeTimers()
+    const ensure = vi.fn(async () => {})
+    const read = vi.fn<() => Promise<ClipboardContent | undefined>>(() =>
+      Promise.resolve({ type: "text", text: "hello" })
+    )
+    const listener = vi.fn()
+    const bridge = bridgeWithGate(
+      { ensure, declared: ["clipboard:watch"] },
+      { clipboard: { read, write: async () => {} }, clipboardPollMs: 10 }
+    )
+    const pluginCtx = bridge.createContext(
+      "com.synapse.test",
+      manifest({ permissions: ["clipboard:watch"] }),
+      { actor: "user", trigger: "command:watch" }
+    )
+
+    const unwatch = pluginCtx.clipboard.watch(listener)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(ensure).toHaveBeenCalledWith({
+        capability: "clipboard:watch",
+        actor: "user",
+        trigger: "command:watch",
+        operation: "watch",
+      })
+      await vi.advanceTimersByTimeAsync(10)
+      expect(listener).toHaveBeenCalledWith({ type: "text", text: "hello" })
+    } finally {
+      unwatch()
+      vi.useRealTimers()
+    }
+  })
+
+  it("denies undeclared capabilities via ensure", async () => {
+    const bridge = bridgeWithGate({ ensure: vi.fn(async () => {}), declared: [] })
+    const pluginCtx = bridge.createContext("com.synapse.test", manifest({ permissions: [] }))
+
+    await expect(pluginCtx.storage.set("key", "value")).rejects.toBeInstanceOf(CapabilityDenied)
+  })
+})
+
+describe("pluginBridge storage and clipboard", () => {
+  it("persists per-plugin storage as JSON", async () => {
+    const ensure = vi.fn(async () => {})
+    const bridge = bridgeWithGate({ ensure, declared: ["storage:plugin"] })
     const pluginCtx = bridge.createContext(
       "com.synapse.test",
       manifest({ permissions: ["storage:plugin"] })
@@ -53,15 +128,15 @@ describe("pluginBridge", () => {
   })
 
   it("routes clipboard helpers through the adapter", async () => {
+    const ensure = vi.fn(async () => {})
     const read = vi.fn<() => Promise<ClipboardContent | undefined>>(() =>
       Promise.resolve({ type: "text", text: "hello" })
     )
     const write = vi.fn<(content: ClipboardContent) => Promise<void>>(() => Promise.resolve())
-    const bridge = new PluginBridge({
-      userDataDir: dir,
-      adapters: adapters({ clipboard: { read, write } }),
-      storageFlushMs: 0,
-    })
+    const bridge = bridgeWithGate(
+      { ensure, declared: ["clipboard:read", "clipboard:write"] },
+      { clipboard: { read, write } }
+    )
     const pluginCtx = bridge.createContext(
       "com.synapse.test",
       manifest({ permissions: ["clipboard:read", "clipboard:write"] })
@@ -77,20 +152,19 @@ describe("pluginBridge", () => {
   it("keeps clipboard watchers alive when adapter reads fail", async () => {
     vi.useFakeTimers()
     const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true)
+    const ensure = vi.fn(async () => {})
     const read = vi
       .fn<() => Promise<ClipboardContent | undefined>>()
       .mockRejectedValueOnce(new Error("busy"))
       .mockResolvedValueOnce({ type: "text", text: "hello" })
     const listener = vi.fn()
-    const bridge = new PluginBridge({
-      userDataDir: dir,
-      adapters: adapters({ clipboard: { read, write: async () => {} } }),
-      storageFlushMs: 0,
-      clipboardPollMs: 10,
-    })
+    const bridge = bridgeWithGate(
+      { ensure, declared: ["clipboard:watch"] },
+      { clipboard: { read, write: async () => {} }, clipboardPollMs: 10 }
+    )
     const pluginCtx = bridge.createContext(
       "com.synapse.test",
-      manifest({ permissions: ["clipboard:read"] })
+      manifest({ permissions: ["clipboard:watch"] })
     )
 
     const unwatch = pluginCtx.clipboard.watch(listener)
@@ -106,6 +180,35 @@ describe("pluginBridge", () => {
     expect(listener).toHaveBeenCalledWith({ type: "text", text: "hello" })
   })
 })
+
+function bridgeWithGate(
+  gate: {
+    ensure: (request: CapabilityRequest) => Promise<void>
+    declared: string[]
+  },
+  overrides: Partial<PluginBridgeAdapters> & { clipboardPollMs?: number } = {}
+): PluginBridge {
+  const { clipboardPollMs, ...adapterOverrides } = overrides
+  return new PluginBridge({
+    userDataDir: dir,
+    adapters: adapters(adapterOverrides),
+    storageFlushMs: 0,
+    clipboardPollMs,
+    createGate: () => ({
+      assertDeclared: (capability) => {
+        if (!gate.declared.includes(capability)) {
+          throw new CapabilityDenied("com.synapse.test", capability, "not declared")
+        }
+      },
+      ensure: async (request: CapabilityRequest) => {
+        if (!gate.declared.includes(request.capability)) {
+          throw new CapabilityDenied("com.synapse.test", request.capability, "not declared")
+        }
+        await gate.ensure(request)
+      },
+    }),
+  })
+}
 
 function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
   return {

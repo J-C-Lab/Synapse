@@ -1,0 +1,347 @@
+import type { IpcMainInvokeEvent } from "electron"
+import type { PluginHost } from "../plugins/plugin-host"
+import type { PluginManifest, PluginRegistryEntry } from "../plugins/types"
+import type {
+  CapabilityApprovalRequestEvent,
+  CapabilityGrantRequestEvent,
+  CapabilityIpcServiceOptions,
+} from "./capabilities"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import * as path from "node:path"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { buildGrantIdentity } from "../plugins/capability-governance"
+import { GrantStore } from "../plugins/grant-store"
+import { CapabilityIpcService, createCapabilityIpcHandlers } from "./capabilities"
+import { invokePluginIpcHandler } from "./plugins"
+
+let dir: string
+let grants: GrantStore
+
+beforeEach(() => {
+  dir = mkdtempSync(path.join(tmpdir(), "synapse-cap-ipc-"))
+  grants = new GrantStore(path.join(dir, "grants.json"), () => 1000)
+})
+
+afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+describe("capabilityIpcService", () => {
+  it("lists declared capabilities with tier, granted, and scopeEnforced", async () => {
+    const manifest = testManifest({
+      permissions: ["storage:plugin", "clipboard:read", "notification"],
+    })
+    const entry = activeEntry(manifest)
+    const identity = buildGrantIdentity(entry.pluginId, manifest, entry.source.kind)
+    await grants.grant(identity, "clipboard:read", "user")
+
+    const service = createService(entry)
+    const rows = await service.listPluginCapabilities(entry.pluginId)
+
+    expect(rows).toEqual([
+      { id: "storage:plugin", tier: "auto", granted: false, scopeEnforced: false },
+      { id: "clipboard:read", tier: "consent", granted: true, scopeEnforced: false },
+      { id: "notification", tier: "auto", granted: false, scopeEnforced: false },
+    ])
+  })
+
+  it("revokes through the host", async () => {
+    const host = fakeHost(activeEntry(testManifest({ permissions: ["clipboard:watch"] })))
+    const service = createService(undefined, {}, host)
+
+    await service.revoke("com.synapse.test", "clipboard:watch")
+
+    expect(host.revokeCapability).toHaveBeenCalledWith("com.synapse.test", "clipboard:watch")
+  })
+
+  it("broadcasts a grant request and resolves via resolveGrantPrompt", async () => {
+    const events: CapabilityGrantRequestEvent[] = []
+    const service = createService(activeEntry(testManifest()), {
+      sendGrantRequest: (event) => events.push(event),
+    })
+    const identity = buildGrantIdentity("com.synapse.test", testManifest(), "user")
+
+    const decision = service.grantPrompt({
+      identity,
+      request: {
+        capability: "clipboard:read",
+        actor: "user",
+        trigger: "command:run",
+        operation: "read",
+        reason: "needs clipboard",
+      },
+      tier: "consent",
+    })
+
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      pluginId: "com.synapse.test",
+      capability: "clipboard:read",
+      tier: "consent",
+      trigger: "command:run",
+      operation: "read",
+      reason: "needs clipboard",
+    })
+
+    service.resolveGrantPrompt(events[0]!.promptId, true)
+    await expect(decision).resolves.toBe(true)
+  })
+
+  it("broadcasts an approval request and resolves via resolveApprovalPrompt", async () => {
+    const events: CapabilityApprovalRequestEvent[] = []
+    const service = createService(activeEntry(testManifest()), {
+      sendApprovalRequest: (event) => events.push(event),
+    })
+    const identity = buildGrantIdentity("com.synapse.test", testManifest(), "user")
+
+    const decision = service.capabilityApprover({
+      identity,
+      request: {
+        capability: "system:capture-screen",
+        actor: "agent",
+        trigger: "tool:capture",
+        operation: "capture",
+        reason: "screenshot",
+      },
+    })
+
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      pluginId: "com.synapse.test",
+      capability: "system:capture-screen",
+      actor: "agent",
+      operation: "capture",
+      reason: "screenshot",
+    })
+
+    service.resolveApprovalPrompt(events[0]!.promptId, true)
+    await expect(decision).resolves.toBe(true)
+  })
+
+  it("resolves a denied grant prompt as false", async () => {
+    const events: CapabilityGrantRequestEvent[] = []
+    const service = createService(activeEntry(testManifest()), {
+      sendGrantRequest: (event) => events.push(event),
+    })
+
+    const decision = service.grantPrompt({
+      identity: buildGrantIdentity("com.synapse.test", testManifest(), "user"),
+      request: {
+        capability: "clipboard:write",
+        actor: "agent",
+        trigger: "tool:write",
+        operation: "write",
+      },
+      tier: "consent",
+    })
+
+    service.resolveGrantPrompt(events[0]!.promptId, false)
+    await expect(decision).resolves.toBe(false)
+  })
+
+  it("denies unanswered grant prompts when cancelAllPendingGrants runs", async () => {
+    const service = createService(activeEntry(testManifest()))
+
+    const decision = service.grantPrompt({
+      identity: buildGrantIdentity("com.synapse.test", testManifest(), "user"),
+      request: {
+        capability: "clipboard:read",
+        actor: "user",
+        trigger: "command:run",
+        operation: "read",
+      },
+      tier: "consent",
+    })
+
+    expect(service.pendingGrantCount()).toBe(1)
+    service.cancelAllPendingGrants()
+    await expect(decision).resolves.toBe(false)
+    expect(service.pendingGrantCount()).toBe(0)
+  })
+
+  it("denies pending prompts when the request signal aborts", async () => {
+    const service = createService(activeEntry(testManifest()))
+    const controller = new AbortController()
+
+    const decision = service.grantPrompt({
+      identity: buildGrantIdentity("com.synapse.test", testManifest(), "user"),
+      request: {
+        capability: "clipboard:read",
+        actor: "agent",
+        trigger: "tool:read",
+        operation: "read",
+        signal: controller.signal,
+      },
+      tier: "consent",
+    })
+
+    controller.abort()
+    await expect(decision).resolves.toBe(false)
+    expect(service.pendingGrantCount()).toBe(0)
+  })
+
+  it("dispose clears pending grants and approvals", async () => {
+    const service = createService(activeEntry(testManifest()))
+    const identity = buildGrantIdentity("com.synapse.test", testManifest(), "user")
+
+    const grantDecision = service.grantPrompt({
+      identity,
+      request: {
+        capability: "notification",
+        actor: "user",
+        trigger: "command:run",
+        operation: "show",
+      },
+      tier: "auto",
+    })
+    const approvalDecision = service.capabilityApprover({
+      identity,
+      request: {
+        capability: "system:capture-screen",
+        actor: "agent",
+        trigger: "tool:capture",
+        operation: "capture",
+      },
+    })
+
+    service.dispose()
+    await expect(grantDecision).resolves.toBe(false)
+    await expect(approvalDecision).resolves.toBe(false)
+    expect(service.pendingGrantCount()).toBe(0)
+    expect(service.pendingApprovalCount()).toBe(0)
+  })
+
+  it("ignores resolveGrantPrompt after cancelAllPendingGrants", async () => {
+    const events: CapabilityGrantRequestEvent[] = []
+    const service = createService(activeEntry(testManifest()), {
+      sendGrantRequest: (event) => events.push(event),
+    })
+
+    void service.grantPrompt({
+      identity: buildGrantIdentity("com.synapse.test", testManifest(), "user"),
+      request: {
+        capability: "clipboard:read",
+        actor: "user",
+        trigger: "command:run",
+        operation: "read",
+      },
+      tier: "consent",
+    })
+
+    service.cancelAllPendingGrants()
+    service.resolveGrantPrompt(events[0]!.promptId, true)
+    expect(service.pendingGrantCount()).toBe(0)
+  })
+})
+
+describe("capability ipc handlers", () => {
+  it("validates revoke payloads", async () => {
+    const handlers = createCapabilityIpcHandlers(createService(activeEntry(testManifest())))
+
+    await expect(
+      handlers.revoke({ pluginId: "com.synapse.test", capability: "clipboard:read" })
+    ).resolves.toBeUndefined()
+  })
+
+  it("rejects malformed revoke payloads", async () => {
+    const handlers = createCapabilityIpcHandlers(createService(activeEntry(testManifest())))
+
+    await expect(handlers.revoke({ pluginId: "com.synapse.test" })).rejects.toThrow(
+      "capability must be a non-empty string"
+    )
+  })
+
+  it("rejects untrusted senders", async () => {
+    const handlers = createCapabilityIpcHandlers(createService(activeEntry(testManifest())))
+
+    const result = await invokePluginIpcHandler(
+      "capabilities:list",
+      fakeEvent("https://evil.example"),
+      () => handlers.list("com.synapse.test"),
+      () => false
+    )
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "IPC_FORBIDDEN",
+        message: "Untrusted IPC sender.",
+        details: { channel: "capabilities:list" },
+      },
+    })
+  })
+
+  it("maps missing plugins to PLUGIN_NOT_FOUND", async () => {
+    const handlers = createCapabilityIpcHandlers(createService(undefined))
+
+    const result = await invokePluginIpcHandler(
+      "capabilities:list",
+      fakeEvent("app://app/index.html"),
+      () => handlers.list("com.synapse.missing"),
+      () => true
+    )
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "PLUGIN_NOT_FOUND",
+        message: "Plugin was not found.",
+        details: { pluginId: "com.synapse.missing" },
+      },
+    })
+  })
+})
+
+function createService(
+  entry: PluginRegistryEntry | undefined,
+  options: Partial<CapabilityIpcServiceOptions> = {},
+  host = fakeHost(entry)
+): CapabilityIpcService {
+  return new CapabilityIpcService(() => host, {
+    sendGrantRequest: vi.fn(),
+    sendApprovalRequest: vi.fn(),
+    ...options,
+  })
+}
+
+function testManifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
+  return {
+    id: "com.synapse.test",
+    name: "test",
+    displayName: "Test",
+    description: "test",
+    version: "0.1.0",
+    author: "Synapse",
+    engines: { synapse: "^0.2.0" },
+    main: "dist/index.js",
+    contributes: {
+      commands: [{ id: "run", title: "Run", mode: "view" }],
+    },
+    permissions: ["storage:plugin"],
+    ...overrides,
+  }
+}
+
+function activeEntry(manifest: PluginManifest): PluginRegistryEntry {
+  return {
+    pluginId: manifest.id,
+    rootDir: path.join(dir, "plugin"),
+    source: { kind: "user", priority: 2 },
+    status: "active",
+    manifest,
+  }
+}
+
+function fakeHost(entry: PluginRegistryEntry | undefined): PluginHost {
+  return {
+    get: vi.fn((pluginId: string) => (entry?.pluginId === pluginId ? entry : undefined)),
+    grants,
+    revokeCapability: vi.fn(async () => {}),
+  } as unknown as PluginHost
+}
+
+function fakeEvent(url: string): IpcMainInvokeEvent {
+  return {
+    sender: { getURL: () => url },
+    senderFrame: { url },
+  } as IpcMainInvokeEvent
+}

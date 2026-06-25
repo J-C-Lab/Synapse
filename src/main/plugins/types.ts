@@ -151,6 +151,7 @@ export interface PluginSandboxRuntime {
   invokeTool: (request: PluginToolInvokeRequest) => Promise<ToolResult>
   disposeCommand: (pluginId: string, commandId: string) => Promise<void>
   dispatchEvent: (request: PluginEventRequest) => Promise<void>
+  abortPluginCapability: (pluginId: string, capability: string) => void
 }
 
 /** The canonical model-visible name for a plugin tool. */

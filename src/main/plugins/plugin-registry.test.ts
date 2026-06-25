@@ -11,6 +11,7 @@ import process from "node:process"
 import { describe, expect, it, vi } from "vitest"
 import { PermissionDenied } from "./permissions"
 import { PluginRegistry } from "./plugin-registry"
+import { PluginInvocationTimeoutError } from "./plugin-sandbox"
 
 describe("pluginRegistry", () => {
   it("loads valid plugins, indexes manifest commands and emits changes", async () => {
@@ -118,6 +119,20 @@ describe("pluginRegistry", () => {
     expect(registry.get("com.synapse.test")?.status).toBe("active")
   })
 
+  it("passes invocation timeouts through invoke without crashing the plugin", async () => {
+    const sandbox = fakeSandbox()
+    sandbox.invokeCommand = vi.fn<PluginSandboxRuntime["invokeCommand"]>(() => {
+      throw new PluginInvocationTimeoutError("Plugin call exceeded 120000ms")
+    })
+    const registry = new PluginRegistry({ sandbox })
+    await registry.load([discovered()])
+
+    await expect(
+      registry.invoke({ pluginId: "com.synapse.test", commandId: "test.run", phase: "run" })
+    ).rejects.toBeInstanceOf(PluginInvocationTimeoutError)
+    expect(registry.get("com.synapse.test")?.status).toBe("active")
+  })
+
   it("dispatches clipboard changes to active listeners", async () => {
     const sandbox = fakeSandbox({
       commands: {
@@ -148,7 +163,7 @@ describe("pluginRegistry", () => {
     })
   })
 
-  it("marks clipboard listeners crashed when clipboard read permission is missing", async () => {
+  it("marks clipboard listeners crashed when clipboard:watch permission is missing", async () => {
     const sandbox = fakeSandbox({
       commands: {
         "clipboard.history": {
@@ -303,6 +318,7 @@ function fakeSandbox(pluginModule?: PluginModule): PluginSandboxRuntime {
     }),
     disposeCommand: vi.fn(async () => {}),
     dispatchEvent: vi.fn<PluginSandboxRuntime["dispatchEvent"]>(async () => {}),
+    abortPluginCapability: vi.fn(),
   }
 }
 
@@ -386,6 +402,6 @@ function manifest(
     },
     permissions:
       overrides.permissions ??
-      (overrides.activationEvents?.includes("clipboard:change") ? ["clipboard:read"] : []),
+      (overrides.activationEvents?.includes("clipboard:change") ? ["clipboard:watch"] : []),
   }
 }

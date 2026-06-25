@@ -98,6 +98,7 @@ describe("scaffoldPlugin", () => {
     )
     expect(manifest.contributes.activationEvents).toEqual(["clipboard:change"])
     expect(manifest.permissions).toContain("clipboard:read")
+    expect(manifest.permissions).toContain("clipboard:watch")
   })
 
   it("produces a buildable project (create → build closed loop)", async () => {

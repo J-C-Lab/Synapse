@@ -21,7 +21,9 @@ import type {
 import { EventEmitter } from "node:events"
 import { fuzzyMatch } from "../launcher/search"
 import { logger } from "../logging"
+import { CapabilityDenied } from "./capability-gate"
 import { PermissionDenied } from "./permissions"
+import { PluginInvocationTimeoutError } from "./plugin-sandbox"
 import { toolFqName } from "./types"
 
 /**
@@ -176,7 +178,12 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
       // Permission denials are policy decisions, not plugin defects —
       // leave the plugin active and surface the original error so the
       // IPC layer can map it to PLUGIN_PERMISSION_DENIED.
-      if (err instanceof PermissionDenied) throw err
+      if (
+        err instanceof PermissionDenied ||
+        err instanceof CapabilityDenied ||
+        err instanceof PluginInvocationTimeoutError
+      )
+        throw err
       this.markCrashed(request.pluginId, err)
       throw new PluginCrashedError(request.pluginId, err)
     }
@@ -223,7 +230,12 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     try {
       await this.options.sandbox.disposeCommand(pluginId, commandId)
     } catch (err) {
-      if (err instanceof PermissionDenied) throw err
+      if (
+        err instanceof PermissionDenied ||
+        err instanceof CapabilityDenied ||
+        err instanceof PluginInvocationTimeoutError
+      )
+        throw err
       this.markCrashed(pluginId, err)
       throw new PluginCrashedError(pluginId, err)
     }
@@ -254,13 +266,23 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     return this.clipboardChangeListeners.has(pluginId)
   }
 
+  revokeCapability(pluginId: string, capability: string): void {
+    if (capability !== "clipboard:watch") return
+    if (this.clipboardChangeListeners.delete(pluginId)) this.emitChanged()
+  }
+
   private async dispatchEvent(request: PluginEventRequest): Promise<void> {
     const entry = this.entries.get(request.pluginId)
     if (!entry || entry.status !== "active") return
     try {
       await this.options.sandbox.dispatchEvent(request)
     } catch (err) {
-      if (err instanceof PermissionDenied) throw err
+      if (
+        err instanceof PermissionDenied ||
+        err instanceof CapabilityDenied ||
+        err instanceof PluginInvocationTimeoutError
+      )
+        throw err
       this.markCrashed(request.pluginId, err)
       throw new PluginCrashedError(request.pluginId, err)
     }
@@ -412,8 +434,10 @@ function validateManifestTools(
 
 function validateActivationEvents(manifest: PluginManifest, module: PluginModule): void {
   if (!manifest.contributes.activationEvents?.includes("clipboard:change")) return
-  if (!manifest.permissions.includes("clipboard:read")) {
-    throw new Error("Manifest activation event clipboard:change requires clipboard:read permission")
+  if (!manifest.permissions.includes("clipboard:watch")) {
+    throw new Error(
+      "Manifest activation event clipboard:change requires clipboard:watch permission"
+    )
   }
   const events = module.events
   if (

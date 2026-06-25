@@ -236,6 +236,24 @@
       "title": "Permissions",
       "none": "No permissions requested"
     },
+    "capabilities": {
+      "granted": "Granted",
+      "notGranted": "Not granted",
+      "alwaysAllowed": "Always allowed",
+      "revoke": "Revoke",
+      "revoked": "Permission revoked.",
+      "allow": "Allow",
+      "deny": "Deny",
+      "grantTitle": "Allow plugin permission?",
+      "grantBody": "{{plugin}} wants {{capability}} ({{tier}}).",
+      "approvalTitle": "Approve elevated capability?",
+      "approvalBody": "{{plugin}} requests {{capability}} as {{actor}} for {{operation}}.",
+      "tier": {
+        "auto": "Auto",
+        "consent": "Consent",
+        "elevated": "Elevated"
+      }
+    },
     "toasts": {
       "enabled": "Plugin enabled.",
       "disabled": "Plugin disabled.",

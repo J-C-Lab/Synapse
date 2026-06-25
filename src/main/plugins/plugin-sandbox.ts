@@ -12,6 +12,7 @@ import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import vm from "node:vm"
 import { logger } from "../logging"
+import { CapabilityDenied } from "./capability-gate"
 import { PermissionDenied } from "./permissions"
 import { commandInvocation } from "./types"
 
@@ -26,10 +27,23 @@ export class PluginSandboxError extends Error {
   }
 }
 
+/** Command/tool hook exceeded its wall-clock budget (not a plugin defect). */
+export class PluginInvocationTimeoutError extends PluginSandboxError {
+  constructor(message: string) {
+    super(message)
+    this.name = "PluginInvocationTimeoutError"
+  }
+}
+
 export interface PluginSandboxOptions {
   bridge: PluginBridge
   loadTimeoutMs?: number
   invokeTimeoutMs?: number
+  /**
+   * `run` may await JIT capability prompts — keep this generous so a slow
+   * user click does not trip the 5s hook budget used by search/action hooks.
+   */
+  commandRunTimeoutMs?: number
   /** Tools may run longer than UI command hooks; defaults to 30s. */
   toolInvokeTimeoutMs?: number
 }
@@ -38,6 +52,7 @@ interface LoadedPlugin extends PluginSandboxModule {
   sandboxVm: vm.Context
   timers: Set<ReturnType<typeof setTimeout>>
   intervals: Set<ReturnType<typeof setInterval>>
+  capabilityAbort: AbortController
 }
 
 interface CommonJSModule {
@@ -120,11 +135,13 @@ export class PluginSandbox {
   private readonly loaded = new Map<string, LoadedPlugin>()
   private readonly loadTimeoutMs: number
   private readonly invokeTimeoutMs: number
+  private readonly commandRunTimeoutMs: number
   private readonly toolInvokeTimeoutMs: number
 
   constructor(private readonly options: PluginSandboxOptions) {
     this.loadTimeoutMs = options.loadTimeoutMs ?? 5_000
     this.invokeTimeoutMs = options.invokeTimeoutMs ?? 5_000
+    this.commandRunTimeoutMs = options.commandRunTimeoutMs ?? 120_000
     this.toolInvokeTimeoutMs = options.toolInvokeTimeoutMs ?? 30_000
   }
 
@@ -138,7 +155,10 @@ export class PluginSandbox {
     const mainPath = resolveInside(entry.rootDir, entry.manifest.main)
     const code = await fs.readFile(mainPath, "utf-8")
     const moduleObject: CommonJSModule = { exports: {} }
-    const runtime = this.options.bridge.createContext(entry.pluginId, entry.manifest)
+    const runtime = this.options.bridge.createContext(entry.pluginId, entry.manifest, {
+      actor: "user",
+      trigger: "plugin:load",
+    })
     const timers = new Set<ReturnType<typeof setTimeout>>()
     const intervals = new Set<ReturnType<typeof setInterval>>()
     const sandboxVm = vm.createContext(
@@ -168,6 +188,7 @@ export class PluginSandbox {
       sandboxVm,
       timers,
       intervals,
+      capabilityAbort: new AbortController(),
     }
     this.loaded.set(entry.pluginId, loaded)
     return loaded
@@ -197,7 +218,11 @@ export class PluginSandbox {
       throw new PluginSandboxError(`Plugin command is not exported: ${request.commandId}`)
     }
 
-    const pluginCtx = this.options.bridge.createContext(request.pluginId, plugin.manifest)
+    const pluginCtx = this.options.bridge.createContext(request.pluginId, plugin.manifest, {
+      actor: "user",
+      trigger: `command:${request.commandId}`,
+      signal: plugin.capabilityAbort.signal,
+    })
     if (request.phase === "run") {
       return this.withTimeout(
         this.runHookInContext(
@@ -208,7 +233,8 @@ export class PluginSandbox {
             invocation: commandInvocation(request.commandId, request.payload),
           },
           pluginCtx
-        )
+        ),
+        this.commandRunTimeoutMs
       )
     }
     if (request.phase === "onSearchChange") {
@@ -253,7 +279,10 @@ export class PluginSandbox {
     // A per-call controller fires on timeout; it is linked with the caller's
     // signal so either source cancels the running tool.
     const controller = new AbortController()
-    const signal = linkAbortSignals(controller.signal, request.options.signal)
+    const signal = linkAbortSignals(
+      controller.signal,
+      linkAbortSignals(plugin.capabilityAbort.signal, request.options.signal)
+    )
     const timer = setTimeout(() => {
       controller.abort(new PluginSandboxError(`Plugin tool exceeded ${this.toolInvokeTimeoutMs}ms`))
     }, this.toolInvokeTimeoutMs)
@@ -263,6 +292,7 @@ export class PluginSandbox {
       signal,
       progress: request.options.progress,
       permissions: request.permissions,
+      toolName: request.toolName,
     })
 
     try {
@@ -281,7 +311,12 @@ export class PluginSandbox {
       // Infrastructure (timeout/cancel/bad-shape) and policy (permission)
       // errors propagate; a fault inside the handler is surfaced to the model
       // as an error result rather than throwing — see ToolHandler docs.
-      if (err instanceof PluginSandboxError || err instanceof PermissionDenied) throw err
+      if (
+        err instanceof PluginSandboxError ||
+        err instanceof PermissionDenied ||
+        err instanceof CapabilityDenied
+      )
+        throw err
       return {
         content: [{ type: "text", text: errorMessage(err) }],
         isError: true,
@@ -295,7 +330,10 @@ export class PluginSandbox {
     const plugin = this.loaded.get(pluginId)
     const handler = plugin?.module.commands[commandId]
     if (!plugin || !handler?.dispose) return
-    const pluginCtx = this.options.bridge.createContext(pluginId, plugin.manifest)
+    const pluginCtx = this.options.bridge.createContext(pluginId, plugin.manifest, {
+      actor: "user",
+      trigger: `command:${commandId}:dispose`,
+    })
     await this.withTimeout(
       this.runHookInContext(plugin, { commandId, phase: "dispose" }, pluginCtx)
     )
@@ -306,7 +344,11 @@ export class PluginSandbox {
     if (!plugin) throw new PluginSandboxError(`Plugin is not loaded: ${request.pluginId}`)
     if (request.event === "clipboard:change" && !plugin.module.events?.onClipboardChange) return
 
-    const pluginCtx = this.options.bridge.createContext(request.pluginId, plugin.manifest)
+    const pluginCtx = this.options.bridge.createContext(request.pluginId, plugin.manifest, {
+      actor: "background",
+      trigger: "clipboard:change",
+      signal: plugin.capabilityAbort.signal,
+    })
     await this.withTimeout(
       this.runEventHookInContext(
         plugin,
@@ -325,15 +367,52 @@ export class PluginSandbox {
     return { pluginId: plugin.pluginId, manifest: plugin.manifest, module: plugin.module }
   }
 
-  private async withTimeout<T>(value: Promise<T> | T): Promise<T> {
+  /**
+   * Abort background work for a loaded plugin after a capability revoke.
+   *
+   * **Intentionally plugin-wide, not capability-scoped:** the `capability`
+   * argument is reserved for future per-capability hooks; today revoke always:
+   * - aborts the plugin's shared `capabilityAbort` signal (cancels in-flight tools)
+   * - clears **all** sandbox `setTimeout` / `setInterval` handles for the plugin
+   *
+   * Rationale: sandbox timers are not tagged with a capability id; leaving them
+   * running after revoke risks re-arming revoked access. The trade-off is that
+   * revoking e.g. `clipboard:watch` also kills unrelated background intervals
+   * and elevated tool calls still in progress.
+   */
+  abortPluginCapability(pluginId: string, capability: string): void {
+    const plugin = this.loaded.get(pluginId)
+    if (!plugin) return
+    void capability // reserved for per-capability teardown in later specs
+
+    plugin.capabilityAbort.abort()
+    plugin.capabilityAbort = new AbortController()
+
+    for (const timer of plugin.timers) clearTimeout(timer)
+    for (const interval of plugin.intervals) clearInterval(interval)
+    plugin.timers.clear()
+    plugin.intervals.clear()
+  }
+
+  /** Test seam: counts timers/intervals the sandbox tracks for a loaded plugin. */
+  trackedWorkCounts(pluginId: string): { timers: number; intervals: number } {
+    const plugin = this.loaded.get(pluginId)
+    if (!plugin) return { timers: 0, intervals: 0 }
+    return { timers: plugin.timers.size, intervals: plugin.intervals.size }
+  }
+
+  private async withTimeout<T>(
+    value: Promise<T> | T,
+    timeoutMs = this.invokeTimeoutMs
+  ): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       return await Promise.race([
         Promise.resolve(value),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
-            () => reject(new PluginSandboxError(`Plugin call exceeded ${this.invokeTimeoutMs}ms`)),
-            this.invokeTimeoutMs
+            () => reject(new PluginInvocationTimeoutError(`Plugin call exceeded ${timeoutMs}ms`)),
+            timeoutMs
           )
         }),
       ])

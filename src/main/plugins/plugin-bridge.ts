@@ -7,13 +7,19 @@ import type {
   ToolCaller,
   ToolContext,
 } from "@synapse/plugin-sdk"
-import type { PermissionGate } from "./permissions"
-import type { PluginManifest } from "./types"
+import type { CapabilityActor, CapabilityGatePort, CapabilityRequest } from "./capability-gate"
+import type { CapabilityGovernance } from "./capability-governance"
+import type { PluginManifest, PluginSourceKind } from "./types"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import process from "node:process"
 import { logger } from "../logging"
-import { createPermissionGate } from "./permissions"
+import { CapabilityGate as CapabilityGateImpl } from "./capability-gate"
+import {
+  buildGrantIdentity,
+  callerToActor,
+  createCapabilityGovernance,
+} from "./capability-governance"
 
 export interface PluginRuntimeSnapshot {
   locale: string
@@ -45,6 +51,13 @@ export interface PluginBridgeAdapters {
   system: SystemAdapter
 }
 
+/** Context passed into each capability `ensure()` call for one plugin invocation. */
+export interface InvocationContext {
+  actor: CapabilityActor
+  trigger: string
+  signal?: AbortSignal
+}
+
 export interface PluginBridgeOptions {
   userDataDir: string
   adapters: PluginBridgeAdapters
@@ -52,6 +65,15 @@ export interface PluginBridgeOptions {
   preferences?: (pluginId: string, manifest: PluginManifest) => Record<string, unknown>
   storageFlushMs?: number
   clipboardPollMs?: number
+  governance?: CapabilityGovernance
+  /** Resolves a plugin's source kind for grant-identity fingerprinting. */
+  sourceKindFor?: (pluginId: string) => PluginSourceKind
+  /** Test seam: replace per-plugin gate construction. */
+  createGate?: (
+    pluginId: string,
+    manifest: PluginManifest,
+    sourceKind: PluginSourceKind
+  ) => CapabilityGatePort
 }
 
 /** Inputs the host supplies when building a `ToolContext` for one tool call. */
@@ -61,6 +83,7 @@ export interface ToolContextOptions {
   progress?: (pct: number, message?: string) => void
   /** Tool-declared permissions; gates the context to this subset when present. */
   permissions?: string[]
+  toolName: string
 }
 
 /** The capability slice shared by command and tool contexts. */
@@ -80,27 +103,43 @@ const defaultRuntime: PluginRuntimeSnapshot = {
   theme: { mode: "light", accent: "neutral" },
 }
 
+const defaultInvocation: InvocationContext = {
+  actor: "user",
+  trigger: "plugin:runtime",
+}
+
 export class PluginBridge {
   private readonly storage = new Map<string, StorageState>()
   private readonly watchers = new Map<string, Set<ReturnType<typeof setInterval>>>()
   private readonly storageFlushMs: number
   private readonly clipboardPollMs: number
+  private readonly governance: CapabilityGovernance
+  private readonly sourceKindFor: (pluginId: string) => PluginSourceKind
+  private readonly createGate?: PluginBridgeOptions["createGate"]
 
   constructor(private readonly options: PluginBridgeOptions) {
     this.storageFlushMs = options.storageFlushMs ?? 250
     this.clipboardPollMs = options.clipboardPollMs ?? 500
+    this.governance =
+      options.governance ?? createCapabilityGovernance({ userDataDir: options.userDataDir })
+    this.sourceKindFor = options.sourceKindFor ?? (() => "user")
+    this.createGate = options.createGate
   }
 
-  createContext(pluginId: string, manifest: PluginManifest): PluginContext {
-    const gate = createPermissionGate(manifest)
+  createContext(
+    pluginId: string,
+    manifest: PluginManifest,
+    invocation: InvocationContext = defaultInvocation
+  ): PluginContext {
     const runtime = this.options.runtime?.() ?? defaultRuntime
+    const gate = this.gateFor(pluginId, manifest)
 
     return {
       pluginId,
       locale: runtime.locale,
       theme: runtime.theme,
       preferences: this.resolvePreferences(pluginId, manifest),
-      ...this.createCapabilities(pluginId, gate),
+      ...this.createCapabilities(pluginId, gate, invocation),
     }
   }
 
@@ -118,16 +157,36 @@ export class PluginBridge {
     const effective = options.permissions
       ? { ...manifest, permissions: options.permissions }
       : manifest
-    const gate = createPermissionGate(effective)
+    const gate = this.gateFor(pluginId, effective)
+    const invocation: InvocationContext = {
+      actor: callerToActor(options.caller),
+      trigger: `tool:${options.toolName}`,
+      signal: options.signal,
+    }
 
     return {
       pluginId,
       preferences: this.resolvePreferences(pluginId, manifest),
-      ...this.createCapabilities(pluginId, gate),
+      ...this.createCapabilities(pluginId, gate, invocation),
       caller: options.caller,
       signal: options.signal,
       progress: options.progress,
     }
+  }
+
+  private gateFor(pluginId: string, manifest: PluginManifest): CapabilityGatePort {
+    const sourceKind = this.sourceKindFor(pluginId)
+    if (this.createGate) return this.createGate(pluginId, manifest, sourceKind)
+
+    const identity = buildGrantIdentity(pluginId, manifest, sourceKind)
+    return new CapabilityGateImpl({
+      identity,
+      declared: new Set(manifest.permissions),
+      grants: this.governance.grants,
+      prompt: this.governance.prompt,
+      approve: this.governance.approve,
+      audit: this.governance.audit,
+    })
   }
 
   private resolvePreferences(pluginId: string, manifest: PluginManifest): Record<string, unknown> {
@@ -137,49 +196,62 @@ export class PluginBridge {
     }
   }
 
-  private createCapabilities(pluginId: string, gate: PermissionGate): PluginCapabilities {
+  private createCapabilities(
+    pluginId: string,
+    gate: CapabilityGatePort,
+    invocation: InvocationContext
+  ): PluginCapabilities {
+    const ensure = (request: Omit<CapabilityRequest, "actor" | "trigger" | "signal">) =>
+      gate.ensure({
+        ...request,
+        actor: invocation.actor,
+        trigger: invocation.trigger,
+        signal: invocation.signal,
+      })
+
     return {
-      storage: this.createStorageAPI(pluginId, gate),
+      storage: this.createStorageAPI(pluginId, gate, invocation),
       clipboard: {
         read: async () => {
-          gate.check("clipboard:read")
+          await ensure({ capability: "clipboard:read", operation: "read" })
           return this.options.adapters.clipboard.read()
         },
         write: async (content) => {
-          gate.check("clipboard:write")
+          await ensure({ capability: "clipboard:write", operation: "write" })
           await this.options.adapters.clipboard.write(content)
         },
-        watch: (listener) => {
-          gate.check("clipboard:read")
-          return this.watchClipboard(pluginId, listener)
-        },
+        watch: (listener) => this.watchClipboardWithGate(pluginId, gate, invocation, listener),
         readText: async () => {
-          gate.check("clipboard:read")
+          await ensure({ capability: "clipboard:read", operation: "read" })
           const content = await this.options.adapters.clipboard.read()
           return content?.type === "text" ? content.text : ""
         },
         writeText: async (text) => {
-          gate.check("clipboard:write")
+          await ensure({ capability: "clipboard:write", operation: "write" })
           await this.options.adapters.clipboard.write({ type: "text", text })
         },
       },
       notifications: {
         show: async (options) => {
-          gate.check("notification")
+          await ensure({ capability: "notification", operation: "show" })
           await this.options.adapters.notifications.show(options)
         },
       },
       system: {
         openUrl: async (url) => {
-          gate.check("system:open-url")
+          await ensure({ capability: "system:open-url", operation: "open", requestedScope: url })
           await this.options.adapters.system.openUrl(url)
         },
         openPath: async (targetPath) => {
-          gate.check("system:open-path")
+          await ensure({
+            capability: "system:open-path",
+            operation: "open",
+            requestedScope: targetPath,
+          })
           await this.options.adapters.system.openPath(targetPath)
         },
         captureScreen: async (options) => {
-          gate.check("system:capture-screen")
+          await ensure({ capability: "system:capture-screen", operation: "capture" })
           return this.options.adapters.system.captureScreen(pluginId, options)
         },
       },
@@ -189,13 +261,49 @@ export class PluginBridge {
     }
   }
 
-  async disposePlugin(pluginId: string): Promise<void> {
-    const timers = this.watchers.get(pluginId)
-    if (timers) {
-      for (const timer of timers) clearInterval(timer)
-      this.watchers.delete(pluginId)
+  private watchClipboardWithGate(
+    pluginId: string,
+    gate: CapabilityGatePort,
+    invocation: InvocationContext,
+    listener: (content: ClipboardContent) => void
+  ): () => void {
+    let unwatch: (() => void) | undefined
+    let cancelled = false
+
+    void gate
+      .ensure({
+        capability: "clipboard:watch",
+        actor: invocation.actor,
+        trigger: invocation.trigger,
+        operation: "watch",
+        signal: invocation.signal,
+      })
+      .then(() => {
+        if (cancelled) return
+        unwatch = this.watchClipboard(pluginId, listener)
+      })
+      .catch((err) => {
+        logger.child(`plugin:${pluginId}`).warn("clipboard watch denied", { err })
+      })
+
+    return () => {
+      cancelled = true
+      unwatch?.()
     }
+  }
+
+  async disposePlugin(pluginId: string): Promise<void> {
+    this.stopClipboardWatchers(pluginId)
     await this.flushStorage(pluginId)
+  }
+
+  /** Tear down bridge-level clipboard.watch polling for a plugin. */
+  revokeCapability(pluginId: string, capability: string): void {
+    if (capability === "clipboard:watch") this.stopClipboardWatchers(pluginId)
+  }
+
+  hasClipboardWatchers(pluginId: string): boolean {
+    return (this.watchers.get(pluginId)?.size ?? 0) > 0
   }
 
   clearPluginData(pluginId: string): void {
@@ -222,28 +330,39 @@ export class PluginBridge {
 
   private createStorageAPI(
     pluginId: string,
-    gate: { check: (permission: string) => void }
+    gate: CapabilityGatePort,
+    invocation: InvocationContext
   ): StorageAPI {
+    const ensure = (operation: string, key?: string) =>
+      gate.ensure({
+        capability: "storage:plugin",
+        actor: invocation.actor,
+        trigger: invocation.trigger,
+        operation,
+        requestedScope: key,
+        signal: invocation.signal,
+      })
+
     return {
       get: async <T = unknown>(key: string) => {
-        gate.check("storage:plugin")
+        await ensure("get", key)
         const state = await this.loadStorage(pluginId)
         return state.data[key] as T | undefined
       },
       set: async <T = unknown>(key: string, value: T) => {
-        gate.check("storage:plugin")
+        await ensure("set", key)
         const state = await this.loadStorage(pluginId)
         state.data[key] = value
         await this.scheduleStorageFlush(pluginId)
       },
       delete: async (key: string) => {
-        gate.check("storage:plugin")
+        await ensure("delete", key)
         const state = await this.loadStorage(pluginId)
         delete state.data[key]
         await this.scheduleStorageFlush(pluginId)
       },
       list: async () => {
-        gate.check("storage:plugin")
+        await ensure("list")
         const state = await this.loadStorage(pluginId)
         return Object.keys(state.data)
       },
@@ -297,6 +416,13 @@ export class PluginBridge {
     const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
     await fs.writeFile(tempPath, `${JSON.stringify(state.data, null, 2)}\n`, "utf-8")
     await fs.rename(tempPath, filePath)
+  }
+
+  private stopClipboardWatchers(pluginId: string): void {
+    const timers = this.watchers.get(pluginId)
+    if (!timers) return
+    for (const timer of timers) clearInterval(timer)
+    this.watchers.delete(pluginId)
   }
 
   private watchClipboard(

@@ -2,6 +2,7 @@ import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { PluginHost } from "../plugins/plugin-host"
 import type { PluginInvokePhase, PluginInvokeRequest } from "../plugins/types"
 import { logger } from "../logging"
+import { CapabilityDenied } from "../plugins/capability-gate"
 import { MarketplaceApiError } from "../plugins/marketplace-api"
 import { PermissionDenied } from "../plugins/permissions"
 import {
@@ -10,6 +11,8 @@ import {
   PluginPreferenceTypeError,
 } from "../plugins/plugin-host"
 import { PluginCrashedError } from "../plugins/plugin-registry"
+import { PluginInvocationTimeoutError } from "../plugins/plugin-sandbox"
+import { withCapabilityPromptTarget } from "./capability-prompt-router"
 
 export type PluginIpcErrorCode =
   | "IPC_FORBIDDEN"
@@ -19,6 +22,7 @@ export type PluginIpcErrorCode =
   | "PLUGIN_NOT_ACTIVE"
   | "PLUGIN_PERMISSION_DENIED"
   | "PLUGIN_CRASHED"
+  | "PLUGIN_INVOCATION_TIMEOUT"
   | "PLUGIN_NOT_IMPLEMENTED"
   | "PLUGIN_INSTALL_ERROR"
   | "PLUGIN_IO_ERROR"
@@ -259,7 +263,7 @@ export function registerPluginIpc(
     invokePluginIpcHandler(
       "plugin:invoke",
       event,
-      () => handlers.invoke(payload),
+      () => withCapabilityPromptTarget(event.sender, () => handlers.invoke(payload)),
       options.isTrustedSender
     )
   )
@@ -420,6 +424,22 @@ function toPluginIpcError(err: unknown): PluginIpcError {
       code: "PLUGIN_PERMISSION_DENIED",
       message: "Plugin permission denied.",
       details: { pluginId: err.pluginId, permission: err.permission },
+    }
+  }
+
+  if (err instanceof CapabilityDenied) {
+    return {
+      code: "PLUGIN_PERMISSION_DENIED",
+      message: "Plugin capability denied.",
+      details: { pluginId: err.pluginId, capability: err.capability, why: err.why },
+    }
+  }
+
+  if (err instanceof PluginInvocationTimeoutError) {
+    return {
+      code: "PLUGIN_INVOCATION_TIMEOUT",
+      message: "Plugin call timed out.",
+      details: { message: err.message },
     }
   }
 

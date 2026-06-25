@@ -45,4 +45,12 @@ describe("createFileSink", () => {
     expect(readFileSync(path.join(dir, "main.1.log"), "utf-8")).toBe("0123456789\n")
     expect(readFileSync(path.join(dir, "main.log"), "utf-8")).toBe("x\n")
   })
+
+  it("honors a custom fileName and rotates it under the same base", () => {
+    const sink = createFileSink(dir, { maxBytes: 5, keep: 2, fileName: "audit.log" })
+    sink.write("aaaa\n")
+    sink.write("bbbb\n") // over threshold → rotate audit.log → audit.1.log
+    expect(readFileSync(path.join(dir, "audit.1.log"), "utf-8")).toBe("aaaa\n")
+    expect(readFileSync(path.join(dir, "audit.log"), "utf-8")).toBe("bbbb\n")
+  })
 })

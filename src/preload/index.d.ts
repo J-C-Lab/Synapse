@@ -128,6 +128,7 @@ declare global {
     | "PLUGIN_NOT_ACTIVE"
     | "PLUGIN_PERMISSION_DENIED"
     | "PLUGIN_CRASHED"
+    | "PLUGIN_INVOCATION_TIMEOUT"
     | "PLUGIN_NOT_IMPLEMENTED"
     | "PLUGIN_INSTALL_ERROR"
     | "PLUGIN_IO_ERROR"
@@ -191,6 +192,33 @@ declare global {
     error?: string
     shadowedBy?: SynapsePluginSourceKind
     loadedAt?: number
+  }
+
+  interface SynapsePluginCapabilityRow {
+    id: string
+    tier: "auto" | "consent" | "elevated"
+    granted: boolean
+    scopeEnforced: boolean
+  }
+
+  interface SynapseCapabilityGrantRequestEvent {
+    promptId: string
+    pluginId: string
+    capability: string
+    tier: string
+    trigger: string
+    operation: string
+    reason?: string
+  }
+
+  interface SynapseCapabilityApprovalRequestEvent {
+    promptId: string
+    pluginId: string
+    capability: string
+    actor: string
+    trigger: string
+    operation: string
+    reason?: string
   }
 
   interface SynapseMarketplaceEntry {
@@ -421,6 +449,21 @@ declare global {
         pluginId: string,
         commandId: string
       ) => Promise<SynapsePluginIpcResult<void>>
+      listPluginCapabilities: (
+        pluginId: string
+      ) => Promise<SynapsePluginIpcResult<SynapsePluginCapabilityRow[]>>
+      revokePluginCapability: (
+        pluginId: string,
+        capability: string
+      ) => Promise<SynapsePluginIpcResult<void>>
+      resolveCapabilityGrant: (
+        promptId: string,
+        allow: boolean
+      ) => Promise<SynapsePluginIpcResult<void>>
+      resolveCapabilityApproval: (
+        promptId: string,
+        allow: boolean
+      ) => Promise<SynapsePluginIpcResult<void>>
       listMarketplacePlugins: () => Promise<SynapsePluginIpcResult<SynapseMarketplaceEntry[]>>
       installMarketplacePlugin: (
         id: string,
@@ -489,6 +532,12 @@ declare global {
       ) => () => void
       onPluginRegistryChanged: (
         handler: (plugins: SynapsePluginRegistryEntry[]) => void
+      ) => () => void
+      onCapabilityGrantRequest: (
+        handler: (event: SynapseCapabilityGrantRequestEvent) => void
+      ) => () => void
+      onCapabilityApprovalRequest: (
+        handler: (event: SynapseCapabilityApprovalRequestEvent) => void
       ) => () => void
       onSettingsChanged: (handler: (settings: SynapseUserSettings) => void) => () => void
       onLanDevicesChanged: (handler: (devices: SynapseLanDevice[]) => void) => () => void

@@ -1,5 +1,5 @@
 import type { ClipboardContent } from "@synapse/plugin-sdk"
-import type { IpcMainInvokeEvent } from "electron"
+import type { IpcMainInvokeEvent, WebContents } from "electron"
 import type { SecretProtector } from "./lan/credential-store"
 import type { LanDevice, LanPairing, LanStatus, LanTransfer } from "./lan/types"
 import type { SearchWindowDeps } from "./search-window"
@@ -48,6 +48,9 @@ import {
   toggleFloatingBallMenu,
 } from "./floating-ball-window"
 import { registerAiIpc } from "./ipc/ai"
+import { CapabilityIpcService, registerCapabilitiesIpc } from "./ipc/capabilities"
+import { attachCapabilityPromptLifecycle } from "./ipc/capability-prompt-lifecycle"
+import { createCapabilityPromptSender } from "./ipc/capability-prompt-router"
 import { registerLanIpc } from "./ipc/lan"
 import { LauncherService } from "./ipc/launcher-service"
 import { registerMarketplaceIpc } from "./ipc/marketplace"
@@ -63,9 +66,12 @@ import {
 } from "./lan/dev-simulation"
 import { LanService } from "./lan/lan-service"
 import { configureRootLogger, logger } from "./logging"
+import { createFileSink } from "./logging/file-sink"
 import { MarketplaceAccountService } from "./marketplace/account-service"
 import { marketplaceTokenFilePath, MarketplaceTokenStore } from "./marketplace/token-store"
 import { defaultNotificationIcon, showStartupNotification } from "./notifications"
+import { createCapabilityAudit } from "./plugins/capability-audit"
+import { GrantStore, grantStoreFilePath } from "./plugins/grant-store"
 import { createMarketplaceApi } from "./plugins/marketplace-api"
 import { PluginHost } from "./plugins/plugin-host"
 import { getContentType, resolveStaticPath } from "./protocol/resolve-static-path"
@@ -191,6 +197,7 @@ function registerStaticProtocol(): void {
 
 const launcher = new LauncherService()
 let plugins: PluginHost
+let capabilityService!: CapabilityIpcService
 let lan: LanService
 let agent: AgentService
 let accountService: MarketplaceAccountService
@@ -213,6 +220,15 @@ let synapseImportInFlight = false
 // the main-window close handler can distinguish "user clicked X" (hide)
 // from "user picked Quit" (let the close go through).
 let quitRequested = false
+const capabilityPromptLifecycleBound = new WeakSet<WebContents>()
+
+function bindCapabilityPromptLifecycle(win: BrowserWindow): void {
+  if (win.isDestroyed()) return
+  const { webContents } = win
+  if (capabilityPromptLifecycleBound.has(webContents)) return
+  capabilityPromptLifecycleBound.add(webContents)
+  attachCapabilityPromptLifecycle(webContents, () => capabilityService?.dispose())
+}
 
 function registerIpc(): void {
   ipcMain.handle("launcher:search", (_event, query: unknown) => {
@@ -299,6 +315,9 @@ function registerIpc(): void {
     isTrustedSender: isTrustedIpcSender,
     onRegistryChanged: broadcastPluginRegistryChanged,
     pickPackageFile: pickSynapsePackageFile,
+  })
+  registerCapabilitiesIpc(ipcMain, capabilityService, {
+    isTrustedSender: isTrustedIpcSender,
   })
   registerAiIpc(ipcMain, agent, { isTrustedSender: isTrustedIpcSender })
   if (memoryService)
@@ -584,11 +603,22 @@ function searchWindowDeps(): SearchWindowDeps {
   return { rendererDevUrl, appOrigin: APP_ORIGIN }
 }
 
-function createPluginHost(): PluginHost {
+function initPluginHost(): PluginHost {
+  const userDataDir = app.getPath("userData")
+  const grants = new GrantStore(grantStoreFilePath(userDataDir))
+  const audit = createCapabilityAudit(
+    createFileSink(path.join(userDataDir, "logs"), { fileName: "audit.log" })
+  )
+
+  capabilityService = new CapabilityIpcService(
+    () => plugins,
+    createCapabilityPromptSender(broadcast)
+  )
+
   return new PluginHost({
     fetch: (url, init) => net.fetch(url, init),
     marketplaceGetToken: () => marketplaceTokenStore().get(),
-    userDataDir: app.getPath("userData"),
+    userDataDir,
     resourcesDir: pluginResourcesDir(),
     runtime: () => {
       const settings = launcher.getSettings()
@@ -599,6 +629,13 @@ function createPluginHost(): PluginHost {
           accent: settings.accent,
         },
       }
+    },
+    capabilityGovernance: {
+      userDataDir,
+      grants,
+      audit,
+      prompt: capabilityService.grantPrompt,
+      approve: capabilityService.capabilityApprover,
     },
   })
 }
@@ -710,6 +747,8 @@ function createMainWindow(): BrowserWindow {
     void win.loadURL(`${APP_ORIGIN}/index.html`)
     attachWindowSecurity(win, APP_ORIGIN)
   }
+
+  bindCapabilityPromptLifecycle(win)
 
   return win
 }
@@ -823,7 +862,13 @@ if (isMcpStdioMode) {
 
       applyCsp()
       registerStaticProtocol()
-      plugins = createPluginHost()
+      plugins = initPluginHost()
+      app.on("browser-window-created", (_, win) => {
+        bindCapabilityPromptLifecycle(win)
+      })
+      for (const win of BrowserWindow.getAllWindows()) {
+        bindCapabilityPromptLifecycle(win)
+      }
       lan = new LanService({
         userDataDir: app.getPath("userData"),
         adapter: new BonjourLanDiscoveryAdapter(),
@@ -912,6 +957,7 @@ if (isMcpStdioMode) {
         .catch((err) => logger.child("synapse").error("failed to stop MCP clients", { err }))
       unbindGlobalShortcut()
       destroyTray()
+      capabilityService?.dispose()
       plugins?.dispose()
     })
 

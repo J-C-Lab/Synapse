@@ -5,6 +5,7 @@ import type { McpServerStatus } from "../ai/mcp-client-manager"
 import type { McpServerConfig } from "../ai/mcp-server-config-store"
 import type { ProviderToolSchema, TokenUsage } from "../ai/providers/types"
 import { logger } from "../logging"
+import { withCapabilityPromptTarget } from "./capability-prompt-router"
 
 // IPC surface for the built-in assistant (design §8). Streaming is push-based:
 // `ai:chat` kicks off a turn and resolves when it ends, while text / tool /
@@ -93,7 +94,7 @@ export function registerAiIpc(
   ipcMain.handle("ai:chat", (event, payload: unknown) => {
     guard(event, "ai:chat")
     const { conversationId, text } = coerceChat(payload)
-    return service.chat(conversationId, text)
+    return withCapabilityPromptTarget(event.sender, () => service.chat(conversationId, text))
   })
   ipcMain.handle("ai:cancel", (event, id: unknown) => {
     guard(event, "ai:cancel")

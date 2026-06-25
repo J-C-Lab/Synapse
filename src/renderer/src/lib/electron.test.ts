@@ -72,6 +72,10 @@ function mockApi() {
     searchPluginCommands: vi.fn().mockResolvedValue(ok([])),
     invokePluginCommand: vi.fn().mockResolvedValue(ok({ type: "toast" })),
     disposePluginCommand: vi.fn().mockResolvedValue(ok(undefined)),
+    listPluginCapabilities: vi.fn().mockResolvedValue(ok([])),
+    revokePluginCapability: vi.fn().mockResolvedValue(ok(undefined)),
+    resolveCapabilityGrant: vi.fn().mockResolvedValue(ok(undefined)),
+    resolveCapabilityApproval: vi.fn().mockResolvedValue(ok(undefined)),
     listMarketplacePlugins: vi.fn().mockResolvedValue(ok([])),
     installMarketplacePlugin: vi.fn().mockResolvedValue(ok({ id: "plugin" })),
     getSettings: vi.fn().mockResolvedValue({
@@ -96,6 +100,8 @@ function mockApi() {
     onFloatingBallMenuState: vi.fn().mockReturnValue(() => {}),
     onFloatingBallFeatures: vi.fn().mockReturnValue(() => {}),
     onPluginRegistryChanged: vi.fn().mockReturnValue(() => {}),
+    onCapabilityGrantRequest: vi.fn().mockReturnValue(() => {}),
+    onCapabilityApprovalRequest: vi.fn().mockReturnValue(() => {}),
     onSettingsChanged: vi.fn().mockReturnValue(() => {}),
     getLanStatus: vi.fn().mockResolvedValue({
       enabled: false,
