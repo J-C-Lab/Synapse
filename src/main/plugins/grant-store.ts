@@ -64,14 +64,22 @@ function sameCoarseIdentity(a: GrantIdentity, b: GrantIdentity): boolean {
 
 // Old on-disk records used `capability`/`scope`. Map them onto the new field
 // names; tolerate records that are already new-shaped.
-function migrateRecord(raw: unknown): GrantRecord {
-  const rec = raw as Record<string, unknown>
+function migrateRecord(rec: Record<string, unknown>): GrantRecord {
   const { capability, scope, capabilityId, grantScope, ...rest } = rec
   return {
     ...(rest as Omit<GrantRecord, "capabilityId" | "grantScope">),
     capabilityId: (capabilityId ?? capability) as string,
     grantScope: grantScope ?? scope,
   }
+}
+
+// Migrate an on-disk array defensively: drop any element that is not a plain
+// object (null, primitives) so one corrupt row can't make the store unreadable
+// or yield garbage records.
+function migrateRecords(raw: unknown[]): GrantRecord[] {
+  return raw
+    .filter((el): el is Record<string, unknown> => el !== null && typeof el === "object")
+    .map(migrateRecord)
 }
 
 export class GrantStore {
@@ -105,9 +113,15 @@ export class GrantStore {
   ): Promise<void> {
     // Replace any prior record for this plugin+capability, and DROP any matching
     // tombstone (a fresh grant supersedes a prior revoke for the same identity).
+    // Deliberate identity split: replacement uses COARSE identity (clean up
+    // superseded rows for the SAME publisher, regardless of declaration hash);
+    // tombstone-drop uses EXACT sameIdentity (only un-revoke the precisely
+    // revoked identity). Coarse replacement also prevents granting under one
+    // publisher from silently deleting a different publisher's grant that
+    // happens to share the same pluginId.
     const state = await this.load()
     state.grants = state.grants.filter(
-      (r) => !(r.capabilityId === capabilityId && r.identity.pluginId === identity.pluginId)
+      (r) => !(r.capabilityId === capabilityId && sameCoarseIdentity(r.identity, identity))
     )
     state.tombstones = state.tombstones.filter(
       (t) => !(t.capabilityId === capabilityId && sameIdentity(t.identity, identity))
@@ -124,6 +138,11 @@ export class GrantStore {
     const state = await this.load()
     state.grants = state.grants.filter(
       (r) => !(r.capabilityId === capabilityId && sameIdentity(r.identity, identity))
+    )
+    // Dedupe: drop any existing tombstone for this exact identity + capability so
+    // repeated grant→revoke cycles don't accumulate duplicate tombstones.
+    state.tombstones = state.tombstones.filter(
+      (t) => !(t.capabilityId === capabilityId && sameIdentity(t.identity, identity))
     )
     state.tombstones.push({ capabilityId, revokedAt: this.now(), revokedBy, identity })
     await this.persist(state)
@@ -157,11 +176,11 @@ export class GrantStore {
       const raw = await readJsonFile(this.filePath)
       if (Array.isArray(raw)) {
         // Legacy bare-array shape: migrate to { grants, tombstones }.
-        this.state = { grants: raw.map(migrateRecord), tombstones: [] }
+        this.state = { grants: migrateRecords(raw), tombstones: [] }
       } else if (raw && typeof raw === "object") {
         const obj = raw as Partial<GrantState>
         this.state = {
-          grants: Array.isArray(obj.grants) ? obj.grants.map(migrateRecord) : [],
+          grants: Array.isArray(obj.grants) ? migrateRecords(obj.grants) : [],
           tombstones: Array.isArray(obj.tombstones) ? obj.tombstones : [],
         }
       } else {

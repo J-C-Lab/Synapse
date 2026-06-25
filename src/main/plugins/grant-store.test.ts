@@ -123,4 +123,19 @@ describe("grantStore", () => {
     const store = new GrantStore(file)
     expect(await store.isGranted(identity(), "notification")).toBe(true)
   })
+
+  it("skips malformed rows in a legacy array without throwing", async () => {
+    const fs = await import("node:fs/promises")
+    await fs.writeFile(
+      file,
+      JSON.stringify([
+        null,
+        42,
+        { capability: "notification", grantedAt: 1, grantedBy: "install", identity: identity() },
+      ])
+    )
+    const store = new GrantStore(file)
+    expect(await store.isGranted(identity(), "notification")).toBe(true)
+    expect(await store.list(identity())).toHaveLength(1)
+  })
 })
