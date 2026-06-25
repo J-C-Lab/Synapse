@@ -12,7 +12,7 @@ export {
   getCapability,
 } from "./capabilities"
 
-export type { CapabilityDescriptor, CapabilityTier } from "./capabilities"
+export type { CapabilityDescriptor, CapabilityScopeAdapter, CapabilityTier } from "./capabilities"
 
 export { isEngineCompatible } from "./engine"
 
@@ -26,6 +26,7 @@ export type {
   ManifestPreferenceOption,
   ManifestPreferenceType,
   ManifestTool,
+  NormalizedCapability,
   PluginActivationEvent,
   PluginManifest,
   ToolAnnotations,

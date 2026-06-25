@@ -1,3 +1,4 @@
+import type { NormalizedCapability } from "./index"
 import { describe, expect, it } from "vitest"
 import {
   CAPABILITIES,
@@ -7,12 +8,13 @@ import {
 } from "./capabilities"
 
 describe("capability registry", () => {
-  it("exposes the eight known capabilities", () => {
+  it("exposes the nine known capabilities", () => {
     expect(capabilityIds().sort()).toEqual(
       [
         "clipboard:read",
         "clipboard:watch",
         "clipboard:write",
+        "network:https",
         "notification",
         "storage:plugin",
         "system:capture-screen",
@@ -40,8 +42,11 @@ describe("capability registry", () => {
     expect(getCapability("clipboard:read")?.id).not.toBe(getCapability("clipboard:watch")?.id)
   })
 
-  it("ships no capability with enforced scope yet (no false restriction)", () => {
-    for (const cap of CAPABILITIES.values()) expect(cap.scopeEnforced).toBe(false)
+  it("ships no live scope adapter yet (no false restriction)", () => {
+    // A scope-enforced capability without an adapter cannot constrain a call, so
+    // its declaration is rejected in Phase 1 — nothing presents scope as a
+    // restriction it does not yet enforce. Adapters are wired in Task 12.
+    for (const cap of CAPABILITIES.values()) expect(cap.scopeAdapter).toBeUndefined()
   })
 
   it("returns undefined for unknown capabilities", () => {
@@ -61,5 +66,27 @@ describe("capabilityDeclarationHash", () => {
     const a = capabilityDeclarationHash(["storage:plugin"])
     const b = capabilityDeclarationHash(["storage:plugin", "clipboard:read"])
     expect(a).not.toBe(b)
+  })
+})
+
+describe("capability descriptors", () => {
+  it("network:https is elevated and scope-enforced", () => {
+    const cap = getCapability("network:https")
+    expect(cap?.tier).toBe("elevated")
+    expect(cap?.scopeEnforced).toBe(true)
+  })
+
+  // Adapter is wired in Task 12 (Phase 2). Placeholder until then.
+  it.todo("network:https owns a scope adapter (wired in Task 12)")
+
+  it("unscoped capabilities have no adapter", () => {
+    const cap = getCapability("storage:plugin")
+    expect(cap?.scopeEnforced).toBe(false)
+    expect(cap?.scopeAdapter).toBeUndefined()
+  })
+
+  it("normalizedCapability is structurally { id, scope? }", () => {
+    const cap: NormalizedCapability = { id: "storage:plugin" }
+    expect(cap.id).toBe("storage:plugin")
   })
 })

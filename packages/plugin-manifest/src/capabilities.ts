@@ -11,6 +11,30 @@ import { createHash } from "node:crypto"
 
 export type CapabilityTier = "auto" | "consent" | "elevated"
 
+/**
+ * The per-capability scope contract. A scope-enforced capability owns one of
+ * these so every place that handles its scope — validation, grant merging,
+ * containment checks during a JIT prompt, audit summaries — goes through the
+ * same logic instead of re-implementing the capability's scope semantics.
+ * Scopes are `unknown` at this boundary because only the adapter knows the shape.
+ */
+export interface CapabilityScopeAdapter {
+  /** Throw if `scope` is not a structurally valid scope for this capability. */
+  validate: (scope: unknown) => void
+  /** Return a stable, normalized form so equal scopes compare equal. */
+  canonicalize: (scope: unknown) => unknown
+  /** Combine multiple granted scopes into one widest-allowed scope. */
+  merge: (scopes: unknown[]) => unknown
+  /** True if `containerScope` fully permits everything `requestedScope` asks for. */
+  contains: (containerScope: unknown, requestedScope: unknown) => boolean
+  /** Strip any fields that must not be persisted or shown (defense in depth). */
+  sanitizeScope: (scope: unknown) => unknown
+  /** Normalize an operation string against an optional scope for safe use/audit. */
+  sanitizeOperation: (operation: string, requestedScope?: unknown) => string
+  /** Human-readable one-line description of the scope (for prompts and audit). */
+  summarize: (scope: unknown) => string
+}
+
 export interface CapabilityDescriptor {
   id: string
   tier: CapabilityTier
@@ -21,6 +45,12 @@ export interface CapabilityDescriptor {
    */
   scopeSchema?: JsonSchema
   scopeEnforced: boolean
+  /**
+   * The scope contract for a scope-enforced capability. Intentionally `undefined`
+   * until the capability's adapter is wired (Task 12) — until then a declaration
+   * of this capability has no way to be constrained and is rejected.
+   */
+  scopeAdapter?: CapabilityScopeAdapter
 }
 
 const ALL: CapabilityDescriptor[] = [
@@ -34,6 +64,9 @@ const ALL: CapabilityDescriptor[] = [
   { id: "system:open-url", tier: "consent", scopeEnforced: false },
   { id: "system:open-path", tier: "consent", scopeEnforced: false },
   { id: "system:capture-screen", tier: "elevated", scopeEnforced: false },
+  // Scope-enforced: an adapter is wired in Task 12. Until then `scopeAdapter` is
+  // undefined, which keeps network declarations rejected during Phase 1.
+  { id: "network:https", tier: "elevated", scopeEnforced: true, scopeAdapter: undefined },
 ]
 
 export const CAPABILITIES: ReadonlyMap<string, CapabilityDescriptor> = new Map(

@@ -1,5 +1,16 @@
 import type { LocalizedString } from "@synapsepkg/plugin-sdk"
 
+/**
+ * A capability after normalization: its stable `id` plus an optional opaque
+ * `scope` payload. Scope is `unknown` here because each capability owns its own
+ * scope shape — only that capability's adapter knows how to validate, canonicalize,
+ * and compare it (see `CapabilityScopeAdapter`).
+ */
+export interface NormalizedCapability {
+  id: string
+  scope?: unknown
+}
+
 export type CommandMode = "view" | "no-view"
 
 export type PluginActivationEvent = "clipboard:change"
