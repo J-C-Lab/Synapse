@@ -78,12 +78,15 @@ export class CapabilityGate {
 
   async ensure(request: CapabilityRequest): Promise<void> {
     const cap = getCapability(request.capability)
-    const deny = (why: string, grantedNow = false): never => {
-      this.emit(request, "deny", grantedNow, why, cap?.tier)
-      throw new CapabilityDenied(this.options.identity.pluginId, request.capability, why)
+    if (!cap || !this.options.declared.has(request.capability)) {
+      this.emit(request, "deny", false, "not declared", cap?.tier)
+      throw new CapabilityDenied(this.options.identity.pluginId, request.capability, "not declared")
     }
 
-    if (!cap || !this.options.declared.has(request.capability)) deny("not declared")
+    const deny = (why: string, grantedNow = false): never => {
+      this.emit(request, "deny", grantedNow, why, cap.tier)
+      throw new CapabilityDenied(this.options.identity.pluginId, request.capability, why)
+    }
 
     let grantedNow = false
     if (cap.tier !== "auto") {

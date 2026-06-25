@@ -377,7 +377,10 @@ describe("pluginHost clipboard watcher", () => {
     vi.useFakeTimers()
     const read = vi.fn(async () => ({ type: "text", text: "hello" }) as ClipboardContent)
     const host = makeHostWithClipboard(read)
-    await writeHostPlugin({ activationEvents: ["clipboard:change"] })
+    await writeHostPlugin({
+      activationEvents: ["clipboard:change"],
+      permissions: ["clipboard:read", "clipboard:watch", "storage:plugin"],
+    })
 
     try {
       await host.init()
