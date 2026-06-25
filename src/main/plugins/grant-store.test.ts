@@ -34,7 +34,7 @@ describe("grantStore", () => {
   it("revokes a capability", async () => {
     const store = new GrantStore(file)
     await store.grant(identity(), "clipboard:read", "install")
-    await store.revoke("com.example.hello", "clipboard:read")
+    await store.revoke(identity(), "clipboard:read", "user")
     expect(await store.isGranted(identity(), "clipboard:read")).toBe(false)
   })
 
@@ -49,7 +49,7 @@ describe("grantStore", () => {
     const records = await store.list(identity())
     expect(records).toHaveLength(1)
     expect(records[0]).toMatchObject({
-      capability: "clipboard:read",
+      capabilityId: "clipboard:read",
       grantedBy: "install",
       grantedAt: 42,
     })
@@ -77,5 +77,50 @@ describe("grantStore", () => {
     expect(
       await store.isGranted(identity({ signingKeyFingerprint: "other" }), "clipboard:read")
     ).toBe(false)
+  })
+
+  it("revoke writes a tombstone keyed by identity + capabilityId", async () => {
+    const store = new GrantStore(file)
+    await store.grant(identity(), "clipboard:watch", "user")
+    await store.revoke(identity(), "clipboard:watch", "user")
+    expect(await store.isGranted(identity(), "clipboard:watch")).toBe(false)
+  })
+
+  it("a fresh user grant supersedes a prior tombstone", async () => {
+    const store = new GrantStore(file)
+    await store.grant(identity(), "clipboard:watch", "user")
+    await store.revoke(identity(), "clipboard:watch", "user")
+    await store.grant(identity(), "clipboard:watch", "user")
+    expect(await store.isGranted(identity(), "clipboard:watch")).toBe(true)
+  })
+
+  it("grantAutoIfAllowed is blocked by an exact-identity tombstone", async () => {
+    const store = new GrantStore(file)
+    await store.grant(identity(), "clipboard:watch", "user")
+    await store.revoke(identity(), "clipboard:watch", "user")
+    await store.grantAutoIfAllowed(identity(), "clipboard:watch")
+    expect(await store.isGranted(identity(), "clipboard:watch")).toBe(false)
+  })
+
+  it("auto tombstone blocks re-grant even after the declaration hash changes (same publisher)", async () => {
+    const store = new GrantStore(file)
+    await store.grant(identity({ capabilityDeclarationHash: "h1" }), "clipboard:watch", "user")
+    await store.revoke(identity({ capabilityDeclarationHash: "h1" }), "clipboard:watch", "user")
+    await store.grantAutoIfAllowed(identity({ capabilityDeclarationHash: "h2" }), "clipboard:watch")
+    expect(
+      await store.isGranted(identity({ capabilityDeclarationHash: "h2" }), "clipboard:watch")
+    ).toBe(false)
+  })
+
+  it("migrates an old bare-array grants file (capability -> capabilityId)", async () => {
+    const fs = await import("node:fs/promises")
+    await fs.writeFile(
+      file,
+      JSON.stringify([
+        { capability: "notification", grantedAt: 1, grantedBy: "install", identity: identity() },
+      ])
+    )
+    const store = new GrantStore(file)
+    expect(await store.isGranted(identity(), "notification")).toBe(true)
   })
 })
