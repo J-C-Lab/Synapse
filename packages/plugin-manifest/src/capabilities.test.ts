@@ -6,6 +6,7 @@ import {
   capabilityIds,
   getCapability,
   normalizeCapabilities,
+  stableStringify,
 } from "./capabilities"
 
 describe("capability registry", () => {
@@ -97,6 +98,23 @@ describe("capabilityDeclarationHash v2", () => {
     const a = capabilityDeclarationHash([{ id: "storage:plugin" }])
     const b = capabilityDeclarationHash([{ id: "storage:plugin" }, { id: "notification" }])
     expect(a).not.toBe(b)
+  })
+})
+
+describe("stableStringify", () => {
+  it("is independent of object key order at every level", () => {
+    expect(stableStringify({ a: 1, b: { d: 2, c: 3 } })).toBe(
+      stableStringify({ b: { c: 3, d: 2 }, a: 1 })
+    )
+  })
+
+  it("preserves array order", () => {
+    expect(stableStringify([3, 1, 2])).toBe("[3,1,2]")
+    expect(stableStringify([1, 2, 3])).not.toBe(stableStringify([3, 2, 1]))
+  })
+
+  it("sorts nested keys deterministically", () => {
+    expect(stableStringify({ b: 2, a: 1 })).toBe(`{"a":1,"b":2}`)
   })
 })
 

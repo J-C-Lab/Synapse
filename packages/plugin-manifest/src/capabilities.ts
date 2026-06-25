@@ -21,7 +21,12 @@ export type CapabilityTier = "auto" | "consent" | "elevated"
 export interface CapabilityScopeAdapter {
   /** Throw if `scope` is not a structurally valid scope for this capability. */
   validate: (scope: unknown) => void
-  /** Return a stable, normalized form so equal scopes compare equal. */
+  /**
+   * Return a stable, normalized form so equal scopes compare equal. The
+   * declaration hash serializes scopes through a key-stable serializer, so
+   * canonicalize need not emit object keys in any particular order — deep value
+   * equality of the returned scope is sufficient for a stable hash.
+   */
   canonicalize: (scope: unknown) => unknown
   /** Combine multiple granted scopes into one widest-allowed scope. */
   merge: (scopes: unknown[]) => unknown
@@ -105,15 +110,30 @@ export function normalizeCapabilities(
 }
 
 /**
+ * Deterministic JSON serializer that sorts object keys at every level (arrays
+ * keep their order). Two deep-equal values always serialize to the same string,
+ * regardless of key insertion order — required because the declaration hash is a
+ * security-identity hash and a scope adapter may emit object keys in any order.
+ */
+export function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`
+  const obj = value as Record<string, unknown>
+  const keys = Object.keys(obj).sort()
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`
+}
+
+/**
  * Stable hash over a plugin's declared-capability set. Part of the grant
  * identity: if an update changes what the plugin declares, the hash changes and
  * prior grants are invalidated — a wider update cannot inherit narrower trust.
- * Hashes over the canonical set (ids + scopes), so order and duplicates in the
- * raw declaration do not affect identity but a scope change does.
+ * Hashes over the canonical set (ids + scopes) via a key-stable serializer, so
+ * order and duplicates in the raw declaration (and object-key order within a
+ * scope) do not affect identity, but a scope change does.
  */
 export function capabilityDeclarationHash(declared: readonly NormalizedCapability[]): string {
-  const canonical = normalizeCapabilities(declared).map((c) =>
-    c.scope === undefined ? { id: c.id } : { id: c.id, scope: c.scope }
-  )
-  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex").slice(0, 16)
+  return createHash("sha256")
+    .update(stableStringify(normalizeCapabilities(declared)))
+    .digest("hex")
+    .slice(0, 16)
 }

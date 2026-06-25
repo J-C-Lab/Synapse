@@ -11,6 +11,7 @@ export {
   capabilityIds,
   getCapability,
   normalizeCapabilities,
+  stableStringify,
 } from "./capabilities"
 
 export type { CapabilityDescriptor, CapabilityScopeAdapter, CapabilityTier } from "./capabilities"
