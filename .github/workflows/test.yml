@@ -53,7 +53,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build workspace packages
-        run: pnpm build:packages
+        run: pnpm build:packages && pnpm -F @synapsepkg/plugin-cli build
 
       - name: Run tests with coverage
         run: pnpm test:coverage
