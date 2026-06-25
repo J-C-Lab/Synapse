@@ -1,4 +1,4 @@
-import type { JsonSchema } from "./types"
+import type { JsonSchema, NormalizedCapability } from "./types"
 import { createHash } from "node:crypto"
 
 // The capability registry — the single source of truth for what a plugin may be
@@ -82,11 +82,38 @@ export function capabilityIds(): string[] {
 }
 
 /**
+ * Collapse a raw declaration into the canonical capability set: one entry per
+ * id, scopes canonicalized and merged through the capability's adapter, sorted
+ * by id. Capabilities without an adapter carry no scope (their scope cannot yet
+ * be constrained), so duplicates simply collapse to a single unscoped entry.
+ */
+export function normalizeCapabilities(
+  declared: readonly NormalizedCapability[]
+): NormalizedCapability[] {
+  const byId = new Map<string, NormalizedCapability>()
+  for (const cap of declared) {
+    const adapter = getCapability(cap.id)?.scopeAdapter
+    const scope = adapter ? adapter.canonicalize(cap.scope) : undefined
+    const existing = byId.get(cap.id)
+    if (!existing) {
+      byId.set(cap.id, scope === undefined ? { id: cap.id } : { id: cap.id, scope })
+    } else if (adapter) {
+      byId.set(cap.id, { id: cap.id, scope: adapter.merge([existing.scope, scope]) })
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id))
+}
+
+/**
  * Stable hash over a plugin's declared-capability set. Part of the grant
  * identity: if an update changes what the plugin declares, the hash changes and
  * prior grants are invalidated — a wider update cannot inherit narrower trust.
+ * Hashes over the canonical set (ids + scopes), so order and duplicates in the
+ * raw declaration do not affect identity but a scope change does.
  */
-export function capabilityDeclarationHash(declared: readonly string[]): string {
-  const normalized = [...new Set(declared)].sort().join("\n")
-  return createHash("sha256").update(normalized).digest("hex").slice(0, 16)
+export function capabilityDeclarationHash(declared: readonly NormalizedCapability[]): string {
+  const canonical = normalizeCapabilities(declared).map((c) =>
+    c.scope === undefined ? { id: c.id } : { id: c.id, scope: c.scope }
+  )
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex").slice(0, 16)
 }

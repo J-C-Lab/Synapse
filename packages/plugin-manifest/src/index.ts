@@ -10,6 +10,7 @@ export {
   capabilityDeclarationHash,
   capabilityIds,
   getCapability,
+  normalizeCapabilities,
 } from "./capabilities"
 
 export type { CapabilityDescriptor, CapabilityScopeAdapter, CapabilityTier } from "./capabilities"

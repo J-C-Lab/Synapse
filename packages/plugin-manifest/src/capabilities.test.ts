@@ -5,6 +5,7 @@ import {
   capabilityDeclarationHash,
   capabilityIds,
   getCapability,
+  normalizeCapabilities,
 } from "./capabilities"
 
 describe("capability registry", () => {
@@ -57,14 +58,44 @@ describe("capability registry", () => {
 
 describe("capabilityDeclarationHash", () => {
   it("is independent of order and duplicates", () => {
-    expect(capabilityDeclarationHash(["clipboard:read", "storage:plugin"])).toBe(
-      capabilityDeclarationHash(["storage:plugin", "clipboard:read", "storage:plugin"])
+    expect(capabilityDeclarationHash([{ id: "clipboard:read" }, { id: "storage:plugin" }])).toBe(
+      capabilityDeclarationHash([
+        { id: "storage:plugin" },
+        { id: "clipboard:read" },
+        { id: "storage:plugin" },
+      ])
     )
   })
 
   it("changes when the declared set changes", () => {
-    const a = capabilityDeclarationHash(["storage:plugin"])
-    const b = capabilityDeclarationHash(["storage:plugin", "clipboard:read"])
+    const a = capabilityDeclarationHash([{ id: "storage:plugin" }])
+    const b = capabilityDeclarationHash([{ id: "storage:plugin" }, { id: "clipboard:read" }])
+    expect(a).not.toBe(b)
+  })
+})
+
+describe("normalizeCapabilities", () => {
+  it("merges duplicate ids into one entry", () => {
+    const out = normalizeCapabilities([{ id: "storage:plugin" }, { id: "storage:plugin" }])
+    expect(out).toHaveLength(1)
+  })
+
+  it("sorts entries by id", () => {
+    const out = normalizeCapabilities([{ id: "notification" }, { id: "clipboard:read" }])
+    expect(out.map((c) => c.id)).toEqual(["clipboard:read", "notification"])
+  })
+})
+
+describe("capabilityDeclarationHash v2", () => {
+  it("is stable across raw entry order", () => {
+    const a = capabilityDeclarationHash([{ id: "notification" }, { id: "storage:plugin" }])
+    const b = capabilityDeclarationHash([{ id: "storage:plugin" }, { id: "notification" }])
+    expect(a).toBe(b)
+  })
+
+  it("changes when a capability is added", () => {
+    const a = capabilityDeclarationHash([{ id: "storage:plugin" }])
+    const b = capabilityDeclarationHash([{ id: "storage:plugin" }, { id: "notification" }])
     expect(a).not.toBe(b)
   })
 })
