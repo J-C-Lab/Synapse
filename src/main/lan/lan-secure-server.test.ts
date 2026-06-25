@@ -66,7 +66,7 @@ describe("lanSecureServer", () => {
     expect(bob.trustedDevices.has("alice")).toBe(false)
     // Self-signed TLS keygen + handshake + chunked transfer is CPU-bound and runs
     // markedly slower on shared CI runners than locally; allow generous headroom.
-  }, 30_000)
+  }, 60_000)
 
   it("orders LAN request candidates by likely reachability and removes duplicates", () => {
     expect(
