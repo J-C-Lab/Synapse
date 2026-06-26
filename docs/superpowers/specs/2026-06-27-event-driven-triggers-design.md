@@ -1,9 +1,15 @@
 # Event-Driven Triggers + Background Capability Model Design
 
 > Date: 2026-06-27
-> Status: design approved in conversation (4 sections), revised after external
-> review (host-minted invocation, three-level signal teardown, manifest-named
-> handlers, sanitized event payloads). Implementation plan not yet drafted.
+> Status: design approved in conversation (4 sections), revised after two
+> external review rounds. Round 1 (host-minted invocation, three-level signal
+> teardown, manifest-named handlers, sanitized event payloads). Round 2
+> amendments applied: per-(trigger,capability,scope) budgets; manifest `uses`
+> declarations; `triggerOrigin` held ONLY in a host-side invocation record
+> (never enters the sandbox); explicit Trigger Admission vs Capability Budget
+> breaker split; conservative timer floor; clipboard hash dropped; fs.watch
+> root-relative paths; grant invalidation tied to the identity fingerprint.
+> Ready for implementation plan.
 
 ## Context
 
@@ -105,34 +111,80 @@ model a **trigger-originated** background invocation carries a host-private
 `triggerOrigin` marker; for those calls the gate replaces per-call `approve()`
 with a **budget/rate circuit-breaker check**.
 
+**Two distinct breakers at two distinct stages** (must NOT be collapsed into
+one layer):
+
+**(a) Trigger Admission Breaker** — decides whether an incoming event may create
+a background invocation at all. Owns: trigger fire-frequency, event-storm
+coalescing / drop, per-trigger pause, fault state, max concurrency. Runs at the
+`fire(event)` stage, before the host mints any invocation.
+
+**(b) Capability Budget Breaker** — decides whether the woken handler may call a
+given sensitive capability. Runs inside the capability gate, per call.
+
+Example: an `fs.watch` emitting 1000 changes/sec is coalesced/dropped by the
+Admission Breaker before any handler wakes; once a handler does wake and tries
+to read a file or hit the network, the Capability Budget Breaker debits the
+`fs:read` / `network:https` budget.
+
+Capability-gate evaluation for a trigger-origin call:
+
 | Gate | Semantics | On trip |
 | --- | --- | --- |
 | Scope check | `adapter.contains(declared, requested)` (unchanged) | deny + audit |
 | Standing grant | granted at enable time | — |
-| Budget | per trigger: ≤ N sensitive actions / period | drop + audit + panel red |
-| Rate | per trigger min interval / per plugin concurrency cap | coalesce or drop |
+| Capability budget | tracked per **(pluginId, triggerId, capabilityId, normalizedScope, period)** tuple — NOT a single pooled per-trigger total | drop + audit + panel red |
 | Cancel signal | revoke / kill / disable → abort in-flight | reuse network `abortAll` |
 
-**Invariant:** budget/rate are a **hard circuit-breaker, not a consent
+**Budget granularity (amendment 1):** budget is per
+`(pluginId, triggerId, capabilityId, normalizedScope, period)`. A trigger-level
+outer cap MAY exist, but it must NOT replace capability-level budgets — otherwise
+a budget intended for `notification:show` could be drained by `network:https` or
+`agent:invoke`. Each sensitive capability under a trigger has its own allowance.
+
+**Invariant:** both breakers are a **hard circuit-breaker, not a consent
 mechanism** — exhaustion drops silently and surfaces in the panel; it never
 prompts. Consent happens only at enable time. The existing agent-driven
-`elevated` path is unchanged (no `triggerOrigin` marker → still per-call
-`approve()`), so security there is not weakened.
+`elevated` path is unchanged (no `triggerOrigin` → still per-call `approve()`),
+so security there is not weakened.
 
 **Per-trigger scope shapes (v1 four types):**
 
-- **timer/cron** — `{ schedule: "*/5 * * * *" | { intervalMs } }`, enforced
-  minimum interval floor (e.g. ≥1s) against busy loops; budget derived from
-  frequency by default.
+- **timer/cron** — `{ schedule: "*/5 * * * *" | { intervalMs } }`. Conservative
+  minimum-interval floor (amendment 5): signed/stable plugins `intervalMs ≥
+  60000` and cron granularity ≥ 1 minute; dev/unsigned local plugins may relax
+  to ≥5s behind an explicit dev-mode flag. The floor is enforced at registration
+  (reject below floor), not just defaulted.
 - **fs.watch** — `{ paths: ["~/Documents/**"], events: ["create","modify"] }`,
   path normalization reusing the network-scope approach (`..` / encoding
   folding), with system/sensitive directories denied (allowlist roots +
   denylist).
 - **clipboard** — `{ contentTypes?: ["text"] }`, lifting the existing
-  `clipboard:watch` into this model.
+  `clipboard:watch` into this model. Safe event exposes NO content hash
+  (amendment 6): a plain hash of short clipboard content — password, OTP, email,
+  URL — is dictionary-attackable. Any change-dedup is done host-internally with a
+  runtime-private, short-lived keyed fingerprint never handed to the plugin.
 - **global-hotkey** — `{ accelerator: "CmdOrCtrl+Shift+K" }`, conflict detection
   at registration time (reject already-bound / system-reserved combos) to
   prevent hotkey hijacking.
+
+**Standing grant invalidation (amendment 8).** An enable-time background grant
+is NOT permanent. It is invalidated — forcing re-consent at next enable — when
+any of these change:
+
+- plugin disabled or uninstalled;
+- trigger paused / revoked / killed;
+- manifest changes; trigger `scope` changes; trigger `uses` / capability budget
+  changes;
+- plugin package hash / signature changes; publisher identity changes.
+
+This reuses the existing
+[identity fingerprint](../../../src/main/plugins/capability-gate.ts) (already
+hashes `pluginId` + `publisherId` + `signingKeyFingerprint` +
+`capabilityDeclarationHash`): fold the trigger declarations into that hash (or a
+parallel `triggerDeclarationHash`) so any trigger/scope/budget/identity change
+yields a new fingerprint and the old grant no longer matches. Prevents an
+upgrade that widens scope from inheriting the prior authorization.
 
 ### Section 3 — lifecycle & dispatch (revised)
 
@@ -140,22 +192,31 @@ The existing dispatch is already the right shape (builds a background context
 with `actor:"background"` + trigger + abort signal, runs the hook under a
 timeout). Four revisions harden it:
 
-**R1 — the background invocation is minted by the host-side Invoker; the sandbox
-only executes the handler inside it.** Security-critical: `triggerOrigin` is the
-switch that disables per-call prompting (Section 2). The plugin/sandbox must NOT
-be able to construct it, else a plugin could forge `triggerOrigin` and bypass
-the agent-driven `elevated` per-call `approve()`.
+**R1 — the background invocation lives ONLY in a host-side record; the sandbox
+never receives the invocation object or `triggerOrigin` (amendment 3).**
+Security-critical: `triggerOrigin` is the switch that disables per-call
+prompting (Section 2). Passing the whole `invocation` (even with a
+non-enumerable `triggerOrigin`) into the sandbox risks misuse or future
+serialization leakage. So `triggerOrigin` is NOT a JS field anywhere the plugin
+can reach.
 
 ```
-fire(event) → registry lookup + budget/rate circuit-breaker
-            → Background Invoker (host) mints invocation:
-                actor: "background"
-                triggerOrigin: runtime-private token (sandbox cannot see/build)
-                pluginId / triggerId
-                audit + grant context
-                per-trigger signal + single-shot timeout
-            → sandbox.dispatchTrigger(invocation, event)  // executes manifest-named export only
+fire(event) → registry lookup + Trigger Admission Breaker (§2)
+            → Background Invoker (host) mints a record keyed by invocationId:
+                { actor: "background", triggerOrigin (runtime-private),
+                  pluginId, triggerId, grant context, audit context,
+                  per-trigger signal, single-shot timeout }
+                stored in a host-side Map<invocationId, InvocationRecord>
+            → host builds a sanitized ctx facade whose capability methods
+              CLOSE OVER invocationId (the plugin never reads it)
+            → sandbox.dispatchTrigger(ctxFacade, event)   // executes manifest-named export only
 ```
+
+When the handler calls a capability, the ctx facade carries `invocationId` back
+to the host; the gate looks up the host-side `InvocationRecord` by `invocationId`
+and trusts ONLY that record for `triggerOrigin` / grant / audit context. The
+sandbox cannot see, build, or forge `triggerOrigin`; an unknown or expired
+`invocationId` fails closed.
 
 **R2 — three-level signal hierarchy for precise teardown.** Plugin-level
 `capabilityAbort` alone cannot revoke a single trigger without killing unrelated
@@ -190,13 +251,41 @@ the "revoke `clipboard:watch` kills unrelated intervals" trade-off noted there.
 **R3 — handler names come from the manifest; the SDK only provides the
 `triggers` object convention.** Supports multiple triggers of the same type:
 
+Each trigger MUST also declare `uses` — the capabilities it may call when woken,
+each with its own scope and budget — plus `limits` (amendment 2). Without `uses`
+the enable-time panel cannot show "what can this trigger do once woken," and the
+per-capability budgets of amendment 1 have nowhere to live.
+
 ```jsonc
 "triggers": [
-  { "id": "sync-5min",     "type": "timer",    "schedule": {"intervalMs": 300000}, "handler": "triggers.onSyncTick" },
-  { "id": "daily-summary", "type": "cron",     "schedule": "0 9 * * *",            "handler": "triggers.onDailySummary" },
-  { "id": "watch-dls",     "type": "fs.watch", "scope": {"paths":["~/Downloads/**"]}, "handler": "triggers.onDownloads" }
+  {
+    "id": "watch-dls",
+    "type": "fs.watch",
+    "scope": { "paths": ["~/Downloads/**"], "events": ["create", "modify"] },
+    "handler": "triggers.onDownloads",
+    "uses": [
+      { "capability": "fs:read",       "scope": { "paths": ["~/Downloads/**"] },          "budget": { "maxCalls": 20, "period": "1h" } },
+      { "capability": "network:https", "scope": { "hosts": ["api.example.com"] },          "budget": { "maxCalls": 10, "period": "1h" } }
+    ],
+    "limits": { "minIntervalMs": 1000, "maxConcurrency": 1 }
+  },
+  {
+    "id": "daily-summary",
+    "type": "cron",
+    "schedule": "0 9 * * *",
+    "handler": "triggers.onDailySummary",
+    "uses": [
+      { "capability": "notification", "scope": {}, "budget": { "maxCalls": 1, "period": "1d" } }
+    ],
+    "limits": { "maxConcurrency": 1 }
+  }
 ]
 ```
+
+`uses[].scope` is matched by the same `adapter.contains` used for capability
+declarations; `uses[].budget` is the per-`(trigger,capability,scope)` allowance
+from amendment 1. A handler calling a capability not listed in its trigger's
+`uses` is denied even if the plugin declares that capability elsewhere.
 
 ```ts
 export const triggers = {
@@ -216,10 +305,18 @@ capability (separately audited).
 
 | Trigger | Safe event payload | Full read → gate |
 | --- | --- | --- |
-| clipboard | `{ contentTypes, textLength, changedAt, hash? }` | full text → `clipboard:read` |
-| fs.watch | `{ path, kind, timestamp, size?, ext? }` | file content → `fs:read` |
+| clipboard | `{ contentTypes, textLength, changedAt }` (no hash, amendment 6) | full text → `clipboard:read` |
+| fs.watch | `{ rootId, relativePath, kind, timestamp, size?, ext? }` (root-relative, amendment 7) | absolute path / content → `fs:resolvePath` / `fs:read` |
 | hotkey | `{ accelerator, pressedAt }` | — |
 | timer | `{ scheduledAt, firedAt, driftMs }` | — |
+
+> fs.watch path (amendment 7): the safe event carries `rootId` (which declared
+> watch root) + `relativePath` within it — NOT an absolute path. A bare filename
+> and directory structure are themselves sensitive (leak home dir / username).
+> The plugin declared the root, so the relative path is the minimal disclosure;
+> the absolute path is obtained only via a gated `fs:resolvePath` / `fs:read`.
+> Audit and UI also read better: `Downloads/report.pdf`, not
+> `/Users/xxx/Downloads/report.pdf`.
 
 > Migration note (breaking): the current
 > [dispatchEvent](../../../src/main/plugins/plugin-sandbox.ts) hands the full
@@ -232,8 +329,8 @@ capability (separately audited).
 | Phase | Mount point | Action |
 | --- | --- | --- |
 | Enable | `host.setEnabled(id, true)` | read manifest triggers → register 4 adapters (start interval/cron, fs watcher, clipboard poll, hotkey); enable-time consent gate first |
-| Fire | adapter `fire(event)` | registry lookup → budget/rate circuit-breaker → host mints invocation → `sandbox.dispatchTrigger` |
-| Execute | warm sandbox | run manifest-named export handler; each sensitive action → gate (scope + grant, no prompt) |
+| Fire | adapter `fire(event)` | registry lookup → **Trigger Admission Breaker** → host mints invocation record (invocationId) → `sandbox.dispatchTrigger(ctxFacade, event)` |
+| Execute | warm sandbox | run manifest-named export handler; each sensitive action → gate via invocationId → scope + grant + **Capability Budget Breaker** (no prompt) |
 | Disable / revoke / kill | `setEnabled(false)` / `abortPluginCapability` / `disposePlugin` | deregister triggers (clear interval / close watcher / unregister hotkey) → abort controllers → reuse network `abortAll()` |
 
 **New SDK / manifest surface** (main process + SDK types only; renderer/preload
@@ -287,14 +384,18 @@ separately).
 - **Source adapters** (timer, fs.watch, clipboard, hotkey) — own OS
   registration + normalization into safe events; depend on Node/Electron APIs;
   expose `register(scope) → Disposable` and `fire(event)`.
-- **Trigger Registry** — owns the manifest→TriggerRuntime map, budget/rate
-  counters, circuit-breaker state; pure-ish, depends on adapters via interfaces.
-- **Background Invoker** (host) — mints invocation contexts incl. the private
-  `triggerOrigin`; the only place that token is created.
-- **Capability gate** (existing, extended) — recognizes `triggerOrigin` to swap
-  per-call approval for the budget/rate check.
-- **Sandbox** (existing, extended) — `dispatchTrigger(invocation, event)`
-  executes the manifest-named export; never constructs invocations.
+- **Trigger Registry** — owns the manifest→TriggerRuntime map and the **Trigger
+  Admission Breaker** (fire-frequency, coalescing, concurrency, pause, fault
+  state); depends on adapters via interfaces.
+- **Background Invoker** (host) — mints the `InvocationRecord` (incl. the private
+  `triggerOrigin`) into a host-side `Map<invocationId, InvocationRecord>`; the
+  only place that token exists. Builds the sanitized ctx facade.
+- **Capability gate** (existing, extended) — looks up the `InvocationRecord` by
+  invocationId; for trigger-origin calls swaps per-call approval for the
+  **Capability Budget Breaker** (per-(trigger,capability,scope) budget).
+- **Sandbox** (existing, extended) — `dispatchTrigger(ctxFacade, event)`
+  executes the manifest-named export; never sees the invocation object or
+  `triggerOrigin`, never constructs invocations.
 - **Active Background panel** (renderer, existing governance UI extended) —
   read-only state + pause/resume/kill actions over existing IPC.
 
@@ -315,10 +416,17 @@ teardown, and panel are built once in step 1.
 
 ## Testing
 
-- Registry: budget exhaustion drops + audits; rate coalescing; fault
+- Admission Breaker: event-storm coalescing/drop; concurrency cap; fault
   auto-pause; enable→register / disable→deregister symmetry.
-- Invoker: `triggerOrigin` cannot be forged from sandbox; gate swaps approval
-  for budget check only when present.
+- Capability Budget Breaker: per-`(trigger,capability,scope)` isolation — a
+  budget for `notification` is NOT drained by `network:https` calls; exhaustion
+  drops + audits without prompting.
+- `uses` enforcement: a handler calling a capability absent from its trigger's
+  `uses` is denied even if the plugin declares it elsewhere.
+- Invoker: the sandbox never receives `triggerOrigin`; a forged/unknown/expired
+  invocationId fails closed; the gate trusts only the host-side record.
+- Grant invalidation: changing trigger scope / `uses` / budget / signature
+  yields a new fingerprint and forces re-consent (old grant no longer matches).
 - Teardown: three-level signals — revoke one trigger leaves siblings running;
   disable kills all; single timeout kills one invocation.
 - Adapters: each emits the sanitized safe event only; full content requires the
