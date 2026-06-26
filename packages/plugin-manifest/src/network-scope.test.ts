@@ -18,6 +18,19 @@ describe("validate", () => {
     expect(() => a.validate({ hosts: ["api.github.com/x"] })).toThrow()
   })
   it("rejects bracketed IPv6 host", () => expect(() => a.validate({ hosts: ["[::1]"] })).toThrow())
+  it("rejects non-bracketed IPv6 host", () =>
+    expect(() => a.validate({ hosts: ["::1"] })).toThrow())
+  it("rejects encoded IPv4 that normalizes to a loopback literal", () => {
+    expect(() => a.validate({ hosts: ["2130706433"] })).toThrow()
+    expect(() => a.validate({ hosts: ["0177.0.0.1"] })).toThrow()
+    expect(() => a.validate({ hosts: ["0x7f.0.0.1"] })).toThrow()
+  })
+  it("rejects userinfo smuggling that normalizes to another host", () =>
+    expect(() => a.validate({ hosts: ["x.com@evil.com"] })).toThrow())
+  it("rejects localhost/.local regardless of case (normalized)", () => {
+    expect(() => a.validate({ hosts: ["LOCALHOST"] })).toThrow()
+    expect(() => a.validate({ hosts: ["printer.LOCAL"] })).toThrow()
+  })
   it("rejects single-label host (no dot)", () =>
     expect(() => a.validate({ hosts: ["example"] })).toThrow())
   it("rejects bad methods", () =>

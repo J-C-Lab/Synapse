@@ -42,7 +42,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-/** Punycode + lowercase a bare hostname via the URL parser. */
+/**
+ * Punycode + lowercase a bare hostname via the URL parser. The URL parser also
+ * decodes alternate IP encodings (decimal, octal, hex) and userinfo — which is
+ * exactly why every security check must run on this normalized value, not the
+ * raw string (see `validateHost`).
+ */
 function normalizeHost(host: string): string {
   return new URL(`https://${host}`).hostname
 }
@@ -50,18 +55,23 @@ function normalizeHost(host: string): string {
 function validateHost(host: unknown): void {
   if (typeof host !== "string" || host.length === 0)
     throw new TypeError("network:https host must be a non-empty string")
-  if (/[:/*[]/.test(host) || host.includes("://"))
+  // Cheap structural rejections on the raw string. `@` is forbidden because
+  // `x.com@evil.com` would otherwise normalize to `evil.com` (userinfo split).
+  if (/[:/*[@]/.test(host) || host.includes("://"))
     throw new TypeError(`network:https host must be a bare hostname: ${host}`)
-  if (host === "localhost" || host.endsWith(".local"))
-    throw new TypeError(`network:https host may not be a loopback/.local name: ${host}`)
-  if (IPV4_RE.test(host))
-    throw new TypeError(`network:https host may not be an IP literal: ${host}`)
+  // Normalize, then run every security check on the NORMALIZED value: the URL
+  // parser decodes `2130706433`, `0177.0.0.1`, `0x7f.0.0.1` → `127.0.0.1`, and
+  // lowercases `LOCALHOST`/`printer.LOCAL`, so raw-string checks would miss them.
   let normalized: string
   try {
     normalized = normalizeHost(host)
   } catch {
     throw new TypeError(`network:https host is not a valid hostname: ${host}`)
   }
+  if (IPV4_RE.test(normalized))
+    throw new TypeError(`network:https host may not be an IP literal: ${host}`)
+  if (normalized === "localhost" || normalized.endsWith(".local"))
+    throw new TypeError(`network:https host may not be a loopback/.local name: ${host}`)
   if (!HOSTNAME_RE.test(normalized))
     throw new TypeError(`network:https host is not a valid hostname: ${host}`)
 }
