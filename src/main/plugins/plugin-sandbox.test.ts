@@ -84,6 +84,61 @@ module.exports = {
     ).resolves.toEqual({ type: "toast", level: "info", message: "undefined/undefined/undefined" })
   })
 
+  it("exposes no network/egress globals inside the sandbox", async () => {
+    // The sandbox is an allowlist (vm.createContext over curated globals); no
+    // network primitive is injected. Network access is only via ctx.network,
+    // a host function — never a vm global. This guards against regressions that
+    // would re-open an egress hole.
+    const entry = await writePlugin(`
+module.exports = {
+  commands: {
+    "test.run": {
+      run() {
+        return {
+          type: "toast",
+          level: "info",
+          message: JSON.stringify({
+            fetch: typeof fetch,
+            globalFetch: typeof globalThis.fetch,
+            XMLHttpRequest: typeof XMLHttpRequest,
+            WebSocket: typeof WebSocket,
+            EventSource: typeof EventSource,
+            Worker: typeof Worker,
+            SharedWorker: typeof SharedWorker,
+            require: typeof require,
+            process: typeof process,
+            global: typeof global,
+            navigator: typeof navigator
+          })
+        }
+      }
+    }
+  }
+}
+`)
+    const sandbox = sandboxForTest()
+    await sandbox.loadPlugin(entry)
+
+    const result = (await sandbox.invokeCommand({
+      pluginId: entry.pluginId,
+      commandId: "test.run",
+      phase: "run",
+    })) as { message: string }
+    expect(JSON.parse(result.message)).toEqual({
+      fetch: "undefined",
+      globalFetch: "undefined",
+      XMLHttpRequest: "undefined",
+      WebSocket: "undefined",
+      EventSource: "undefined",
+      Worker: "undefined",
+      SharedWorker: "undefined",
+      require: "undefined",
+      process: "undefined",
+      global: "undefined",
+      navigator: "undefined",
+    })
+  })
+
   it("times out commands that never resolve", async () => {
     const entry = await writePlugin(`
 module.exports = {

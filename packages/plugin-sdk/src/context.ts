@@ -1,4 +1,5 @@
 import type { ClipboardContent } from "./clipboard"
+import type { NetworkAPI } from "./network"
 
 /**
  * Per-plugin key/value store. Backed by `userData/plugin-data/<pluginId>.json`
@@ -80,6 +81,13 @@ export interface PluginContext {
   clipboard: ClipboardAPI
   notifications: NotificationAPI
   system: SystemAPI
+
+  /**
+   * HTTPS fetch, gated by the `network:https` capability. Constrained to the
+   * declared host/method/path scope; the host blocks private IPs and
+   * cross-origin redirects, and there is no cookie jar.
+   */
+  network: NetworkAPI
 
   /** Routed to the host's plugin log channel. Avoid `console` from inside the sandbox. */
   log: (...args: unknown[]) => void

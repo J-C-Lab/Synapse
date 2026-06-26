@@ -1,6 +1,7 @@
 import type { NormalizedCapability } from "@synapse/plugin-manifest"
 import type {
   ClipboardContent,
+  NetworkRequestInit,
   NotificationAPI,
   PluginContext,
   StorageAPI,
@@ -10,6 +11,7 @@ import type {
 } from "@synapse/plugin-sdk"
 import type { CapabilityActor, CapabilityGatePort, CapabilityRequest } from "./capability-gate"
 import type { CapabilityGovernance } from "./capability-governance"
+import type { NetworkFetcher } from "./network-fetcher"
 import type { PluginManifest, PluginSourceKind } from "./types"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
@@ -21,6 +23,7 @@ import {
   callerToActor,
   createCapabilityGovernance,
 } from "./capability-governance"
+import { createNetworkFetcher } from "./network-fetcher"
 
 export interface PluginRuntimeSnapshot {
   locale: string
@@ -90,7 +93,7 @@ export interface ToolContextOptions {
 /** The capability slice shared by command and tool contexts. */
 type PluginCapabilities = Pick<
   PluginContext,
-  "storage" | "clipboard" | "notifications" | "system" | "log"
+  "storage" | "clipboard" | "notifications" | "system" | "network" | "log"
 >
 
 interface StorageState {
@@ -112,6 +115,9 @@ const defaultInvocation: InvocationContext = {
 export class PluginBridge {
   private readonly storage = new Map<string, StorageState>()
   private readonly watchers = new Map<string, Set<ReturnType<typeof setInterval>>>()
+  // Per-plugin set of in-flight network fetchers, one per invocation. Held so a
+  // network:https revoke (or disposePlugin) can abortAll() every running fetch.
+  private readonly fetchers = new Map<string, Set<NetworkFetcher>>()
   private readonly storageFlushMs: number
   private readonly clipboardPollMs: number
   private readonly governance: CapabilityGovernance
@@ -217,6 +223,16 @@ export class PluginBridge {
         signal: invocation.signal,
       })
 
+    // The fetcher runs its own gate.ensure inside fetch(), so network needs no
+    // separate ensure() wrapper here. Track it per-plugin for revoke teardown.
+    const fetcher = createNetworkFetcher({
+      gate,
+      actor: invocation.actor,
+      trigger: invocation.trigger,
+      pluginId,
+    })
+    this.registerFetcher(pluginId, fetcher)
+
     return {
       storage: this.createStorageAPI(pluginId, gate, invocation),
       clipboard: {
@@ -267,10 +283,30 @@ export class PluginBridge {
           return this.options.adapters.system.captureScreen(pluginId, options)
         },
       },
+      network: {
+        fetch: (url, init) => fetcher.fetch(url, withInvocationSignal(init, invocation.signal)),
+      },
       log: (...args) => {
         logger.child(`plugin:${pluginId}`).warn(args.map((arg) => String(arg)).join(" "))
       },
     }
+  }
+
+  private registerFetcher(pluginId: string, fetcher: NetworkFetcher): void {
+    let set = this.fetchers.get(pluginId)
+    if (!set) {
+      set = new Set()
+      this.fetchers.set(pluginId, set)
+    }
+    set.add(fetcher)
+  }
+
+  /** Abort + drop every tracked network fetcher for a plugin (revoke teardown). */
+  private abortFetchers(pluginId: string): void {
+    const set = this.fetchers.get(pluginId)
+    if (!set) return
+    for (const fetcher of set) fetcher.abortAll()
+    this.fetchers.delete(pluginId)
   }
 
   private watchClipboardWithGate(
@@ -306,12 +342,15 @@ export class PluginBridge {
 
   async disposePlugin(pluginId: string): Promise<void> {
     this.stopClipboardWatchers(pluginId)
+    this.abortFetchers(pluginId)
     await this.flushStorage(pluginId)
   }
 
-  /** Tear down bridge-level clipboard.watch polling for a plugin. */
+  /** Tear down bridge-level resources for a revoked capability. */
   revokeCapability(pluginId: string, capability: string): void {
     if (capability === "clipboard:watch") this.stopClipboardWatchers(pluginId)
+    // Abort every in-flight HTTPS fetch so a revoke cancels live egress.
+    if (capability === "network:https") this.abortFetchers(pluginId)
   }
 
   hasClipboardWatchers(pluginId: string): boolean {
@@ -472,6 +511,20 @@ export class PluginBridge {
       if (timers.size === 0) this.watchers.delete(pluginId)
     }
   }
+}
+
+/**
+ * Merge the invocation's AbortSignal with the caller's `init.signal` so host-side
+ * cancellation (tool timeout / plugin reload) also aborts the fetch. When the
+ * caller supplied no signal, just pin the invocation signal onto the init.
+ */
+function withInvocationSignal(
+  init: NetworkRequestInit | undefined,
+  invocationSignal: AbortSignal | undefined
+): NetworkRequestInit | undefined {
+  if (!invocationSignal) return init
+  if (!init?.signal) return { ...init, signal: invocationSignal }
+  return { ...init, signal: AbortSignal.any([invocationSignal, init.signal]) }
 }
 
 function preferencesFromManifest(manifest: PluginManifest): Record<string, unknown> {
