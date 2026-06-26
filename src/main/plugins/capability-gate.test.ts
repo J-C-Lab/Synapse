@@ -30,7 +30,7 @@ function makeGate(opts: {
   const audit: CapabilityAuditEntry[] = []
   const gate = new CapabilityGate({
     identity: identity(),
-    declared: new Set(opts.declared ?? []),
+    declared: (opts.declared ?? []).map((id) => ({ id })),
     grants,
     prompt,
     approve,
@@ -114,6 +114,15 @@ describe("capabilityGate.ensure", () => {
     await gate.ensure(req({ capability: "clipboard:watch", actor: "user" }))
     expect(approve).not.toHaveBeenCalled()
   })
+
+  it("denies an unscoped capability call that carries a requestedScope", async () => {
+    const { gate } = makeGate({ declared: ["clipboard:read"], granted: ["clipboard:read"] })
+    await expect(
+      gate.ensure(req({ capability: "clipboard:read", requestedScope: { x: 1 } }))
+    ).rejects.toThrow(/scope not allowed/)
+  })
+
+  it.todo("enforces scoped containment once network adapter is registered (Task 12)")
 })
 
 describe("capabilityGate.assertDeclared", () => {

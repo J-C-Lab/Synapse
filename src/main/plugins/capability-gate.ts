@@ -1,3 +1,4 @@
+import type { NormalizedCapability } from "@synapse/plugin-manifest"
 import type { GrantIdentity, GrantStore } from "./grant-store"
 import { createHash } from "node:crypto"
 import { getCapability } from "@synapse/plugin-manifest"
@@ -63,7 +64,7 @@ export interface CapabilityAuditEntry {
 
 export interface CapabilityGateOptions {
   identity: GrantIdentity
-  declared: ReadonlySet<string>
+  declared: readonly NormalizedCapability[]
   grants: Pick<GrantStore, "isGranted" | "grant">
   prompt: GrantPromptPort
   approve: CapabilityApprover
@@ -77,18 +78,23 @@ export interface CapabilityGatePort {
 }
 
 export class CapabilityGate implements CapabilityGatePort {
-  constructor(private readonly options: CapabilityGateOptions) {}
+  private readonly declaredById: Map<string, NormalizedCapability>
+
+  constructor(private readonly options: CapabilityGateOptions) {
+    this.declaredById = new Map(options.declared.map((c) => [c.id, c]))
+  }
 
   /** Synchronous declaration check (load/manifest time + defense in depth). */
   assertDeclared(capability: string): void {
-    if (!this.options.declared.has(capability)) {
+    if (!this.declaredById.has(capability)) {
       throw new CapabilityDenied(this.options.identity.pluginId, capability, "not declared")
     }
   }
 
   async ensure(request: CapabilityRequest): Promise<void> {
     const cap = getCapability(request.capability)
-    if (!cap || !this.options.declared.has(request.capability)) {
+    const declared = this.declaredById.get(request.capability)
+    if (!cap || !declared) {
       this.emit(request, "deny", false, "not declared", cap?.tier)
       throw new CapabilityDenied(this.options.identity.pluginId, request.capability, "not declared")
     }
@@ -98,9 +104,25 @@ export class CapabilityGate implements CapabilityGatePort {
       throw new CapabilityDenied(this.options.identity.pluginId, request.capability, why)
     }
 
+    // Scope decisions are owned by the capability's adapter — the gate only
+    // routes the call to it. An unscoped capability rejects any scope outright;
+    // a scope-enforced one asks its adapter whether the declared scope contains
+    // what this call requests.
+    if (request.requestedScope !== undefined) {
+      if (!cap.scopeEnforced) deny("scope not allowed on unscoped capability")
+      else if (!cap.scopeAdapter) deny("capability not available")
+      else if (!cap.scopeAdapter.contains(declared.scope, request.requestedScope)) {
+        deny("scope not allowed")
+      }
+    }
+
     let grantedNow = false
     if (cap.tier !== "auto") {
-      const granted = await this.options.grants.isGranted(this.options.identity, request.capability)
+      const granted = await this.options.grants.isGranted(
+        this.options.identity,
+        request.capability,
+        request.requestedScope
+      )
       if (!granted) {
         const ok = await this.options.prompt({
           identity: this.options.identity,
@@ -112,7 +134,7 @@ export class CapabilityGate implements CapabilityGatePort {
           this.options.identity,
           request.capability,
           "user",
-          request.requestedScope
+          declared.scope
         )
         grantedNow = true
       }
