@@ -14,6 +14,8 @@ function identity(): GrantIdentity {
 
 function makeGate(opts: {
   declared?: string[]
+  /** Pre-shaped declared entries with scopes, for scope-enforced capabilities. */
+  declaredEntries?: { id: string; scope?: unknown }[]
   granted?: string[]
   prompt?: () => Promise<boolean>
   approve?: () => Promise<boolean>
@@ -28,9 +30,10 @@ function makeGate(opts: {
   const prompt = vi.fn(opts.prompt ?? (async () => true))
   const approve = vi.fn(opts.approve ?? (async () => true))
   const audit: CapabilityAuditEntry[] = []
+  const declared = opts.declaredEntries ?? (opts.declared ?? []).map((id) => ({ id }))
   const gate = new CapabilityGate({
     identity: identity(),
-    declared: (opts.declared ?? []).map((id) => ({ id })),
+    declared,
     grants,
     prompt,
     approve,
@@ -120,6 +123,22 @@ describe("capabilityGate.ensure", () => {
     await expect(
       gate.ensure(req({ capability: "clipboard:read", requestedScope: { x: 1 } }))
     ).rejects.toThrow(/scope not allowed/)
+  })
+
+  it("denies a scoped capability call when no scope adapter is registered yet", async () => {
+    const { gate } = makeGate({
+      declaredEntries: [{ id: "network:https", scope: { hosts: ["api.github.com"] } }],
+      granted: ["network:https"],
+    })
+    await expect(
+      gate.ensure(
+        req({
+          capability: "network:https",
+          operation: "GET",
+          requestedScope: { host: "api.github.com" },
+        })
+      )
+    ).rejects.toThrow(/scope adapter not registered/)
   })
 
   it.todo("enforces scoped containment once network adapter is registered (Task 12)")

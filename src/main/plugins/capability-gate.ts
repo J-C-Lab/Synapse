@@ -105,12 +105,13 @@ export class CapabilityGate implements CapabilityGatePort {
     }
 
     // Scope decisions are owned by the capability's adapter — the gate only
-    // routes the call to it. An unscoped capability rejects any scope outright;
-    // a scope-enforced one asks its adapter whether the declared scope contains
-    // what this call requests.
+    // routes the call to it. Three outcomes for a scoped call: an unscoped
+    // capability carrying a scope is denied outright; a scope-enforced capability
+    // whose adapter is not yet registered is denied (fail closed); otherwise the
+    // adapter decides whether the declared scope contains what this call requests.
     if (request.requestedScope !== undefined) {
       if (!cap.scopeEnforced) deny("scope not allowed on unscoped capability")
-      else if (!cap.scopeAdapter) deny("capability not available")
+      else if (!cap.scopeAdapter) deny("scope adapter not registered")
       else if (!cap.scopeAdapter.contains(declared.scope, request.requestedScope)) {
         deny("scope not allowed")
       }
