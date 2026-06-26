@@ -18,6 +18,10 @@ export type { CapabilityDescriptor, CapabilityScopeAdapter, CapabilityTier } fro
 
 export { isEngineCompatible } from "./engine"
 
+export { networkHttpsAdapter } from "./network-scope"
+
+export type { NetworkHttpsRequestedScope, NetworkHttpsScope } from "./network-scope"
+
 export { normalizeLegacyCapabilities } from "./normalize-legacy"
 
 export { manifestSchema, ManifestValidationError, parseManifest } from "./schema"
