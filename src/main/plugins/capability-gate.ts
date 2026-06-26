@@ -50,12 +50,14 @@ export interface CapabilityApprover {
 export interface CapabilityAuditEntry {
   pluginId: string
   identityFingerprint: string
-  capability: string
+  capabilityId: string
   tier: string
   actor: CapabilityActor
   trigger: string
   operation: string
   requestedScope?: unknown
+  declaredScope?: unknown
+  grantScope?: unknown
   reason?: string
   decision: "allow" | "deny"
   grantedNow: boolean
@@ -161,12 +163,13 @@ export class CapabilityGate implements CapabilityGatePort {
     this.options.audit({
       pluginId: this.options.identity.pluginId,
       identityFingerprint: identityFingerprint(this.options.identity),
-      capability: request.capability,
+      capabilityId: request.capability,
       tier,
       actor: request.actor,
       trigger: request.trigger,
       operation: request.operation,
       requestedScope: request.requestedScope,
+      declaredScope: this.declaredById.get(request.capability)?.scope,
       reason: request.reason,
       decision,
       grantedNow,
