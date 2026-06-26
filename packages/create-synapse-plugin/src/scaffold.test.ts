@@ -97,8 +97,9 @@ describe("scaffoldPlugin", () => {
       JSON.parse(await fs.readFile(path.join(targetDir, "synapse.json"), "utf-8"))
     )
     expect(manifest.contributes.activationEvents).toEqual(["clipboard:change"])
-    expect(manifest.permissions).toContain("clipboard:read")
-    expect(manifest.permissions).toContain("clipboard:watch")
+    const capabilityIds = manifest.capabilities.map((c) => c.id)
+    expect(capabilityIds).toContain("clipboard:read")
+    expect(capabilityIds).toContain("clipboard:watch")
   })
 
   it("produces a buildable project (create → build closed loop)", async () => {

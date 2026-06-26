@@ -13,7 +13,8 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
     engines: { synapse: "^0.2.0" },
     main: "dist/index.js",
     contributes: { commands: [{ id: "b.run", title: "Run", mode: "view" }] },
-    permissions: [],
+    manifestVersion: 2,
+    capabilities: [],
     ...overrides,
   } as PluginManifest
 }
@@ -21,11 +22,13 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
 describe("assessManifestRisk", () => {
   it("rates an ordinary manifest low", () => {
     expect(assessManifestRisk(manifest()).level).toBe("low")
-    expect(assessManifestRisk(manifest({ permissions: ["clipboard:read"] })).level).toBe("low")
+    expect(assessManifestRisk(manifest({ capabilities: [{ id: "clipboard:read" }] })).level).toBe(
+      "low"
+    )
   })
 
   it("flags a system permission as high", () => {
-    const risk = assessManifestRisk(manifest({ permissions: ["system:open-url"] }))
+    const risk = assessManifestRisk(manifest({ capabilities: [{ id: "system:open-url" }] }))
     expect(risk.level).toBe("high")
     expect(risk.reasons.join(" ")).toContain("system:open-url")
   })
@@ -33,7 +36,7 @@ describe("assessManifestRisk", () => {
   it("flags a destructive tool as high", () => {
     const risk = assessManifestRisk(
       manifest({
-        permissions: ["storage:plugin"],
+        capabilities: [{ id: "storage:plugin" }],
         contributes: {
           commands: [{ id: "b.run", title: "Run", mode: "view" }],
           tools: [

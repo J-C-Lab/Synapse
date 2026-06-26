@@ -5,8 +5,8 @@ import type { PluginManifest } from "@synapsepkg/plugin-manifest"
 // publishing stays live). Intentionally conservative and explainable — it
 // reads only the manifest, no code execution.
 
-const SENSITIVE_PERMISSION_PREFIXES = ["system:"]
-const SENSITIVE_PERMISSIONS = new Set(["clipboard:write"])
+const SENSITIVE_CAPABILITY_PREFIXES = ["system:"]
+const SENSITIVE_CAPABILITIES = new Set(["clipboard:write"])
 
 export interface RiskAssessment {
   level: "low" | "high"
@@ -15,20 +15,20 @@ export interface RiskAssessment {
 
 export function assessManifestRisk(manifest: PluginManifest): RiskAssessment {
   const reasons: string[] = []
-  const permissions = new Set<string>(manifest.permissions ?? [])
+  const capabilities = new Set<string>(manifest.capabilities.map((cap) => cap.id))
 
   for (const tool of manifest.contributes.tools ?? []) {
-    for (const permission of tool.permissions ?? []) permissions.add(permission)
+    for (const cap of tool.capabilities ?? []) capabilities.add(cap.id)
     if (tool.annotations?.destructiveHint) {
       reasons.push(`destructive tool: ${tool.name}`)
     }
   }
 
-  for (const permission of permissions) {
+  for (const capability of capabilities) {
     const sensitive =
-      SENSITIVE_PERMISSION_PREFIXES.some((prefix) => permission.startsWith(prefix)) ||
-      SENSITIVE_PERMISSIONS.has(permission)
-    if (sensitive) reasons.push(`sensitive permission: ${permission}`)
+      SENSITIVE_CAPABILITY_PREFIXES.some((prefix) => capability.startsWith(prefix)) ||
+      SENSITIVE_CAPABILITIES.has(capability)
+    if (sensitive) reasons.push(`sensitive capability: ${capability}`)
   }
 
   return { level: reasons.length > 0 ? "high" : "low", reasons }

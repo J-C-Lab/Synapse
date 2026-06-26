@@ -49,7 +49,7 @@ export interface ToolResult {
  * client, or the user, possibly with no UI in front of it). Everything else
  * from {@link PluginContext} — `storage`, `clipboard`, `system`,
  * `notifications`, `preferences`, `log` — is available, gated by the same
- * manifest permissions.
+ * manifest capabilities.
  *
  * The host builds a fresh `ToolContext` per call. Long-running tools should
  * honour `signal` (cooperative cancellation) and may report `progress`.
