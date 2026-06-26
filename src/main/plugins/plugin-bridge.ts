@@ -1,3 +1,4 @@
+import type { NormalizedCapability } from "@synapse/plugin-manifest"
 import type {
   ClipboardContent,
   NotificationAPI,
@@ -81,8 +82,8 @@ export interface ToolContextOptions {
   caller: ToolCaller
   signal: AbortSignal
   progress?: (pct: number, message?: string) => void
-  /** Tool-declared permissions; gates the context to this subset when present. */
-  permissions?: string[]
+  /** Tool-declared capabilities; gates the context to this subset when present. */
+  capabilities?: readonly NormalizedCapability[]
   toolName: string
 }
 
@@ -147,14 +148,14 @@ export class PluginBridge {
    * Build a headless `ToolContext` for one tool invocation. Reuses the same
    * permission-gated capabilities as commands, drops `locale`/`theme` (tools
    * have no UI), and adds `caller`/`signal`/`progress`. When the tool declares
-   * its own `permissions`, the gate is restricted to that subset.
+   * its own `capabilities`, the gate is restricted to that subset.
    */
   createToolContext(
     pluginId: string,
     manifest: PluginManifest,
     options: ToolContextOptions
   ): ToolContext {
-    const gate = this.gateFor(pluginId, manifest, options.permissions)
+    const gate = this.gateFor(pluginId, manifest, options.capabilities)
     const invocation: InvocationContext = {
       actor: callerToActor(options.caller),
       trigger: `tool:${options.toolName}`,
@@ -174,13 +175,13 @@ export class PluginBridge {
   private gateFor(
     pluginId: string,
     manifest: PluginManifest,
-    declaredPermissions: readonly string[] = manifest.permissions
+    declaredCapabilities: readonly NormalizedCapability[] = manifest.capabilities
   ): CapabilityGatePort {
     const sourceKind = this.sourceKindFor(pluginId)
     if (this.createGate) {
       return this.createGate(
         pluginId,
-        { ...manifest, permissions: [...declaredPermissions] },
+        { ...manifest, capabilities: [...declaredCapabilities] },
         sourceKind
       )
     }
@@ -188,7 +189,7 @@ export class PluginBridge {
     const identity = buildGrantIdentity(pluginId, manifest, sourceKind)
     return new CapabilityGateImpl({
       identity,
-      declared: new Set(declaredPermissions),
+      declared: [...declaredCapabilities],
       grants: this.governance.grants,
       prompt: this.governance.prompt,
       approve: this.governance.approve,
@@ -246,14 +247,13 @@ export class PluginBridge {
       },
       system: {
         openUrl: async (url) => {
-          await ensure({ capability: "system:open-url", operation: "open", requestedScope: url })
+          await ensure({ capability: "system:open-url", operation: "open" })
           await this.options.adapters.system.openUrl(url)
         },
         openPath: async (targetPath) => {
           await ensure({
             capability: "system:open-path",
             operation: "open",
-            requestedScope: targetPath,
           })
           await this.options.adapters.system.openPath(targetPath)
         },
@@ -340,30 +340,32 @@ export class PluginBridge {
     gate: CapabilityGatePort,
     invocation: InvocationContext
   ): StorageAPI {
-    const ensure = (operation: string, key?: string) =>
+    // storage:plugin is unscoped, so the per-key value is carried as the
+    // operation suffix (audit context) rather than as a requestedScope —
+    // the gate rejects a requestedScope on an unscoped capability.
+    const ensure = (operation: string) =>
       gate.ensure({
         capability: "storage:plugin",
         actor: invocation.actor,
         trigger: invocation.trigger,
         operation,
-        requestedScope: key,
         signal: invocation.signal,
       })
 
     return {
       get: async <T = unknown>(key: string) => {
-        await ensure("get", key)
+        await ensure("get")
         const state = await this.loadStorage(pluginId)
         return state.data[key] as T | undefined
       },
       set: async <T = unknown>(key: string, value: T) => {
-        await ensure("set", key)
+        await ensure("set")
         const state = await this.loadStorage(pluginId)
         state.data[key] = value
         await this.scheduleStorageFlush(pluginId)
       },
       delete: async (key: string) => {
-        await ensure("delete", key)
+        await ensure("delete")
         const state = await this.loadStorage(pluginId)
         delete state.data[key]
         await this.scheduleStorageFlush(pluginId)

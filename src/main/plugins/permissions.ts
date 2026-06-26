@@ -25,7 +25,7 @@ export class PermissionGate {
   private readonly permissions: Set<string>
 
   constructor(private readonly manifest: PluginManifest) {
-    this.permissions = new Set(manifest.permissions)
+    this.permissions = new Set(manifest.capabilities.map((c) => c.id))
   }
 
   get pluginId(): string {

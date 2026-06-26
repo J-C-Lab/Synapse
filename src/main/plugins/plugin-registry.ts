@@ -221,7 +221,7 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
       pluginId,
       toolName,
       input,
-      permissions: indexed.tool.permissions,
+      capabilities: indexed.tool.capabilities,
       options,
     })
   }
@@ -446,7 +446,7 @@ function validateManifestTools(
 
 function validateActivationEvents(manifest: PluginManifest, module: PluginModule): void {
   if (!manifest.contributes.activationEvents?.includes("clipboard:change")) return
-  if (!manifest.permissions.includes("clipboard:watch")) {
+  if (!manifest.capabilities.some((c) => c.id === "clipboard:watch")) {
     throw new Error(
       "Manifest activation event clipboard:change requires clipboard:watch permission"
     )

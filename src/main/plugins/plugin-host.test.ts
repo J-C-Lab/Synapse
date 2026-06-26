@@ -96,6 +96,7 @@ async function writeHostPlugin(
     path.join(pluginDir, "synapse.json"),
     `${JSON.stringify(
       {
+        manifestVersion: 2,
         id: pluginId,
         name: pluginId.split(".").at(-1) ?? "plugin",
         displayName: "Clipboard Plugin",
@@ -109,7 +110,9 @@ async function writeHostPlugin(
           commands: [{ id: "clipboard.run", title: "Clipboard", mode: "view" }],
           tools: options.tools,
         },
-        permissions: options.permissions ?? ["clipboard:read", "storage:plugin"],
+        capabilities: (options.permissions ?? ["clipboard:read", "storage:plugin"]).map((id) => ({
+          id,
+        })),
       },
       null,
       2
@@ -147,6 +150,7 @@ const baseEntry: PluginRegistryEntry = {
   source: { kind: "builtin", priority: 3 },
   status: "active",
   manifest: {
+    manifestVersion: 2,
     id: "com.synapse.test",
     name: "test",
     displayName: "Test",
@@ -173,7 +177,7 @@ const baseEntry: PluginRegistryEntry = {
         },
       ],
     },
-    permissions: [],
+    capabilities: [],
   },
 }
 
@@ -378,7 +382,7 @@ describe("pluginHost package installation", () => {
     expect(await host.grants.isGranted(identity, "storage:plugin")).toBe(true)
     expect(await host.grants.isGranted(identity, "clipboard:read")).toBe(false)
     expect(await host.grants.list(identity)).toEqual([
-      expect.objectContaining({ capability: "storage:plugin", grantedBy: "install" }),
+      expect.objectContaining({ capabilityId: "storage:plugin", grantedBy: "install" }),
     ])
   })
 })
@@ -627,7 +631,7 @@ describe("pluginHost clipboard watcher", () => {
       expect(audit).toHaveBeenCalledWith(
         expect.objectContaining({
           pluginId: "com.synapse.clipboard",
-          capability: "clipboard:watch",
+          capabilityId: "clipboard:watch",
           actor: "background",
           trigger: "clipboard:change",
           operation: "watch",
@@ -682,7 +686,7 @@ describe("pluginHost clipboard watcher", () => {
       expect(audit).toHaveBeenCalledWith(
         expect.objectContaining({
           pluginId,
-          capability: "clipboard:watch",
+          capabilityId: "clipboard:watch",
           decision: "deny",
           why: "per-call approval refused",
         })
@@ -745,7 +749,7 @@ module.exports = {
           name: "write",
           description: "Writes text",
           inputSchema: { type: "object" },
-          permissions: ["clipboard:write"],
+          capabilities: [{ id: "clipboard:write" }],
         },
       ],
     })
@@ -788,7 +792,7 @@ module.exports = {
           name: "write",
           description: "Writes text",
           inputSchema: { type: "object" },
-          permissions: ["clipboard:write"],
+          capabilities: [{ id: "clipboard:write" }],
         },
       ],
     })
@@ -827,6 +831,7 @@ async function writeInstallSource(options: {
     path.join(pluginDir, "synapse.json"),
     `${JSON.stringify(
       {
+        manifestVersion: 2,
         id: options.id,
         name: options.id.split(".").at(-1) ?? "plugin",
         displayName: "Install Plugin",
@@ -838,7 +843,7 @@ async function writeInstallSource(options: {
         contributes: {
           commands: [{ id: "clipboard.run", title: "Clipboard", mode: "view" }],
         },
-        permissions: options.permissions,
+        capabilities: options.permissions.map((id) => ({ id })),
       },
       null,
       2

@@ -413,8 +413,10 @@ export class PluginHost {
   async revokeCapability(pluginId: string, capability: string): Promise<void> {
     const entry = this.registry.get(pluginId)
     if (!entry) throw new Error(`Plugin not found: ${pluginId}`)
+    if (!entry.manifest) throw new Error(`Plugin manifest unavailable: ${pluginId}`)
 
-    await this.grants.revoke(pluginId, capability)
+    const identity = buildGrantIdentity(pluginId, entry.manifest, entry.source.kind)
+    await this.grants.revoke(identity, capability, "user")
     this.registry.revokeCapability(pluginId, capability)
     this.bridge.revokeCapability(pluginId, capability)
     this.sandbox.abortPluginCapability(pluginId, capability)
@@ -491,7 +493,7 @@ export class PluginHost {
       const identity = buildGrantIdentity(entry.pluginId, entry.manifest, entry.source.kind)
       const gate = new CapabilityGate({
         identity,
-        declared: new Set(entry.manifest.permissions),
+        declared: entry.manifest.capabilities,
         grants: this.capabilityGovernance.grants,
         prompt: this.capabilityGovernance.prompt,
         approve: this.capabilityGovernance.approve,
@@ -701,7 +703,7 @@ export class PluginHost {
   private async grantAutoInstallCapabilities(entry: PluginRegistryEntry): Promise<void> {
     if (!entry.manifest) return
     const identity = buildGrantIdentity(entry.pluginId, entry.manifest, entry.source.kind)
-    for (const capability of entry.manifest.permissions) {
+    for (const { id: capability } of entry.manifest.capabilities) {
       if (getCapability(capability)?.tier !== "auto") continue
       if (await this.grants.isGranted(identity, capability)) continue
       await this.grants.grant(identity, capability, "install")

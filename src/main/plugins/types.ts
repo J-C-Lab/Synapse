@@ -9,6 +9,7 @@ import type {
   ManifestPreferenceOption,
   ManifestPreferenceType,
   ManifestTool,
+  NormalizedCapability,
   PluginActivationEvent,
   PluginManifest,
 } from "@synapse/plugin-manifest"
@@ -124,11 +125,11 @@ export interface PluginToolInvokeRequest {
   toolName: string
   input: unknown
   /**
-   * Tool-declared permissions. When set, the tool's `ToolContext` is gated to
+   * Tool-declared capabilities. When set, the tool's `ToolContext` is gated to
    * this subset (least privilege); when omitted it inherits the plugin's full
-   * permission set.
+   * capability set.
    */
-  permissions?: string[]
+  capabilities?: NormalizedCapability[]
   options: ToolInvocationOptions
 }
 

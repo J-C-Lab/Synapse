@@ -181,7 +181,7 @@ module.exports = {
   }
 }
 `)
-    entry.manifest!.permissions = ["storage:plugin"]
+    entry.manifest!.capabilities = [{ id: "storage:plugin" }]
     const sandbox = sandboxForTest()
     await sandbox.loadPlugin(entry)
     await sandbox.dispatchEvent({
@@ -315,9 +315,9 @@ module.exports = {
   }
 }
 `)
-    // Plugin is granted clipboard:write, but the tool declares no permissions,
+    // Plugin is granted clipboard:write, but the tool declares no capabilities,
     // so its context must be gated down and deny the write.
-    entry.manifest!.permissions = ["clipboard:write"]
+    entry.manifest!.capabilities = [{ id: "clipboard:write" }]
     const sandbox = sandboxForTest()
     await sandbox.loadPlugin(entry)
 
@@ -326,7 +326,7 @@ module.exports = {
         pluginId: entry.pluginId,
         toolName: "write",
         input: {},
-        permissions: [],
+        capabilities: [],
         options: { caller: { kind: "agent" } },
       })
     ).rejects.toBeInstanceOf(CapabilityDenied)
@@ -379,6 +379,7 @@ async function writePlugin(code: string): Promise<DiscoveredPlugin> {
 
 function manifest(): PluginManifest {
   return {
+    manifestVersion: 2,
     id: "com.synapse.test",
     name: "Test",
     displayName: "Test",
@@ -388,6 +389,6 @@ function manifest(): PluginManifest {
     engines: { synapse: "^0.1.0" },
     main: "dist/index.js",
     contributes: { commands: [{ id: "test.run", title: "Run", mode: "view" }] },
-    permissions: [],
+    capabilities: [],
   }
 }

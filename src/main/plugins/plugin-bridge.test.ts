@@ -210,8 +210,12 @@ function bridgeWithGate(
   })
 }
 
-function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
+function manifest(
+  overrides: Partial<Omit<PluginManifest, "capabilities">> & { permissions?: string[] } = {}
+): PluginManifest {
+  const { permissions = ["storage:plugin"], ...rest } = overrides
   return {
+    manifestVersion: 2,
     id: "com.synapse.test",
     name: "Test",
     displayName: "Test",
@@ -221,8 +225,8 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
     engines: { synapse: "^0.1.0" },
     main: "dist/index.js",
     contributes: { commands: [{ id: "test.run", title: "Run", mode: "view" }] },
-    permissions: ["storage:plugin"],
-    ...overrides,
+    capabilities: permissions.map((id) => ({ id })),
+    ...rest,
   }
 }
 
