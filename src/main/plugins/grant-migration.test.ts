@@ -33,7 +33,7 @@ describe("migrateGrants", () => {
   it("grandfathers each declared capability under the plugin identity with grantedBy install", async () => {
     const store = new GrantStore(file, () => 1000)
     const manifest = manifestWith({
-      permissions: ["storage:plugin", "clipboard:read", "notification"],
+      capabilities: [{ id: "storage:plugin" }, { id: "clipboard:read" }, { id: "notification" }],
     })
     const entry = activeEntry(manifest)
 
@@ -52,7 +52,7 @@ describe("migrateGrants", () => {
   it("also grants clipboard:watch for legacy clipboard:change plugins that only declared clipboard:read", async () => {
     const store = new GrantStore(file)
     const manifest = manifestWith({
-      permissions: ["clipboard:read", "storage:plugin"],
+      capabilities: [{ id: "clipboard:read" }, { id: "storage:plugin" }],
       activationEvents: ["clipboard:change"],
     })
     const entry = activeEntry(manifest)
@@ -66,7 +66,7 @@ describe("migrateGrants", () => {
 
   it("does not add clipboard:watch when there is no clipboard:change activation", async () => {
     const store = new GrantStore(file)
-    const manifest = manifestWith({ permissions: ["clipboard:read"] })
+    const manifest = manifestWith({ capabilities: [{ id: "clipboard:read" }] })
     const entry = activeEntry(manifest)
 
     await migrateGrants([entry], store, marker())
@@ -78,7 +78,7 @@ describe("migrateGrants", () => {
 
   it("is idempotent — a second run adds nothing", async () => {
     const store = new GrantStore(file, () => 1000)
-    const manifest = manifestWith({ permissions: ["storage:plugin"] })
+    const manifest = manifestWith({ capabilities: [{ id: "storage:plugin" }] })
     const entry = activeEntry(manifest)
     const identity = buildGrantIdentity(entry.pluginId, manifest, entry.source.kind)
     const epoch = marker()
@@ -94,13 +94,15 @@ describe("migrateGrants", () => {
 
   it("never re-grants a capability the user revoked after the epoch (revoke is permanent)", async () => {
     const store = new GrantStore(file)
-    const manifest = manifestWith({ permissions: ["clipboard:read", "storage:plugin"] })
+    const manifest = manifestWith({
+      capabilities: [{ id: "clipboard:read" }, { id: "storage:plugin" }],
+    })
     const entry = activeEntry(manifest)
     const identity = buildGrantIdentity(entry.pluginId, manifest, entry.source.kind)
     const epoch = marker()
 
     await migrateGrants([entry], store, epoch)
-    await store.revoke(entry.pluginId, "clipboard:read")
+    await store.revoke(identity, "clipboard:read", "user")
     expect(await store.isGranted(identity, "clipboard:read")).toBe(false)
 
     // A later boot must NOT resurrect the revoked grant.
@@ -111,13 +113,16 @@ describe("migrateGrants", () => {
   it("does not grandfather a plugin installed after the epoch (new installs go through JIT)", async () => {
     const store = new GrantStore(file)
     const epoch = marker()
-    const oldPlugin = activeEntry(manifestWith({ permissions: ["clipboard:read"] }))
+    const oldPlugin = activeEntry(manifestWith({ capabilities: [{ id: "clipboard:read" }] }))
 
     // Epoch boot: only the pre-governance plugin exists.
     await migrateGrants([oldPlugin], store, epoch)
 
     // A new plugin appears on a later boot — it must not be auto-granted.
-    const newManifest = manifestWith({ id: "com.synapse.new", permissions: ["storage:plugin"] })
+    const newManifest = manifestWith({
+      id: "com.synapse.new",
+      capabilities: [{ id: "storage:plugin" }],
+    })
     const newPlugin = activeEntry(newManifest)
     await migrateGrants([oldPlugin, newPlugin], store, epoch)
 
@@ -132,7 +137,10 @@ describe("migrateGrants", () => {
     await migrateGrants([], store, epoch)
     expect(await epoch.done()).toBe(true)
 
-    const newManifest = manifestWith({ id: "com.synapse.fresh", permissions: ["storage:plugin"] })
+    const newManifest = manifestWith({
+      id: "com.synapse.fresh",
+      capabilities: [{ id: "storage:plugin" }],
+    })
     const newPlugin = activeEntry(newManifest)
     await migrateGrants([newPlugin], store, epoch)
 
@@ -142,7 +150,7 @@ describe("migrateGrants", () => {
 
   it("leaves an existing user grant intact", async () => {
     const store = new GrantStore(file, () => 1000)
-    const manifest = manifestWith({ permissions: ["clipboard:read"] })
+    const manifest = manifestWith({ capabilities: [{ id: "clipboard:read" }] })
     const entry = activeEntry(manifest)
     const identity = buildGrantIdentity(entry.pluginId, manifest, entry.source.kind)
     await store.grant(identity, "clipboard:read", "user", undefined)
@@ -156,7 +164,7 @@ describe("migrateGrants", () => {
 
   it("skips non-active plugins", async () => {
     const store = new GrantStore(file)
-    const manifest = manifestWith({ permissions: ["storage:plugin"] })
+    const manifest = manifestWith({ capabilities: [{ id: "storage:plugin" }] })
     const entry = activeEntry(manifest, "disabled")
 
     await migrateGrants([entry], store, marker())
@@ -164,15 +172,28 @@ describe("migrateGrants", () => {
     const identity = buildGrantIdentity(entry.pluginId, manifest, entry.source.kind)
     expect(await store.list(identity)).toHaveLength(0)
   })
+
+  it("never grandfathers a scope-enforced capability (no synthesized scoped grant)", async () => {
+    const store = new GrantStore(file)
+    const manifest = manifestWith({
+      capabilities: [{ id: "storage:plugin" }, { id: "network:https" }],
+    })
+    const entry = activeEntry(manifest)
+    await migrateGrants([entry], store, marker())
+    const identity = buildGrantIdentity(entry.pluginId, manifest, entry.source.kind)
+    expect(await store.isGranted(identity, "storage:plugin")).toBe(true)
+    expect(await store.isGranted(identity, "network:https")).toBe(false)
+  })
 })
 
 function manifestWith(
   overrides: Partial<PluginManifest> & {
-    permissions: string[]
+    capabilities: { id: string }[]
     activationEvents?: PluginManifest["contributes"]["activationEvents"]
   }
 ): PluginManifest {
   return {
+    manifestVersion: 2 as const,
     id: overrides.id ?? "com.synapse.legacy",
     name: "legacy",
     displayName: "Legacy",
@@ -185,7 +206,7 @@ function manifestWith(
       commands: [{ id: "run", title: "Run", mode: "view" }],
       activationEvents: overrides.activationEvents,
     },
-    permissions: overrides.permissions,
+    capabilities: overrides.capabilities,
   }
 }
 

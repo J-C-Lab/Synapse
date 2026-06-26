@@ -24,7 +24,7 @@ export function buildGrantIdentity(
     pluginId,
     publisherId: "unsigned",
     signingKeyFingerprint: `local:${sourceKind}`,
-    capabilityDeclarationHash: capabilityDeclarationHash(manifest.permissions),
+    capabilityDeclarationHash: capabilityDeclarationHash(manifest.capabilities),
   }
 }
 
