@@ -24,7 +24,7 @@ const relativePathSchema = z.string().min(1).refine(isSafeRelativePath, {
 // A single capability declaration: an object `{ id, scope? }`. The id is checked
 // against the registry (red-line abilities are absent and so cannot be declared)
 // and the scope is delegated to the capability's adapter. A scope-enforced
-// capability with no adapter wired yet (Phase 1 network:https) is rejected here.
+// capability with no adapter wired (fail-closed guard) is rejected here.
 const capabilityEntrySchema = z
   .object({ id: z.enum(capabilityIds() as [string, ...string[]]), scope: z.unknown().optional() })
   .strict()

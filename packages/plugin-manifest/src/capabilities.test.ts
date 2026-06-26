@@ -44,11 +44,13 @@ describe("capability registry", () => {
     expect(getCapability("clipboard:read")?.id).not.toBe(getCapability("clipboard:watch")?.id)
   })
 
-  it("ships no live scope adapter yet (no false restriction)", () => {
-    // A scope-enforced capability without an adapter cannot constrain a call, so
-    // its declaration is rejected in Phase 1 — nothing presents scope as a
-    // restriction it does not yet enforce. Adapters are wired in Task 12.
-    for (const cap of CAPABILITIES.values()) expect(cap.scopeAdapter).toBeUndefined()
+  it("registers exactly one live scope adapter (network:https)", () => {
+    // network:https owns a live adapter (wired in Task 12); every other
+    // capability is unscoped and carries no adapter — no false restriction.
+    for (const cap of CAPABILITIES.values()) {
+      if (cap.id === "network:https") expect(cap.scopeAdapter).toBeDefined()
+      else expect(cap.scopeAdapter).toBeUndefined()
+    }
   })
 
   it("returns undefined for unknown capabilities", () => {
@@ -125,8 +127,9 @@ describe("capability descriptors", () => {
     expect(cap?.scopeEnforced).toBe(true)
   })
 
-  // Adapter is wired in Task 12 (Phase 2). Placeholder until then.
-  it.todo("network:https owns a scope adapter (wired in Task 12)")
+  it("network:https owns a scope adapter (wired in Task 12)", () => {
+    expect(getCapability("network:https")?.scopeAdapter).toBeDefined()
+  })
 
   it("unscoped capabilities have no adapter", () => {
     const cap = getCapability("storage:plugin")

@@ -1,5 +1,6 @@
 import type { JsonSchema, NormalizedCapability } from "./types"
 import { createHash } from "node:crypto"
+import { networkHttpsAdapter } from "./network-scope"
 
 // The capability registry — the single source of truth for what a plugin may be
 // granted, and how risky each capability is. A capability is governed, not just
@@ -69,9 +70,9 @@ const ALL: CapabilityDescriptor[] = [
   { id: "system:open-url", tier: "consent", scopeEnforced: false },
   { id: "system:open-path", tier: "consent", scopeEnforced: false },
   { id: "system:capture-screen", tier: "elevated", scopeEnforced: false },
-  // Scope-enforced: an adapter is wired in Task 12. Until then `scopeAdapter` is
-  // undefined, which keeps network declarations rejected during Phase 1.
-  { id: "network:https", tier: "elevated", scopeEnforced: true, scopeAdapter: undefined },
+  // Scope-enforced: the adapter constrains every declared/granted network scope
+  // and decides containment for each call. Declaring it requires a valid scope.
+  { id: "network:https", tier: "elevated", scopeEnforced: true, scopeAdapter: networkHttpsAdapter },
 ]
 
 export const CAPABILITIES: ReadonlyMap<string, CapabilityDescriptor> = new Map(

@@ -139,11 +139,30 @@ describe("parseManifest — v2 capabilities", () => {
     expect(() => parseManifest({ ...base, capabilities: ["storage:plugin"] })).toThrow()
   })
 
-  it("rejects network:https in phase 1 because no adapter is registered yet", () => {
+  it("accepts a valid network:https scope now that the adapter is registered", () => {
+    const m = parseManifest({
+      ...base,
+      capabilities: [
+        {
+          id: "network:https",
+          scope: { hosts: ["api.github.com"], methods: ["GET"], paths: ["/repos/**"] },
+        },
+      ],
+    })
+    expect(m.capabilities.some((c) => c.id === "network:https")).toBe(true)
+  })
+
+  it("rejects an invalid network:https scope (adapter.validate runs)", () => {
     expect(() =>
       parseManifest({
         ...base,
-        capabilities: [{ id: "network:https", scope: { hosts: ["api.github.com"] } }],
+        capabilities: [{ id: "network:https", scope: { hosts: [] } }],
+      })
+    ).toThrow()
+    expect(() =>
+      parseManifest({
+        ...base,
+        capabilities: [{ id: "network:https", scope: { hosts: ["127.0.0.1"] } }],
       })
     ).toThrow()
   })

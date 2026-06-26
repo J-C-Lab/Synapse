@@ -125,9 +125,37 @@ describe("capabilityGate.ensure", () => {
     ).rejects.toThrow(/scope not allowed/)
   })
 
-  it("denies a scoped capability call when no scope adapter is registered yet", async () => {
+  it("allows a scoped network:https call contained by the declared scope", async () => {
     const { gate } = makeGate({
-      declaredEntries: [{ id: "network:https", scope: { hosts: ["api.github.com"] } }],
+      declaredEntries: [
+        {
+          id: "network:https",
+          scope: { hosts: ["api.github.com"], methods: ["GET"], paths: ["/repos/**"] },
+        },
+      ],
+      granted: ["network:https"],
+    })
+    // actor "user" (req default) skips per-call approval, so the scope decision
+    // is what's asserted here — not the elevated approval flow.
+    await expect(
+      gate.ensure(
+        req({
+          capability: "network:https",
+          operation: "GET",
+          requestedScope: { host: "api.github.com", method: "GET", path: "/repos/x" },
+        })
+      )
+    ).resolves.toBeUndefined()
+  })
+
+  it("denies a scoped network:https call to a host outside the declared scope", async () => {
+    const { gate } = makeGate({
+      declaredEntries: [
+        {
+          id: "network:https",
+          scope: { hosts: ["api.github.com"], methods: ["GET"], paths: ["/repos/**"] },
+        },
+      ],
       granted: ["network:https"],
     })
     await expect(
@@ -135,13 +163,11 @@ describe("capabilityGate.ensure", () => {
         req({
           capability: "network:https",
           operation: "GET",
-          requestedScope: { host: "api.github.com" },
+          requestedScope: { host: "evil.com", method: "GET", path: "/repos/x" },
         })
       )
-    ).rejects.toThrow(/scope adapter not registered/)
+    ).rejects.toThrow(/scope not allowed/)
   })
-
-  it.todo("enforces scoped containment once network adapter is registered (Task 12)")
 })
 
 describe("capabilityGate.assertDeclared", () => {
