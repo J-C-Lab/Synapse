@@ -24,7 +24,8 @@ function manifest(overrides: Record<string, unknown> = {}): Record<string, unkno
     contributes: {
       commands: [{ id: "test.run", title: "Run", mode: "view" }],
     },
-    permissions: ["storage:plugin"],
+    manifestVersion: 2,
+    capabilities: [{ id: "storage:plugin" }],
     ...overrides,
   }
 }

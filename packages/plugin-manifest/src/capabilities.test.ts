@@ -1,18 +1,22 @@
+import type { NormalizedCapability } from "./index"
 import { describe, expect, it } from "vitest"
 import {
   CAPABILITIES,
   capabilityDeclarationHash,
   capabilityIds,
   getCapability,
+  normalizeCapabilities,
+  stableStringify,
 } from "./capabilities"
 
 describe("capability registry", () => {
-  it("exposes the eight known capabilities", () => {
+  it("exposes the nine known capabilities", () => {
     expect(capabilityIds().sort()).toEqual(
       [
         "clipboard:read",
         "clipboard:watch",
         "clipboard:write",
+        "network:https",
         "notification",
         "storage:plugin",
         "system:capture-screen",
@@ -40,8 +44,13 @@ describe("capability registry", () => {
     expect(getCapability("clipboard:read")?.id).not.toBe(getCapability("clipboard:watch")?.id)
   })
 
-  it("ships no capability with enforced scope yet (no false restriction)", () => {
-    for (const cap of CAPABILITIES.values()) expect(cap.scopeEnforced).toBe(false)
+  it("registers exactly one live scope adapter (network:https)", () => {
+    // network:https owns a live adapter (wired in Task 12); every other
+    // capability is unscoped and carries no adapter — no false restriction.
+    for (const cap of CAPABILITIES.values()) {
+      if (cap.id === "network:https") expect(cap.scopeAdapter).toBeDefined()
+      else expect(cap.scopeAdapter).toBeUndefined()
+    }
   })
 
   it("returns undefined for unknown capabilities", () => {
@@ -52,14 +61,84 @@ describe("capability registry", () => {
 
 describe("capabilityDeclarationHash", () => {
   it("is independent of order and duplicates", () => {
-    expect(capabilityDeclarationHash(["clipboard:read", "storage:plugin"])).toBe(
-      capabilityDeclarationHash(["storage:plugin", "clipboard:read", "storage:plugin"])
+    expect(capabilityDeclarationHash([{ id: "clipboard:read" }, { id: "storage:plugin" }])).toBe(
+      capabilityDeclarationHash([
+        { id: "storage:plugin" },
+        { id: "clipboard:read" },
+        { id: "storage:plugin" },
+      ])
     )
   })
 
   it("changes when the declared set changes", () => {
-    const a = capabilityDeclarationHash(["storage:plugin"])
-    const b = capabilityDeclarationHash(["storage:plugin", "clipboard:read"])
+    const a = capabilityDeclarationHash([{ id: "storage:plugin" }])
+    const b = capabilityDeclarationHash([{ id: "storage:plugin" }, { id: "clipboard:read" }])
     expect(a).not.toBe(b)
+  })
+})
+
+describe("normalizeCapabilities", () => {
+  it("merges duplicate ids into one entry", () => {
+    const out = normalizeCapabilities([{ id: "storage:plugin" }, { id: "storage:plugin" }])
+    expect(out).toHaveLength(1)
+  })
+
+  it("sorts entries by id", () => {
+    const out = normalizeCapabilities([{ id: "notification" }, { id: "clipboard:read" }])
+    expect(out.map((c) => c.id)).toEqual(["clipboard:read", "notification"])
+  })
+})
+
+describe("capabilityDeclarationHash v2", () => {
+  it("is stable across raw entry order", () => {
+    const a = capabilityDeclarationHash([{ id: "notification" }, { id: "storage:plugin" }])
+    const b = capabilityDeclarationHash([{ id: "storage:plugin" }, { id: "notification" }])
+    expect(a).toBe(b)
+  })
+
+  it("changes when a capability is added", () => {
+    const a = capabilityDeclarationHash([{ id: "storage:plugin" }])
+    const b = capabilityDeclarationHash([{ id: "storage:plugin" }, { id: "notification" }])
+    expect(a).not.toBe(b)
+  })
+})
+
+describe("stableStringify", () => {
+  it("is independent of object key order at every level", () => {
+    expect(stableStringify({ a: 1, b: { d: 2, c: 3 } })).toBe(
+      stableStringify({ b: { c: 3, d: 2 }, a: 1 })
+    )
+  })
+
+  it("preserves array order", () => {
+    expect(stableStringify([3, 1, 2])).toBe("[3,1,2]")
+    expect(stableStringify([1, 2, 3])).not.toBe(stableStringify([3, 2, 1]))
+  })
+
+  it("sorts nested keys deterministically", () => {
+    expect(stableStringify({ b: 2, a: 1 })).toBe(`{"a":1,"b":2}`)
+  })
+})
+
+describe("capability descriptors", () => {
+  it("network:https is elevated and scope-enforced", () => {
+    const cap = getCapability("network:https")
+    expect(cap?.tier).toBe("elevated")
+    expect(cap?.scopeEnforced).toBe(true)
+  })
+
+  it("network:https owns a scope adapter (wired in Task 12)", () => {
+    expect(getCapability("network:https")?.scopeAdapter).toBeDefined()
+  })
+
+  it("unscoped capabilities have no adapter", () => {
+    const cap = getCapability("storage:plugin")
+    expect(cap?.scopeEnforced).toBe(false)
+    expect(cap?.scopeAdapter).toBeUndefined()
+  })
+
+  it("normalizedCapability is structurally { id, scope? }", () => {
+    const cap: NormalizedCapability = { id: "storage:plugin" }
+    expect(cap.id).toBe("storage:plugin")
   })
 })

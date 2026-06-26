@@ -35,7 +35,8 @@ function manifest(overrides: Record<string, unknown> = {}): Record<string, unkno
     engines: { synapse: "^0.2.0" },
     main: "dist/index.js",
     contributes: { commands: [{ id: "foo.run", title: "Run", mode: "view" }] },
-    permissions: [],
+    manifestVersion: 2,
+    capabilities: [],
     ...overrides,
   }
 }

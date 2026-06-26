@@ -26,7 +26,7 @@ export interface ScaffoldOptions {
   author: string
   /** Command id wired into synapse.json + src/index.ts. */
   commandId: string
-  /** Add clipboard:change activation + clipboard:watch & clipboard:read permissions. */
+  /** Add clipboard:change activation + clipboard:watch & clipboard:read capabilities. */
   clipboard: boolean
   /** Allow scaffolding into a non-empty directory. */
   force?: boolean
@@ -142,9 +142,9 @@ async function patchManifest(targetDir: string, options: ScaffoldOptions): Promi
     contributes.activationEvents = ["clipboard:change"]
     // clipboard:watch authorizes the change subscription; clipboard:read lets
     // the handler read the copied content.
-    manifest.permissions = ["clipboard:watch", "clipboard:read"]
+    manifest.capabilities = [{ id: "clipboard:watch" }, { id: "clipboard:read" }]
   } else {
-    manifest.permissions = []
+    manifest.capabilities = []
   }
 
   await writeJson(manifestPath, manifest)

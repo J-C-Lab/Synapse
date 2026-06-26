@@ -16,7 +16,7 @@
       "homepage": "https://github.com/WiIIiamWei/synapse-plugin-timestamp",
       "version": "0.3.0",
       "downloadUrl": "https://github.com/WiIIiamWei/synapse-plugin-timestamp/releases/download/v0.3.0/com.synapse.timestamp-0.3.0.syn",
-      "sha256": "b4cb35a4793e712218bca64bf2c0b39888a55ff96684573999311dc154f0dd9a",
+      "sha256": "b2cb302470efb6de80ea90a769a97b799c9a04b0cf0028f7a9e18c3035c14547",
       "synapseEngine": "^0.2.0",
       "icon": "lucide:clock",
       "categories": ["utilities"]

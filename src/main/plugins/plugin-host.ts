@@ -129,6 +129,7 @@ export class PluginHost {
   private readonly marketplaceApi: MarketplaceApi
   private clipboardTimer?: ReturnType<typeof setInterval>
   private lastClipboardSnapshot?: string
+  private clipboardDispatchChain: Promise<void> = Promise.resolve()
   private readonly handleRegistryChanged = (): void => {
     this.syncClipboardWatcher()
   }
@@ -169,13 +170,19 @@ export class PluginHost {
 
   async init(): Promise<void> {
     await this.preferences.load()
-    const discovered = await discoverPlugins({
-      builtinDir: this.builtinDir,
-      userDir: this.userDir,
-      devFilePath: this.devFilePath,
-    })
-    await this.registry.load(discovered)
-    await migrateGrants(this.registry.list(), this.grants, this.migrationMarker)
+    this.registry.off("changed", this.handleRegistryChanged)
+    try {
+      const discovered = await discoverPlugins({
+        builtinDir: this.builtinDir,
+        userDir: this.userDir,
+        devFilePath: this.devFilePath,
+      })
+      await this.registry.load(discovered)
+      await migrateGrants(this.registry.list(), this.grants, this.migrationMarker)
+    } finally {
+      this.registry.on("changed", this.handleRegistryChanged)
+      this.syncClipboardWatcher()
+    }
   }
 
   list(): PluginRegistryEntry[] {
@@ -387,7 +394,13 @@ export class PluginHost {
   }
 
   async flush(): Promise<void> {
+    await this.drainClipboardWatcher()
     await this.bridge.flushAll()
+  }
+
+  /** Await in-flight clipboard watcher reads/dispatches (tests and flush). */
+  async drainClipboardWatcher(): Promise<void> {
+    await this.clipboardDispatchChain
   }
 
   dispose(): void {
@@ -413,8 +426,10 @@ export class PluginHost {
   async revokeCapability(pluginId: string, capability: string): Promise<void> {
     const entry = this.registry.get(pluginId)
     if (!entry) throw new Error(`Plugin not found: ${pluginId}`)
+    if (!entry.manifest) throw new Error(`Plugin manifest unavailable: ${pluginId}`)
 
-    await this.grants.revoke(pluginId, capability)
+    const identity = buildGrantIdentity(pluginId, entry.manifest, entry.source.kind)
+    await this.grants.revoke(identity, capability, "user")
     this.registry.revokeCapability(pluginId, capability)
     this.bridge.revokeCapability(pluginId, capability)
     this.sandbox.abortPluginCapability(pluginId, capability)
@@ -452,9 +467,17 @@ export class PluginHost {
     if (this.clipboardTimer) return
     const pollMs = this.options.clipboardPollMs ?? 500
     this.clipboardTimer = setInterval(() => {
-      void this.readAndDispatchClipboard()
+      this.queueClipboardRead()
     }, pollMs)
-    void this.readAndDispatchClipboard()
+    this.queueClipboardRead()
+  }
+
+  private queueClipboardRead(): void {
+    this.clipboardDispatchChain = this.clipboardDispatchChain
+      .then(() => this.readAndDispatchClipboard())
+      .catch((err) => {
+        logger.child("plugin-host").warn("clipboard watch read failed", { err })
+      })
   }
 
   private stopClipboardWatcher(): void {
@@ -491,7 +514,7 @@ export class PluginHost {
       const identity = buildGrantIdentity(entry.pluginId, entry.manifest, entry.source.kind)
       const gate = new CapabilityGate({
         identity,
-        declared: new Set(entry.manifest.permissions),
+        declared: entry.manifest.capabilities,
         grants: this.capabilityGovernance.grants,
         prompt: this.capabilityGovernance.prompt,
         approve: this.capabilityGovernance.approve,
@@ -701,7 +724,7 @@ export class PluginHost {
   private async grantAutoInstallCapabilities(entry: PluginRegistryEntry): Promise<void> {
     if (!entry.manifest) return
     const identity = buildGrantIdentity(entry.pluginId, entry.manifest, entry.source.kind)
-    for (const capability of entry.manifest.permissions) {
+    for (const { id: capability } of entry.manifest.capabilities) {
       if (getCapability(capability)?.tier !== "auto") continue
       if (await this.grants.isGranted(identity, capability)) continue
       await this.grants.grant(identity, capability, "install")

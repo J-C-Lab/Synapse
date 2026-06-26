@@ -37,7 +37,8 @@ function manifest(overrides: Record<string, unknown> = {}): Record<string, unkno
     engines: { synapse: "^0.2.0" },
     main: "dist/index.js",
     contributes: { commands: [{ id: "foo.run", title: "Run", mode: "view" }] },
-    permissions: [],
+    manifestVersion: 2,
+    capabilities: [],
     ...overrides,
   }
 }
@@ -93,7 +94,7 @@ async function adminToken(): Promise<string> {
 describe("automated upload scan", () => {
   it("flags a high-risk publish into the admin queue", async () => {
     const alice = await authToken(ALICE)
-    await publish(alice, manifest({ permissions: ["system:open-url"] }))
+    await publish(alice, manifest({ capabilities: [{ id: "system:open-url" }] }))
 
     const admin = await adminToken()
     const queue = await harness.app.inject({

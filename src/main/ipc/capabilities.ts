@@ -140,7 +140,7 @@ export class CapabilityIpcService {
 
     const identity = buildGrantIdentity(pluginId, entry.manifest, entry.source.kind)
     const rows: PluginCapabilityRow[] = []
-    for (const id of entry.manifest.permissions) {
+    for (const { id } of entry.manifest.capabilities) {
       const descriptor = getCapability(id)
       if (!descriptor) continue
       rows.push({

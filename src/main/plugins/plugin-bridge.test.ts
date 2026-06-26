@@ -127,6 +127,48 @@ describe("pluginBridge storage and clipboard", () => {
     expect(JSON.parse(raw)).toEqual({ name: "Synapse", count: 2 })
   })
 
+  it("records the opened url in the capability operation for audit", async () => {
+    const ensure = vi.fn<(request: CapabilityRequest) => Promise<void>>(async () => {})
+    const openUrl = vi.fn(async () => {})
+    const bridge = bridgeWithGate(
+      { ensure, declared: ["system:open-url"] },
+      { system: { openUrl, openPath: async () => {}, captureScreen: async () => ({ path: "" }) } }
+    )
+    const pluginCtx = bridge.createContext(
+      "com.synapse.test",
+      manifest({ permissions: ["system:open-url"] })
+    )
+
+    await pluginCtx.system.openUrl("https://api.github.com/repos/x/y")
+
+    expect(openUrl).toHaveBeenCalledWith("https://api.github.com/repos/x/y")
+    // Unscoped capability: the URL must ride in `operation` (the audit pipeline
+    // sanitizes it to an origin), never as `requestedScope` (gate would deny).
+    expect(ensure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capability: "system:open-url",
+        operation: "open https://api.github.com/repos/x/y",
+      })
+    )
+    expect(ensure.mock.calls[0]?.[0]).not.toHaveProperty("requestedScope")
+  })
+
+  it("records the storage key in the capability operation for audit", async () => {
+    const ensure = vi.fn<(request: CapabilityRequest) => Promise<void>>(async () => {})
+    const bridge = bridgeWithGate({ ensure, declared: ["storage:plugin"] })
+    const pluginCtx = bridge.createContext(
+      "com.synapse.test",
+      manifest({ permissions: ["storage:plugin"] })
+    )
+
+    await pluginCtx.storage.set("session-token", "x")
+
+    expect(ensure).toHaveBeenCalledWith(
+      expect.objectContaining({ capability: "storage:plugin", operation: "set session-token" })
+    )
+    expect(ensure.mock.calls[0]?.[0]).not.toHaveProperty("requestedScope")
+  })
+
   it("routes clipboard helpers through the adapter", async () => {
     const ensure = vi.fn(async () => {})
     const read = vi.fn<() => Promise<ClipboardContent | undefined>>(() =>
@@ -210,8 +252,12 @@ function bridgeWithGate(
   })
 }
 
-function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
+function manifest(
+  overrides: Partial<Omit<PluginManifest, "capabilities">> & { permissions?: string[] } = {}
+): PluginManifest {
+  const { permissions = ["storage:plugin"], ...rest } = overrides
   return {
+    manifestVersion: 2,
     id: "com.synapse.test",
     name: "Test",
     displayName: "Test",
@@ -221,8 +267,8 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
     engines: { synapse: "^0.1.0" },
     main: "dist/index.js",
     contributes: { commands: [{ id: "test.run", title: "Run", mode: "view" }] },
-    permissions: ["storage:plugin"],
-    ...overrides,
+    capabilities: permissions.map((id) => ({ id })),
+    ...rest,
   }
 }
 

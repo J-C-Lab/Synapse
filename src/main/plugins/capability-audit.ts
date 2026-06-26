@@ -1,6 +1,7 @@
 import type { LogSink } from "../logging"
 import type { CapabilityAuditEntry } from "./capability-gate"
 import * as path from "node:path"
+import { getCapability } from "@synapse/plugin-manifest"
 import { Logger } from "../logging"
 
 // Writes capability decisions as redacted JSON lines to a dedicated sink (its
@@ -11,8 +12,8 @@ export function createCapabilityAudit(sink: LogSink): (entry: CapabilityAuditEnt
   const log = new Logger({ scope: "capability", sinks: [sink], minLevel: "info" })
   return (entry) => {
     const safeEntry = sanitizeAuditEntry(entry)
-    if (entry.decision === "deny") log.warn(entry.capability, safeEntry)
-    else log.info(entry.capability, safeEntry)
+    if (entry.decision === "deny") log.warn(entry.capabilityId, safeEntry)
+    else log.info(entry.capabilityId, safeEntry)
   }
 }
 
@@ -27,14 +28,32 @@ const URL_PATTERN = /\bhttps?:\/\/[^\s"'<>]+/gi
 const PATH_PATTERN = /(?:[a-z]:\\|\/)[^\s"'<>]+/gi
 
 function sanitizeAuditEntry(entry: CapabilityAuditEntry): Record<string, unknown> {
+  // Descriptor adapter (when registered) projects scope/operation down to a
+  // minimal, capability-aware shape first; the generic sanitizers below then run
+  // over the result as defense-in-depth. In Phase 1 no adapter is registered, so
+  // these projections are identity and behavior is unchanged.
+  const adapter = getCapability(entry.capabilityId)?.scopeAdapter
+  const adaptScope = (value: unknown): unknown => (adapter ? adapter.sanitizeScope(value) : value)
+  const adaptedOperation = adapter
+    ? adapter.sanitizeOperation(entry.operation, entry.requestedScope)
+    : entry.operation
+
   const safe: Record<string, unknown> = {
     ...entry,
     trigger: scrubText(entry.trigger),
-    operation: sanitizeOperation(entry.operation),
+    operation: sanitizeOperation(adaptedOperation),
     why: scrubText(entry.why),
   }
   if (entry.reason !== undefined) safe.reason = sanitizeReason(entry.reason)
-  if (entry.requestedScope !== undefined) safe.requestedScope = sanitizeScope(entry.requestedScope)
+  if (entry.requestedScope !== undefined) {
+    safe.requestedScope = sanitizeScope(adaptScope(entry.requestedScope))
+  }
+  if (entry.declaredScope !== undefined) {
+    safe.declaredScope = sanitizeScope(adaptScope(entry.declaredScope))
+  }
+  if (entry.grantScope !== undefined) {
+    safe.grantScope = sanitizeScope(adaptScope(entry.grantScope))
+  }
   return safe
 }
 

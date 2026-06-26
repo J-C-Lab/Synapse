@@ -1,5 +1,6 @@
 {
   "$schema": "https://unpkg.com/@synapsepkg/plugin-manifest/schema/synapse-manifest.schema.json",
+  "manifestVersion": 2,
   "id": "com.example.hello-world",
   "name": "hello-world",
   "displayName": { "en": "Hello World", "zh-CN": "你好世界" },
@@ -46,5 +47,5 @@
       }
     ]
   },
-  "permissions": []
+  "capabilities": []
 }

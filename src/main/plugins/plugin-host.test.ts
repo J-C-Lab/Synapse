@@ -96,6 +96,7 @@ async function writeHostPlugin(
     path.join(pluginDir, "synapse.json"),
     `${JSON.stringify(
       {
+        manifestVersion: 2,
         id: pluginId,
         name: pluginId.split(".").at(-1) ?? "plugin",
         displayName: "Clipboard Plugin",
@@ -109,7 +110,9 @@ async function writeHostPlugin(
           commands: [{ id: "clipboard.run", title: "Clipboard", mode: "view" }],
           tools: options.tools,
         },
-        permissions: options.permissions ?? ["clipboard:read", "storage:plugin"],
+        capabilities: (options.permissions ?? ["clipboard:read", "storage:plugin"]).map((id) => ({
+          id,
+        })),
       },
       null,
       2
@@ -147,6 +150,7 @@ const baseEntry: PluginRegistryEntry = {
   source: { kind: "builtin", priority: 3 },
   status: "active",
   manifest: {
+    manifestVersion: 2,
     id: "com.synapse.test",
     name: "test",
     displayName: "Test",
@@ -173,7 +177,7 @@ const baseEntry: PluginRegistryEntry = {
         },
       ],
     },
-    permissions: [],
+    capabilities: [],
   },
 }
 
@@ -378,7 +382,7 @@ describe("pluginHost package installation", () => {
     expect(await host.grants.isGranted(identity, "storage:plugin")).toBe(true)
     expect(await host.grants.isGranted(identity, "clipboard:read")).toBe(false)
     expect(await host.grants.list(identity)).toEqual([
-      expect.objectContaining({ capability: "storage:plugin", grantedBy: "install" }),
+      expect.objectContaining({ capabilityId: "storage:plugin", grantedBy: "install" }),
     ])
   })
 })
@@ -485,6 +489,7 @@ describe("pluginHost.revokeCapability", () => {
       expect(host.registry.hasClipboardChangeListeners()).toBe(true)
 
       await vi.runOnlyPendingTimersAsync()
+      await host.drainClipboardWatcher()
       const readsAfterInit = read.mock.calls.length
       expect(readsAfterInit).toBeGreaterThan(0)
 
@@ -495,6 +500,7 @@ describe("pluginHost.revokeCapability", () => {
       expect(host.registry.hasClipboardChangeListeners()).toBe(false)
 
       await vi.advanceTimersByTimeAsync(50)
+      await host.drainClipboardWatcher()
       expect(read.mock.calls.length).toBe(readsAfterInit)
     } finally {
       host.dispose()
@@ -577,12 +583,9 @@ describe("pluginHost clipboard watcher", () => {
     try {
       await host.init()
       await vi.runOnlyPendingTimersAsync()
+      await host.drainClipboardWatcher()
 
       expect(read).toHaveBeenCalled()
-      // Storage writes sit behind a flush timer that is scheduled *during* the
-      // async dispatch chain, so `runOnlyPendingTimersAsync` above doesn't catch
-      // it. Force the pending write so the read below is deterministic (this was
-      // a CI flake otherwise).
       await host.flush()
       const raw = await fs.readFile(
         path.join(dir, "plugin-data", "com.synapse.clipboard.json"),
@@ -622,12 +625,13 @@ describe("pluginHost clipboard watcher", () => {
     try {
       await host.init()
       await vi.advanceTimersByTimeAsync(20)
+      await host.drainClipboardWatcher()
 
       expect(read).not.toHaveBeenCalled()
       expect(audit).toHaveBeenCalledWith(
         expect.objectContaining({
           pluginId: "com.synapse.clipboard",
-          capability: "clipboard:watch",
+          capabilityId: "clipboard:watch",
           actor: "background",
           trigger: "clipboard:change",
           operation: "watch",
@@ -677,12 +681,13 @@ describe("pluginHost clipboard watcher", () => {
       await host.grants.grant(identity, "clipboard:watch", "user")
 
       await vi.advanceTimersByTimeAsync(20)
+      await host.drainClipboardWatcher()
 
       expect(read).not.toHaveBeenCalled()
       expect(audit).toHaveBeenCalledWith(
         expect.objectContaining({
           pluginId,
-          capability: "clipboard:watch",
+          capabilityId: "clipboard:watch",
           decision: "deny",
           why: "per-call approval refused",
         })
@@ -745,7 +750,7 @@ module.exports = {
           name: "write",
           description: "Writes text",
           inputSchema: { type: "object" },
-          permissions: ["clipboard:write"],
+          capabilities: [{ id: "clipboard:write" }],
         },
       ],
     })
@@ -788,7 +793,7 @@ module.exports = {
           name: "write",
           description: "Writes text",
           inputSchema: { type: "object" },
-          permissions: ["clipboard:write"],
+          capabilities: [{ id: "clipboard:write" }],
         },
       ],
     })
@@ -827,6 +832,7 @@ async function writeInstallSource(options: {
     path.join(pluginDir, "synapse.json"),
     `${JSON.stringify(
       {
+        manifestVersion: 2,
         id: options.id,
         name: options.id.split(".").at(-1) ?? "plugin",
         displayName: "Install Plugin",
@@ -838,7 +844,7 @@ async function writeInstallSource(options: {
         contributes: {
           commands: [{ id: "clipboard.run", title: "Clipboard", mode: "view" }],
         },
-        permissions: options.permissions,
+        capabilities: options.permissions.map((id) => ({ id })),
       },
       null,
       2

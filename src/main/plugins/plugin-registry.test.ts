@@ -235,15 +235,15 @@ describe("pluginRegistry", () => {
     )
   })
 
-  it("passes a tool's declared permissions through to the sandbox", async () => {
+  it("passes a tool's declared capabilities through to the sandbox", async () => {
     const sandbox = fakeSandbox()
     const registry = new PluginRegistry({ sandbox })
-    const tool = { ...toolDef("greet"), permissions: ["storage:plugin"] }
+    const tool = { ...toolDef("greet"), capabilities: [{ id: "storage:plugin" }] }
     await registry.load([discovered({ tools: [tool], permissions: ["storage:plugin"] })])
 
     await registry.invokeTool("com.synapse.test", "greet", {}, options())
     expect(sandbox.invokeTool).toHaveBeenCalledWith(
-      expect.objectContaining({ permissions: ["storage:plugin"] })
+      expect.objectContaining({ capabilities: [{ id: "storage:plugin" }] })
     )
   })
 
@@ -380,6 +380,7 @@ function manifest(
   const commandId = overrides.commandId ?? "test.run"
   const title = overrides.title ?? "Run Test"
   return {
+    manifestVersion: 2,
     id,
     name: "Test",
     displayName: "Test",
@@ -400,8 +401,9 @@ function manifest(
       ],
       tools: overrides.tools,
     },
-    permissions:
+    capabilities: (
       overrides.permissions ??
-      (overrides.activationEvents?.includes("clipboard:change") ? ["clipboard:watch"] : []),
+      (overrides.activationEvents?.includes("clipboard:change") ? ["clipboard:watch"] : [])
+    ).map((id) => ({ id })),
   }
 }

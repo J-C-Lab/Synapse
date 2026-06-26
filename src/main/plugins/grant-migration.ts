@@ -1,19 +1,22 @@
 import type { GrantStore } from "./grant-store"
 import type { PluginManifest, PluginRegistryEntry } from "./types"
 import * as path from "node:path"
+import { getCapability } from "@synapse/plugin-manifest"
 import { readJsonFile, writeJsonFile } from "../lan/atomic-json-store"
 import { buildGrantIdentity } from "./capability-governance"
 
 /** Capabilities to grandfather for one installed plugin (declared set + legacy rules). */
 export function grandfatheredCapabilities(manifest: PluginManifest): string[] {
-  const capabilities = new Set(manifest.permissions)
+  const capabilities = new Set(manifest.capabilities.map((c) => c.id))
   if (
     manifest.contributes.activationEvents?.includes("clipboard:change") &&
     !capabilities.has("clipboard:watch")
   ) {
     capabilities.add("clipboard:watch")
   }
-  return [...capabilities]
+  // Never synthesize a scoped grant: a grandfathered grant carries no scope, and
+  // a scopeless scope-enforced grant (e.g. network:https) is forbidden.
+  return [...capabilities].filter((id) => getCapability(id)?.scopeEnforced !== true)
 }
 
 /**
@@ -61,7 +64,7 @@ export function createMigrationMarker(userDataDir: string): MigrationMarker {
  */
 export async function migrateGrants(
   plugins: readonly PluginRegistryEntry[],
-  grants: Pick<GrantStore, "isGranted" | "grant">,
+  grants: Pick<GrantStore, "isGranted" | "grant" | "grantAutoIfAllowed">,
   marker: MigrationMarker,
   now: () => number = Date.now
 ): Promise<void> {
@@ -73,7 +76,7 @@ export async function migrateGrants(
     const identity = buildGrantIdentity(entry.pluginId, entry.manifest, entry.source.kind)
     for (const capability of grandfatheredCapabilities(entry.manifest)) {
       if (await grants.isGranted(identity, capability)) continue
-      await grants.grant(identity, capability, "install")
+      await grants.grantAutoIfAllowed(identity, capability)
     }
   }
 

@@ -14,6 +14,8 @@ function identity(): GrantIdentity {
 
 function makeGate(opts: {
   declared?: string[]
+  /** Pre-shaped declared entries with scopes, for scope-enforced capabilities. */
+  declaredEntries?: { id: string; scope?: unknown }[]
   granted?: string[]
   prompt?: () => Promise<boolean>
   approve?: () => Promise<boolean>
@@ -28,9 +30,10 @@ function makeGate(opts: {
   const prompt = vi.fn(opts.prompt ?? (async () => true))
   const approve = vi.fn(opts.approve ?? (async () => true))
   const audit: CapabilityAuditEntry[] = []
+  const declared = opts.declaredEntries ?? (opts.declared ?? []).map((id) => ({ id }))
   const gate = new CapabilityGate({
     identity: identity(),
-    declared: new Set(opts.declared ?? []),
+    declared,
     grants,
     prompt,
     approve,
@@ -113,6 +116,57 @@ describe("capabilityGate.ensure", () => {
     })
     await gate.ensure(req({ capability: "clipboard:watch", actor: "user" }))
     expect(approve).not.toHaveBeenCalled()
+  })
+
+  it("denies an unscoped capability call that carries a requestedScope", async () => {
+    const { gate } = makeGate({ declared: ["clipboard:read"], granted: ["clipboard:read"] })
+    await expect(
+      gate.ensure(req({ capability: "clipboard:read", requestedScope: { x: 1 } }))
+    ).rejects.toThrow(/scope not allowed/)
+  })
+
+  it("allows a scoped network:https call contained by the declared scope", async () => {
+    const { gate } = makeGate({
+      declaredEntries: [
+        {
+          id: "network:https",
+          scope: { hosts: ["api.github.com"], methods: ["GET"], paths: ["/repos/**"] },
+        },
+      ],
+      granted: ["network:https"],
+    })
+    // actor "user" (req default) skips per-call approval, so the scope decision
+    // is what's asserted here — not the elevated approval flow.
+    await expect(
+      gate.ensure(
+        req({
+          capability: "network:https",
+          operation: "GET",
+          requestedScope: { host: "api.github.com", method: "GET", path: "/repos/x" },
+        })
+      )
+    ).resolves.toBeUndefined()
+  })
+
+  it("denies a scoped network:https call to a host outside the declared scope", async () => {
+    const { gate } = makeGate({
+      declaredEntries: [
+        {
+          id: "network:https",
+          scope: { hosts: ["api.github.com"], methods: ["GET"], paths: ["/repos/**"] },
+        },
+      ],
+      granted: ["network:https"],
+    })
+    await expect(
+      gate.ensure(
+        req({
+          capability: "network:https",
+          operation: "GET",
+          requestedScope: { host: "evil.com", method: "GET", path: "/repos/x" },
+        })
+      )
+    ).rejects.toThrow(/scope not allowed/)
   })
 })
 

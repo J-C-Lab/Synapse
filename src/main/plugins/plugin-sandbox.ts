@@ -291,7 +291,7 @@ export class PluginSandbox {
       caller: request.options.caller,
       signal,
       progress: request.options.progress,
-      permissions: request.permissions,
+      capabilities: request.capabilities,
       toolName: request.toolName,
     })
 

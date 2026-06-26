@@ -12,7 +12,7 @@ function entry(overrides: Partial<CapabilityAuditEntry> = {}): CapabilityAuditEn
   const base: CapabilityAuditEntry = {
     pluginId: "com.example.hello",
     identityFingerprint: "abcdef123456",
-    capability: "clipboard:watch",
+    capabilityId: "clipboard:watch",
     tier: "elevated",
     actor: "agent",
     trigger: "tool:greet",
@@ -32,7 +32,7 @@ describe("createCapabilityAudit", () => {
     const record = JSON.parse(sink.lines[0])
     expect(record).toMatchObject({
       scope: "capability",
-      capability: "clipboard:watch",
+      capabilityId: "clipboard:watch",
       decision: "deny",
       actor: "agent",
     })
@@ -47,6 +47,19 @@ describe("createCapabilityAudit", () => {
     expect(line).not.toContain("sk-secret")
     expect(line).toContain("api.github.com")
     expect(line).toContain("[redacted]")
+  })
+
+  it("redacts a secret-looking requestedScope field under the capabilityId key", () => {
+    const sink = memorySink()
+    createCapabilityAudit(sink)(
+      entry({ requestedScope: { token: "sk-abc123", host: "api.x.com" } })
+    )
+    const line = sink.lines[0]
+    expect(line).not.toContain("sk-abc123")
+    expect(line).toContain("api.x.com")
+    expect(line).toContain("[redacted]")
+    const record = JSON.parse(line)
+    expect(record.capabilityId).toBe("clipboard:watch")
   })
 
   it("sanitizes urls, paths, reasons, and payload-shaped audit fields", () => {

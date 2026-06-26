@@ -85,6 +85,7 @@ async function writePlugin(pluginDir: string, id: string): Promise<void> {
     path.join(pluginDir, "synapse.json"),
     JSON.stringify(
       {
+        manifestVersion: 2,
         id,
         name: id,
         displayName: id,
@@ -94,7 +95,7 @@ async function writePlugin(pluginDir: string, id: string): Promise<void> {
         engines: { synapse: "^0.2.0" },
         main: "dist/index.js",
         contributes: { commands: [{ id: `${id.split(".").at(-1)}.run`, title: "Run" }] },
-        permissions: [],
+        capabilities: [],
       },
       null,
       2

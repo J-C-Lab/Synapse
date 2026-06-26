@@ -303,8 +303,12 @@ function createService(
   })
 }
 
-function testManifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
+function testManifest(
+  overrides: Partial<Omit<PluginManifest, "capabilities">> & { permissions?: string[] } = {}
+): PluginManifest {
+  const { permissions = ["storage:plugin"], ...rest } = overrides
   return {
+    manifestVersion: 2,
     id: "com.synapse.test",
     name: "test",
     displayName: "Test",
@@ -316,8 +320,8 @@ function testManifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
     contributes: {
       commands: [{ id: "run", title: "Run", mode: "view" }],
     },
-    permissions: ["storage:plugin"],
-    ...overrides,
+    capabilities: permissions.map((id) => ({ id })),
+    ...rest,
   }
 }
 

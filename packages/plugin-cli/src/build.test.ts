@@ -12,6 +12,7 @@ import { buildPlugin, PluginBuildError } from "./build"
 let projectDir: string
 
 const MANIFEST = {
+  manifestVersion: 2,
   id: "com.synapse.fixture",
   name: "fixture",
   displayName: { en: "Fixture", "zh-CN": "夹具" },
@@ -23,7 +24,7 @@ const MANIFEST = {
   contributes: {
     commands: [{ id: "fixture.run", title: "Run", mode: "view" }],
   },
-  permissions: [],
+  capabilities: [],
 }
 
 const ENTRY_SOURCE = `

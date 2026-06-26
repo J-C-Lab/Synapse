@@ -75,7 +75,7 @@ const DETAIL = {
       sizeBytes: 100,
       manifestSnapshot: {
         id: "com.alice.foo",
-        permissions: ["clipboard:read"],
+        capabilities: [{ id: "clipboard:read" }],
         contributes: { commands: [], tools: [{ name: "doThing", description: "does a thing" }] },
       },
       publishedAt: SUMMARY.updatedAt,

@@ -980,7 +980,7 @@ function PluginDetailDialog({
 
   const latest = detail ? latestVersion(detail) : undefined
   const manifest = latest?.manifestSnapshot
-  const permissions = manifest?.permissions ?? []
+  const capabilities = (manifest?.capabilities ?? []).map((cap) => cap.id)
   const tools = manifest?.contributes.tools ?? []
 
   async function install() {
@@ -1072,15 +1072,15 @@ function PluginDetailDialog({
                 <ShieldCheck className="size-4 text-muted-foreground" aria-hidden />
                 {t("marketplace.detail.permissionsTitle")}
               </h3>
-              {permissions.length === 0 ? (
+              {capabilities.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
                   {t("marketplace.detail.permissionsNone")}
                 </p>
               ) : (
                 <div className="flex flex-wrap gap-1.5">
-                  {permissions.map((permission) => (
-                    <Badge key={permission} variant="secondary" className="font-mono font-normal">
-                      {permission}
+                  {capabilities.map((capability) => (
+                    <Badge key={capability} variant="secondary" className="font-mono font-normal">
+                      {capability}
                     </Badge>
                   ))}
                 </div>

@@ -1,7 +1,7 @@
 import type { PluginManifest } from "./types"
 import * as path from "node:path"
 import { z } from "zod"
-import { capabilityIds } from "./capabilities"
+import { capabilityIds, getCapability } from "./capabilities"
 
 const idSchema = z
   .string()
@@ -21,10 +21,40 @@ const relativePathSchema = z.string().min(1).refine(isSafeRelativePath, {
   message: "Path must be relative and stay inside the plugin directory",
 })
 
-// Built from the capability registry so the manifest, the host gate, and the UI
-// share one vocabulary. Red-line abilities are absent from the registry and so
-// cannot be declared here.
-const permissionSchema = z.enum(capabilityIds() as [string, ...string[]])
+// A single capability declaration: an object `{ id, scope? }`. The id is checked
+// against the registry (red-line abilities are absent and so cannot be declared)
+// and the scope is delegated to the capability's adapter. A scope-enforced
+// capability with no adapter wired (fail-closed guard) is rejected here.
+const capabilityEntrySchema = z
+  .object({ id: z.enum(capabilityIds() as [string, ...string[]]), scope: z.unknown().optional() })
+  .strict()
+  .superRefine((entry, ctx) => {
+    const desc = getCapability(entry.id)
+    if (!desc) return
+    if (!desc.scopeEnforced && entry.scope !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: `${entry.id} does not accept a scope`,
+        path: ["scope"],
+      })
+      return
+    }
+    if (desc.scopeEnforced) {
+      if (!desc.scopeAdapter) {
+        ctx.addIssue({
+          code: "custom",
+          message: `${entry.id} is not available in this version of Synapse`,
+          path: ["id"],
+        })
+        return
+      }
+      try {
+        desc.scopeAdapter.validate(entry.scope)
+      } catch (err) {
+        ctx.addIssue({ code: "custom", message: (err as Error).message, path: ["scope"] })
+      }
+    }
+  })
 
 const commandSchema = z
   .object({
@@ -97,13 +127,29 @@ const toolSchema = z
     inputSchema: jsonSchemaSchema,
     outputSchema: jsonSchemaSchema.optional(),
     annotations: toolAnnotationsSchema.optional(),
-    permissions: z.array(permissionSchema).optional(),
+    capabilities: z.array(capabilityEntrySchema).optional(),
   })
   .strict()
+
+// A tool capability is contained when the plugin declares the same id and, for
+// scope-enforced capabilities, the declared scope contains the tool's scope.
+// A truly-unknown id never reaches here: capabilityEntrySchema's enum gate
+// rejects it first, so `getCapability` is always defined in practice.
+function toolCapabilityContained(
+  toolCap: { id: string; scope?: unknown },
+  declared: Map<string, { id: string; scope?: unknown }>
+): boolean {
+  const top = declared.get(toolCap.id)
+  if (!top) return false
+  const desc = getCapability(toolCap.id)
+  if (!desc?.scopeEnforced) return true
+  return desc.scopeAdapter?.contains(top.scope, toolCap.scope) ?? false
+}
 
 export const manifestSchema = z
   .object({
     $schema: z.string().optional(),
+    manifestVersion: z.literal(2),
     id: idSchema,
     name: z.string().min(1),
     displayName: localizedStringSchema,
@@ -121,23 +167,23 @@ export const manifestSchema = z
         tools: z.array(toolSchema).optional(),
       })
       .strict(),
-    permissions: z.array(permissionSchema).default([]),
+    capabilities: z.array(capabilityEntrySchema),
   })
   .strict()
   .superRefine((value, ctx) => {
     if (
       value.contributes.activationEvents?.includes("clipboard:change") &&
-      !value.permissions.includes("clipboard:watch")
+      !value.capabilities.some((c) => c.id === "clipboard:watch")
     ) {
       ctx.addIssue({
         code: "custom",
-        message: "clipboard:change activation requires clipboard:watch permission",
-        path: ["permissions"],
+        message: "clipboard:change activation requires clipboard:watch capability",
+        path: ["capabilities"],
       })
     }
 
     const tools = value.contributes.tools ?? []
-    const granted = new Set(value.permissions)
+    const declared = new Map(value.capabilities.map((c) => [c.id, c]))
     const seen = new Set<string>()
     tools.forEach((tool, index) => {
       if (seen.has(tool.name)) {
@@ -149,12 +195,12 @@ export const manifestSchema = z
       }
       seen.add(tool.name)
 
-      for (const perm of tool.permissions ?? []) {
-        if (!granted.has(perm)) {
+      for (const cap of tool.capabilities ?? []) {
+        if (!toolCapabilityContained(cap, declared)) {
           ctx.addIssue({
             code: "custom",
-            message: `Tool "${tool.name}" requests permission "${perm}" not declared in the plugin's top-level permissions`,
-            path: ["contributes", "tools", index, "permissions"],
+            message: `Tool "${tool.name}" requests capability "${cap.id}" not contained by the plugin's capabilities`,
+            path: ["contributes", "tools", index, "capabilities"],
           })
         }
       }
@@ -178,6 +224,10 @@ export class ManifestValidationError extends Error {
  * (the Synapse host does; the CLI's structural validation does not require it).
  */
 export function parseManifest(raw: unknown): PluginManifest {
+  if (raw && typeof raw === "object" && "permissions" in raw) {
+    const legacyMsg = "permissions has been replaced by capabilities in manifestVersion 2."
+    throw new ManifestValidationError(legacyMsg, [`permissions: ${legacyMsg}`])
+  }
   const parsed = manifestSchema.safeParse(raw)
   if (!parsed.success) {
     throw new ManifestValidationError(
