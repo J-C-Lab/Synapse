@@ -20,4 +20,14 @@ describe("writeJsonFile", () => {
     const value = await readJsonFile(file)
     expect(value).toEqual(expect.objectContaining({ index: expect.any(Number) }))
   })
+
+  it("serializes writes that spell the same path differently", async () => {
+    const relative = path.join(dir, ".", "state.json")
+    await Promise.all([
+      writeJsonFile(file, { from: "absolute" }),
+      writeJsonFile(relative, { from: "relative" }),
+    ])
+    const value = await readJsonFile(file)
+    expect(value).toEqual(expect.objectContaining({ from: expect.any(String) }))
+  })
 })

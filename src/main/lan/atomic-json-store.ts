@@ -14,17 +14,19 @@ export async function readJsonFile(filePath: string): Promise<unknown | null> {
 }
 
 export async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
-  const previous = writeChains.get(filePath) ?? Promise.resolve()
+  const resolvedPath = path.resolve(filePath)
+  const previous = writeChains.get(resolvedPath) ?? Promise.resolve()
   const run = previous.then(async () => {
-    await fs.mkdir(path.dirname(filePath), { recursive: true })
-    const tempPath = `${filePath}.${randomUUID()}.tmp`
+    await fs.mkdir(path.dirname(resolvedPath), { recursive: true })
+    const tempPath = `${resolvedPath}.${randomUUID()}.tmp`
     await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf-8")
-    await fs.rename(tempPath, filePath)
+    await fs.rename(tempPath, resolvedPath)
   })
-  writeChains.set(
-    filePath,
-    run.catch(() => {})
-  )
+  const chainTail = run.catch(() => {})
+  writeChains.set(resolvedPath, chainTail)
+  chainTail.finally(() => {
+    if (writeChains.get(resolvedPath) === chainTail) writeChains.delete(resolvedPath)
+  })
   await run
 }
 
