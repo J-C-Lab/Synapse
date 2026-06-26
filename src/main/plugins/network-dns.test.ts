@@ -25,6 +25,10 @@ describe("isPublicIp", () => {
     "accepts public %s",
     (ip) => expect(isPublicIp(ip)).toBe(true)
   )
+  it.each(["::ffff:7f00:1", "::ffff:a9fe:a9fe", "::ffff:0a00:0001"])(
+    "rejects hex-encoded IPv4-mapped %s",
+    (ip) => expect(isPublicIp(ip)).toBe(false)
+  )
   it("rejects a non-IP string", () => expect(isPublicIp("not-an-ip")).toBe(false))
 })
 

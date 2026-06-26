@@ -67,6 +67,20 @@ function isPublicIpv6(ip: string): boolean {
     if (isIP(tail) === 4) return isPublicIpv4(tail)
   }
 
+  // Hex-encoded IPv4-mapped short form `::ffff:7f00:1` (== ::ffff:127.0.0.1).
+  // Node's dns.lookup emits the canonical dotted form, but isPublicIp is a
+  // reusable guard, so reconstruct the embedded IPv4 from the two trailing
+  // 16-bit groups and run the IPv4 rules. Anchored so it never misfires on
+  // real v6. (Longhand `0:0:0:0:0:ffff:...` is not produced by any resolver and
+  // is left to fall through to the prefix checks below.)
+  const hexMapped = normalized.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/)
+  if (hexMapped) {
+    const high = Number.parseInt(hexMapped[1], 16)
+    const low = Number.parseInt(hexMapped[2], 16)
+    const dotted = `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`
+    return isPublicIpv4(dotted)
+  }
+
   // :: (unspecified)
   if (normalized === "::") return false
   // ::1 (loopback)
