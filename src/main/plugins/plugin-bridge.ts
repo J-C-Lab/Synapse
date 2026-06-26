@@ -247,13 +247,18 @@ export class PluginBridge {
       },
       system: {
         openUrl: async (url) => {
-          await ensure({ capability: "system:open-url", operation: "open" })
+          // system:open-url is unscoped, so the gate rejects a requestedScope.
+          // Fold the URL into the operation instead — capability-audit sanitizes
+          // it to an origin, preserving forensic visibility without leaking paths.
+          await ensure({ capability: "system:open-url", operation: `open ${url}` })
           await this.options.adapters.system.openUrl(url)
         },
         openPath: async (targetPath) => {
+          // system:open-path is unscoped; carry the path in the operation so the
+          // audit trail records what was opened (sanitized to a basename).
           await ensure({
             capability: "system:open-path",
-            operation: "open",
+            operation: `open ${targetPath}`,
           })
           await this.options.adapters.system.openPath(targetPath)
         },
@@ -340,32 +345,32 @@ export class PluginBridge {
     gate: CapabilityGatePort,
     invocation: InvocationContext
   ): StorageAPI {
-    // storage:plugin is unscoped, so the per-key value is carried as the
-    // operation suffix (audit context) rather than as a requestedScope —
-    // the gate rejects a requestedScope on an unscoped capability.
-    const ensure = (operation: string) =>
+    // storage:plugin is unscoped, so the gate rejects a requestedScope. The
+    // per-key value is folded into the operation suffix for audit context
+    // instead (keys aren't secrets; capability-audit still scrubs the string).
+    const ensure = (operation: string, key?: string) =>
       gate.ensure({
         capability: "storage:plugin",
         actor: invocation.actor,
         trigger: invocation.trigger,
-        operation,
+        operation: key === undefined ? operation : `${operation} ${key}`,
         signal: invocation.signal,
       })
 
     return {
       get: async <T = unknown>(key: string) => {
-        await ensure("get")
+        await ensure("get", key)
         const state = await this.loadStorage(pluginId)
         return state.data[key] as T | undefined
       },
       set: async <T = unknown>(key: string, value: T) => {
-        await ensure("set")
+        await ensure("set", key)
         const state = await this.loadStorage(pluginId)
         state.data[key] = value
         await this.scheduleStorageFlush(pluginId)
       },
       delete: async (key: string) => {
-        await ensure("delete")
+        await ensure("delete", key)
         const state = await this.loadStorage(pluginId)
         delete state.data[key]
         await this.scheduleStorageFlush(pluginId)
