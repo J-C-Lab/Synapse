@@ -129,6 +129,7 @@ export class PluginHost {
   private readonly marketplaceApi: MarketplaceApi
   private clipboardTimer?: ReturnType<typeof setInterval>
   private lastClipboardSnapshot?: string
+  private clipboardDispatchChain: Promise<void> = Promise.resolve()
   private readonly handleRegistryChanged = (): void => {
     this.syncClipboardWatcher()
   }
@@ -169,13 +170,19 @@ export class PluginHost {
 
   async init(): Promise<void> {
     await this.preferences.load()
-    const discovered = await discoverPlugins({
-      builtinDir: this.builtinDir,
-      userDir: this.userDir,
-      devFilePath: this.devFilePath,
-    })
-    await this.registry.load(discovered)
-    await migrateGrants(this.registry.list(), this.grants, this.migrationMarker)
+    this.registry.off("changed", this.handleRegistryChanged)
+    try {
+      const discovered = await discoverPlugins({
+        builtinDir: this.builtinDir,
+        userDir: this.userDir,
+        devFilePath: this.devFilePath,
+      })
+      await this.registry.load(discovered)
+      await migrateGrants(this.registry.list(), this.grants, this.migrationMarker)
+    } finally {
+      this.registry.on("changed", this.handleRegistryChanged)
+      this.syncClipboardWatcher()
+    }
   }
 
   list(): PluginRegistryEntry[] {
@@ -387,7 +394,13 @@ export class PluginHost {
   }
 
   async flush(): Promise<void> {
+    await this.drainClipboardWatcher()
     await this.bridge.flushAll()
+  }
+
+  /** Await in-flight clipboard watcher reads/dispatches (tests and flush). */
+  async drainClipboardWatcher(): Promise<void> {
+    await this.clipboardDispatchChain
   }
 
   dispose(): void {
@@ -454,9 +467,17 @@ export class PluginHost {
     if (this.clipboardTimer) return
     const pollMs = this.options.clipboardPollMs ?? 500
     this.clipboardTimer = setInterval(() => {
-      void this.readAndDispatchClipboard()
+      this.queueClipboardRead()
     }, pollMs)
-    void this.readAndDispatchClipboard()
+    this.queueClipboardRead()
+  }
+
+  private queueClipboardRead(): void {
+    this.clipboardDispatchChain = this.clipboardDispatchChain
+      .then(() => this.readAndDispatchClipboard())
+      .catch((err) => {
+        logger.child("plugin-host").warn("clipboard watch read failed", { err })
+      })
   }
 
   private stopClipboardWatcher(): void {

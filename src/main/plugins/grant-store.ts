@@ -84,6 +84,7 @@ function migrateRecords(raw: unknown[]): GrantRecord[] {
 
 export class GrantStore {
   private state: GrantState | null = null
+  private exclusive: Promise<void> = Promise.resolve()
 
   constructor(
     private readonly filePath: string,
@@ -111,23 +112,23 @@ export class GrantStore {
     grantedBy: GrantRecord["grantedBy"],
     grantScope?: unknown
   ): Promise<void> {
-    // Replace any prior record for this plugin+capability, and DROP any matching
-    // tombstone (a fresh grant supersedes a prior revoke for the same identity).
-    // Deliberate identity split: replacement uses COARSE identity (clean up
-    // superseded rows for the SAME publisher, regardless of declaration hash);
-    // tombstone-drop uses EXACT sameIdentity (only un-revoke the precisely
-    // revoked identity). Coarse replacement also prevents granting under one
-    // publisher from silently deleting a different publisher's grant that
-    // happens to share the same pluginId.
-    const state = await this.load()
-    state.grants = state.grants.filter(
-      (r) => !(r.capabilityId === capabilityId && sameCoarseIdentity(r.identity, identity))
-    )
-    state.tombstones = state.tombstones.filter(
-      (t) => !(t.capabilityId === capabilityId && sameIdentity(t.identity, identity))
-    )
-    state.grants.push({ capabilityId, grantedAt: this.now(), grantedBy, grantScope, identity })
-    await this.persist(state)
+    return this.runExclusive(async () => {
+      const state = await this.load()
+      state.grants = state.grants.filter(
+        (r) => !(r.capabilityId === capabilityId && sameCoarseIdentity(r.identity, identity))
+      )
+      state.tombstones = state.tombstones.filter(
+        (t) => !(t.capabilityId === capabilityId && sameIdentity(t.identity, identity))
+      )
+      state.grants.push({
+        capabilityId,
+        grantedAt: this.now(),
+        grantedBy,
+        grantScope,
+        identity,
+      })
+      await this.persist(state)
+    })
   }
 
   async revoke(
@@ -135,17 +136,17 @@ export class GrantStore {
     capabilityId: string,
     revokedBy: RevocationTombstone["revokedBy"]
   ): Promise<void> {
-    const state = await this.load()
-    state.grants = state.grants.filter(
-      (r) => !(r.capabilityId === capabilityId && sameIdentity(r.identity, identity))
-    )
-    // Dedupe: drop any existing tombstone for this exact identity + capability so
-    // repeated grant→revoke cycles don't accumulate duplicate tombstones.
-    state.tombstones = state.tombstones.filter(
-      (t) => !(t.capabilityId === capabilityId && sameIdentity(t.identity, identity))
-    )
-    state.tombstones.push({ capabilityId, revokedAt: this.now(), revokedBy, identity })
-    await this.persist(state)
+    return this.runExclusive(async () => {
+      const state = await this.load()
+      state.grants = state.grants.filter(
+        (r) => !(r.capabilityId === capabilityId && sameIdentity(r.identity, identity))
+      )
+      state.tombstones = state.tombstones.filter(
+        (t) => !(t.capabilityId === capabilityId && sameIdentity(t.identity, identity))
+      )
+      state.tombstones.push({ capabilityId, revokedAt: this.now(), revokedBy, identity })
+      await this.persist(state)
+    })
   }
 
   /**
@@ -193,5 +194,14 @@ export class GrantStore {
   private async persist(state: GrantState): Promise<void> {
     this.state = state
     await writeJsonFile(this.filePath, state)
+  }
+
+  private async runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.exclusive.then(fn)
+    this.exclusive = run.then(
+      () => {},
+      () => {}
+    )
+    return run
   }
 }

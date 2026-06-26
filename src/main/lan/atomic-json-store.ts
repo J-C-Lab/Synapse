@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
-import process from "node:process"
+
+const writeChains = new Map<string, Promise<void>>()
 
 export async function readJsonFile(filePath: string): Promise<unknown | null> {
   try {
@@ -12,10 +14,18 @@ export async function readJsonFile(filePath: string): Promise<unknown | null> {
 }
 
 export async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
-  await fs.mkdir(path.dirname(filePath), { recursive: true })
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
-  await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf-8")
-  await fs.rename(tempPath, filePath)
+  const previous = writeChains.get(filePath) ?? Promise.resolve()
+  const run = previous.then(async () => {
+    await fs.mkdir(path.dirname(filePath), { recursive: true })
+    const tempPath = `${filePath}.${randomUUID()}.tmp`
+    await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf-8")
+    await fs.rename(tempPath, filePath)
+  })
+  writeChains.set(
+    filePath,
+    run.catch(() => {})
+  )
+  await run
 }
 
 function isFileNotFound(err: unknown): boolean {

@@ -124,6 +124,22 @@ describe("grantStore", () => {
     expect(await store.isGranted(identity(), "notification")).toBe(true)
   })
 
+  it("serializes concurrent persists without losing grants", async () => {
+    const store = new GrantStore(file)
+    const id = identity()
+    await Promise.all([
+      store.grant(id, "clipboard:read", "user"),
+      store.grant(id, "clipboard:write", "user"),
+      store.grant(id, "storage:plugin", "install"),
+      store.grant(id, "notification", "install"),
+    ])
+    const fresh = new GrantStore(file)
+    expect(await fresh.isGranted(id, "clipboard:read")).toBe(true)
+    expect(await fresh.isGranted(id, "clipboard:write")).toBe(true)
+    expect(await fresh.isGranted(id, "storage:plugin")).toBe(true)
+    expect(await fresh.isGranted(id, "notification")).toBe(true)
+  })
+
   it("skips malformed rows in a legacy array without throwing", async () => {
     const fs = await import("node:fs/promises")
     await fs.writeFile(

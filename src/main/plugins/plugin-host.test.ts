@@ -489,6 +489,7 @@ describe("pluginHost.revokeCapability", () => {
       expect(host.registry.hasClipboardChangeListeners()).toBe(true)
 
       await vi.runOnlyPendingTimersAsync()
+      await host.drainClipboardWatcher()
       const readsAfterInit = read.mock.calls.length
       expect(readsAfterInit).toBeGreaterThan(0)
 
@@ -499,6 +500,7 @@ describe("pluginHost.revokeCapability", () => {
       expect(host.registry.hasClipboardChangeListeners()).toBe(false)
 
       await vi.advanceTimersByTimeAsync(50)
+      await host.drainClipboardWatcher()
       expect(read.mock.calls.length).toBe(readsAfterInit)
     } finally {
       host.dispose()
@@ -581,12 +583,9 @@ describe("pluginHost clipboard watcher", () => {
     try {
       await host.init()
       await vi.runOnlyPendingTimersAsync()
+      await host.drainClipboardWatcher()
 
       expect(read).toHaveBeenCalled()
-      // Storage writes sit behind a flush timer that is scheduled *during* the
-      // async dispatch chain, so `runOnlyPendingTimersAsync` above doesn't catch
-      // it. Force the pending write so the read below is deterministic (this was
-      // a CI flake otherwise).
       await host.flush()
       const raw = await fs.readFile(
         path.join(dir, "plugin-data", "com.synapse.clipboard.json"),
@@ -626,6 +625,7 @@ describe("pluginHost clipboard watcher", () => {
     try {
       await host.init()
       await vi.advanceTimersByTimeAsync(20)
+      await host.drainClipboardWatcher()
 
       expect(read).not.toHaveBeenCalled()
       expect(audit).toHaveBeenCalledWith(
@@ -681,6 +681,7 @@ describe("pluginHost clipboard watcher", () => {
       await host.grants.grant(identity, "clipboard:watch", "user")
 
       await vi.advanceTimersByTimeAsync(20)
+      await host.drainClipboardWatcher()
 
       expect(read).not.toHaveBeenCalled()
       expect(audit).toHaveBeenCalledWith(
