@@ -20,7 +20,7 @@ export function ConversationSidebar({
 }) {
   const { t } = useTranslation()
   return (
-    <div className="flex w-56 shrink-0 flex-col gap-2 border-r pr-2">
+    <div className="flex h-full min-h-0 flex-col gap-2 pr-1">
       <Button variant="outline" size="sm" className="justify-start" onClick={onNew}>
         <MessageSquarePlus className="size-4" />
         {t("chat.newConversation")}

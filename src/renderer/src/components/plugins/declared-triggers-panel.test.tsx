@@ -5,9 +5,17 @@ import { DeclaredTriggersPanel } from "@/components/plugins/declared-triggers-pa
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) => {
-      if (key === "plugins.triggers.budgetLine") return `${options?.max}/${options?.period}`
-      if (key === "plugins.triggers.handler") return String(options?.handler)
+      if (key === "plugins.triggers.budgetLine")
+        return `${options?.capability} ${options?.max}/${options?.period}`
       if (key === "plugins.triggers.contentTypes") return String(options?.types)
+      // Capability labels, periods, and type labels resolve to their defaultValue.
+      if (
+        key.startsWith("permissions.items.") ||
+        key.startsWith("plugins.triggers.period.") ||
+        key.startsWith("plugins.triggers.typeLabel.")
+      ) {
+        return (options?.defaultValue as string) ?? key
+      }
       return key
     },
   }),
@@ -29,6 +37,6 @@ describe("declaredTriggersPanel", () => {
       />
     )
     expect(screen.getByText("plugins.triggers.clipboardDisclosureTitle")).toBeInTheDocument()
-    expect(screen.getByText("clipboard:read: 20/1h")).toBeInTheDocument()
+    expect(screen.getByText("clipboard:read 20/1h")).toBeInTheDocument()
   })
 })

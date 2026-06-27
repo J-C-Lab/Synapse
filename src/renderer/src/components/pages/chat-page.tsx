@@ -1,9 +1,21 @@
+import type { ImperativePanelHandle } from "react-resizable-panels"
 import type { DisplayMessage, ToolCard } from "./chat-message-model"
 import type { AiChatEvent, AiConversationSummary, AiStatus, AiTokenUsage } from "@/lib/electron"
-import { Bot, Brain, Loader2, PanelLeft, Send, Server, Settings, Wrench } from "lucide-react"
+import {
+  ArrowUp,
+  Bot,
+  Brain,
+  Loader2,
+  PanelLeft,
+  Plus,
+  Server,
+  Settings,
+  Wrench,
+} from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { AiSettingsDialog } from "@/components/ai-settings-dialog"
+import { AssistantOnboarding } from "@/components/assistant-onboarding"
 import { ConversationSidebar } from "@/components/conversation-sidebar"
 import { Markdown } from "@/components/markdown"
 import { McpServersDialog } from "@/components/mcp-servers-dialog"
@@ -17,7 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import { Textarea } from "@/components/ui/textarea"
 import {
   approveAiTool,
@@ -56,6 +68,14 @@ export function ChatPage() {
   const [conversations, setConversations] = useState<AiConversationSummary[]>([])
   const [conversationId, setConversationId] = useState<string>(() => crypto.randomUUID())
   const scrollRef = useRef<HTMLDivElement>(null)
+  const sidebarPanelRef = useRef<ImperativePanelHandle>(null)
+
+  useEffect(() => {
+    const panel = sidebarPanelRef.current
+    if (!panel) return
+    if (showSidebar) panel.expand()
+    else panel.collapse()
+  }, [showSidebar])
 
   const refreshConversations = useCallback(() => {
     if (isElectron()) void listAiConversations().then(setConversations)
@@ -156,7 +176,7 @@ export function ChatPage() {
 
   if (status && !status.hasKey) {
     return (
-      <div className="space-y-4">
+      <div className="flex h-full min-h-0 flex-col gap-3">
         <Header
           onManageMcp={() => setShowMcp(true)}
           onManageMemory={() => setShowMemory(true)}
@@ -170,134 +190,208 @@ export function ChatPage() {
           status={status}
           onStatusChange={setStatus}
         />
-        <div className="rounded-lg border bg-card p-6">
-          <p className="mb-3 text-sm text-muted-foreground">{t("chat.keyPrompt")}</p>
-          <div className="flex gap-2">
-            <Input
-              type="password"
-              value={keyDraft}
-              onChange={(event) => setKeyDraft(event.target.value)}
-              placeholder="sk-ant-..."
-              onKeyDown={(event) => event.key === "Enter" && void saveKey()}
-            />
-            <Button onClick={() => void saveKey()} disabled={savingKey || !keyDraft.trim()}>
-              {t("chat.saveKey")}
-            </Button>
-          </div>
-        </div>
+        <AssistantOnboarding
+          status={status}
+          keyDraft={keyDraft}
+          savingKey={savingKey}
+          onKeyDraftChange={setKeyDraft}
+          onSaveKey={() => void saveKey()}
+          onOpenSettings={() => setShowSettings(true)}
+        />
       </div>
     )
   }
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] gap-3">
-      {showSidebar && (
-        <ConversationSidebar
-          conversations={conversations}
-          activeId={conversationId}
-          onSelect={(id) => void selectConversation(id)}
-          onNew={newConversation}
-          onDelete={(id) => void removeConversation(id)}
-        />
-      )}
-      <div className="flex min-w-0 flex-1 flex-col gap-3">
-        <Header
-          model={status?.model}
-          onToggleSidebar={() => setShowSidebar((value) => !value)}
-          onManageMcp={() => setShowMcp(true)}
-          onManageMemory={() => setShowMemory(true)}
-          onOpenSettings={() => setShowSettings(true)}
-        />
-        <McpServersDialog open={showMcp} onOpenChange={setShowMcp} />
-        <MemoryDialog open={showMemory} onOpenChange={setShowMemory} />
-        <AiSettingsDialog
-          open={showSettings}
-          onOpenChange={setShowSettings}
-          status={status}
-          onStatusChange={setStatus}
-        />
-
-        <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto pr-1">
-          {messages.length === 0 ? (
-            <p className="py-12 text-center text-sm text-muted-foreground">{t("chat.empty")}</p>
-          ) : (
-            messages.map((message) => <MessageBubble key={message.id} message={message} />)
-          )}
-        </div>
-
-        {usage && (
-          <p className="text-right text-[11px] text-muted-foreground">
-            {t("chat.usage", {
-              input: usage.inputTokens,
-              output: usage.outputTokens,
-              cached: usage.cacheReadInputTokens,
-            })}
-            {status && status.budgetTokens > 0 && (
-              <span>
-                {" · "}
-                {t("chat.usageBudget", {
-                  used:
-                    usage.inputTokens +
-                    usage.outputTokens +
-                    usage.cacheCreationInputTokens +
-                    usage.cacheReadInputTokens,
-                  budget: status.budgetTokens,
-                })}
-              </span>
-            )}
-          </p>
-        )}
-
-        <div className="flex items-end gap-2">
-          <Textarea
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault()
-                void send()
-              }
-            }}
-            placeholder={t("chat.placeholder")}
-            className="max-h-40 min-h-10 resize-none"
-            rows={1}
-          />
-          <Button onClick={() => void send()} disabled={busy || !input.trim()} size="icon">
-            {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-          </Button>
-        </div>
-
-        <Dialog
-          open={approval !== null}
-          onOpenChange={(open) => !open && void resolveApproval(false, "once")}
+    <div className="h-full min-h-0">
+      <ResizablePanelGroup
+        direction="horizontal"
+        autoSaveId="synapse-chat-layout"
+        className="h-full min-h-0"
+      >
+        <ResizablePanel
+          ref={sidebarPanelRef}
+          defaultSize={22}
+          minSize={16}
+          maxSize={42}
+          collapsible
+          collapsedSize={0}
+          className="min-w-0"
         >
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>{t("chat.approvalTitle")}</DialogTitle>
-              <DialogDescription>
-                {t("chat.approvalBody", { tool: approval?.toolName ?? "" })}
-              </DialogDescription>
-            </DialogHeader>
-            {approval && (
-              <pre className="max-h-48 overflow-auto rounded bg-muted p-3 text-xs">
-                {JSON.stringify(approval.input, null, 2)}
-              </pre>
-            )}
-            <DialogFooter className="gap-2 sm:justify-between">
-              <Button variant="ghost" onClick={() => void resolveApproval(false, "once")}>
-                {t("chat.deny")}
-              </Button>
-              <div className="flex gap-2">
-                <Button variant="outline" onClick={() => void resolveApproval(true, "always")}>
-                  {t("chat.allowAlways")}
-                </Button>
-                <Button onClick={() => void resolveApproval(true, "once")}>
-                  {t("chat.allow")}
-                </Button>
+          <ConversationSidebar
+            conversations={conversations}
+            activeId={conversationId}
+            onSelect={(id) => void selectConversation(id)}
+            onNew={newConversation}
+            onDelete={(id) => void removeConversation(id)}
+          />
+        </ResizablePanel>
+
+        <ResizableHandle withHandle />
+
+        <ResizablePanel minSize={45} className="min-w-0">
+          <div className="flex h-full min-h-0 flex-col gap-3 pl-1">
+            <Header
+              model={status?.model}
+              onToggleSidebar={() => setShowSidebar((value) => !value)}
+              onManageMcp={() => setShowMcp(true)}
+              onManageMemory={() => setShowMemory(true)}
+              onOpenSettings={() => setShowSettings(true)}
+            />
+            <McpServersDialog open={showMcp} onOpenChange={setShowMcp} />
+            <MemoryDialog open={showMemory} onOpenChange={setShowMemory} />
+            <AiSettingsDialog
+              open={showSettings}
+              onOpenChange={setShowSettings}
+              status={status}
+              onStatusChange={setStatus}
+            />
+
+            <div ref={scrollRef} className="flex-1 overflow-y-auto pr-1">
+              <div className="mx-auto w-full max-w-3xl space-y-6 px-1 py-2">
+                {messages.length === 0 ? (
+                  <p className="py-12 text-center text-sm text-muted-foreground">
+                    {t("chat.empty")}
+                  </p>
+                ) : (
+                  messages.map((message) => <MessageBubble key={message.id} message={message} />)
+                )}
               </div>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            </div>
+
+            {usage && (
+              <p className="text-right text-[11px] text-muted-foreground">
+                {t("chat.usage", {
+                  input: usage.inputTokens,
+                  output: usage.outputTokens,
+                  cached: usage.cacheReadInputTokens,
+                })}
+                {status && status.budgetTokens > 0 && (
+                  <span>
+                    {" · "}
+                    {t("chat.usageBudget", {
+                      used:
+                        usage.inputTokens +
+                        usage.outputTokens +
+                        usage.cacheCreationInputTokens +
+                        usage.cacheReadInputTokens,
+                      budget: status.budgetTokens,
+                    })}
+                  </span>
+                )}
+              </p>
+            )}
+
+            <ChatComposer
+              value={input}
+              busy={busy}
+              onChange={setInput}
+              onSend={() => void send()}
+            />
+
+            <Dialog
+              open={approval !== null}
+              onOpenChange={(open) => !open && void resolveApproval(false, "once")}
+            >
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>{t("chat.approvalTitle")}</DialogTitle>
+                  <DialogDescription>
+                    {t("chat.approvalBody", { tool: approval?.toolName ?? "" })}
+                  </DialogDescription>
+                </DialogHeader>
+                {approval && (
+                  <pre className="max-h-48 overflow-auto rounded bg-muted p-3 text-xs">
+                    {JSON.stringify(approval.input, null, 2)}
+                  </pre>
+                )}
+                <DialogFooter className="gap-2 sm:justify-between">
+                  <Button variant="ghost" onClick={() => void resolveApproval(false, "once")}>
+                    {t("chat.deny")}
+                  </Button>
+                  <div className="flex gap-2">
+                    <Button variant="outline" onClick={() => void resolveApproval(true, "always")}>
+                      {t("chat.allowAlways")}
+                    </Button>
+                    <Button onClick={() => void resolveApproval(true, "once")}>
+                      {t("chat.allow")}
+                    </Button>
+                  </div>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    </div>
+  )
+}
+
+function ChatComposer({
+  value,
+  busy,
+  onChange,
+  onSend,
+}: {
+  value: string
+  busy: boolean
+  onChange: (value: string) => void
+  onSend: () => void
+}) {
+  const { t } = useTranslation()
+  const canSend = value.trim().length > 0 && !busy
+
+  return (
+    <div className="mx-auto w-full max-w-3xl px-1 pb-1">
+      <div
+        className={cn(
+          "flex items-end gap-0.5 rounded-[28px] border border-border/80 bg-background px-2 py-1.5",
+          "shadow-sm ring-1 ring-border/40"
+        )}
+      >
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="mb-0.5 size-9 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+          aria-label={t("chat.attach")}
+          disabled
+        >
+          <Plus className="size-5 stroke-[1.75]" />
+        </Button>
+
+        <Textarea
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault()
+              if (canSend) onSend()
+            }
+          }}
+          placeholder={t("chat.placeholder")}
+          rows={1}
+          className="max-h-[200px] min-h-9 flex-1 resize-none border-0 bg-transparent px-1 py-2.5 text-[15px] leading-6 shadow-none focus-visible:ring-0"
+        />
+
+        <button
+          type="button"
+          onClick={onSend}
+          disabled={!canSend}
+          aria-label={t("chat.send")}
+          className={cn(
+            "mb-0.5 flex size-9 shrink-0 items-center justify-center rounded-full transition-colors",
+            canSend
+              ? "bg-primary text-primary-foreground hover:bg-primary/90"
+              : "cursor-not-allowed bg-muted text-muted-foreground"
+          )}
+        >
+          {busy ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <ArrowUp className="size-5 stroke-[2.25]" />
+          )}
+        </button>
       </div>
     </div>
   )
@@ -353,24 +447,23 @@ function Header({
 
 function MessageBubble({ message }: { message: DisplayMessage }) {
   const isUser = message.role === "user"
-  return (
-    <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
-      <div
-        className={cn(
-          "max-w-[85%] space-y-2 rounded-lg px-3 py-2 text-sm",
-          isUser ? "bg-primary text-primary-foreground" : "bg-muted"
-        )}
-      >
-        {message.text &&
-          (isUser ? (
-            <p className="whitespace-pre-wrap wrap-break-word">{message.text}</p>
-          ) : (
-            <Markdown>{message.text}</Markdown>
-          ))}
-        {message.tools.map((tool) => (
-          <ToolCardView key={tool.id} tool={tool} />
-        ))}
+
+  if (isUser) {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[min(85%,42rem)] rounded-[22px] bg-muted px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
+          <p className="whitespace-pre-wrap wrap-break-word">{message.text}</p>
+        </div>
       </div>
+    )
+  }
+
+  return (
+    <div className="w-full space-y-3 text-[15px] leading-relaxed text-foreground">
+      {message.text && <Markdown>{message.text}</Markdown>}
+      {message.tools.map((tool) => (
+        <ToolCardView key={tool.id} tool={tool} />
+      ))}
     </div>
   )
 }

@@ -89,8 +89,7 @@ export function ActiveBackgroundPanel({
           >
             <div className="flex flex-wrap items-center gap-2">
               <span className="min-w-0 flex-1 font-medium">
-                {row.triggerId}
-                <span className="ml-2 text-xs font-normal text-muted-foreground">{row.type}</span>
+                {t(`plugins.triggers.typeLabel.${row.type}`, { defaultValue: row.type })}
               </span>
               <Badge variant={statusVariant(row.status)} className="font-normal capitalize">
                 {t(`plugins.triggers.status.${row.status}`, { defaultValue: row.status })}
@@ -99,7 +98,14 @@ export function ActiveBackgroundPanel({
             <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
               {row.budgets.map((budget) => (
                 <span key={budget.capabilityId}>
-                  {budget.capabilityId}: {budget.used}/{budget.max}
+                  {t("plugins.triggers.budgetUsage", {
+                    capability: t(`permissions.items.${budget.capabilityId}`, {
+                      defaultValue: budget.capabilityId,
+                      nsSeparator: false,
+                    }),
+                    used: budget.used,
+                    max: budget.max,
+                  })}
                 </span>
               ))}
             </div>

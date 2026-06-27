@@ -173,16 +173,22 @@ export function AppShell() {
           <SidebarTrigger />
           <span className="text-sm font-medium">{t(`nav.${navKey(nav)}`)}</span>
         </header>
-        <main className="flex-1 overflow-y-auto px-6 py-8">
+        <main
+          className={cn(
+            "flex-1",
+            nav === "assistant"
+              ? "flex min-h-0 flex-col overflow-hidden px-4 py-4"
+              : "overflow-y-auto px-6 py-8"
+          )}
+        >
           <div
             className={cn(
               "mx-auto w-full",
-              nav === "plugins" ||
-                nav === "marketplace" ||
-                nav === "lan-transfer" ||
-                nav === "assistant"
-                ? "max-w-5xl"
-                : "max-w-3xl"
+              nav === "assistant"
+                ? "flex min-h-0 flex-1 flex-col"
+                : nav === "plugins" || nav === "marketplace" || nav === "lan-transfer"
+                  ? "max-w-5xl"
+                  : "max-w-3xl"
             )}
           >
             {nav === "home" && <HomePage onNavigate={setNav} />}

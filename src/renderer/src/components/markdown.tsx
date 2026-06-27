@@ -15,9 +15,10 @@ export function Markdown({ children, className }: { children: string; className?
     <div
       className={cn(
         "prose prose-sm dark:prose-invert max-w-none",
-        // Tighten the default prose rhythm for chat bubbles.
-        "prose-pre:my-2 prose-pre:bg-background/70 prose-p:my-1.5 prose-headings:my-2",
-        "prose-ul:my-1.5 prose-ol:my-1.5 prose-code:before:content-none prose-code:after:content-none",
+        // Chat-style prose: assistant replies sit on the page, not in a bubble.
+        "prose-pre:my-3 prose-pre:bg-muted/50 prose-p:my-2 prose-headings:my-3 prose-p:leading-relaxed",
+        "prose-ul:my-2 prose-ol:my-2 prose-code:before:content-none prose-code:after:content-none",
+        "prose-code:rounded prose-code:bg-muted/70 prose-code:px-1.5 prose-code:py-0.5 prose-code:font-normal prose-code:text-foreground",
         className
       )}
     >

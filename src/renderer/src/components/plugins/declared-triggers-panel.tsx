@@ -1,6 +1,5 @@
 import { useTranslation } from "react-i18next"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 
 export interface DeclaredTriggerUse {
@@ -59,14 +58,10 @@ export function DeclaredTriggersPanel({
           data-testid="declared-trigger-row"
         >
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium">{trigger.id}</span>
-            <Badge variant="outline" className="font-normal">
-              {trigger.type}
-            </Badge>
+            <span className="font-medium">
+              {t(`plugins.triggers.typeLabel.${trigger.type}`, { defaultValue: trigger.type })}
+            </span>
           </div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t("plugins.triggers.handler", { handler: trigger.handler })}
-          </p>
           {trigger.type === "clipboard" && trigger.scope?.contentTypes?.length ? (
             <p className="mt-1 text-xs text-muted-foreground">
               {t("plugins.triggers.contentTypes", {
@@ -103,23 +98,25 @@ export function DeclaredTriggersPanel({
               })}
             </p>
           ) : null}
-          <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-            {trigger.type === "fs.watch" ? (
-              <li>{t("plugins.triggers.implicitFsWatchGrant")}</li>
-            ) : null}
-            {trigger.type === "hotkey" ? (
-              <li>{t("plugins.triggers.implicitHotkeyGrant")}</li>
-            ) : null}
-            {trigger.uses.map((use) => (
-              <li key={`${trigger.id}:${use.capability}`}>
-                {use.capability}:{" "}
-                {t("plugins.triggers.budgetLine", {
-                  max: use.budget.maxCalls,
-                  period: use.budget.period,
-                })}
-              </li>
-            ))}
-          </ul>
+          <div className="mt-2 space-y-1">
+            <p className="text-xs font-medium">{t("plugins.triggers.allowsTitle")}</p>
+            <ul className="space-y-1 text-xs text-muted-foreground">
+              {trigger.uses.map((use) => (
+                <li key={`${trigger.id}:${use.capability}`}>
+                  {t("plugins.triggers.budgetLine", {
+                    capability: t(`permissions.items.${use.capability}`, {
+                      defaultValue: use.capability,
+                      nsSeparator: false,
+                    }),
+                    max: use.budget.maxCalls,
+                    period: t(`plugins.triggers.period.${use.budget.period}`, {
+                      defaultValue: use.budget.period,
+                    }),
+                  })}
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       ))}
     </div>
