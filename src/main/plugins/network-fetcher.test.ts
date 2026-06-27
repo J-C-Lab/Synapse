@@ -2,6 +2,7 @@ import type { ResolvedAddress } from "./network-dns"
 import type {
   NetworkFetcherConfig,
   NetworkTransport,
+  StreamTransportResult,
   TransportArgs,
   TransportResult,
 } from "./network-fetcher"
@@ -477,5 +478,144 @@ describe("network-fetcher address failover", () => {
     ).rejects.toThrow(/aborted/)
     // Aborted on the first attempt → no roll-over to the second address.
     expect((transport as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
+  })
+})
+
+// ---- Streaming responses ----------------------------------------------------
+
+function streamTransportFrom(
+  chunks: Uint8Array[],
+  result: Partial<StreamTransportResult> = {}
+): ReturnType<typeof vi.fn> {
+  return vi.fn(
+    async (_args: TransportArgs): Promise<StreamTransportResult> => ({
+      status: 200,
+      statusText: "OK",
+      headers: { "content-type": "application/octet-stream" },
+      stream: (async function* () {
+        for (const c of chunks) yield c
+      })(),
+      ...result,
+    })
+  )
+}
+
+async function drain(body: AsyncIterable<Uint8Array>): Promise<Buffer> {
+  const parts: Buffer[] = []
+  for await (const chunk of body) parts.push(Buffer.from(chunk))
+  return Buffer.concat(parts)
+}
+
+describe("network-fetcher streaming", () => {
+  it("yields the body as chunks that reassemble to the original bytes", async () => {
+    const chunks = [Buffer.from("hello "), Buffer.from("streamed "), Buffer.from("world")]
+    const streamTransport = streamTransportFrom(chunks)
+    const fetcher = createNetworkFetcher(makeConfig({ streamTransport: streamTransport as never }))
+
+    const res = await fetcher.fetchStream("https://api.github.com/big")
+    expect(res.ok).toBe(true)
+    expect(res.status).toBe(200)
+    expect((await drain(res.body)).toString("utf8")).toBe("hello streamed world")
+  })
+
+  it("throws once the cumulative body exceeds maxStreamBytes", async () => {
+    const streamTransport = streamTransportFrom([Buffer.alloc(8), Buffer.alloc(8), Buffer.alloc(8)])
+    const fetcher = createNetworkFetcher(
+      makeConfig({ streamTransport: streamTransport as never, maxStreamBytes: 16 })
+    )
+
+    const res = await fetcher.fetchStream("https://api.github.com/big")
+    await expect(drain(res.body)).rejects.toThrow(/maxStreamBytes/)
+  })
+
+  it("runs the consent gate before the stream transport (consent before egress)", async () => {
+    const streamTransport = streamTransportFrom([Buffer.from("x")])
+    const gate = fakeGate(async () => {
+      throw new CapabilityDenied("p", "network:https", "scope not allowed")
+    })
+    const fetcher = createNetworkFetcher(
+      makeConfig({ gate, streamTransport: streamTransport as never })
+    )
+
+    await expect(fetcher.fetchStream("https://evil.com/x")).rejects.toBeInstanceOf(CapabilityDenied)
+    expect(streamTransport).not.toHaveBeenCalled()
+  })
+
+  it("follows a same-origin redirect, then streams the final body", async () => {
+    let call = 0
+    const streamTransport = vi.fn(async (_args: TransportArgs): Promise<StreamTransportResult> => {
+      call += 1
+      if (call === 1) {
+        return {
+          status: 302,
+          statusText: "Found",
+          headers: { location: "https://api.github.com/final" },
+          stream: (async function* () {
+            yield Buffer.from("")
+          })(),
+        }
+      }
+      return {
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        stream: (async function* () {
+          yield Buffer.from("final body")
+        })(),
+      }
+    })
+    const fetcher = createNetworkFetcher(makeConfig({ streamTransport: streamTransport as never }))
+
+    const res = await fetcher.fetchStream("https://api.github.com/start")
+    expect((await drain(res.body)).toString("utf8")).toBe("final body")
+    expect(streamTransport.mock.calls).toHaveLength(2)
+  })
+
+  it("rejects a cross-origin redirect", async () => {
+    const streamTransport = streamTransportFrom([], {
+      status: 302,
+      headers: { location: "https://evil.com/x" },
+    })
+    const fetcher = createNetworkFetcher(makeConfig({ streamTransport: streamTransport as never }))
+
+    await expect(fetcher.fetchStream("https://api.github.com/start")).rejects.toThrow(
+      /cross-origin redirect/
+    )
+  })
+
+  it("strips set-cookie and hop-by-hop headers on the streamed response", async () => {
+    const streamTransport = streamTransportFrom([Buffer.from("x")], {
+      headers: { "set-cookie": "a=1", connection: "keep-alive", "content-type": "text/plain" },
+    })
+    const fetcher = createNetworkFetcher(makeConfig({ streamTransport: streamTransport as never }))
+
+    const res = await fetcher.fetchStream("https://api.github.com/x")
+    const keys = Object.keys(res.headers).map((k) => k.toLowerCase())
+    expect(keys).not.toContain("set-cookie")
+    expect(keys).not.toContain("connection")
+    expect(keys).toContain("content-type")
+  })
+
+  it("abortAll mid-stream makes the iterator throw", async () => {
+    const streamTransport = vi.fn(
+      async (args: TransportArgs): Promise<StreamTransportResult> => ({
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        stream: (async function* () {
+          yield Buffer.from("first")
+          await new Promise((r) => setTimeout(r, 5))
+          if (args.signal.aborted) throw new Error("aborted")
+          yield Buffer.from("second")
+        })(),
+      })
+    )
+    const fetcher = createNetworkFetcher(makeConfig({ streamTransport: streamTransport as never }))
+
+    const res = await fetcher.fetchStream("https://api.github.com/x")
+    const iterator = res.body[Symbol.asyncIterator]()
+    expect(Buffer.from((await iterator.next()).value!).toString("utf8")).toBe("first")
+    fetcher.abortAll()
+    await expect(iterator.next()).rejects.toThrow(/aborted/)
   })
 })
