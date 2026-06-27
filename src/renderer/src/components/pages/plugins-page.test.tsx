@@ -104,7 +104,8 @@ describe("pluginsPage", () => {
     const user = userEvent.setup()
     render(<PluginsPage />)
 
-    expect(await screen.findByText("Clipboard Helper")).toBeInTheDocument()
+    // Details (incl. capabilities) now live in a dialog opened from the row.
+    await user.click(await screen.findByText("Clipboard Helper"))
     expect(await screen.findByTestId("capability-row")).toBeInTheDocument()
     expect(screen.getByText("clipboard:read")).toBeInTheDocument()
 
@@ -117,6 +118,7 @@ describe("pluginsPage", () => {
   })
 
   it("shows always allowed for auto-tier capabilities", async () => {
+    const user = userEvent.setup()
     // Persistent (not Once) + keyed by pluginId so a refetch under full-suite
     // load returns the same Storage fixture instead of falling back to the
     // beforeEach default — the source of this test's earlier flakiness.
@@ -139,7 +141,7 @@ describe("pluginsPage", () => {
 
     render(<PluginsPage />)
 
-    expect(await screen.findByText("Storage")).toBeInTheDocument()
+    await user.click(await screen.findByText("Storage"))
     expect(await screen.findByText("plugins.capabilities.alwaysAllowed")).toBeInTheDocument()
     expect(
       screen.queryByRole("button", { name: "plugins.capabilities.revoke" })

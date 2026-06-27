@@ -21,14 +21,14 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -113,6 +113,10 @@ export function PluginsPage() {
   const [importing, setImporting] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [enableConfirm, setEnableConfirm] = useState<PluginRegistryEntry | null>(null)
+  // The detail dialog tracks the selected plugin by its composite key (not the
+  // object) so it always renders the freshest entry after a toggle/preference
+  // mutation replaces the array item.
+  const [detailKey, setDetailKey] = useState<string | null>(null)
   const [trustedSourcePolicy, setTrustedSourcePolicy] =
     useState<SynapseTrustedSourcePolicy>("official-marketplace")
 
@@ -125,6 +129,11 @@ export function PluginsPage() {
       return pluginSearchText(plugin, i18n.language).toLowerCase().includes(normalizedQuery)
     })
   }, [i18n.language, plugins, query, sourceFilter, statusFilter])
+
+  const detailPlugin = useMemo(
+    () => plugins.find((plugin) => pluginKey(plugin) === detailKey) ?? null,
+    [plugins, detailKey]
+  )
 
   const load = useCallback(async () => {
     if (!electronReady) return
@@ -407,22 +416,52 @@ export function PluginsPage() {
             </CardHeader>
           </Card>
         ) : (
-          <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2">
             {visiblePlugins.map((plugin) => (
-              <PluginCard
-                key={`${plugin.pluginId}:${plugin.source.kind}:${plugin.rootDir}`}
+              <PluginRow
+                key={pluginKey(plugin)}
                 locale={i18n.language}
                 pending={pending}
                 plugin={plugin}
-                onPreferenceChange={onPreferenceChange}
-                onReload={onReload}
+                onOpenDetails={() => setDetailKey(pluginKey(plugin))}
                 onToggle={onToggle}
-                onUninstall={onUninstall}
               />
             ))}
           </div>
         )}
       </PageFrame>
+
+      <Dialog
+        open={detailPlugin !== null}
+        onOpenChange={(open) => {
+          if (!open) setDetailKey(null)
+        }}
+      >
+        <DialogContent className="max-h-[85vh] gap-4 overflow-y-auto sm:max-w-2xl">
+          {detailPlugin ? (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex flex-wrap items-center gap-2 text-base">
+                  <span className="truncate">{pluginTitle(detailPlugin, i18n.language)}</span>
+                  <StatusBadge status={detailPlugin.status} />
+                  <Badge variant="outline">{detailPlugin.pluginId}</Badge>
+                </DialogTitle>
+                <DialogDescription>
+                  {pluginDescription(detailPlugin, i18n.language)}
+                </DialogDescription>
+              </DialogHeader>
+              <PluginDetails
+                locale={i18n.language}
+                pending={pending}
+                plugin={detailPlugin}
+                onPreferenceChange={onPreferenceChange}
+                onReload={onReload}
+                onUninstall={onUninstall}
+              />
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog
         open={enableConfirm !== null}
@@ -515,11 +554,90 @@ function PageFrame({
   )
 }
 
-function PluginCard({
+function pluginKey(plugin: PluginRegistryEntry): string {
+  return `${plugin.pluginId}:${plugin.source.kind}:${plugin.rootDir}`
+}
+
+function pluginTitle(plugin: PluginRegistryEntry, locale: string): string {
+  return localize(plugin.manifest?.displayName, locale) || plugin.manifest?.name || plugin.pluginId
+}
+
+function pluginDescription(plugin: PluginRegistryEntry, locale: string): string {
+  return localize(plugin.manifest?.description, locale) || plugin.error || plugin.rootDir
+}
+
+// Compact list row: identity + status + the enable toggle. Clicking the row body
+// (everything except the toggle) opens the detail dialog, so a long plugin list
+// stays scannable instead of stacking every plugin's full detail panel.
+function PluginRow({
+  locale,
+  onOpenDetails,
+  onToggle,
+  pending,
+  plugin,
+}: {
+  locale: string
+  onOpenDetails: () => void
+  onToggle: (plugin: PluginRegistryEntry, enabled: boolean) => Promise<void>
+  pending: string | null
+  plugin: PluginRegistryEntry
+}) {
+  const { t } = useTranslation()
+  const manifest = plugin.manifest
+  const title = pluginTitle(plugin, locale)
+  const description = pluginDescription(plugin, locale)
+  const togglePending = pending === `toggle:${plugin.pluginId}`
+  const canToggle = plugin.status === "active" || plugin.status === "disabled"
+
+  return (
+    <Card className={cn("p-0", plugin.status === "invalid" && "border-destructive/50")}>
+      <div className="flex items-center gap-3 p-4">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 flex-col gap-1 text-left"
+          aria-label={t("plugins.actions.details", { name: title, defaultValue: title })}
+          onClick={onOpenDetails}
+        >
+          <span className="flex flex-wrap items-center gap-2">
+            <span className="truncate text-sm font-medium">{title}</span>
+            <StatusBadge status={plugin.status} />
+            <Badge variant="outline">{plugin.pluginId}</Badge>
+          </span>
+          <span className="truncate text-xs text-muted-foreground">{description}</span>
+          <span className="flex flex-wrap gap-x-3 text-xs text-muted-foreground">
+            <span>
+              {t("plugins.meta.version")}: {manifest?.version ?? "—"}
+            </span>
+            <span>
+              {t("plugins.meta.commands")}: {manifest?.contributes.commands.length ?? 0}
+            </span>
+            <span>{t(`plugins.source.${plugin.source.kind}`)}</span>
+          </span>
+        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Label htmlFor={`plugin-enabled-${plugin.pluginId}`} className="text-xs">
+            {t(plugin.status === "disabled" ? "plugins.actions.enable" : "plugins.actions.disable")}
+          </Label>
+          <Switch
+            id={`plugin-enabled-${plugin.pluginId}`}
+            size="sm"
+            checked={plugin.status === "active"}
+            disabled={!canToggle || togglePending}
+            onCheckedChange={(checked) => void onToggle(plugin, checked)}
+          />
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+// Full detail body rendered inside the detail dialog: meta, permissions,
+// declared/active triggers, errors, preferences, and the heavier reload/uninstall
+// actions that no longer belong on the compact list row.
+function PluginDetails({
   locale,
   onPreferenceChange,
   onReload,
-  onToggle,
   onUninstall,
   pending,
   plugin,
@@ -531,139 +649,101 @@ function PluginCard({
     value: unknown
   ) => Promise<void>
   onReload: (plugin: PluginRegistryEntry) => Promise<void>
-  onToggle: (plugin: PluginRegistryEntry, enabled: boolean) => Promise<void>
   onUninstall: (plugin: PluginRegistryEntry) => Promise<void>
   pending: string | null
   plugin: PluginRegistryEntry
 }) {
   const { t } = useTranslation()
   const manifest = plugin.manifest
-  const title = localize(manifest?.displayName, locale) || manifest?.name || plugin.pluginId
-  const description = localize(manifest?.description, locale) || plugin.error || plugin.rootDir
-  const togglePending = pending === `toggle:${plugin.pluginId}`
   const reloadPending = pending === `reload:${plugin.pluginId}`
   const uninstallPending = pending === `uninstall:${plugin.pluginId}`
-  const canToggle = plugin.status === "active" || plugin.status === "disabled"
   const canUninstall = plugin.source.kind !== "builtin"
 
   return (
-    <Card className={cn("gap-4", plugin.status === "invalid" && "border-destructive/50")}>
-      <CardHeader>
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0 space-y-2">
-            <CardTitle className="flex flex-wrap items-center gap-2 text-base">
-              <span className="truncate">{title}</span>
-              <StatusBadge status={plugin.status} />
-              <Badge variant="outline">{plugin.pluginId}</Badge>
-            </CardTitle>
-            <CardDescription>{description}</CardDescription>
-          </div>
-          <CardAction className="static col-auto row-auto justify-self-auto">
-            <div className="flex items-center gap-2">
-              <Label htmlFor={`plugin-enabled-${plugin.pluginId}`} className="text-xs">
-                {t(
-                  plugin.status === "disabled"
-                    ? "plugins.actions.enable"
-                    : "plugins.actions.disable"
-                )}
-              </Label>
-              <Switch
-                id={`plugin-enabled-${plugin.pluginId}`}
-                size="sm"
-                checked={plugin.status === "active"}
-                disabled={!canToggle || togglePending}
-                onCheckedChange={(checked) => void onToggle(plugin, checked)}
-              />
-            </div>
-          </CardAction>
-        </div>
-      </CardHeader>
+    <div className="flex flex-col gap-4">
+      <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+        <span>
+          {t("plugins.meta.version")}: {manifest?.version ?? "—"}
+        </span>
+        <span>
+          {t("plugins.meta.author")}: {manifest?.author ?? "—"}
+        </span>
+        <span>
+          {t("plugins.meta.commands")}: {manifest?.contributes.commands.length ?? 0}
+        </span>
+        <span className="truncate" title={plugin.rootDir}>
+          {t("plugins.meta.path")}: {plugin.rootDir}
+        </span>
+      </div>
 
-      <CardContent className="flex flex-col gap-4">
-        <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
-          <span>
-            {t("plugins.meta.version")}: {manifest?.version ?? "—"}
-          </span>
-          <span>
-            {t("plugins.meta.author")}: {manifest?.author ?? "—"}
-          </span>
-          <span>
-            {t("plugins.meta.commands")}: {manifest?.contributes.commands.length ?? 0}
-          </span>
-          <span className="truncate" title={plugin.rootDir}>
-            {t("plugins.meta.path")}: {plugin.rootDir}
-          </span>
-        </div>
+      <div className="space-y-2">
+        <h3 className="text-sm font-medium">{t("plugins.permissions.title")}</h3>
+        <PluginCapabilityList
+          pluginId={plugin.pluginId}
+          emptyLabel={t("plugins.permissions.none")}
+        />
+      </div>
 
+      {(manifest as ManifestWithTriggers | undefined)?.triggers?.length ? (
         <div className="space-y-2">
-          <h3 className="text-sm font-medium">{t("plugins.permissions.title")}</h3>
-          <PluginCapabilityList
-            pluginId={plugin.pluginId}
-            emptyLabel={t("plugins.permissions.none")}
+          <h3 className="text-sm font-medium">{t("plugins.triggers.declaredTitle")}</h3>
+          <DeclaredTriggersPanel triggers={(manifest as ManifestWithTriggers).triggers ?? []} />
+        </div>
+      ) : null}
+
+      <div className="space-y-2">
+        <h3 className="text-sm font-medium">
+          {t("plugins.triggers.activeTitle", { defaultValue: "Active triggers" })}
+        </h3>
+        <ActiveBackgroundPanel
+          pluginId={plugin.pluginId}
+          emptyLabel={t("plugins.triggers.none", { defaultValue: "No active triggers" })}
+        />
+      </div>
+
+      {plugin.error && (
+        <Alert variant="destructive">
+          <AlertCircle className="size-4" aria-hidden />
+          <AlertTitle>{t("plugins.pluginErrorTitle")}</AlertTitle>
+          <AlertDescription>{plugin.error}</AlertDescription>
+        </Alert>
+      )}
+
+      {manifest?.contributes.preferences?.length ? (
+        <>
+          <Separator />
+          <PluginPreferences
+            locale={locale}
+            pending={pending}
+            plugin={plugin}
+            preferences={manifest.contributes.preferences}
+            onPreferenceChange={onPreferenceChange}
           />
-        </div>
+        </>
+      ) : null}
 
-        {(manifest as ManifestWithTriggers | undefined)?.triggers?.length ? (
-          <div className="space-y-2">
-            <h3 className="text-sm font-medium">{t("plugins.triggers.declaredTitle")}</h3>
-            <DeclaredTriggersPanel triggers={(manifest as ManifestWithTriggers).triggers ?? []} />
-          </div>
-        ) : null}
-
-        <div className="space-y-2">
-          <h3 className="text-sm font-medium">
-            {t("plugins.triggers.activeTitle", { defaultValue: "Active triggers" })}
-          </h3>
-          <ActiveBackgroundPanel
-            pluginId={plugin.pluginId}
-            emptyLabel={t("plugins.triggers.none", { defaultValue: "No active triggers" })}
-          />
-        </div>
-
-        {plugin.error && (
-          <Alert variant="destructive">
-            <AlertCircle className="size-4" aria-hidden />
-            <AlertTitle>{t("plugins.pluginErrorTitle")}</AlertTitle>
-            <AlertDescription>{plugin.error}</AlertDescription>
-          </Alert>
-        )}
-
-        {manifest?.contributes.preferences?.length ? (
-          <>
-            <Separator />
-            <PluginPreferences
-              locale={locale}
-              pending={pending}
-              plugin={plugin}
-              preferences={manifest.contributes.preferences}
-              onPreferenceChange={onPreferenceChange}
-            />
-          </>
-        ) : null}
-
-        <Separator />
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={reloadPending}
-            onClick={() => void onReload(plugin)}
-          >
-            <RefreshCw className={cn("size-4", reloadPending && "animate-spin")} aria-hidden />
-            {t("plugins.actions.reload")}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!canUninstall || uninstallPending}
-            onClick={() => void onUninstall(plugin)}
-          >
-            <Trash2 className="size-4" aria-hidden />
-            {t("plugins.actions.uninstall")}
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+      <Separator />
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={reloadPending}
+          onClick={() => void onReload(plugin)}
+        >
+          <RefreshCw className={cn("size-4", reloadPending && "animate-spin")} aria-hidden />
+          {t("plugins.actions.reload")}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!canUninstall || uninstallPending}
+          onClick={() => void onUninstall(plugin)}
+        >
+          <Trash2 className="size-4" aria-hidden />
+          {t("plugins.actions.uninstall")}
+        </Button>
+      </div>
+    </div>
   )
 }
 
