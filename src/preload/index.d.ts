@@ -201,6 +201,20 @@ declare global {
     scopeEnforced: boolean
   }
 
+  interface SynapsePluginTriggerBudgetRow {
+    capabilityId: string
+    used: number
+    max: number
+  }
+
+  interface SynapsePluginTriggerRow {
+    pluginId: string
+    triggerId: string
+    type: string
+    status: string
+    budgets: SynapsePluginTriggerBudgetRow[]
+  }
+
   interface SynapseCapabilityGrantRequestEvent {
     promptId: string
     pluginId: string
@@ -464,6 +478,10 @@ declare global {
         promptId: string,
         allow: boolean
       ) => Promise<SynapsePluginIpcResult<void>>
+      listTriggers: () => Promise<SynapsePluginIpcResult<SynapsePluginTriggerRow[]>>
+      pauseTrigger: (pluginId: string, triggerId: string) => Promise<SynapsePluginIpcResult<void>>
+      resumeTrigger: (pluginId: string, triggerId: string) => Promise<SynapsePluginIpcResult<void>>
+      killTrigger: (pluginId: string, triggerId: string) => Promise<SynapsePluginIpcResult<void>>
       listMarketplacePlugins: () => Promise<SynapsePluginIpcResult<SynapseMarketplaceEntry[]>>
       installMarketplacePlugin: (
         id: string,

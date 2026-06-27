@@ -254,6 +254,42 @@
         "elevated": "Elevated"
       }
     },
+    "triggers": {
+      "declaredTitle": "Declared background triggers",
+      "activeTitle": "Active triggers",
+      "none": "No active triggers",
+      "enableConfirmTitle": "Enable background triggers?",
+      "enableConfirmBody": "Enabling grants the triggers and capabilities listed below for unattended background use — including global hotkeys, filesystem watches, network hosts, and clipboard reads where declared. This is the consent moment (no per-call prompts). Budget limits apply at runtime.",
+      "implicitFsWatchGrant": "fs:watch — monitor declared folders while enabled",
+      "implicitHotkeyGrant": "hotkey:global — register declared shortcut while enabled",
+      "clipboardDisclosureTitle": "Clipboard monitoring",
+      "clipboardDisclosureBody": "This plugin watches clipboard changes while enabled. Handlers receive metadata only; reading clipboard text requires an explicit capability call.",
+      "fsWatchDisclosureTitle": "Filesystem monitoring",
+      "fsWatchDisclosureBody": "This plugin watches declared folders while enabled. Events carry root-relative paths only; resolve or read files through ctx.fs.",
+      "hotkeyDisclosureTitle": "Global hotkey",
+      "hotkeyDisclosureBody": "This plugin registers a global keyboard shortcut while enabled — the shortcut fires even when Synapse is not focused. System shortcuts (copy, paste, quit, Alt+F4, etc.) and the launcher shortcut are always blocked.",
+      "watchPaths": "Watches: {{paths}}",
+      "hotkeyAccelerator": "Shortcut: {{accelerator}}",
+      "hotkeyCaptureWarning": "Globally captures {{accelerator}} while enabled, even when Synapse is unfocused.",
+      "scheduleLine": "Schedule: {{schedule}}",
+      "handler": "Handler: {{handler}}",
+      "contentTypes": "Content types: {{types}}",
+      "budgetLine": "up to {{max}} calls / {{period}}",
+      "pause": "Pause",
+      "resume": "Resume",
+      "kill": "Kill",
+      "paused": "Trigger paused.",
+      "resumed": "Trigger resumed.",
+      "killed": "Trigger stopped.",
+      "status": {
+        "ok": "OK",
+        "paused": "Paused",
+        "throttled": "Throttled",
+        "faulted": "Faulted",
+        "budget-exhausted": "Budget exhausted",
+        "unknown": "Unknown"
+      }
+    },
     "toasts": {
       "enabled": "Plugin enabled.",
       "disabled": "Plugin disabled.",

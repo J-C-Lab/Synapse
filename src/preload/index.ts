@@ -88,6 +88,13 @@ const electronAPI = {
     ipcRenderer.invoke("capabilities:grant-resolve", { promptId, allow }),
   resolveCapabilityApproval: (promptId: string, allow: boolean) =>
     ipcRenderer.invoke("capabilities:approval-resolve", { promptId, allow }),
+  listTriggers: () => ipcRenderer.invoke("triggers:list"),
+  pauseTrigger: (pluginId: string, triggerId: string) =>
+    ipcRenderer.invoke("triggers:pause", { pluginId, triggerId }),
+  resumeTrigger: (pluginId: string, triggerId: string) =>
+    ipcRenderer.invoke("triggers:resume", { pluginId, triggerId }),
+  killTrigger: (pluginId: string, triggerId: string) =>
+    ipcRenderer.invoke("triggers:kill", { pluginId, triggerId }),
   listMarketplacePlugins: () => ipcRenderer.invoke("marketplace:list"),
   installMarketplacePlugin: (id: string, version?: string) =>
     ipcRenderer.invoke("marketplace:install", { id, version }),

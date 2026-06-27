@@ -118,4 +118,6 @@ export interface PluginManifest {
     tools?: ManifestTool[]
   }
   capabilities: NormalizedCapability[]
+  /** Background event triggers. Sole source of trigger registration. */
+  triggers?: import("./triggers").TriggerDeclaration[]
 }

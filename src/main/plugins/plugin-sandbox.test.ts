@@ -250,6 +250,56 @@ module.exports = {
     expect(stored).toEqual({ entries: ["hello"] })
   })
 
+  it("dispatchTrigger runs the manifest-named export with the safe event", async () => {
+    const entry = await writePlugin(`
+module.exports = {
+  commands: { "test.run": { run() { return { type: "toast", level: "info", message: "x" } } } },
+  triggers: {
+    async onTick(event, ctx) {
+      const prev = (await ctx.storage.get("calls")) ?? []
+      await ctx.storage.set("calls", prev.concat([event]))
+    }
+  }
+}
+`)
+    entry.manifest!.capabilities = [{ id: "storage:plugin" }]
+    const sandbox = sandboxForTest()
+    await sandbox.loadPlugin(entry)
+    await sandbox.dispatchTrigger({
+      pluginId: entry.pluginId,
+      triggerId: "t",
+      trigger: "timer:t",
+      handler: "triggers.onTick",
+      invocationId: "inv-1",
+      event: { firedAt: 5 },
+      signal: new AbortController().signal,
+    })
+    const raw = await fs.readFile(path.join(dir, "plugin-data", "com.synapse.test.json"), "utf-8")
+    expect(JSON.parse(raw)).toEqual({ calls: [{ firedAt: 5 }] })
+  })
+
+  it("dispatchTrigger is a no-op when the named handler is missing", async () => {
+    const entry = await writePlugin(`
+module.exports = {
+  commands: { "test.run": { run() { return { type: "toast", level: "info", message: "x" } } } },
+  triggers: {}
+}
+`)
+    const sandbox = sandboxForTest()
+    await sandbox.loadPlugin(entry)
+    await expect(
+      sandbox.dispatchTrigger({
+        pluginId: entry.pluginId,
+        triggerId: "t",
+        trigger: "timer:t",
+        handler: "triggers.onMissing",
+        invocationId: "inv-1",
+        event: {},
+        signal: new AbortController().signal,
+      })
+    ).resolves.toBeUndefined()
+  })
+
   it("invokes a tool and returns its result, exposing the caller in ctx", async () => {
     const entry = await writePlugin(`
 module.exports = {

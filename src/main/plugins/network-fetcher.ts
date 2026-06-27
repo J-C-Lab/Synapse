@@ -28,6 +28,16 @@ export interface NetworkResponse {
   arrayBuffer: () => Promise<ArrayBuffer>
 }
 
+/** Like {@link NetworkResponse} but the body is consumed incrementally. */
+export interface NetworkStreamResponse {
+  ok: boolean
+  status: number
+  statusText: string
+  headers: Record<string, string>
+  /** The response body as backpressured chunks. Consume once. */
+  body: AsyncIterable<Uint8Array>
+}
+
 export interface NetworkFetchInit {
   method?: string
   headers?: Record<string, string>
@@ -56,27 +66,45 @@ export interface TransportArgs {
 
 export type NetworkTransport = (args: TransportArgs) => Promise<TransportResult>
 
+/** Headers plus an un-capped body stream from one round-trip. Injectable for tests. */
+export interface StreamTransportResult {
+  status: number
+  statusText: string
+  headers: Record<string, string> // raw response headers (lowercased keys)
+  /** Raw response body; the fetcher caps total bytes while iterating. */
+  stream: AsyncIterable<Uint8Array>
+}
+
+export type NetworkStreamTransport = (args: TransportArgs) => Promise<StreamTransportResult>
+
 export interface NetworkFetcherConfig {
   gate: CapabilityGatePort
   actor: CapabilityActor
   trigger: string
   pluginId: string
+  /** Trigger-origin background calls carry this for budget-breaker routing. */
+  invocationId?: string
   resolve?: (host: string) => Promise<ResolvedAddress[]> // default resolvePublicIps
   transport?: NetworkTransport // default node:https transport
+  streamTransport?: NetworkStreamTransport // default node:https stream transport
   maxRequestBytes?: number // default 10 MiB
-  maxResponseBytes?: number // default 25 MiB
+  maxResponseBytes?: number // default 25 MiB (buffered fetch)
+  maxStreamBytes?: number // default 256 MiB (streamed fetch, hard total cap)
   timeoutMs?: number // default 30s
   maxRedirects?: number // default 5
 }
 
 export interface NetworkFetcher {
   fetch: (url: string, init?: NetworkFetchInit) => Promise<NetworkResponse>
+  /** Like {@link fetch} but the body is streamed; bounded by `maxStreamBytes`. */
+  fetchStream: (url: string, init?: NetworkFetchInit) => Promise<NetworkStreamResponse>
   /** Aborts all in-flight fetches for this plugin (revoke teardown). */
   abortAll: () => void
 }
 
 const DEFAULT_MAX_REQUEST_BYTES = 10 * 1024 * 1024
 const DEFAULT_MAX_RESPONSE_BYTES = 25 * 1024 * 1024
+const DEFAULT_MAX_STREAM_BYTES = 256 * 1024 * 1024
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_REDIRECTS = 5
 
@@ -204,8 +232,10 @@ function buildResponse(result: TransportResult): NetworkResponse {
 export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetcher {
   const resolve = config.resolve ?? resolvePublicIps
   const transport = config.transport ?? defaultTransport
+  const streamTransport = config.streamTransport ?? defaultStreamTransport
   const maxRequestBytes = config.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES
   const maxResponseBytes = config.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES
+  const maxStreamBytes = config.maxStreamBytes ?? DEFAULT_MAX_STREAM_BYTES
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const maxRedirects = config.maxRedirects ?? DEFAULT_MAX_REDIRECTS
 
@@ -266,9 +296,16 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
     controller: AbortController
   }
 
-  async function run(args: RunArgs): Promise<NetworkResponse> {
+  // Steps 1–9: the shared, security-critical pre-flight that runs before ANY
+  // byte leaves the process. Identical for buffered and streamed fetches so the
+  // two paths cannot diverge in their enforcement.
+  async function preflight(
+    currentUrl: string,
+    method: string,
+    controller: AbortController
+  ): Promise<{ parsed: URL; addresses: ResolvedAddress[] }> {
     // 1. Parse + validate the URL.
-    const parsed = new URL(args.currentUrl)
+    const parsed = new URL(currentUrl)
     if (parsed.protocol !== "https:") throw new Error(`only https is allowed: ${parsed.protocol}`)
     if (parsed.username !== "" || parsed.password !== "")
       throw new Error("userinfo (user:pass@) is not allowed in url")
@@ -283,7 +320,7 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
       url: parsed.toString(),
       origin: parsed.origin,
       host: parsed.hostname,
-      method: args.method,
+      method,
       path: normalizedPath,
     }
 
@@ -292,8 +329,7 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
 
     // 7. Resolve to PUBLIC IPs only; throws on any private addr (SSRF/rebinding).
     const addresses = await resolve(parsed.hostname)
-    const pinnedAddress = addresses[0]
-    if (!pinnedAddress) throw new Error(`no addresses resolved for ${parsed.hostname}`)
+    if (addresses.length === 0) throw new Error(`no addresses resolved for ${parsed.hostname}`)
 
     // 9. Consent gate BEFORE any byte leaves the process.
     await config.gate.ensure({
@@ -302,20 +338,41 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
       trigger: config.trigger,
       operation,
       requestedScope: requested,
-      signal: args.controller.signal,
+      signal: controller.signal,
+      invocationId: config.invocationId,
     })
 
-    // 10. Single raw round-trip to the pinned address. No auto-redirect.
-    const result = await transport({
-      url: parsed,
-      method: args.method,
-      headers: args.headers,
-      body: args.body,
-      pinnedAddress,
-      signal: args.controller.signal,
-      timeoutMs,
-      maxResponseBytes,
-    })
+    return { parsed, addresses }
+  }
+
+  async function run(args: RunArgs): Promise<NetworkResponse> {
+    const { parsed, addresses } = await preflight(args.currentUrl, args.method, args.controller)
+
+    // 10. Raw round-trip with address failover: try each validated public IP in
+    // turn until one yields a response. A connection-level failure rolls over to
+    // the next address; an aborted request (timeout / revoke) stops immediately.
+    // No auto-redirect — that is handled below.
+    let result: TransportResult | undefined
+    let lastError: unknown
+    for (const pinnedAddress of addresses) {
+      try {
+        result = await transport({
+          url: parsed,
+          method: args.method,
+          headers: args.headers,
+          body: args.body,
+          pinnedAddress,
+          signal: args.controller.signal,
+          timeoutMs,
+          maxResponseBytes,
+        })
+        break
+      } catch (err) {
+        if (args.controller.signal.aborted) throw err
+        lastError = err
+      }
+    }
+    if (!result) throw lastError ?? new Error(`all addresses failed for ${parsed.hostname}`)
 
     // 11. Manual redirect handling.
     if (REDIRECT_STATUSES.has(result.status) && result.headers.location) {
@@ -344,11 +401,142 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
     return buildResponse(result)
   }
 
+  async function fetchStream(
+    url: string,
+    init: NetworkFetchInit = {}
+  ): Promise<NetworkStreamResponse> {
+    const method = (init.method ?? "GET").toUpperCase()
+
+    let body: Buffer | undefined
+    if (init.body !== undefined) {
+      body = toBuffer(init.body)
+      if (body.byteLength > maxRequestBytes) {
+        throw new Error(
+          `request body of ${body.byteLength} bytes exceeds maxRequestBytes (${maxRequestBytes})`
+        )
+      }
+    }
+
+    const controller = new AbortController()
+    inFlight.add(controller)
+    const onCallerAbort = (): void => controller.abort()
+    if (init.signal) {
+      if (init.signal.aborted) controller.abort()
+      else init.signal.addEventListener("abort", onCallerAbort, { once: true })
+    }
+
+    const cleanup = (): void => {
+      if (init.signal) init.signal.removeEventListener("abort", onCallerAbort)
+      inFlight.delete(controller)
+    }
+
+    try {
+      const response = await runStream({
+        currentUrl: url,
+        method,
+        headers: stripRequestHeaders(init.headers),
+        body,
+        originUrl: new URL(url).origin,
+        redirectsLeft: maxRedirects,
+        controller,
+      })
+      // The body keeps the controller live until fully drained; deregister only
+      // when iteration finishes (or errors/aborts).
+      return { ...response, body: trackedStream(response.body, cleanup) }
+    } catch (err) {
+      cleanup()
+      throw err
+    }
+  }
+
+  /** Wrap a body so the in-flight controller is deregistered once it is drained. */
+  async function* trackedStream(
+    source: AsyncIterable<Uint8Array>,
+    cleanup: () => void
+  ): AsyncGenerator<Uint8Array> {
+    try {
+      for await (const chunk of source) yield chunk
+    } finally {
+      cleanup()
+    }
+  }
+
+  /** Cap the cumulative bytes of a body stream; throws (and the runtime tears
+   *  down the source) when the hard `maxStreamBytes` total is exceeded. */
+  async function* cappedStream(source: AsyncIterable<Uint8Array>): AsyncGenerator<Uint8Array> {
+    let received = 0
+    for await (const chunk of source) {
+      received += chunk.byteLength
+      if (received > maxStreamBytes)
+        throw new Error(`response exceeded maxStreamBytes (${maxStreamBytes})`)
+      yield chunk
+    }
+  }
+
+  async function runStream(args: RunArgs): Promise<NetworkStreamResponse> {
+    const { parsed, addresses } = await preflight(args.currentUrl, args.method, args.controller)
+
+    // Round-trip with address failover, streaming the body. Connection-level
+    // failure rolls over; abort stops immediately.
+    let result: StreamTransportResult | undefined
+    let lastError: unknown
+    for (const pinnedAddress of addresses) {
+      try {
+        result = await streamTransport({
+          url: parsed,
+          method: args.method,
+          headers: args.headers,
+          body: args.body,
+          pinnedAddress,
+          signal: args.controller.signal,
+          timeoutMs,
+          maxResponseBytes: maxStreamBytes,
+        })
+        break
+      } catch (err) {
+        if (args.controller.signal.aborted) throw err
+        lastError = err
+      }
+    }
+    if (!result) throw lastError ?? new Error(`all addresses failed for ${parsed.hostname}`)
+
+    // Manual redirect handling: drain + discard the (tiny) redirect body, then
+    // follow. Cross-origin rejected; Authorization dropped — same as buffered.
+    if (REDIRECT_STATUSES.has(result.status) && result.headers.location) {
+      if (args.redirectsLeft <= 0) throw new Error(`too many redirects (max ${maxRedirects})`)
+      const target = new URL(result.headers.location, parsed)
+      if (target.origin !== args.originUrl)
+        throw new Error(
+          `cross-origin redirect from ${args.originUrl} to ${target.origin} is not allowed`
+        )
+      for await (const _chunk of cappedStream(result.stream)) {
+        void _chunk // discard redirect body
+      }
+      return runStream({
+        currentUrl: target.toString(),
+        method: args.method,
+        headers: dropAuthorization(args.headers),
+        body: args.body,
+        originUrl: args.originUrl,
+        redirectsLeft: args.redirectsLeft - 1,
+        controller: args.controller,
+      })
+    }
+
+    return {
+      ok: result.status >= 200 && result.status < 300,
+      status: result.status,
+      statusText: result.statusText,
+      headers: stripResponseHeaders(result.headers),
+      body: cappedStream(result.stream),
+    }
+  }
+
   function abortAll(): void {
     for (const controller of inFlight) controller.abort()
   }
 
-  return { fetch, abortAll }
+  return { fetch, fetchStream, abortAll }
 }
 
 /**
@@ -447,6 +635,77 @@ function defaultTransport(args: TransportArgs): Promise<TransportResult> {
       request?.destroy(new Error(`request timed out after ${args.timeoutMs}ms`))
     })
     request.on("error", fail)
+
+    if (args.body) request.write(args.body)
+    request.end()
+  })
+}
+
+/**
+ * Default production STREAM transport over node:https. Same DNS pin / SNI as
+ * {@link defaultTransport}, but resolves once response headers arrive and hands
+ * back the response stream (an `AsyncIterable<Uint8Array>`) instead of buffering.
+ * The agent is destroyed when the stream ends, errors, or the request aborts, so
+ * a fully-drained (or torn-down) body releases the socket.
+ */
+function defaultStreamTransport(args: TransportArgs): Promise<StreamTransportResult> {
+  return new Promise<StreamTransportResult>((resolve, reject) => {
+    if (args.signal.aborted) {
+      reject(new Error("aborted"))
+      return
+    }
+
+    const agent = new https.Agent({
+      lookup: (_hostname, _options, callback) => {
+        callback(null, args.pinnedAddress.address, args.pinnedAddress.family)
+      },
+    })
+
+    let request: ReturnType<typeof https.request> | undefined
+    const onAbort = (): void => {
+      request?.destroy(new Error("aborted"))
+    }
+    args.signal.addEventListener("abort", onAbort, { once: true })
+
+    const releaseAgent = (): void => {
+      args.signal.removeEventListener("abort", onAbort)
+      agent.destroy()
+    }
+
+    request = https.request(
+      args.url,
+      {
+        method: args.method,
+        headers: args.headers,
+        agent,
+        servername: args.url.hostname,
+      },
+      (response: IncomingMessage) => {
+        // Release the socket/agent once the body is consumed or torn down.
+        response.on("close", releaseAgent)
+        response.on("error", releaseAgent)
+
+        const headers: Record<string, string> = {}
+        for (const [key, value] of Object.entries(response.headers)) {
+          if (value === undefined) continue
+          headers[key.toLowerCase()] = Array.isArray(value) ? value.join(", ") : value
+        }
+        resolve({
+          status: response.statusCode ?? 0,
+          statusText: response.statusMessage ?? "",
+          headers,
+          stream: response,
+        })
+      }
+    )
+
+    request.setTimeout(args.timeoutMs, () => {
+      request?.destroy(new Error(`request timed out after ${args.timeoutMs}ms`))
+    })
+    request.on("error", (err) => {
+      releaseAgent()
+      reject(err)
+    })
 
     if (args.body) request.write(args.body)
     request.end()

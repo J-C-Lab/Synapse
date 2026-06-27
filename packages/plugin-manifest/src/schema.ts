@@ -2,6 +2,7 @@ import type { PluginManifest } from "./types"
 import * as path from "node:path"
 import { z } from "zod"
 import { capabilityIds, getCapability } from "./capabilities"
+import { validateTriggers } from "./triggers"
 
 const idSchema = z
   .string()
@@ -146,6 +147,92 @@ function toolCapabilityContained(
   return desc.scopeAdapter?.contains(top.scope, toolCap.scope) ?? false
 }
 
+const triggerBudgetSchema = z
+  .object({
+    maxCalls: z.number().positive(),
+    period: z.enum(["1m", "1h", "1d"]),
+  })
+  .strict()
+
+const triggerUseSchema = z
+  .object({
+    capability: z.enum(capabilityIds() as [string, ...string[]]),
+    scope: z.unknown().optional(),
+    budget: triggerBudgetSchema,
+  })
+  .strict()
+
+const triggerLimitsSchema = z
+  .object({
+    minIntervalMs: z.number().nonnegative().optional(),
+    maxConcurrency: z.number().nonnegative().optional(),
+  })
+  .strict()
+  .optional()
+
+const triggerBaseSchema = {
+  id: z.string().regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
+  handler: z.string().startsWith("triggers."),
+  uses: z.array(triggerUseSchema).min(1),
+  limits: triggerLimitsSchema,
+}
+
+const scheduledTriggerSchema = z
+  .object({
+    ...triggerBaseSchema,
+    type: z.enum(["timer", "cron"]),
+    schedule: z.union([
+      z.object({ intervalMs: z.number().positive() }).strict(),
+      z.string().min(1),
+    ]),
+  })
+  .strict()
+
+const clipboardTriggerSchema = z
+  .object({
+    ...triggerBaseSchema,
+    type: z.literal("clipboard"),
+    scope: z
+      .object({
+        contentTypes: z.array(z.enum(["text", "image", "file"])).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+
+const fsWatchTriggerSchema = z
+  .object({
+    ...triggerBaseSchema,
+    type: z.literal("fs.watch"),
+    scope: z
+      .object({
+        paths: z.array(z.string().min(1)).min(1),
+        events: z.array(z.enum(["create", "modify", "delete", "rename"])).optional(),
+      })
+      .strict(),
+  })
+  .strict()
+
+const hotkeyTriggerSchema = z
+  .object({
+    ...triggerBaseSchema,
+    type: z.literal("hotkey"),
+    scope: z
+      .object({
+        accelerator: z.string().min(1),
+      })
+      .strict(),
+  })
+  .strict()
+
+const triggerSchema = z.union([
+  scheduledTriggerSchema,
+  clipboardTriggerSchema,
+  fsWatchTriggerSchema,
+  hotkeyTriggerSchema,
+])
+
 export const manifestSchema = z
   .object({
     $schema: z.string().optional(),
@@ -168,6 +255,7 @@ export const manifestSchema = z
       })
       .strict(),
     capabilities: z.array(capabilityEntrySchema),
+    triggers: z.array(triggerSchema).optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -235,6 +323,7 @@ export function parseManifest(raw: unknown): PluginManifest {
       formatZodIssues(parsed.error)
     )
   }
+  if (parsed.data.triggers?.length) validateTriggers(parsed.data.triggers)
   return parsed.data
 }
 

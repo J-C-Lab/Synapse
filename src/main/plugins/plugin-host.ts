@@ -8,14 +8,17 @@ import type {
   Visibility,
 } from "@synapse/marketplace-types"
 import type { ClipboardContent, ToolResult } from "@synapse/plugin-sdk"
+import type { PluginTriggerRow } from "../ipc/triggers"
 import type {
   CapabilityGovernance,
   CreateCapabilityGovernanceOptions,
 } from "./capability-governance"
+import type { ClipboardPollHub } from "./clipboard-adapter"
 import type { MigrationMarker } from "./grant-migration"
 import type { MarketplaceApi } from "./marketplace-api"
 import type { MarketplaceEntry } from "./marketplace-registry"
 import type { PluginBridgeAdapters, PluginRuntimeSnapshot } from "./plugin-bridge"
+import type { TimerAdapter } from "./timer-adapter"
 import type {
   PluginCommandResult,
   PluginInvokeRequest,
@@ -30,11 +33,15 @@ import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import { getCapability } from "@synapse/plugin-manifest"
 import { logger } from "../logging"
+import { BackgroundInvoker } from "./background-invoker"
 import { CapabilityDenied, CapabilityGate } from "./capability-gate"
 import { buildGrantIdentity, createCapabilityGovernance } from "./capability-governance"
+import { createClipboardAdapter } from "./clipboard-adapter"
 import { createElectronPluginAdapters } from "./electron-adapters"
+import { createFsWatchAdapter } from "./fs-watch-adapter"
 import { createMigrationMarker, migrateGrants } from "./grant-migration"
 import { GrantStore, grantStoreFilePath } from "./grant-store"
+import { createHotkeyAdapter } from "./hotkey-adapter"
 import { extractSynapsePackage } from "./install-from-package"
 import { loadPluginManifest } from "./manifest-loader"
 import { createMarketplaceApi } from "./marketplace-api"
@@ -49,6 +56,12 @@ import { pluginPreferenceFilePath, PluginPreferenceStore } from "./plugin-prefer
 import { PluginRegistry } from "./plugin-registry"
 import { PluginSandbox } from "./plugin-sandbox"
 import { PluginToolBridge } from "./plugin-tool-bridge"
+import { createTimerAdapter } from "./timer-adapter"
+import { AdmissionBreaker } from "./trigger-admission"
+import { BudgetLedger } from "./trigger-budget"
+import { createBudgetBreakerPort, scopeKeyForUse } from "./trigger-budget-breaker"
+import { grantTriggerUses, revokeTriggerUses } from "./trigger-grants"
+import { TriggerRegistry } from "./trigger-registry"
 
 export interface PluginHostOptions {
   userDataDir: string
@@ -68,6 +81,16 @@ export interface PluginHostOptions {
   capabilityGovernance?: CreateCapabilityGovernanceOptions
   /** Test seam: override the one-time grandfather-migration epoch marker. */
   migrationMarker?: MigrationMarker
+  /** Test seam: inject a fake timer adapter (no real intervals). */
+  timerAdapter?: TimerAdapter
+  /** Test seam: inject a fake clipboard adapter (no real polling). */
+  clipboardAdapter?: ClipboardPollHub
+  /** Test seam: inject a fake fs watch adapter (no real OS watchers). */
+  fsWatchAdapter?: import("./fs-watch-adapter").FsWatchAdapter
+  /** Test seam: inject a fake hotkey adapter (no real globalShortcut). */
+  hotkeyAdapter?: import("./hotkey-adapter").HotkeyAdapter
+  /** Accelerators reserved by the host (for example the launcher shortcut). */
+  reservedAccelerators?: () => readonly string[]
 }
 
 /**
@@ -110,10 +133,6 @@ export class PluginInstallError extends Error {
   }
 }
 
-function clipboardSnapshot(content: ClipboardContent): string {
-  return JSON.stringify(content)
-}
-
 export class PluginHost {
   readonly bridge: PluginBridge
   readonly sandbox: PluginSandbox
@@ -127,11 +146,15 @@ export class PluginHost {
   private readonly userDir: string
   private readonly devFilePath: string
   private readonly marketplaceApi: MarketplaceApi
-  private clipboardTimer?: ReturnType<typeof setInterval>
-  private lastClipboardSnapshot?: string
+  private readonly clipboardPoll: ClipboardPollHub
+  private legacyClipboardUnlisten?: () => void
   private clipboardDispatchChain: Promise<void> = Promise.resolve()
+  private readonly admission = new AdmissionBreaker()
+  private readonly budgetLedger = new BudgetLedger()
+  private readonly invoker = new BackgroundInvoker()
+  private readonly triggerRegistry: TriggerRegistry
   private readonly handleRegistryChanged = (): void => {
-    this.syncClipboardWatcher()
+    void this.syncClipboardWatcher()
   }
 
   constructor(private readonly options: PluginHostOptions) {
@@ -153,6 +176,29 @@ export class PluginHost {
       grants: this.grants,
     })
     this.migrationMarker = options.migrationMarker ?? createMigrationMarker(options.userDataDir)
+    let readClipboardForHost: () => Promise<ClipboardContent | undefined> = async () => undefined
+    const clipboardPoll =
+      options.clipboardAdapter ??
+      createClipboardAdapter({
+        pollMs: options.clipboardPollMs ?? 500,
+        read: () => readClipboardForHost(),
+      })
+    this.clipboardPoll = clipboardPoll
+    const fsWatchAdapter = options.fsWatchAdapter ?? createFsWatchAdapter()
+    const hotkeyAdapter =
+      options.hotkeyAdapter ??
+      createHotkeyAdapter({
+        reservedAccelerators: options.reservedAccelerators,
+      })
+    this.triggerRegistry = new TriggerRegistry({
+      admission: this.admission,
+      invoker: this.invoker,
+      timerAdapter: options.timerAdapter ?? createTimerAdapter({ minFloorMs: 60_000 }),
+      clipboardAdapter: clipboardPoll,
+      fsWatchAdapter,
+      hotkeyAdapter,
+      dispatch: (req) => this.sandbox.dispatchTrigger(req),
+    })
     this.bridge = new PluginBridge({
       userDataDir: options.userDataDir,
       adapters: options.adapters ?? createElectronPluginAdapters(options.userDataDir),
@@ -161,7 +207,16 @@ export class PluginHost {
       governance: this.capabilityGovernance,
       sourceKindFor: (pluginId) => this.registry?.get(pluginId)?.source.kind ?? "user",
       storageFlushMs: options.storageFlushMs,
+      budgetBreaker: createBudgetBreakerPort({
+        invoker: this.invoker,
+        ledger: this.budgetLedger,
+        manifestFor: (pluginId) => this.registry.get(pluginId)?.manifest,
+        registry: this.triggerRegistry,
+      }),
+      registerClipboardListener: (key, listener) =>
+        this.clipboardPoll.registerContentListener(key, listener),
     })
+    readClipboardForHost = () => this.bridge.readClipboardForHost()
     this.sandbox = new PluginSandbox({ bridge: this.bridge })
     this.registry = new PluginRegistry({ sandbox: this.sandbox })
     this.tools = new PluginToolBridge({ registry: this.registry })
@@ -171,6 +226,7 @@ export class PluginHost {
   async init(): Promise<void> {
     await this.preferences.load()
     this.registry.off("changed", this.handleRegistryChanged)
+    this.triggerRegistry.clearAll()
     try {
       const discovered = await discoverPlugins({
         builtinDir: this.builtinDir,
@@ -179,10 +235,32 @@ export class PluginHost {
       })
       await this.registry.load(discovered)
       await migrateGrants(this.registry.list(), this.grants, this.migrationMarker)
+      await this.syncTriggerRegistrations()
     } finally {
       this.registry.on("changed", this.handleRegistryChanged)
-      this.syncClipboardWatcher()
+      await this.syncClipboardWatcher()
     }
+  }
+
+  private async syncTriggerRegistrations(): Promise<void> {
+    for (const entry of this.registry.list()) {
+      if (entry.status === "active" && entry.manifest?.triggers?.length) {
+        await this.ensureTriggerUseGrants(entry)
+        this.triggerRegistry.register(entry.pluginId, entry.manifest.triggers)
+      }
+    }
+  }
+
+  private async ensureTriggerUseGrants(entry: PluginRegistryEntry): Promise<void> {
+    if (!entry.manifest?.triggers?.length) return
+    const identity = buildGrantIdentity(entry.pluginId, entry.manifest, entry.source.kind)
+    await grantTriggerUses(this.grants, identity, entry.manifest.triggers)
+  }
+
+  private async revokeTriggerUseGrants(entry: PluginRegistryEntry): Promise<void> {
+    if (!entry.manifest?.triggers?.length) return
+    const identity = buildGrantIdentity(entry.pluginId, entry.manifest, entry.source.kind)
+    await revokeTriggerUses(this.grants, identity, entry.manifest.triggers)
   }
 
   list(): PluginRegistryEntry[] {
@@ -195,7 +273,66 @@ export class PluginHost {
   }
 
   async setEnabled(pluginId: string, enabled: boolean): Promise<PluginRegistryEntry> {
-    return this.withPreferences(await this.registry.setEnabled(pluginId, enabled))
+    if (!enabled) this.triggerRegistry.deregisterPlugin(pluginId)
+    const entry = await this.withPreferences(await this.registry.setEnabled(pluginId, enabled))
+    if (enabled) {
+      await this.ensureTriggerUseGrants(entry)
+      if (entry.manifest?.triggers?.length) {
+        this.triggerRegistry.register(pluginId, entry.manifest.triggers)
+      }
+    } else {
+      await this.revokeTriggerUseGrants(entry)
+    }
+    return entry
+  }
+
+  triggerSnapshot(): Array<{ pluginId: string; triggerId: string; status: string }> {
+    return this.triggerRegistry.snapshot()
+  }
+
+  listTriggers(): PluginTriggerRow[] {
+    const rows: PluginTriggerRow[] = []
+    for (const snap of this.triggerRegistry.snapshot()) {
+      const decl = this.triggerRegistry.getDeclaration(snap.pluginId, snap.triggerId)
+      if (!decl) continue
+      rows.push({
+        pluginId: snap.pluginId,
+        triggerId: snap.triggerId,
+        type: decl.type,
+        status: snap.status,
+        budgets: decl.uses.map((use) => ({
+          capabilityId: use.capability,
+          ...this.budgetLedger.usage(
+            {
+              pluginId: snap.pluginId,
+              triggerId: snap.triggerId,
+              capabilityId: use.capability,
+              scopeKey: scopeKeyForUse(use),
+            },
+            use.budget
+          ),
+        })),
+      })
+    }
+    return rows
+  }
+
+  pauseTrigger(pluginId: string, triggerId: string): void {
+    this.triggerRegistry.pause(pluginId, triggerId)
+  }
+
+  resumeTrigger(pluginId: string, triggerId: string): void {
+    this.triggerRegistry.resume(pluginId, triggerId)
+  }
+
+  killTrigger(pluginId: string, triggerId: string): void {
+    this.triggerRegistry.deregisterTrigger(pluginId, triggerId)
+  }
+
+  killAllBackground(): void {
+    for (const row of this.triggerRegistry.snapshot()) {
+      this.triggerRegistry.deregisterPlugin(row.pluginId)
+    }
   }
 
   searchCommands(query: string, locale?: string, limit?: number): PluginCommandResult[] {
@@ -401,11 +538,13 @@ export class PluginHost {
   /** Await in-flight clipboard watcher reads/dispatches (tests and flush). */
   async drainClipboardWatcher(): Promise<void> {
     await this.clipboardDispatchChain
+    await this.clipboardPoll.drain()
   }
 
   dispose(): void {
     this.registry.off("changed", this.handleRegistryChanged)
-    this.stopClipboardWatcher()
+    this.legacyClipboardUnlisten?.()
+    this.legacyClipboardUnlisten = undefined
   }
 
   /**
@@ -430,6 +569,7 @@ export class PluginHost {
 
     const identity = buildGrantIdentity(pluginId, entry.manifest, entry.source.kind)
     await this.grants.revoke(identity, capability, "user")
+    this.triggerRegistry.deregisterPlugin(pluginId)
     this.registry.revokeCapability(pluginId, capability)
     this.bridge.revokeCapability(pluginId, capability)
     this.sandbox.abortPluginCapability(pluginId, capability)
@@ -451,60 +591,31 @@ export class PluginHost {
     }
   }
 
-  private syncClipboardWatcher(): void {
-    if (this.hasClipboardChangeListeners()) {
-      this.startClipboardWatcher()
-    } else {
-      this.stopClipboardWatcher()
-    }
-  }
+  private async syncClipboardWatcher(): Promise<void> {
+    this.legacyClipboardUnlisten?.()
+    this.legacyClipboardUnlisten = undefined
+    if (!this.registry.hasClipboardChangeListeners()) return
 
-  private hasClipboardChangeListeners(): boolean {
-    return this.registry.hasClipboardChangeListeners()
-  }
-
-  private startClipboardWatcher(): void {
-    if (this.clipboardTimer) return
-    const pollMs = this.options.clipboardPollMs ?? 500
-    this.clipboardTimer = setInterval(() => {
-      this.queueClipboardRead()
-    }, pollMs)
-    this.queueClipboardRead()
-  }
-
-  private queueClipboardRead(): void {
-    this.clipboardDispatchChain = this.clipboardDispatchChain
-      .then(() => this.readAndDispatchClipboard())
-      .catch((err) => {
-        logger.child("plugin-host").warn("clipboard watch read failed", { err })
-      })
-  }
-
-  private stopClipboardWatcher(): void {
-    if (this.clipboardTimer) {
-      clearInterval(this.clipboardTimer)
-      this.clipboardTimer = undefined
-    }
-    this.lastClipboardSnapshot = undefined
-  }
-
-  private async readAndDispatchClipboard(): Promise<void> {
     const allowedPluginIds = await this.authorizedClipboardWatchers()
     if (allowedPluginIds.length === 0) return
 
-    const content = await this.bridge.readClipboardForHost().catch((err) => {
-      logger.child("plugin-host").warn("clipboard watch read failed", { err })
-      return undefined
-    })
-    if (!content) return
+    this.legacyClipboardUnlisten = this.clipboardPoll.registerContentListener(
+      "legacy:activation",
+      (content) => {
+        this.clipboardDispatchChain = this.clipboardDispatchChain
+          .then(() => this.dispatchLegacyClipboard(content, allowedPluginIds))
+          .catch((err) => {
+            logger.child("plugin-host").warn("clipboard change dispatch failed", { err })
+          })
+      }
+    )
+  }
 
-    const snapshot = clipboardSnapshot(content)
-    if (snapshot === this.lastClipboardSnapshot) return
-    this.lastClipboardSnapshot = snapshot
-
-    await this.registry.dispatchClipboardChange(content, allowedPluginIds).catch((err) => {
-      logger.child("plugin-host").warn("clipboard change dispatch failed", { err })
-    })
+  private async dispatchLegacyClipboard(
+    content: ClipboardContent,
+    allowedPluginIds: string[]
+  ): Promise<void> {
+    await this.registry.dispatchClipboardChange(content, allowedPluginIds)
   }
 
   private async authorizedClipboardWatchers(): Promise<string[]> {

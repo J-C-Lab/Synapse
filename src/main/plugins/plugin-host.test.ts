@@ -1,4 +1,5 @@
 import type { ClipboardContent } from "@synapse/plugin-sdk"
+import type { TimerAdapter } from "./timer-adapter"
 import type { PluginCommandResult, PluginManifest, PluginRegistryEntry } from "./types"
 import { createHash } from "node:crypto"
 import { promises as fs } from "node:fs"
@@ -87,6 +88,7 @@ async function writeHostPlugin(
     activationEvents?: PluginManifest["contributes"]["activationEvents"]
     permissions?: string[]
     tools?: PluginManifest["contributes"]["tools"]
+    triggers?: PluginManifest["triggers"]
   } = {}
 ): Promise<string> {
   const pluginId = options.id ?? "com.synapse.clipboard"
@@ -113,6 +115,7 @@ async function writeHostPlugin(
         capabilities: (options.permissions ?? ["clipboard:read", "storage:plugin"]).map((id) => ({
           id,
         })),
+        triggers: options.triggers,
       },
       null,
       2
@@ -869,3 +872,38 @@ module.exports = {
   )
   return pluginDir
 }
+
+describe("pluginHost trigger registration", () => {
+  it("registers triggers on enable and deregisters on disable", async () => {
+    const timerAdapter: TimerAdapter = {
+      register: () => () => {},
+      registerCron: () => () => {},
+    }
+    const host = new PluginHost(
+      hostOptions({
+        migrationMarker: migrationAlreadyDone(),
+        timerAdapter,
+        adapters: noopAdapters,
+      })
+    )
+    const pluginId = "com.synapse.timer"
+    await writeHostPlugin({
+      id: pluginId,
+      permissions: ["notification"],
+      triggers: [
+        {
+          id: "tick",
+          type: "timer",
+          schedule: { intervalMs: 60_000 },
+          handler: "triggers.onTick",
+          uses: [{ capability: "notification", budget: { maxCalls: 1, period: "1h" } }],
+          limits: { minIntervalMs: 60_000, maxConcurrency: 1 },
+        },
+      ],
+    })
+    await host.init()
+    expect(host.triggerSnapshot().some((s) => s.triggerId === "tick")).toBe(true)
+    await host.setEnabled(pluginId, false)
+    expect(host.triggerSnapshot().some((s) => s.triggerId === "tick")).toBe(false)
+  })
+})

@@ -1,4 +1,4 @@
-import type { NormalizedCapability } from "@synapse/plugin-manifest"
+import type { FsPathScope, NormalizedCapability } from "@synapse/plugin-manifest"
 import type {
   ClipboardContent,
   NetworkRequestInit,
@@ -9,13 +9,23 @@ import type {
   ToolCaller,
   ToolContext,
 } from "@synapse/plugin-sdk"
-import type { CapabilityActor, CapabilityGatePort, CapabilityRequest } from "./capability-gate"
+import type {
+  BudgetBreakerPort,
+  CapabilityActor,
+  CapabilityGatePort,
+  CapabilityRequest,
+} from "./capability-gate"
 import type { CapabilityGovernance } from "./capability-governance"
 import type { NetworkFetcher } from "./network-fetcher"
 import type { PluginManifest, PluginSourceKind } from "./types"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import process from "node:process"
+import {
+  getCapability,
+  mergeDeclaredWithTriggerUses,
+  patternForRootId,
+} from "@synapse/plugin-manifest"
 import { logger } from "../logging"
 import { CapabilityGate as CapabilityGateImpl } from "./capability-gate"
 import {
@@ -23,6 +33,7 @@ import {
   callerToActor,
   createCapabilityGovernance,
 } from "./capability-governance"
+import { readVerifiedText, resolveVerifiedAbsolutePath } from "./fs-path-resolver"
 import { createNetworkFetcher } from "./network-fetcher"
 
 export interface PluginRuntimeSnapshot {
@@ -60,6 +71,7 @@ export interface InvocationContext {
   actor: CapabilityActor
   trigger: string
   signal?: AbortSignal
+  invocationId?: string
 }
 
 export interface PluginBridgeOptions {
@@ -78,6 +90,13 @@ export interface PluginBridgeOptions {
     manifest: PluginManifest,
     sourceKind: PluginSourceKind
   ) => CapabilityGatePort
+  /** Trigger-origin budget breaker wired from the host trigger subsystem. */
+  budgetBreaker?: BudgetBreakerPort
+  /** Shared clipboard poll hub — bridge `watch()` registers here instead of its own timer. */
+  registerClipboardListener?: (
+    key: string,
+    listener: (content: ClipboardContent) => void
+  ) => () => void
 }
 
 /** Inputs the host supplies when building a `ToolContext` for one tool call. */
@@ -93,7 +112,7 @@ export interface ToolContextOptions {
 /** The capability slice shared by command and tool contexts. */
 type PluginCapabilities = Pick<
   PluginContext,
-  "storage" | "clipboard" | "notifications" | "system" | "network" | "log"
+  "storage" | "clipboard" | "notifications" | "system" | "network" | "fs" | "log"
 >
 
 interface StorageState {
@@ -123,6 +142,9 @@ export class PluginBridge {
   private readonly governance: CapabilityGovernance
   private readonly sourceKindFor: (pluginId: string) => PluginSourceKind
   private readonly createGate?: PluginBridgeOptions["createGate"]
+  private readonly budgetBreaker?: BudgetBreakerPort
+  private readonly registerClipboardListener?: PluginBridgeOptions["registerClipboardListener"]
+  private readonly clipboardWatchUnlisten = new Map<string, Set<() => void>>()
 
   constructor(private readonly options: PluginBridgeOptions) {
     this.storageFlushMs = options.storageFlushMs ?? 250
@@ -131,6 +153,8 @@ export class PluginBridge {
       options.governance ?? createCapabilityGovernance({ userDataDir: options.userDataDir })
     this.sourceKindFor = options.sourceKindFor ?? (() => "user")
     this.createGate = options.createGate
+    this.budgetBreaker = options.budgetBreaker
+    this.registerClipboardListener = options.registerClipboardListener
   }
 
   createContext(
@@ -146,7 +170,7 @@ export class PluginBridge {
       locale: runtime.locale,
       theme: runtime.theme,
       preferences: this.resolvePreferences(pluginId, manifest),
-      ...this.createCapabilities(pluginId, gate, invocation),
+      ...this.createCapabilities(pluginId, manifest, gate, invocation),
     }
   }
 
@@ -171,7 +195,7 @@ export class PluginBridge {
     return {
       pluginId,
       preferences: this.resolvePreferences(pluginId, manifest),
-      ...this.createCapabilities(pluginId, gate, invocation),
+      ...this.createCapabilities(pluginId, manifest, gate, invocation),
       caller: options.caller,
       signal: options.signal,
       progress: options.progress,
@@ -181,7 +205,10 @@ export class PluginBridge {
   private gateFor(
     pluginId: string,
     manifest: PluginManifest,
-    declaredCapabilities: readonly NormalizedCapability[] = manifest.capabilities
+    declaredCapabilities: readonly NormalizedCapability[] = mergeDeclaredWithTriggerUses(
+      manifest.capabilities,
+      manifest.triggers
+    )
   ): CapabilityGatePort {
     const sourceKind = this.sourceKindFor(pluginId)
     if (this.createGate) {
@@ -200,6 +227,7 @@ export class PluginBridge {
       prompt: this.governance.prompt,
       approve: this.governance.approve,
       audit: this.governance.audit,
+      budgetBreaker: this.budgetBreaker,
     })
   }
 
@@ -212,15 +240,19 @@ export class PluginBridge {
 
   private createCapabilities(
     pluginId: string,
+    manifest: PluginManifest,
     gate: CapabilityGatePort,
     invocation: InvocationContext
   ): PluginCapabilities {
-    const ensure = (request: Omit<CapabilityRequest, "actor" | "trigger" | "signal">) =>
+    const ensure = (
+      request: Omit<CapabilityRequest, "actor" | "trigger" | "signal" | "invocationId">
+    ) =>
       gate.ensure({
         ...request,
         actor: invocation.actor,
         trigger: invocation.trigger,
         signal: invocation.signal,
+        invocationId: invocation.invocationId,
       })
 
     // The fetcher runs its own gate.ensure inside fetch(), so network needs no
@@ -230,6 +262,7 @@ export class PluginBridge {
       actor: invocation.actor,
       trigger: invocation.trigger,
       pluginId,
+      invocationId: invocation.invocationId,
     })
     this.registerFetcher(pluginId, fetcher)
 
@@ -285,9 +318,46 @@ export class PluginBridge {
       },
       network: {
         fetch: (url, init) => fetcher.fetch(url, withInvocationSignal(init, invocation.signal)),
+        fetchStream: (url, init) =>
+          fetcher.fetchStream(url, withInvocationSignal(init, invocation.signal)),
       },
+      fs: this.createFsAPI(pluginId, manifest, ensure),
       log: (...args) => {
         logger.child(`plugin:${pluginId}`).warn(args.map((arg) => String(arg)).join(" "))
+      },
+    }
+  }
+
+  private createFsAPI(
+    pluginId: string,
+    manifest: PluginManifest,
+    ensure: (
+      request: Omit<CapabilityRequest, "actor" | "trigger" | "signal" | "invocationId">
+    ) => Promise<void>
+  ): PluginContext["fs"] {
+    const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? ""
+    const pathScopes = pathScopesFromManifest(manifest)
+
+    return {
+      resolvePath: async (rootId, relativePath) => {
+        await ensure({
+          capability: "fs:resolvePath",
+          operation: "resolve",
+          requestedScope: { rootId, relativePath },
+        })
+        const pattern = patternForRootId(rootId, pathScopes)
+        if (!pattern) throw new Error(`Unknown fs rootId for ${pluginId}: ${rootId}`)
+        return resolveVerifiedAbsolutePath(homeDir, pattern, relativePath)
+      },
+      readText: async (rootId, relativePath) => {
+        await ensure({
+          capability: "fs:read",
+          operation: "read",
+          requestedScope: { rootId, relativePath },
+        })
+        const pattern = patternForRootId(rootId, pathScopes)
+        if (!pattern) throw new Error(`Unknown fs rootId for ${pluginId}: ${rootId}`)
+        return readVerifiedText(homeDir, pattern, relativePath)
       },
     }
   }
@@ -472,6 +542,11 @@ export class PluginBridge {
   }
 
   private stopClipboardWatchers(pluginId: string): void {
+    const hubUnlisteners = this.clipboardWatchUnlisten.get(pluginId)
+    if (hubUnlisteners) {
+      for (const unlisten of hubUnlisteners) unlisten()
+      this.clipboardWatchUnlisten.delete(pluginId)
+    }
     const timers = this.watchers.get(pluginId)
     if (!timers) return
     for (const timer of timers) clearInterval(timer)
@@ -482,6 +557,22 @@ export class PluginBridge {
     pluginId: string,
     listener: (content: ClipboardContent) => void
   ): () => void {
+    if (this.registerClipboardListener) {
+      const key = `bridge:${pluginId}:${Math.random().toString(36).slice(2)}`
+      const unlisten = this.registerClipboardListener(key, listener)
+      let unlisteners = this.clipboardWatchUnlisten.get(pluginId)
+      if (!unlisteners) {
+        unlisteners = new Set()
+        this.clipboardWatchUnlisten.set(pluginId, unlisteners)
+      }
+      unlisteners.add(unlisten)
+      return () => {
+        unlisten()
+        unlisteners!.delete(unlisten)
+        if (unlisteners!.size === 0) this.clipboardWatchUnlisten.delete(pluginId)
+      }
+    }
+
     let lastSerialized: string | undefined
     const timer = setInterval(() => {
       void this.options.adapters.clipboard
@@ -525,6 +616,19 @@ function withInvocationSignal(
   if (!invocationSignal) return init
   if (!init?.signal) return { ...init, signal: invocationSignal }
   return { ...init, signal: AbortSignal.any([invocationSignal, init.signal]) }
+}
+
+function pathScopesFromManifest(manifest: PluginManifest): FsPathScope[] {
+  const scopes: FsPathScope[] = []
+  for (const cap of mergeDeclaredWithTriggerUses(manifest.capabilities, manifest.triggers)) {
+    if (cap.scope && getCapability(cap.id)?.scopeEnforced) {
+      scopes.push(cap.scope as FsPathScope)
+    }
+  }
+  for (const trigger of manifest.triggers ?? []) {
+    if (trigger.type === "fs.watch") scopes.push({ paths: trigger.scope.paths })
+  }
+  return scopes
 }
 
 function preferencesFromManifest(manifest: PluginManifest): Record<string, unknown> {

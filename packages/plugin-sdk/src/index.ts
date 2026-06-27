@@ -34,9 +34,14 @@ export type {
   CommandInvocation,
   PluginEventHandlers,
   PluginModule,
+  TriggerHandler,
 } from "./commands"
 
 export type { ClipboardAPI, NotificationAPI, PluginContext, StorageAPI, SystemAPI } from "./context"
+
+export type { FsAPI, FsWatchEvent } from "./fs"
+
+export type { HotkeyEvent } from "./hotkey"
 
 export type { LocalizedString } from "./locales"
 

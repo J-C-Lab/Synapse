@@ -1,7 +1,10 @@
 import type { CapabilityAuditEntry, CapabilityRequest } from "./capability-gate"
 import type { GrantIdentity } from "./grant-store"
 import { describe, expect, it, vi } from "vitest"
+import { BackgroundInvoker } from "./background-invoker"
 import { CapabilityDenied, CapabilityGate } from "./capability-gate"
+import { BudgetLedger } from "./trigger-budget"
+import { createBudgetBreakerPort } from "./trigger-budget-breaker"
 
 function identity(): GrantIdentity {
   return {
@@ -175,5 +178,158 @@ describe("capabilityGate.assertDeclared", () => {
     const { gate } = makeGate({ declared: ["clipboard:read"] })
     expect(() => gate.assertDeclared("network:http")).toThrow(CapabilityDenied)
     expect(() => gate.assertDeclared("clipboard:read")).not.toThrow()
+  })
+})
+
+function gateWithBudget(
+  tryDebit: () => "debited" | "not-in-uses" | "exhausted",
+  opts: {
+    declared?: { id: string; scope?: unknown }[]
+    granted?: boolean
+    prompt?: () => Promise<boolean>
+  } = {}
+) {
+  const audit: CapabilityAuditEntry[] = []
+  const gate = new CapabilityGate({
+    identity: identity(),
+    declared: opts.declared ?? [
+      {
+        id: "network:https",
+        scope: { hosts: ["api.example.com"], methods: ["GET"], paths: ["/**"] },
+      },
+    ],
+    grants: { isGranted: async () => opts.granted ?? true, grant: async () => {} },
+    prompt: opts.prompt ?? (async () => true),
+    approve: async () => {
+      throw new Error("approve() must NOT be called for trigger origin")
+    },
+    audit: (entry) => audit.push(entry),
+    budgetBreaker: {
+      isTriggerOrigin: (id) => id === "inv-1",
+      tryDebit: () => tryDebit(),
+    },
+  })
+  return { gate, audit }
+}
+
+describe("capabilityGate budget breaker", () => {
+  it("permits a trigger-origin elevated call without prompting when budget remains", async () => {
+    const { gate } = gateWithBudget(() => "debited")
+    await expect(
+      gate.ensure({
+        capability: "network:https",
+        actor: "background",
+        trigger: "timer:t",
+        operation: "GET",
+        requestedScope: { host: "api.example.com", method: "GET", path: "/x" },
+        invocationId: "inv-1",
+      })
+    ).resolves.toBeUndefined()
+  })
+
+  it("denies (no prompt) when the budget is exhausted", async () => {
+    const { gate, audit } = gateWithBudget(() => "exhausted")
+    await expect(
+      gate.ensure({
+        capability: "network:https",
+        actor: "background",
+        trigger: "timer:t",
+        operation: "GET",
+        requestedScope: { host: "api.example.com", method: "GET", path: "/x" },
+        invocationId: "inv-1",
+      })
+    ).rejects.toBeInstanceOf(CapabilityDenied)
+    expect(audit.at(-1)?.why).toMatch(/budget/)
+  })
+
+  it("denies with a distinct reason when the capability is not in trigger uses", async () => {
+    const { gate, audit } = gateWithBudget(() => "not-in-uses")
+    await expect(
+      gate.ensure({
+        capability: "network:https",
+        actor: "background",
+        trigger: "timer:t",
+        operation: "GET",
+        requestedScope: { host: "api.example.com", method: "GET", path: "/x" },
+        invocationId: "inv-1",
+      })
+    ).rejects.toBeInstanceOf(CapabilityDenied)
+    expect(audit.at(-1)?.why).toMatch(/not in trigger uses/)
+  })
+
+  it("denies trigger-origin consent calls without JIT prompt when not granted at enable", async () => {
+    const prompt = vi.fn(async () => true)
+    const { gate } = gateWithBudget(() => "debited", {
+      declared: [{ id: "clipboard:read" }],
+      granted: false,
+      prompt,
+    })
+    await expect(
+      gate.ensure({
+        capability: "clipboard:read",
+        actor: "background",
+        trigger: "clipboard:clip",
+        operation: "read",
+        invocationId: "inv-1",
+      })
+    ).rejects.toThrow(/not granted at enable time/)
+    expect(prompt).not.toHaveBeenCalled()
+  })
+
+  it("enforces per-trigger budget for consent-tier clipboard:read", async () => {
+    const invoker = new BackgroundInvoker(() => 0)
+    const ledger = new BudgetLedger(() => 0)
+    const decl = {
+      id: "clip",
+      type: "clipboard" as const,
+      handler: "triggers.onClip",
+      uses: [{ capability: "clipboard:read", budget: { maxCalls: 20, period: "1h" as const } }],
+    }
+    const breaker = createBudgetBreakerPort({
+      invoker,
+      ledger,
+      manifestFor: () => ({ triggers: [decl] }) as never,
+      registry: { getDeclaration: () => decl },
+    })
+    const { invocationId } = invoker.mint({
+      pluginId: "p",
+      triggerId: "clip",
+      actor: "background",
+      trigger: "clipboard:clip",
+      signal: new AbortController().signal,
+    })
+
+    const gate = new CapabilityGate({
+      identity: identity(),
+      declared: [{ id: "clipboard:read" }],
+      grants: { isGranted: async () => true, grant: async () => {} },
+      prompt: async () => {
+        throw new Error("prompt must not run")
+      },
+      approve: async () => {
+        throw new Error("approve must not run")
+      },
+      audit: () => {},
+      budgetBreaker: breaker,
+    })
+
+    for (let i = 0; i < 20; i++) {
+      await gate.ensure({
+        capability: "clipboard:read",
+        actor: "background",
+        trigger: "clipboard:clip",
+        operation: "read",
+        invocationId,
+      })
+    }
+    await expect(
+      gate.ensure({
+        capability: "clipboard:read",
+        actor: "background",
+        trigger: "clipboard:clip",
+        operation: "read",
+        invocationId,
+      })
+    ).rejects.toThrow(/budget exhausted/)
   })
 })
