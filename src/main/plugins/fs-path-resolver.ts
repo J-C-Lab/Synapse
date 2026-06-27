@@ -24,7 +24,22 @@ export interface FsPathIo {
 export const defaultFsPathIo: FsPathIo = {
   realpath: (target) => fs.realpath(target),
   lstat: (target) => fs.lstat(target),
-  readFile: (target, encoding) => fs.readFile(target, encoding),
+  // O_NOFOLLOW refuses a final-component symlink where available (Linux/macOS);
+  // Windows lacks it and relies on the prior realpath/lstat checks. Living here
+  // (not in readRegularFileUtf8) keeps the read injectable for tests while
+  // production still gets the real-fd guard.
+  readFile: async (target, encoding) => {
+    const nofollow = constants.O_NOFOLLOW
+    if (nofollow !== undefined) {
+      const handle = await fs.open(target, constants.O_RDONLY | nofollow)
+      try {
+        return await handle.readFile({ encoding })
+      } finally {
+        await handle.close()
+      }
+    }
+    return fs.readFile(target, encoding)
+  },
 }
 
 /** Resolve a scoped path and verify the real path (and no symlink hops) stay inside the watch root. */
@@ -103,24 +118,14 @@ async function readRegularFileUtf8(lexical: string, io: FsPathIo): Promise<strin
   }
   if (!info.isFile()) throw new FsPathEscapeError("path is not a regular file")
 
-  // Known residual (TOCTOU): the realpath/lstat checks above and the open below
-  // are not atomic. O_NOFOLLOW refuses only a final-component symlink; a
-  // determined local attacker who swaps an INTERMEDIATE directory to a symlink
-  // between check and open could still escape, and on platforms without
-  // O_NOFOLLOW (Windows) we fall back to a plain read guarded only by the prior
-  // realpath check. Fully closing this needs per-component openat semantics or
-  // re-validating the opened fd's real path (e.g. /proc/self/fd on Linux). The
-  // current guard is a strong, deliberate mitigation for the plugin threat model,
-  // not an atomic guarantee.
-  const nofollow = constants.O_NOFOLLOW
-  if (nofollow !== undefined) {
-    const handle = await fs.open(lexical, constants.O_RDONLY | nofollow)
-    try {
-      return await handle.readFile({ encoding: "utf8" })
-    } finally {
-      await handle.close()
-    }
-  }
+  // Known residual (TOCTOU): the realpath/lstat checks above and the read below
+  // are not atomic. The default io read uses O_NOFOLLOW (where available) to
+  // refuse a final-component symlink, but a determined local attacker who swaps
+  // an INTERMEDIATE directory to a symlink between check and read could still
+  // escape; on platforms without O_NOFOLLOW (Windows) the read is guarded only by
+  // the prior realpath check. Fully closing this needs per-component openat
+  // semantics or re-validating the opened fd's real path. A strong, deliberate
+  // mitigation for the plugin threat model, not an atomic guarantee.
   return io.readFile(lexical, "utf8")
 }
 
