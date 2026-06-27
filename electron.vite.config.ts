@@ -1,7 +1,21 @@
+import type { Plugin } from "vite"
+import { copyFileSync, mkdirSync } from "node:fs"
 import { resolve } from "node:path"
 import tailwindcss from "@tailwindcss/vite"
 import react from "@vitejs/plugin-react"
 import { defineConfig, externalizeDepsPlugin } from "electron-vite"
+
+function copyCredentialSecretPromptHtml(): Plugin {
+  const src = resolve(__dirname, "src/main/plugins/credential-secret-prompt.html")
+  const dest = resolve(__dirname, "out/main/credential-secret-prompt.html")
+  return {
+    name: "copy-credential-secret-prompt-html",
+    closeBundle() {
+      mkdirSync(resolve(__dirname, "out/main"), { recursive: true })
+      copyFileSync(src, dest)
+    },
+  }
+}
 
 // electron-vite produces three independent bundles:
 //   out/main/index.js        ← main process (Node, CommonJS)
@@ -19,7 +33,10 @@ export default defineConfig({
     // schema). Bundle it from source instead of externalizing it so the app
     // needs no prior `pnpm build:manifest` in dev/build — mirrors how the SDK
     // is aliased to source for tsc/vitest. zod stays externalized (real dep).
-    plugins: [externalizeDepsPlugin({ exclude: ["@synapse/plugin-manifest"] })],
+    plugins: [
+      externalizeDepsPlugin({ exclude: ["@synapse/plugin-manifest"] }),
+      copyCredentialSecretPromptHtml(),
+    ],
     resolve: {
       alias: {
         "@synapse/plugin-manifest": resolve(__dirname, "packages/plugin-manifest/src/index.ts"),
@@ -43,7 +60,10 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        input: { index: resolve(__dirname, "src/preload/index.ts") },
+        input: {
+          index: resolve(__dirname, "src/preload/index.ts"),
+          "credential-secret-prompt": resolve(__dirname, "src/preload/credential-secret-prompt.ts"),
+        },
       },
     },
   },
