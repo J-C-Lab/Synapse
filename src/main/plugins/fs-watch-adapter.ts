@@ -3,6 +3,7 @@ import type { FsPathIo } from "./fs-path-resolver"
 import * as path from "node:path"
 import process from "node:process"
 import {
+  DEFAULT_IGNORE_EXTENSIONS,
   defaultWatchEvents,
   fsPathAdapter,
   rootIdForPattern,
@@ -69,6 +70,11 @@ export function createFsWatchAdapter(options: FsWatchAdapterOptions = {}): FsWat
       const allowedEvents = new Set(defaultWatchEvents(scope))
       const watchers: Array<{ close: () => void }> = []
       const watchedDirs = new Set<string>()
+      const settle = scope.settle
+      const pending = new Map<string, ReturnType<typeof setTimeout>>()
+      const ignoreExtensions = new Set(
+        (settle?.ignoreExtensions ?? DEFAULT_IGNORE_EXTENSIONS).map((ext) => ext.toLowerCase())
+      )
 
       const emitForRelative = async (
         pattern: string,
@@ -94,6 +100,54 @@ export function createFsWatchAdapter(options: FsWatchAdapterOptions = {}): FsWat
         })
       }
 
+      const armSettledCreate = (
+        key: string,
+        pattern: string,
+        relativePath: string,
+        size: number
+      ) => {
+        const existing = pending.get(key)
+        if (existing) clearTimeout(existing)
+
+        const timer = setTimeout(() => {
+          void safeScopedStat(homeDir, pattern, relativePath, options.io).then((current) => {
+            if (pending.get(key) !== timer) return
+            if (!current) {
+              pending.delete(key)
+              return
+            }
+            if (current.size !== size) {
+              armSettledCreate(key, pattern, relativePath, current.size)
+              return
+            }
+
+            pending.delete(key)
+            const ext = extensionOf(relativePath)
+            fire({
+              rootId: rootIdForPattern(pattern),
+              relativePath,
+              kind: "create",
+              timestamp: now(),
+              size,
+              ...(ext ? { ext } : {}),
+            })
+          })
+        }, settle?.stableMs)
+        if (typeof timer.unref === "function") timer.unref()
+        pending.set(key, timer)
+      }
+
+      const settleForRelative = async (pattern: string, relativePath: string) => {
+        if (!settle) return
+        if (!matchesPattern(relativePath, pattern)) return
+        if (!allowedEvents.has("create")) return
+        const ext = extensionOf(relativePath)?.toLowerCase()
+        if (ext && ignoreExtensions.has(ext)) return
+        const info = await safeScopedStat(homeDir, pattern, relativePath, options.io)
+        if (!info) return
+        armSettledCreate(`${pattern}\0${relativePath}`, pattern, relativePath, info.size)
+      }
+
       for (const pattern of scope.paths) {
         const rootDir = watchDirectoryForPattern(pattern, homeDir)
         if (watchedDirs.has(rootDir)) continue
@@ -105,13 +159,16 @@ export function createFsWatchAdapter(options: FsWatchAdapterOptions = {}): FsWat
             if (!relative) return
             const kind = mapEventKind(eventType)
             for (const declared of scope.paths) {
-              void emitForRelative(declared, relative, kind)
+              if (settle) void settleForRelative(declared, relative)
+              else void emitForRelative(declared, relative, kind)
             }
           })
         )
       }
 
       return () => {
+        for (const timer of pending.values()) clearTimeout(timer)
+        pending.clear()
         for (const handle of watchers) handle.close()
       }
     },

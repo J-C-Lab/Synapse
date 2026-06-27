@@ -4,7 +4,7 @@ import type { NormalizedCapability } from "./types"
 import { createHash } from "node:crypto"
 import { getCapability, stableStringify } from "./capabilities"
 import { validateCronExpression } from "./cron-schedule"
-import { fsPathAdapter, validateWatchEvents } from "./fs-path-scope"
+import { fsPathAdapter, validateSettle, validateWatchEvents } from "./fs-path-scope"
 import { validateHotkeyTriggerScope } from "./hotkey-scope"
 
 export type TriggerType = "timer" | "cron" | "clipboard" | "fs.watch" | "hotkey"
@@ -111,6 +111,7 @@ function validateFsWatchScope(scope: unknown): void {
   if (!isRecord(scope)) throw new TypeError("fs.watch trigger requires a `scope` object")
   fsPathAdapter.validate({ paths: scope.paths })
   validateWatchEvents(scope.events)
+  validateSettle(scope.settle)
 }
 
 function validateTriggerShape(t: Record<string, unknown>): void {

@@ -29,6 +29,7 @@ export type { CronFields, ValidateCronOptions } from "./cron-schedule"
 export { isEngineCompatible } from "./engine"
 
 export {
+  DEFAULT_IGNORE_EXTENSIONS,
   defaultWatchEvents,
   expandHomePath,
   fsPathAdapter,
@@ -36,6 +37,7 @@ export {
   patternForRootId,
   resolveAbsolutePath,
   rootIdForPattern,
+  validateSettle,
   validateWatchEvents,
   watchDirectoryForPattern,
 } from "./fs-path-scope"
@@ -44,6 +46,7 @@ export type {
   FsPathRequestedScope,
   FsPathScope,
   FsWatchEventKind,
+  FsWatchSettleConfig,
   FsWatchTriggerScope,
 } from "./fs-path-scope"
 
