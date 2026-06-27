@@ -57,10 +57,14 @@ describe("grantTriggerUses", () => {
         id: "clip",
         type: "clipboard",
         handler: "triggers.onClip",
-        uses: [{ capability: "clipboard:read", budget: { maxCalls: 20, period: "1h" } }],
+        uses: [
+          { capability: "clipboard:read", budget: { maxCalls: 20, period: "1h" } },
+          { capability: "fs:write", budget: { maxCalls: 5, period: "1h" } },
+        ],
       },
     ])
     expect(await store.isGranted(identity, "clipboard:read")).toBe(true)
+    expect(await store.isGranted(identity, "fs:write")).toBe(true)
     await fs.rm(dir, { recursive: true, force: true })
   })
 
