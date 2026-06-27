@@ -8,6 +8,13 @@ export interface NetworkResponse {
   arrayBuffer: () => Promise<ArrayBuffer>
 }
 
+/** The streamed response body: backpressured chunks plus explicit teardown. */
+export interface NetworkStreamBody extends AsyncIterable<Uint8Array> {
+  /** Destroy the socket and release the in-flight slot. Idempotent. Equivalent
+   *  to breaking out of the `for await` loop. */
+  cancel: () => void
+}
+
 /** Like {@link NetworkResponse} but the body is consumed incrementally. */
 export interface NetworkStreamResponse {
   ok: boolean
@@ -16,10 +23,11 @@ export interface NetworkStreamResponse {
   headers: Record<string, string>
   /**
    * The response body as backpressured chunks — consume once with `for await`.
-   * Bounded by the host's stream size cap; a slow consumer applies backpressure
-   * rather than buffering unboundedly.
+   * Iterating a second time throws `BodyAlreadyConsumed` (a single socket cannot
+   * be replayed). Bounded by the host's stream size cap; a slow consumer applies
+   * backpressure rather than buffering unboundedly.
    */
-  body: AsyncIterable<Uint8Array>
+  body: NetworkStreamBody
 }
 
 export interface NetworkRequestInit {

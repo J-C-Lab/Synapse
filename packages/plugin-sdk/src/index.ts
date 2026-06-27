@@ -45,7 +45,13 @@ export type { HotkeyEvent } from "./hotkey"
 
 export type { LocalizedString } from "./locales"
 
-export type { NetworkAPI, NetworkRequestInit, NetworkResponse } from "./network"
+export type {
+  NetworkAPI,
+  NetworkRequestInit,
+  NetworkResponse,
+  NetworkStreamBody,
+  NetworkStreamResponse,
+} from "./network"
 
 export type { ToolCaller, ToolContentBlock, ToolContext, ToolHandler, ToolResult } from "./tools"
 
