@@ -77,6 +77,7 @@ export {
 } from "./triggers"
 
 export type {
+  AgentTriggerBudget,
   ClipboardContentType,
   ClipboardTriggerDeclaration,
   ClipboardTriggerScope,

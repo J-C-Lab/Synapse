@@ -170,11 +170,23 @@ const triggerLimitsSchema = z
   .strict()
   .optional()
 
+const agentTriggerBudgetSchema = z
+  .object({
+    maxRuns: z.number().positive(),
+    period: z.enum(["1m", "1h", "1d"]),
+    maxToolCallsPerRun: z.number().positive(),
+    maxTokensPerRun: z.number().positive(),
+    timeoutMs: z.number().positive(),
+  })
+  .strict()
+  .optional()
+
 const triggerBaseSchema = {
   id: z.string().regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
   handler: z.string().startsWith("triggers."),
   uses: z.array(triggerUseSchema).min(1),
   limits: triggerLimitsSchema,
+  agent: agentTriggerBudgetSchema,
 }
 
 const scheduledTriggerSchema = z

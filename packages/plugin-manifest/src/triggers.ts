@@ -20,6 +20,14 @@ export interface TriggerBudget {
   period: "1m" | "1h" | "1d"
 }
 
+export interface AgentTriggerBudget {
+  maxRuns: number
+  period: "1m" | "1h" | "1d"
+  maxToolCallsPerRun: number
+  maxTokensPerRun: number
+  timeoutMs: number
+}
+
 export interface TriggerUse {
   capability: string
   scope?: unknown
@@ -37,6 +45,7 @@ interface TriggerDeclarationBase {
   handler: string
   uses: TriggerUse[]
   limits?: TriggerLimits
+  agent?: AgentTriggerBudget
 }
 
 export interface ScheduledTriggerDeclaration extends TriggerDeclarationBase {
@@ -92,6 +101,24 @@ function validateUse(use: unknown): void {
     throw new TypeError(`trigger use for ${use.capability} needs budget.period in 1m|1h|1d`)
   const adapter = getCapability(use.capability)?.scopeAdapter
   if (use.scope !== undefined && adapter) adapter.validate(use.scope)
+}
+
+function validatePositiveNumber(value: unknown, path: string): void {
+  if (typeof value !== "number" || value <= 0) {
+    throw new TypeError(`${path} must be a positive number`)
+  }
+}
+
+function validateAgentBudget(agent: unknown): void {
+  if (agent === undefined) return
+  if (!isRecord(agent)) throw new TypeError("trigger agent budget must be an object")
+  validatePositiveNumber(agent.maxRuns, "trigger agent.maxRuns")
+  if (typeof agent.period !== "string" || !PERIODS.has(agent.period)) {
+    throw new TypeError("trigger agent.period must be in 1m|1h|1d")
+  }
+  validatePositiveNumber(agent.maxToolCallsPerRun, "trigger agent.maxToolCallsPerRun")
+  validatePositiveNumber(agent.maxTokensPerRun, "trigger agent.maxTokensPerRun")
+  validatePositiveNumber(agent.timeoutMs, "trigger agent.timeoutMs")
 }
 
 function validateClipboardScope(scope: unknown): void {
@@ -167,6 +194,7 @@ export function validateTriggers(triggers: unknown): void {
     if (!Array.isArray(t.uses) || t.uses.length === 0)
       throw new TypeError("trigger requires at least one `uses` entry")
     for (const use of t.uses) validateUse(use)
+    validateAgentBudget(t.agent)
     validateTriggerShape(t)
   }
 }
