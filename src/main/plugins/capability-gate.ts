@@ -26,6 +26,8 @@ export interface CapabilityRequest {
   signal?: AbortSignal
   /** Set by the host for trigger-origin background calls; resolves the budget path. */
   invocationId?: string
+  /** Host-computed: whether this concrete write operation can be reversed. */
+  reversible?: boolean
 }
 
 export class CapabilityDenied extends Error {
