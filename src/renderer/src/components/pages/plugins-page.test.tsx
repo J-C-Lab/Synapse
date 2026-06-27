@@ -117,7 +117,10 @@ describe("pluginsPage", () => {
   })
 
   it("shows always allowed for auto-tier capabilities", async () => {
-    mocks.listPlugins.mockResolvedValueOnce([
+    // Persistent (not Once) + keyed by pluginId so a refetch under full-suite
+    // load returns the same Storage fixture instead of falling back to the
+    // beforeEach default — the source of this test's earlier flakiness.
+    mocks.listPlugins.mockResolvedValue([
       plugin({
         pluginId: "com.synapse.storage",
         manifest: {
@@ -128,14 +131,16 @@ describe("pluginsPage", () => {
         },
       }),
     ])
-    mocks.listPluginCapabilities.mockResolvedValueOnce([
-      { id: "storage:plugin", tier: "auto", granted: false, scopeEnforced: false },
-    ])
+    mocks.listPluginCapabilities.mockImplementation(async (pluginId: string) =>
+      pluginId === "com.synapse.storage"
+        ? [{ id: "storage:plugin", tier: "auto", granted: false, scopeEnforced: false }]
+        : []
+    )
 
     render(<PluginsPage />)
 
     expect(await screen.findByText("Storage")).toBeInTheDocument()
-    expect(screen.getByText("plugins.capabilities.alwaysAllowed")).toBeInTheDocument()
+    expect(await screen.findByText("plugins.capabilities.alwaysAllowed")).toBeInTheDocument()
     expect(
       screen.queryByRole("button", { name: "plugins.capabilities.revoke" })
     ).not.toBeInTheDocument()
