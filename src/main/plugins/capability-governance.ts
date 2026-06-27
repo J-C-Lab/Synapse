@@ -36,8 +36,11 @@ export function buildGrantIdentity(
 }
 
 /** Maps tool invocation origin to the capability actor used by `ensure()`. */
-export function callerToActor(caller: ToolCaller): "user" | "agent" | "background" {
+export function callerToActor(
+  caller: ToolCaller
+): "user" | "agent" | "background" | "background-agent" {
   if (caller.kind === "user") return "user"
+  if (caller.kind === "background-agent") return "background-agent"
   return "agent"
 }
 

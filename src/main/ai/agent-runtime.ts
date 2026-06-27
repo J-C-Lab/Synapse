@@ -1,3 +1,4 @@
+import type { ToolCaller } from "@synapse/plugin-sdk"
 import type { ChatContentBlock, ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
 import type { AiToolRegistry } from "./tool-registry"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
@@ -49,6 +50,8 @@ export interface AgentRunOptions {
   onEvent?: (event: AgentEvent) => void
   /** Gate each tool call; return false to deny. Defaults to approve-all (P2). */
   approve?: (request: ApprovalRequest) => boolean | Promise<boolean>
+  /** Override the caller identity attached to tool invocations. */
+  caller?: ToolCaller
 }
 
 export interface AgentRunResult {
@@ -128,7 +131,7 @@ export class AgentRuntime {
 
     try {
       const result = await this.options.tools.invoke(call.name, call.input, {
-        caller: { kind: "agent", conversationId: options.conversationId },
+        caller: options.caller ?? { kind: "agent", conversationId: options.conversationId },
         signal: options.signal,
       })
       const isError = result.isError ?? false
