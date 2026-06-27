@@ -2,7 +2,8 @@ import type { FsPathScope, NormalizedCapability } from "@synapse/plugin-manifest
 import type {
   ClipboardContent,
   NetworkRequestInit,
-  NotificationAPI,
+  NotificationShowOptions,
+  NotificationShowResult,
   PluginContext,
   StorageAPI,
   SystemAPI,
@@ -33,8 +34,16 @@ import {
   callerToActor,
   createCapabilityGovernance,
 } from "./capability-governance"
-import { readVerifiedText, resolveVerifiedAbsolutePath } from "./fs-path-resolver"
+import { readVerifiedText, resolveVerifiedAbsolutePath, safeScopedStat } from "./fs-path-resolver"
+import {
+  fsWriteMkdir,
+  fsWriteMove,
+  fsWriteText,
+  resolveVerifiedWritePath,
+} from "./fs-write-resolver"
+import { MoveJournal } from "./move-journal"
 import { createNetworkFetcher } from "./network-fetcher"
+import { NotificationActionRegistry } from "./notification-actions"
 
 export interface PluginRuntimeSnapshot {
   locale: string
@@ -51,7 +60,20 @@ export interface ClipboardAdapter {
 }
 
 export interface NotificationAdapter {
-  show: NotificationAPI["show"]
+  show: (options: HostNotificationShowOptions) => Promise<void>
+}
+
+export interface HostNotificationAction {
+  title: string
+  actionId: string
+}
+
+export interface HostNotificationShowOptions {
+  notificationId: string
+  title: string
+  body?: string
+  silent?: boolean
+  actions?: HostNotificationAction[]
 }
 
 export interface SystemAdapter {
@@ -97,6 +119,10 @@ export interface PluginBridgeOptions {
     key: string,
     listener: (content: ClipboardContent) => void
   ) => () => void
+  /** Test seam: replace the host-owned fs:write move journal. */
+  moveJournal?: MoveJournal
+  notificationActions?: NotificationActionRegistry
+  notificationActionTtlMs?: number
 }
 
 /** Inputs the host supplies when building a `ToolContext` for one tool call. */
@@ -145,6 +171,9 @@ export class PluginBridge {
   private readonly budgetBreaker?: BudgetBreakerPort
   private readonly registerClipboardListener?: PluginBridgeOptions["registerClipboardListener"]
   private readonly clipboardWatchUnlisten = new Map<string, Set<() => void>>()
+  private readonly moveJournal: MoveJournal
+  private readonly notificationActions: NotificationActionRegistry
+  private readonly notificationActionTtlMs: number
 
   constructor(private readonly options: PluginBridgeOptions) {
     this.storageFlushMs = options.storageFlushMs ?? 250
@@ -155,6 +184,11 @@ export class PluginBridge {
     this.createGate = options.createGate
     this.budgetBreaker = options.budgetBreaker
     this.registerClipboardListener = options.registerClipboardListener
+    this.moveJournal =
+      options.moveJournal ??
+      new MoveJournal(path.join(options.userDataDir, "plugins", "move-journal.json"))
+    this.notificationActions = options.notificationActions ?? new NotificationActionRegistry()
+    this.notificationActionTtlMs = options.notificationActionTtlMs ?? 10 * 60_000
   }
 
   createContext(
@@ -190,6 +224,7 @@ export class PluginBridge {
       actor: callerToActor(options.caller),
       trigger: `tool:${options.toolName}`,
       signal: options.signal,
+      invocationId: options.caller.invocationId,
     }
 
     return {
@@ -291,7 +326,7 @@ export class PluginBridge {
       notifications: {
         show: async (options) => {
           await ensure({ capability: "notification", operation: "show" })
-          await this.options.adapters.notifications.show(options)
+          return this.showNotification(pluginId, options)
         },
       },
       system: {
@@ -359,6 +394,117 @@ export class PluginBridge {
         if (!pattern) throw new Error(`Unknown fs rootId for ${pluginId}: ${rootId}`)
         return readVerifiedText(homeDir, pattern, relativePath)
       },
+      writeText: async (rootId, relativePath, data) => {
+        const requestedScope = { rootId, relativePath }
+        const pattern = patternForRootId(rootId, pathScopes)
+        if (!pattern) throw new Error(`Unknown fs rootId for ${pluginId}: ${rootId}`)
+        await ensure({
+          capability: "fs:write",
+          operation: "writeText",
+          requestedScope,
+          reversible: !(await this.pathExists(homeDir, pattern, relativePath)),
+        })
+        await fsWriteText(homeDir, pattern, relativePath, data)
+      },
+      mkdir: async (rootId, relativePath) => {
+        const requestedScope = { rootId, relativePath }
+        const pattern = patternForRootId(rootId, pathScopes)
+        if (!pattern) throw new Error(`Unknown fs rootId for ${pluginId}: ${rootId}`)
+        await ensure({
+          capability: "fs:write",
+          operation: "mkdir",
+          requestedScope,
+          reversible: true,
+        })
+        await fsWriteMkdir(homeDir, pattern, relativePath)
+      },
+      move: async (fromRootId, fromRel, toRootId, toRel) => {
+        const fromPattern = patternForRootId(fromRootId, pathScopes)
+        const toPattern = patternForRootId(toRootId, pathScopes)
+        if (!fromPattern) throw new Error(`Unknown fs rootId for ${pluginId}: ${fromRootId}`)
+        if (!toPattern) throw new Error(`Unknown fs rootId for ${pluginId}: ${toRootId}`)
+
+        await ensure({
+          capability: "fs:write",
+          operation: "move",
+          requestedScope: { rootId: fromRootId, relativePath: fromRel },
+          reversible: true,
+        })
+        await ensure({
+          capability: "fs:write",
+          operation: "move",
+          requestedScope: { rootId: toRootId, relativePath: toRel },
+          reversible: true,
+        })
+
+        const info = await safeScopedStat(homeDir, fromPattern, fromRel)
+        if (!info) throw new Error(`move source is missing or not a regular file: ${fromRel}`)
+        const journalId = await this.moveJournal.commit({
+          pluginId,
+          fromRootId,
+          fromRel,
+          toRootId,
+          toRel,
+          fromPattern,
+          toPattern,
+          size: info.size,
+        })
+        await fsWriteMove(homeDir, fromPattern, fromRel, toPattern, toRel)
+        return { journalId }
+      },
+    }
+  }
+
+  async handleNotificationAction(notificationId: string, actionId: string): Promise<void> {
+    const action = this.notificationActions.resolve(notificationId, actionId)
+    if (!action || action === "expired") return
+    if (action.journalId) await this.undoMove(action.pluginId, action.journalId)
+  }
+
+  async undoMove(pluginId: string, journalId: string): Promise<void> {
+    const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? ""
+    await this.moveJournal.rollback({ pluginId, journalId, homeDir })
+  }
+
+  moveJournalForTest(): MoveJournal {
+    return this.moveJournal
+  }
+
+  private async showNotification(
+    pluginId: string,
+    options: NotificationShowOptions
+  ): Promise<NotificationShowResult> {
+    const actions = options.actions ?? []
+    const registered = this.notificationActions.register({
+      pluginId,
+      actions,
+      ttlMs: this.notificationActionTtlMs,
+    })
+    await this.options.adapters.notifications.show({
+      notificationId: registered.notificationId,
+      title: options.title,
+      body: options.body,
+      silent: options.silent,
+      actions: actions.map((action, index) => ({
+        title: action.title,
+        actionId: registered.actionIds[index]!,
+      })),
+    })
+    return { notificationId: registered.notificationId }
+  }
+
+  private async pathExists(
+    homeDir: string,
+    pattern: string,
+    relativePath: string
+  ): Promise<boolean> {
+    try {
+      const abs = await resolveVerifiedWritePath(homeDir, pattern, relativePath)
+      await fs.access(abs)
+      return true
+    } catch (err) {
+      if (isFileNotFound(err)) return false
+      throw err
     }
   }
 

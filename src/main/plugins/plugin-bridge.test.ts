@@ -7,6 +7,7 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import process from "node:process"
+import { rootIdForPattern } from "@synapse/plugin-manifest"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { CapabilityDenied } from "./capability-gate"
 import { PluginBridge } from "./plugin-bridge"
@@ -223,6 +224,147 @@ describe("pluginBridge storage and clipboard", () => {
   })
 })
 
+describe("pluginBridge fs:write", () => {
+  it("fs.move requires fs:write, journals before moving, and returns a journalId", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-home-"))
+    const previousHome = process.env.HOME
+    process.env.HOME = home
+    try {
+      await fs.mkdir(path.join(home, "Downloads"), { recursive: true })
+      await fs.writeFile(path.join(home, "Downloads", "src.txt"), "x", "utf8")
+      const rootId = rootIdForPattern("~/Downloads/**")
+      const ensure = vi.fn(async () => {})
+      const bridge = bridgeWithGate({ ensure, declared: ["fs:write"] })
+      const pluginCtx = bridge.createContext("com.synapse.test", fsManifest())
+
+      const { journalId } = await pluginCtx.fs.move(rootId, "src.txt", rootId, "images/src.txt")
+
+      expect(journalId).toMatch(/.+/)
+      expect(await fs.readFile(path.join(home, "Downloads", "images", "src.txt"), "utf8")).toBe("x")
+      await expect(fs.access(path.join(home, "Downloads", "src.txt"))).rejects.toThrow()
+      expect(ensure).toHaveBeenCalledWith(
+        expect.objectContaining({ capability: "fs:write", operation: "move", reversible: true })
+      )
+
+      const journal = JSON.parse(
+        await fs.readFile(path.join(dir, "plugins", "move-journal.json"), "utf8")
+      ) as Array<{ journalId: string; fromRel: string; toRel: string }>
+      expect(journal).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ journalId, fromRel: "src.txt", toRel: "images/src.txt" }),
+        ])
+      )
+    } finally {
+      process.env.HOME = previousHome
+      await fs.rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it("fs.writeText overwriting an existing file is gated as not reversible", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-home-"))
+    const previousHome = process.env.HOME
+    process.env.HOME = home
+    try {
+      await fs.mkdir(path.join(home, "Downloads"), { recursive: true })
+      await fs.writeFile(path.join(home, "Downloads", "a.txt"), "old", "utf8")
+      const rootId = rootIdForPattern("~/Downloads/**")
+      const ensure = vi.fn(async () => {})
+      const bridge = bridgeWithGate({ ensure, declared: ["fs:write"] })
+      const pluginCtx = bridge.createContext("com.synapse.test", fsManifest())
+
+      await expect(pluginCtx.fs.writeText(rootId, "a.txt", "x")).rejects.toThrow(/exists/i)
+
+      expect(ensure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          capability: "fs:write",
+          operation: "writeText",
+          reversible: false,
+        })
+      )
+    } finally {
+      process.env.HOME = previousHome
+      await fs.rm(home, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("pluginBridge notification actions", () => {
+  it("returns a host notification id and sends only host-minted action ids to the adapter", async () => {
+    const ensure = vi.fn(async () => {})
+    const show = vi.fn<PluginBridgeAdapters["notifications"]["show"]>(async () => {})
+    const bridge = bridgeWithGate(
+      { ensure, declared: ["notification"] },
+      { notifications: { show } }
+    )
+    const pluginCtx = bridge.createContext(
+      "com.synapse.test",
+      manifest({ permissions: ["notification"] })
+    )
+
+    const result = await pluginCtx.notifications.show({
+      title: "Moved file",
+      actions: [{ title: "Undo", journalId: "journal-1", actionId: "plugin-id" } as never],
+    })
+
+    expect(result.notificationId).toMatch(/.+/)
+    expect(show).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notificationId: result.notificationId,
+        actions: [
+          expect.objectContaining({
+            title: "Undo",
+            actionId: expect.any(String),
+          }),
+        ],
+      })
+    )
+    expect(show.mock.calls[0]?.[0].actions?.[0]?.actionId).not.toBe("plugin-id")
+  })
+
+  it("handles an Undo notification action by rolling back the owning journal", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-home-"))
+    const previousHome = process.env.HOME
+    process.env.HOME = home
+    try {
+      await fs.mkdir(path.join(home, "Downloads", "Documents"), { recursive: true })
+      await fs.writeFile(path.join(home, "Downloads", "Documents", "a.txt"), "abc", "utf8")
+      const ensure = vi.fn(async () => {})
+      const show = vi.fn<PluginBridgeAdapters["notifications"]["show"]>(async () => {})
+      const bridge = bridgeWithGate(
+        { ensure, declared: ["notification"] },
+        { notifications: { show } }
+      )
+      const journalId = await bridge.moveJournalForTest().commit({
+        pluginId: "com.synapse.test",
+        fromRootId: "downloads",
+        fromRel: "a.txt",
+        toRootId: "downloads",
+        toRel: "Documents/a.txt",
+        fromPattern: "~/Downloads/**",
+        toPattern: "~/Downloads/**",
+        size: 3,
+      })
+      const pluginCtx = bridge.createContext(
+        "com.synapse.test",
+        manifest({ permissions: ["notification"] })
+      )
+      const result = await pluginCtx.notifications.show({
+        title: "Moved file",
+        actions: [{ title: "Undo", journalId }],
+      })
+      const actionId = show.mock.calls[0]?.[0].actions?.[0]?.actionId
+
+      await bridge.handleNotificationAction(result.notificationId, actionId!)
+
+      expect(await fs.readFile(path.join(home, "Downloads", "a.txt"), "utf8")).toBe("abc")
+      await expect(fs.access(path.join(home, "Downloads", "Documents", "a.txt"))).rejects.toThrow()
+    } finally {
+      process.env.HOME = previousHome
+      await fs.rm(home, { recursive: true, force: true })
+    }
+  })
+})
+
 function bridgeWithGate(
   gate: {
     ensure: (request: CapabilityRequest) => Promise<void>
@@ -269,6 +411,13 @@ function manifest(
     contributes: { commands: [{ id: "test.run", title: "Run", mode: "view" }] },
     capabilities: permissions.map((id) => ({ id })),
     ...rest,
+  }
+}
+
+function fsManifest(): PluginManifest {
+  return {
+    ...manifest({ permissions: [] }),
+    capabilities: [{ id: "fs:write", scope: { paths: ["~/Downloads/**"] } }],
   }
 }
 

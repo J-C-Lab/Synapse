@@ -37,7 +37,16 @@ export type {
   TriggerHandler,
 } from "./commands"
 
-export type { ClipboardAPI, NotificationAPI, PluginContext, StorageAPI, SystemAPI } from "./context"
+export type {
+  ClipboardAPI,
+  NotificationAction,
+  NotificationAPI,
+  NotificationShowOptions,
+  NotificationShowResult,
+  PluginContext,
+  StorageAPI,
+  SystemAPI,
+} from "./context"
 
 export type { FsAPI, FsWatchEvent } from "./fs"
 
@@ -45,7 +54,13 @@ export type { HotkeyEvent } from "./hotkey"
 
 export type { LocalizedString } from "./locales"
 
-export type { NetworkAPI, NetworkRequestInit, NetworkResponse } from "./network"
+export type {
+  NetworkAPI,
+  NetworkRequestInit,
+  NetworkResponse,
+  NetworkStreamBody,
+  NetworkStreamResponse,
+} from "./network"
 
 export type { ToolCaller, ToolContentBlock, ToolContext, ToolHandler, ToolResult } from "./tools"
 

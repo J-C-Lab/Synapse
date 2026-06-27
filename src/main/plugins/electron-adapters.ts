@@ -4,15 +4,35 @@ import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import { clipboard, desktopCapturer, nativeImage, Notification, shell } from "electron"
 
-export function createElectronPluginAdapters(userDataDir: string): PluginBridgeAdapters {
+export interface ElectronPluginAdapterOptions {
+  onNotificationAction?: (notificationId: string, actionId: string) => void
+}
+
+export function createElectronPluginAdapters(
+  userDataDir: string,
+  options: ElectronPluginAdapterOptions = {}
+): PluginBridgeAdapters {
   return {
     clipboard: {
       read: async () => readClipboardContent(),
       write: async (content) => writeClipboardContent(content),
     },
     notifications: {
-      show: async (options) => {
-        new Notification(options).show()
+      show: async (showOptions) => {
+        const notification = new Notification({
+          title: showOptions.title,
+          body: showOptions.body,
+          silent: showOptions.silent,
+          actions: showOptions.actions?.map((action) => ({
+            type: "button",
+            text: action.title,
+          })),
+        })
+        notification.on("action", (_event, index) => {
+          const action = showOptions.actions?.[index]
+          if (action) options.onNotificationAction?.(showOptions.notificationId, action.actionId)
+        })
+        notification.show()
       },
     },
     system: {

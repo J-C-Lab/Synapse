@@ -9,7 +9,7 @@ import type {
 import { Buffer } from "node:buffer"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { CapabilityDenied } from "./capability-gate"
-import { createNetworkFetcher } from "./network-fetcher"
+import { BodyAlreadyConsumed, createNetworkFetcher } from "./network-fetcher"
 
 // ---- Test doubles -----------------------------------------------------------
 
@@ -518,6 +518,15 @@ describe("network-fetcher streaming", () => {
     expect((await drain(res.body)).toString("utf8")).toBe("hello streamed world")
   })
 
+  it("throws BodyAlreadyConsumed on a second iteration of the body", async () => {
+    const streamTransport = streamTransportFrom([Buffer.from("once")])
+    const fetcher = createNetworkFetcher(makeConfig({ streamTransport: streamTransport as never }))
+
+    const res = await fetcher.fetchStream("https://api.github.com/x")
+    expect((await drain(res.body)).toString("utf8")).toBe("once")
+    expect(() => res.body[Symbol.asyncIterator]()).toThrow(BodyAlreadyConsumed)
+  })
+
   it("throws once the cumulative body exceeds maxStreamBytes", async () => {
     const streamTransport = streamTransportFrom([Buffer.alloc(8), Buffer.alloc(8), Buffer.alloc(8)])
     const fetcher = createNetworkFetcher(
@@ -617,5 +626,271 @@ describe("network-fetcher streaming", () => {
     expect(Buffer.from((await iterator.next()).value!).toString("utf8")).toBe("first")
     fetcher.abortAll()
     await expect(iterator.next()).rejects.toThrow(/aborted/)
+  })
+
+  it("yields plain Uint8Array chunks, never a Node Buffer", async () => {
+    const streamTransport = streamTransportFrom([Buffer.from("abc"), Buffer.from("def")])
+    const fetcher = createNetworkFetcher(makeConfig({ streamTransport: streamTransport as never }))
+
+    const res = await fetcher.fetchStream("https://api.github.com/x")
+    let count = 0
+    for await (const chunk of res.body) {
+      count += 1
+      expect(chunk instanceof Uint8Array).toBe(true)
+      expect(chunk.constructor).toBe(Uint8Array)
+      expect(Buffer.isBuffer(chunk)).toBe(false)
+    }
+    expect(count).toBe(2)
+  })
+
+  it("does not drain an unbounded redirect body (capped by maxRedirectDrainBytes)", async () => {
+    let redirectPulls = 0
+    let call = 0
+    const streamTransport = vi.fn(async (_args: TransportArgs): Promise<StreamTransportResult> => {
+      call += 1
+      if (call === 1) {
+        return {
+          status: 302,
+          statusText: "Found",
+          headers: { location: "https://api.github.com/final" },
+          stream: (async function* () {
+            while (true) {
+              redirectPulls += 1
+              yield Buffer.alloc(1024)
+            }
+          })(),
+        }
+      }
+      return {
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        stream: (async function* () {
+          yield Buffer.from("final body")
+        })(),
+      }
+    })
+    const fetcher = createNetworkFetcher(
+      makeConfig({
+        streamTransport: streamTransport as never,
+        maxRedirectDrainBytes: 4096,
+        maxRedirectDrainMs: 1000,
+      })
+    )
+
+    const res = await fetcher.fetchStream("https://api.github.com/start")
+    expect((await drain(res.body)).toString("utf8")).toBe("final body")
+    expect(streamTransport.mock.calls).toHaveLength(2)
+    expect(redirectPulls).toBeLessThanOrEqual(6)
+  })
+
+  it("destroys the socket if the body is never consumed (unconsumed timeout)", async () => {
+    vi.useFakeTimers()
+    try {
+      let captured: AbortSignal | undefined
+      const streamTransport = vi.fn(async (args: TransportArgs): Promise<StreamTransportResult> => {
+        captured = args.signal
+        return {
+          status: 200,
+          statusText: "OK",
+          headers: {},
+          stream: (async function* () {
+            yield Buffer.from("x")
+          })(),
+        }
+      })
+      const fetcher = createNetworkFetcher(
+        makeConfig({ streamTransport: streamTransport as never, maxUnconsumedStreamMs: 1000 })
+      )
+
+      await fetcher.fetchStream("https://api.github.com/x")
+      expect(captured?.aborted).toBe(false)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(captured?.aborted).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("does NOT abort once consumption has started (unconsumed timer cleared)", async () => {
+    vi.useFakeTimers()
+    try {
+      let captured: AbortSignal | undefined
+      const streamTransport = vi.fn(async (args: TransportArgs): Promise<StreamTransportResult> => {
+        captured = args.signal
+        return {
+          status: 200,
+          statusText: "OK",
+          headers: {},
+          stream: (async function* () {
+            yield Buffer.from("x")
+          })(),
+        }
+      })
+      const fetcher = createNetworkFetcher(
+        makeConfig({ streamTransport: streamTransport as never, maxUnconsumedStreamMs: 1000 })
+      )
+
+      const res = await fetcher.fetchStream("https://api.github.com/x")
+      await drain(res.body)
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(captured?.aborted).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("rejects before exposing body when Content-Length exceeds maxStreamBytes", async () => {
+    const streamTransport = streamTransportFrom([Buffer.from("x")], {
+      headers: { "content-length": String(1024 * 1024) },
+    })
+    const fetcher = createNetworkFetcher(
+      makeConfig({ streamTransport: streamTransport as never, maxStreamBytes: 1024 })
+    )
+
+    await expect(fetcher.fetchStream("https://api.github.com/big")).rejects.toThrow(
+      /content-length/i
+    )
+  })
+
+  it("forces Accept-Encoding: identity, overriding a plugin-supplied value", async () => {
+    let captured: Record<string, string> | undefined
+    const streamTransport = vi.fn(async (args: TransportArgs): Promise<StreamTransportResult> => {
+      captured = args.headers
+      return {
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        stream: (async function* () {
+          yield Buffer.from("x")
+        })(),
+      }
+    })
+    const fetcher = createNetworkFetcher(makeConfig({ streamTransport: streamTransport as never }))
+
+    const res = await fetcher.fetchStream("https://api.github.com/x", {
+      headers: { "Accept-Encoding": "gzip, br" },
+    })
+    await drain(res.body)
+    expect(captured?.["accept-encoding"]).toBe("identity")
+  })
+
+  it("body.cancel() aborts the socket and releases the in-flight slot", async () => {
+    let captured: AbortSignal | undefined
+    const streamTransport = vi.fn(async (args: TransportArgs): Promise<StreamTransportResult> => {
+      captured = args.signal
+      return {
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        stream: (async function* () {
+          yield Buffer.from("first")
+          await new Promise(() => {})
+        })(),
+      }
+    })
+    const fetcher = createNetworkFetcher(
+      makeConfig({ streamTransport: streamTransport as never, maxUnconsumedStreamMs: 1_000_000 })
+    )
+
+    const res = await fetcher.fetchStream("https://api.github.com/x")
+    res.body.cancel()
+    expect(captured?.aborted).toBe(true)
+  })
+
+  it("aborts a stream that idles longer than streamIdleTimeoutMs", async () => {
+    vi.useFakeTimers()
+    try {
+      let captured: AbortSignal | undefined
+      const streamTransport = vi.fn(async (args: TransportArgs): Promise<StreamTransportResult> => {
+        captured = args.signal
+        return {
+          status: 200,
+          statusText: "OK",
+          headers: {},
+          stream: (async function* () {
+            yield Buffer.from("first")
+            await new Promise((r) => setTimeout(r, 60_000))
+            yield Buffer.from("second")
+          })(),
+        }
+      })
+      const fetcher = createNetworkFetcher(
+        makeConfig({ streamTransport: streamTransport as never, streamIdleTimeoutMs: 1000 })
+      )
+
+      const res = await fetcher.fetchStream("https://api.github.com/x")
+      const it = res.body[Symbol.asyncIterator]()
+      expect(Buffer.from((await it.next()).value!).toString("utf8")).toBe("first")
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(captured?.aborted).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("aborts a stream that exceeds maxStreamDurationMs", async () => {
+    vi.useFakeTimers()
+    try {
+      let captured: AbortSignal | undefined
+      const streamTransport = vi.fn(async (args: TransportArgs): Promise<StreamTransportResult> => {
+        captured = args.signal
+        return {
+          status: 200,
+          statusText: "OK",
+          headers: {},
+          stream: (async function* () {
+            yield Buffer.from("a")
+            await new Promise((r) => setTimeout(r, 10_000))
+            yield Buffer.from("b")
+          })(),
+        }
+      })
+      const fetcher = createNetworkFetcher(
+        makeConfig({
+          streamTransport: streamTransport as never,
+          streamIdleTimeoutMs: 1_000_000,
+          maxStreamDurationMs: 2000,
+        })
+      )
+
+      const res = await fetcher.fetchStream("https://api.github.com/x")
+      const it = res.body[Symbol.asyncIterator]()
+      await it.next()
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(captured?.aborted).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("enforces the per-plugin concurrent-stream cap and releases on cancel", async () => {
+    const streamTransport = vi.fn(
+      async (): Promise<StreamTransportResult> => ({
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        stream: (async function* () {
+          yield Buffer.from("x")
+          await new Promise(() => {})
+        })(),
+      })
+    )
+    const fetcher = createNetworkFetcher(
+      makeConfig({
+        streamTransport: streamTransport as never,
+        maxConcurrentStreams: 2,
+        maxUnconsumedStreamMs: 1_000_000,
+      })
+    )
+
+    const a = await fetcher.fetchStream("https://api.github.com/a")
+    await fetcher.fetchStream("https://api.github.com/b")
+    await expect(fetcher.fetchStream("https://api.github.com/c")).rejects.toThrow(
+      /concurrent streams/
+    )
+
+    a.body.cancel()
+    await expect(fetcher.fetchStream("https://api.github.com/c")).resolves.toBeDefined()
   })
 })

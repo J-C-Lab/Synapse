@@ -14,8 +14,16 @@ export interface FsPathRequestedScope {
 
 export type FsWatchEventKind = "create" | "modify" | "delete" | "rename"
 
+export interface FsWatchSettleConfig {
+  /** Min ms the size must stay unchanged before emitting a settled create. */
+  stableMs: number
+  /** Extensions (without dot) that never produce a settled event. */
+  ignoreExtensions?: string[]
+}
+
 export interface FsWatchTriggerScope extends FsPathScope {
   events?: FsWatchEventKind[]
+  settle?: FsWatchSettleConfig
 }
 
 interface CanonicalFsPathScope {
@@ -23,6 +31,9 @@ interface CanonicalFsPathScope {
 }
 
 const ALL_WATCH_EVENTS: FsWatchEventKind[] = ["create", "modify", "delete", "rename"]
+const MIN_STABLE_MS = 1000
+
+export const DEFAULT_IGNORE_EXTENSIONS = ["crdownload", "part", "tmp", "download"]
 
 /** Top-level home segments plugins may declare (case-insensitive). Spec allowlist roots. */
 const ALLOWED_HOME_ROOTS = [
@@ -260,6 +271,16 @@ export function validateWatchEvents(events: unknown): void {
   for (const event of events) {
     if (typeof event !== "string" || !ALL_WATCH_EVENTS.includes(event as FsWatchEventKind))
       throw new TypeError(`unsupported fs.watch event: ${String(event)}`)
+  }
+}
+
+export function validateSettle(settle: unknown): void {
+  if (settle === undefined) return
+  if (!isRecord(settle) || typeof settle.stableMs !== "number" || settle.stableMs < MIN_STABLE_MS) {
+    throw new TypeError(`fs.watch settle.stableMs must be a number >= ${MIN_STABLE_MS}`)
+  }
+  if (settle.ignoreExtensions !== undefined && !Array.isArray(settle.ignoreExtensions)) {
+    throw new TypeError("fs.watch settle.ignoreExtensions must be an array")
   }
 }
 

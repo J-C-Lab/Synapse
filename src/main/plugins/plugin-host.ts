@@ -8,6 +8,7 @@ import type {
   Visibility,
 } from "@synapse/marketplace-types"
 import type { ClipboardContent, ToolResult } from "@synapse/plugin-sdk"
+import type { ChatProvider } from "../ai/providers/types"
 import type { PluginTriggerRow } from "../ipc/triggers"
 import type {
   CapabilityGovernance,
@@ -20,6 +21,7 @@ import type { MarketplaceEntry } from "./marketplace-registry"
 import type { PluginBridgeAdapters, PluginRuntimeSnapshot } from "./plugin-bridge"
 import type { TimerAdapter } from "./timer-adapter"
 import type {
+  PluginAgentTriggerDispatchRequest,
   PluginCommandResult,
   PluginInvokeRequest,
   PluginManifest,
@@ -32,7 +34,9 @@ import { createHash } from "node:crypto"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import { getCapability } from "@synapse/plugin-manifest"
+import { BackgroundAgentRunner } from "../ai/background-agent-runner"
 import { logger } from "../logging"
+import { AgentBudgetLedger } from "./agent-budget"
 import { BackgroundInvoker } from "./background-invoker"
 import { CapabilityDenied, CapabilityGate } from "./capability-gate"
 import { buildGrantIdentity, createCapabilityGovernance } from "./capability-governance"
@@ -91,6 +95,8 @@ export interface PluginHostOptions {
   hotkeyAdapter?: import("./hotkey-adapter").HotkeyAdapter
   /** Accelerators reserved by the host (for example the launcher shortcut). */
   reservedAccelerators?: () => readonly string[]
+  /** Supplies the currently selected chat provider/model for trigger-woken agents. */
+  backgroundAgentProvider?: () => Promise<{ provider: ChatProvider; model?: string }>
 }
 
 /**
@@ -151,6 +157,7 @@ export class PluginHost {
   private clipboardDispatchChain: Promise<void> = Promise.resolve()
   private readonly admission = new AdmissionBreaker()
   private readonly budgetLedger = new BudgetLedger()
+  private readonly agentBudgetLedger = new AgentBudgetLedger()
   private readonly invoker = new BackgroundInvoker()
   private readonly triggerRegistry: TriggerRegistry
   private readonly handleRegistryChanged = (): void => {
@@ -190,6 +197,15 @@ export class PluginHost {
       createHotkeyAdapter({
         reservedAccelerators: options.reservedAccelerators,
       })
+    const adapters =
+      options.adapters ??
+      createElectronPluginAdapters(options.userDataDir, {
+        onNotificationAction: (notificationId, actionId) => {
+          void this.bridge
+            ?.handleNotificationAction(notificationId, actionId)
+            .catch((err) => logger.child("plugin-host").warn("notification action failed", { err }))
+        },
+      })
     this.triggerRegistry = new TriggerRegistry({
       admission: this.admission,
       invoker: this.invoker,
@@ -198,10 +214,11 @@ export class PluginHost {
       fsWatchAdapter,
       hotkeyAdapter,
       dispatch: (req) => this.sandbox.dispatchTrigger(req),
+      dispatchAgent: (req) => this.dispatchBackgroundAgent(req),
     })
     this.bridge = new PluginBridge({
       userDataDir: options.userDataDir,
-      adapters: options.adapters ?? createElectronPluginAdapters(options.userDataDir),
+      adapters,
       runtime: options.runtime,
       preferences: (pluginId, manifest) => this.preferencesFor(pluginId, manifest),
       governance: this.capabilityGovernance,
@@ -351,6 +368,29 @@ export class PluginHost {
   /** Invoke a plugin tool by its `${pluginId}/${name}` after input validation. */
   invokeTool(fqName: string, input: unknown, options: ToolInvocationOptions): Promise<ToolResult> {
     return this.tools.invoke(fqName, input, options)
+  }
+
+  private async dispatchBackgroundAgent(request: PluginAgentTriggerDispatchRequest): Promise<void> {
+    if (!this.options.backgroundAgentProvider) {
+      throw new Error("background agent provider not configured")
+    }
+    const { provider, model } = await this.options.backgroundAgentProvider()
+    const runner = new BackgroundAgentRunner({
+      provider,
+      model,
+      tools: this,
+      ledger: this.agentBudgetLedger,
+    })
+    await runner.run({
+      pluginId: request.pluginId,
+      triggerId: request.triggerId,
+      invocationId: request.invocationId,
+      event: request.event,
+      allowedUses: request.allowedUses,
+      agent: request.agent,
+      signal: request.signal,
+      instruction: backgroundAgentInstruction(request),
+    })
   }
 
   disposeCommand(pluginId: string, commandId: string): Promise<void> {
@@ -973,6 +1013,14 @@ async function pathExists(target: string): Promise<boolean> {
 
 function safePluginFileName(pluginId: string): string {
   return pluginId.replace(/[^\w.-]/g, "_")
+}
+
+function backgroundAgentInstruction(request: PluginAgentTriggerDispatchRequest): string {
+  return [
+    `Handle the ${request.trigger} trigger for plugin ${request.pluginId}.`,
+    "Use the available tools only when needed, then stop.",
+    "Do not ask the user for interactive input.",
+  ].join("\n")
 }
 
 function isInsideDirectory(target: string, parent: string): boolean {

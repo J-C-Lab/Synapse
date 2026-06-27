@@ -9,7 +9,7 @@ import { getCapability } from "@synapse/plugin-manifest"
 // work. Trigger-origin calls (host-minted invocationId) require enable-time grants
 // and debit per-trigger `uses` budgets — no JIT prompt and no per-call approve.
 
-export type CapabilityActor = "user" | "agent" | "background"
+export type CapabilityActor = "user" | "agent" | "background" | "background-agent"
 
 export interface CapabilityRequest {
   capability: string
@@ -26,6 +26,8 @@ export interface CapabilityRequest {
   signal?: AbortSignal
   /** Set by the host for trigger-origin background calls; resolves the budget path. */
   invocationId?: string
+  /** Host-computed: whether this concrete write operation can be reversed. */
+  reversible?: boolean
 }
 
 export class CapabilityDenied extends Error {
@@ -148,6 +150,11 @@ export class CapabilityGate implements CapabilityGatePort {
       if (debit === "not-in-uses") deny("capability not in trigger uses")
       if (debit === "exhausted") deny("budget exhausted")
 
+      if (cap.tier === "elevated" && request.reversible === false) {
+        const ok = await this.options.approve({ identity: this.options.identity, request })
+        if (!ok) deny("irreversible operation: per-call approval refused")
+      }
+
       this.emit(request, "allow", false, "permitted", cap.tier)
       return
     }
@@ -177,7 +184,11 @@ export class CapabilityGate implements CapabilityGatePort {
     }
 
     if (cap.tier === "elevated") {
-      if (request.actor === "agent" || request.actor === "background") {
+      if (
+        request.actor === "agent" ||
+        request.actor === "background" ||
+        request.actor === "background-agent"
+      ) {
         const ok = await this.options.approve({ identity: this.options.identity, request })
         if (!ok) deny("per-call approval refused", grantedNow)
       }

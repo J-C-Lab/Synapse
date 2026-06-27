@@ -1,3 +1,4 @@
+import type { TriggerUse } from "@synapse/plugin-manifest"
 import type { CapabilityActor } from "./capability-gate"
 import { randomUUID } from "node:crypto"
 
@@ -7,6 +8,8 @@ export interface MintInput {
   actor: CapabilityActor
   trigger: string
   signal: AbortSignal
+  /** Host-owned trigger uses allowed for this invocation; never exposed to sandbox ctx. */
+  allowedUses?: TriggerUse[]
 }
 
 export interface InvocationRecord extends MintInput {

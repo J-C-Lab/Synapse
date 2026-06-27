@@ -4,13 +4,16 @@ import type { PluginContext } from "./context"
  * Where a tool invocation originated.
  *
  * - `agent` — Synapse's built-in agent picked the tool during a conversation.
+ * - `background-agent` — a trigger-woken agent picked the tool outside a chat.
  * - `mcp` — an external MCP client (Claude Desktop/Code, …) called it.
  * - `user` — the user invoked it directly (e.g. a "run tool" affordance).
  */
 export interface ToolCaller {
-  kind: "agent" | "mcp" | "user"
+  kind: "agent" | "background-agent" | "mcp" | "user"
   /** The conversation this call belongs to, when driven by the built-in agent. */
   conversationId?: string
+  /** The background invocation this call belongs to, when trigger-driven. */
+  invocationId?: string
 }
 
 /**

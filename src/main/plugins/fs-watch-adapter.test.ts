@@ -1,3 +1,4 @@
+import type { FsWatchEvent } from "./fs-watch-adapter"
 import { rootIdForPattern } from "@synapse/plugin-manifest"
 import { describe, expect, it, vi } from "vitest"
 import { createFsWatchAdapter } from "./fs-watch-adapter"
@@ -93,5 +94,85 @@ describe("fs watch adapter", () => {
     const dispose = adapter.register("p", "x", { paths: ["~/Downloads/**"] }, () => {})
     dispose()
     expect(closed).toEqual(["/home/alice/Downloads"])
+  })
+
+  it("emits one settled create after the size is stable for stableMs", async () => {
+    vi.useFakeTimers()
+    try {
+      const fired: FsWatchEvent[] = []
+      let size = 0
+      const io = {
+        realpath: async (target: string) => target,
+        lstat: async () => ({ isSymbolicLink: () => false, isFile: () => true, size }),
+        readFile: async () => "",
+      }
+      let listener!: (type: "rename" | "change", filename: string | null) => void
+      const adapter = createFsWatchAdapter({
+        homeDir: HOME,
+        io,
+        watch: (_dir, next) => {
+          listener = next
+          return { close() {} }
+        },
+      })
+      adapter.register(
+        "p",
+        "downloads",
+        { paths: ["~/Downloads/**"], settle: { stableMs: 1000 } } as never,
+        (event) => fired.push(event)
+      )
+
+      size = 100
+      listener("rename", "report.pdf")
+      await vi.advanceTimersByTimeAsync(500)
+      size = 200
+      listener("change", "report.pdf")
+      await vi.advanceTimersByTimeAsync(500)
+      expect(fired).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(500)
+
+      expect(fired).toHaveLength(1)
+      expect(fired[0]).toMatchObject({ relativePath: "report.pdf", kind: "create", size: 200 })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("ignores temp download extensions in settle mode", async () => {
+    vi.useFakeTimers()
+    try {
+      const fired: FsWatchEvent[] = []
+      const io = {
+        realpath: async (target: string) => target,
+        lstat: async () => ({ isSymbolicLink: () => false, isFile: () => true, size: 12 }),
+        readFile: async () => "",
+      }
+      let listener!: (type: "rename" | "change", filename: string | null) => void
+      const adapter = createFsWatchAdapter({
+        homeDir: HOME,
+        io,
+        watch: (_dir, next) => {
+          listener = next
+          return { close() {} }
+        },
+      })
+      adapter.register(
+        "p",
+        "downloads",
+        { paths: ["~/Downloads/**"], settle: { stableMs: 1000 } } as never,
+        (event) => fired.push(event)
+      )
+
+      listener("rename", "report.pdf.crdownload")
+      await vi.advanceTimersByTimeAsync(1500)
+      expect(fired).toHaveLength(0)
+
+      listener("rename", "report.pdf")
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(fired).toHaveLength(1)
+      expect(fired[0]).toMatchObject({ relativePath: "report.pdf", kind: "create" })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

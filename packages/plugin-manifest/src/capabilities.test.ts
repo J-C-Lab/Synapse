@@ -8,9 +8,10 @@ import {
   normalizeCapabilities,
   stableStringify,
 } from "./capabilities"
+import { fsPathAdapter } from "./fs-path-scope"
 
 describe("capability registry", () => {
-  it("exposes the thirteen known capabilities", () => {
+  it("exposes the fourteen known capabilities", () => {
     expect(capabilityIds().sort()).toEqual(
       [
         "clipboard:read",
@@ -19,6 +20,7 @@ describe("capability registry", () => {
         "fs:read",
         "fs:resolvePath",
         "fs:watch",
+        "fs:write",
         "hotkey:global",
         "network:https",
         "notification",
@@ -54,12 +56,21 @@ describe("capability registry", () => {
       "fs:watch",
       "fs:read",
       "fs:resolvePath",
+      "fs:write",
       "hotkey:global",
     ])
     for (const cap of CAPABILITIES.values()) {
       if (scoped.has(cap.id)) expect(cap.scopeAdapter).toBeDefined()
       else expect(cap.scopeAdapter).toBeUndefined()
     }
+  })
+
+  it("registers fs:write as an elevated, scope-enforced capability using the fs path adapter", () => {
+    const cap = getCapability("fs:write")
+    expect(cap).toBeDefined()
+    expect(cap?.tier).toBe("elevated")
+    expect(cap?.scopeEnforced).toBe(true)
+    expect(cap?.scopeAdapter).toBe(fsPathAdapter)
   })
 
   it("returns undefined for unknown capabilities", () => {

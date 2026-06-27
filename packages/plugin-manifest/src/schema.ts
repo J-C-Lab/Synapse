@@ -1,7 +1,7 @@
 import type { PluginManifest } from "./types"
 import * as path from "node:path"
 import { z } from "zod"
-import { capabilityIds, getCapability } from "./capabilities"
+import { capabilityIds, getCapability, stableStringify } from "./capabilities"
 import { validateTriggers } from "./triggers"
 
 const idSchema = z
@@ -144,7 +144,13 @@ function toolCapabilityContained(
   if (!top) return false
   const desc = getCapability(toolCap.id)
   if (!desc?.scopeEnforced) return true
-  return desc.scopeAdapter?.contains(top.scope, toolCap.scope) ?? false
+  if (!desc.scopeAdapter) return false
+  const declaredScope = desc.scopeAdapter.canonicalize(top.scope)
+  const toolScope = desc.scopeAdapter.canonicalize(toolCap.scope)
+  return (
+    stableStringify(declaredScope) === stableStringify(toolScope) ||
+    desc.scopeAdapter.contains(declaredScope, toolCap.scope)
+  )
 }
 
 const triggerBudgetSchema = z
@@ -170,11 +176,23 @@ const triggerLimitsSchema = z
   .strict()
   .optional()
 
+const agentTriggerBudgetSchema = z
+  .object({
+    maxRuns: z.number().positive(),
+    period: z.enum(["1m", "1h", "1d"]),
+    maxToolCallsPerRun: z.number().positive(),
+    maxTokensPerRun: z.number().positive(),
+    timeoutMs: z.number().positive(),
+  })
+  .strict()
+  .optional()
+
 const triggerBaseSchema = {
   id: z.string().regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
   handler: z.string().startsWith("triggers."),
   uses: z.array(triggerUseSchema).min(1),
   limits: triggerLimitsSchema,
+  agent: agentTriggerBudgetSchema,
 }
 
 const scheduledTriggerSchema = z
@@ -209,6 +227,13 @@ const fsWatchTriggerSchema = z
       .object({
         paths: z.array(z.string().min(1)).min(1),
         events: z.array(z.enum(["create", "modify", "delete", "rename"])).optional(),
+        settle: z
+          .object({
+            stableMs: z.number().min(1000),
+            ignoreExtensions: z.array(z.string()).optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict(),
   })

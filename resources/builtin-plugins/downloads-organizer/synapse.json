@@ -1,0 +1,81 @@
+{
+  "manifestVersion": 2,
+  "id": "com.synapse.downloads-organizer",
+  "name": "downloads-organizer",
+  "displayName": "Downloads Organizer",
+  "description": "Organizes settled downloads into simple folders with undo.",
+  "version": "0.1.0",
+  "author": "Synapse",
+  "engines": {
+    "synapse": "^0.2.0"
+  },
+  "main": "dist/index.js",
+  "contributes": {
+    "commands": [
+      {
+        "id": "downloads-organizer.run",
+        "title": "Downloads Organizer",
+        "mode": "view"
+      }
+    ],
+    "tools": [
+      {
+        "name": "classifyAndMove",
+        "description": "Move a settled download into a category folder and show an undo notification.",
+        "inputSchema": {
+          "type": "object",
+          "required": ["sourceRootId", "sourceRel", "category", "reason"],
+          "properties": {
+            "sourceRootId": { "type": "string" },
+            "sourceRel": { "type": "string" },
+            "category": { "type": "string" },
+            "reason": { "type": "string" }
+          }
+        },
+        "capabilities": [
+          { "id": "fs:write", "scope": { "paths": ["~/Downloads/**"] } },
+          { "id": "notification" }
+        ]
+      }
+    ]
+  },
+  "capabilities": [
+    { "id": "fs:write", "scope": { "paths": ["~/Downloads/**"] } },
+    { "id": "notification" }
+  ],
+  "triggers": [
+    {
+      "id": "downloads",
+      "type": "fs.watch",
+      "scope": {
+        "paths": ["~/Downloads/**"],
+        "events": ["create"],
+        "settle": { "stableMs": 1000 }
+      },
+      "handler": "triggers.onDownloads",
+      "uses": [
+        {
+          "capability": "fs:read",
+          "scope": { "paths": ["~/Downloads/**"] },
+          "budget": { "maxCalls": 20, "period": "1d" }
+        },
+        {
+          "capability": "fs:write",
+          "scope": { "paths": ["~/Downloads/**"] },
+          "budget": { "maxCalls": 20, "period": "1d" }
+        },
+        {
+          "capability": "notification",
+          "budget": { "maxCalls": 20, "period": "1d" }
+        }
+      ],
+      "agent": {
+        "maxRuns": 20,
+        "period": "1d",
+        "maxToolCallsPerRun": 4,
+        "maxTokensPerRun": 4000,
+        "timeoutMs": 30000
+      }
+    }
+  ]
+}

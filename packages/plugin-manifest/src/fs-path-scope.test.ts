@@ -4,6 +4,7 @@ import {
   expandHomePath,
   resolveAbsolutePath,
   rootIdForPattern,
+  validateSettle,
 } from "./fs-path-scope"
 
 const HOME = "/home/alice"
@@ -85,5 +86,18 @@ describe("expandHomePath", () => {
 describe("rootIdForPattern", () => {
   it("is stable for the same pattern", () => {
     expect(rootIdForPattern("~/Downloads/**")).toBe(rootIdForPattern("~/Downloads/**"))
+  })
+})
+
+describe("validateSettle", () => {
+  it("accepts stableMs at or above the floor", () => {
+    expect(() => validateSettle({ stableMs: 1000 })).not.toThrow()
+  })
+
+  it("rejects too-small stableMs and non-array ignoreExtensions", () => {
+    expect(() => validateSettle({ stableMs: 999 })).toThrow(/stableMs/)
+    expect(() => validateSettle({ stableMs: 1000, ignoreExtensions: "tmp" })).toThrow(
+      /ignoreExtensions/
+    )
   })
 })

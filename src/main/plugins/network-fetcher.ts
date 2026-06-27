@@ -28,6 +28,22 @@ export interface NetworkResponse {
   arrayBuffer: () => Promise<ArrayBuffer>
 }
 
+/** The streamed response body: backpressured chunks plus explicit teardown. */
+export interface NetworkStreamBody extends AsyncIterable<Uint8Array> {
+  /** Destroy the socket and release the in-flight slot. Idempotent. */
+  cancel: () => void
+}
+
+/** Thrown when a stream body is iterated more than once. The body is consume-once
+ *  (a single underlying socket) — a second iteration is a programming error, not
+ *  a silent empty result. */
+export class BodyAlreadyConsumed extends Error {
+  constructor() {
+    super("stream body already consumed")
+    this.name = "BodyAlreadyConsumed"
+  }
+}
+
 /** Like {@link NetworkResponse} but the body is consumed incrementally. */
 export interface NetworkStreamResponse {
   ok: boolean
@@ -35,7 +51,7 @@ export interface NetworkStreamResponse {
   statusText: string
   headers: Record<string, string>
   /** The response body as backpressured chunks. Consume once. */
-  body: AsyncIterable<Uint8Array>
+  body: NetworkStreamBody
 }
 
 export interface NetworkFetchInit {
@@ -92,6 +108,12 @@ export interface NetworkFetcherConfig {
   maxStreamBytes?: number // default 256 MiB (streamed fetch, hard total cap)
   timeoutMs?: number // default 30s
   maxRedirects?: number // default 5
+  maxRedirectDrainBytes?: number // default 64 KiB (redirect body is not trusted to be small)
+  maxRedirectDrainMs?: number // default 2s
+  maxUnconsumedStreamMs?: number // default 15s (body never consumed -> tear down)
+  streamIdleTimeoutMs?: number // default 60s (max gap between chunks)
+  maxStreamDurationMs?: number // default 10min (whole-stream ceiling)
+  maxConcurrentStreams?: number // default 4 (live fetchStream bodies per plugin)
 }
 
 export interface NetworkFetcher {
@@ -107,6 +129,12 @@ const DEFAULT_MAX_RESPONSE_BYTES = 25 * 1024 * 1024
 const DEFAULT_MAX_STREAM_BYTES = 256 * 1024 * 1024
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_REDIRECTS = 5
+const DEFAULT_MAX_REDIRECT_DRAIN_BYTES = 64 * 1024
+const DEFAULT_MAX_REDIRECT_DRAIN_MS = 2_000
+const DEFAULT_MAX_UNCONSUMED_STREAM_MS = 15_000
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 60_000
+const DEFAULT_MAX_STREAM_DURATION_MS = 600_000
+const DEFAULT_MAX_CONCURRENT_STREAMS = 4
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 
@@ -186,6 +214,14 @@ function toBuffer(body: string | ArrayBuffer | Uint8Array): Buffer {
   return Buffer.from(new Uint8Array(body))
 }
 
+/** Copy any chunk (possibly a Node Buffer) into a fresh plain Uint8Array so no
+ *  Node Buffer instance or prototype crosses into plugin/sandbox code. */
+function toPlainUint8Array(chunk: Uint8Array): Uint8Array {
+  const copy = new Uint8Array(chunk.byteLength)
+  copy.set(chunk)
+  return copy
+}
+
 function stripRequestHeaders(headers: Record<string, string> | undefined): Record<string, string> {
   const out: Record<string, string> = {}
   if (!headers) return out
@@ -214,6 +250,19 @@ function dropAuthorization(headers: Record<string, string>): Record<string, stri
   return out
 }
 
+/** Force identity encoding on a streamed request: drop any plugin-supplied
+ *  accept-encoding (case-insensitive) and pin to identity so host-counted bytes
+ *  equal plugin-delivered bytes and compression bombs are avoided. */
+function forceIdentityEncoding(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === "accept-encoding") continue
+    out[key] = value
+  }
+  out["accept-encoding"] = "identity"
+  return out
+}
+
 function buildResponse(result: TransportResult): NetworkResponse {
   const headers = stripResponseHeaders(result.headers)
   const body = result.body
@@ -238,10 +287,17 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
   const maxStreamBytes = config.maxStreamBytes ?? DEFAULT_MAX_STREAM_BYTES
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const maxRedirects = config.maxRedirects ?? DEFAULT_MAX_REDIRECTS
+  const maxRedirectDrainBytes = config.maxRedirectDrainBytes ?? DEFAULT_MAX_REDIRECT_DRAIN_BYTES
+  const maxRedirectDrainMs = config.maxRedirectDrainMs ?? DEFAULT_MAX_REDIRECT_DRAIN_MS
+  const maxUnconsumedStreamMs = config.maxUnconsumedStreamMs ?? DEFAULT_MAX_UNCONSUMED_STREAM_MS
+  const streamIdleTimeoutMs = config.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS
+  const maxStreamDurationMs = config.maxStreamDurationMs ?? DEFAULT_MAX_STREAM_DURATION_MS
+  const maxConcurrentStreams = config.maxConcurrentStreams ?? DEFAULT_MAX_CONCURRENT_STREAMS
 
   // Every in-flight fetch's controller, so abortAll() (revoke teardown) can
   // tear them all down at once.
   const inFlight = new Set<AbortController>()
+  let activeStreams = 0
 
   async function fetch(url: string, init: NetworkFetchInit = {}): Promise<NetworkResponse> {
     const method = (init.method ?? "GET").toUpperCase()
@@ -417,6 +473,11 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
       }
     }
 
+    if (activeStreams >= maxConcurrentStreams) {
+      throw new Error(`too many concurrent streams (max ${maxConcurrentStreams})`)
+    }
+    activeStreams += 1
+
     const controller = new AbortController()
     inFlight.add(controller)
     const onCallerAbort = (): void => controller.abort()
@@ -425,35 +486,53 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
       else init.signal.addEventListener("abort", onCallerAbort, { once: true })
     }
 
+    let released = false
     const cleanup = (): void => {
+      if (released) return
+      released = true
       if (init.signal) init.signal.removeEventListener("abort", onCallerAbort)
       inFlight.delete(controller)
+      activeStreams -= 1
     }
 
     try {
       const response = await runStream({
         currentUrl: url,
         method,
-        headers: stripRequestHeaders(init.headers),
+        headers: forceIdentityEncoding(stripRequestHeaders(init.headers)),
         body,
         originUrl: new URL(url).origin,
         redirectsLeft: maxRedirects,
         controller,
       })
-      // The body keeps the controller live until fully drained; deregister only
-      // when iteration finishes (or errors/aborts).
-      return { ...response, body: trackedStream(response.body, cleanup) }
+
+      let consumed = false
+      const unconsumedTimer = setTimeout(() => {
+        if (consumed) return
+        controller.abort()
+        cleanup()
+      }, maxUnconsumedStreamMs)
+      if (typeof unconsumedTimer.unref === "function") unconsumedTimer.unref()
+      const onStart = (): void => {
+        consumed = true
+        clearTimeout(unconsumedTimer)
+      }
+
+      return { ...response, body: makeStreamBody(response.body, controller, cleanup, onStart) }
     } catch (err) {
       cleanup()
       throw err
     }
   }
 
-  /** Wrap a body so the in-flight controller is deregistered once it is drained. */
+  /** Wrap a body so the in-flight controller is deregistered once it is drained,
+   *  errors, or is returned. `onStart` fires when iteration actually begins. */
   async function* trackedStream(
     source: AsyncIterable<Uint8Array>,
-    cleanup: () => void
+    cleanup: () => void,
+    onStart: () => void
   ): AsyncGenerator<Uint8Array> {
+    onStart()
     try {
       for await (const chunk of source) yield chunk
     } finally {
@@ -461,19 +540,83 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
     }
   }
 
-  /** Cap the cumulative bytes of a body stream; throws (and the runtime tears
-   *  down the source) when the hard `maxStreamBytes` total is exceeded. */
+  /** Enforce a per-chunk idle timeout and a whole-stream duration ceiling. */
+  async function* withStreamTimers(
+    source: AsyncIterable<Uint8Array>,
+    controller: AbortController
+  ): AsyncGenerator<Uint8Array> {
+    const durationTimer = setTimeout(() => controller.abort(), maxStreamDurationMs)
+    if (typeof durationTimer.unref === "function") durationTimer.unref()
+    let idleTimer: ReturnType<typeof setTimeout> | undefined
+    const armIdle = (): void => {
+      if (idleTimer) clearTimeout(idleTimer)
+      idleTimer = setTimeout(() => controller.abort(), streamIdleTimeoutMs)
+      if (typeof idleTimer.unref === "function") idleTimer.unref()
+    }
+    try {
+      armIdle()
+      for await (const chunk of source) {
+        armIdle()
+        yield chunk
+      }
+    } finally {
+      clearTimeout(durationTimer)
+      if (idleTimer) clearTimeout(idleTimer)
+    }
+  }
+
+  /** Build the plugin-facing body: timers + in-flight tracking + cancel(). */
+  function makeStreamBody(
+    source: AsyncIterable<Uint8Array>,
+    controller: AbortController,
+    cleanup: () => void,
+    onStart: () => void
+  ): NetworkStreamBody {
+    const gen = trackedStream(withStreamTimers(source, controller), cleanup, onStart)
+    let iterated = false
+    return {
+      [Symbol.asyncIterator]() {
+        // Consume-once: a single socket cannot be replayed. A second `for await`
+        // (or any second iterator acquisition) is a bug — fail loudly.
+        if (iterated) throw new BodyAlreadyConsumed()
+        iterated = true
+        return gen
+      },
+      cancel(): void {
+        onStart()
+        controller.abort()
+        cleanup()
+        void gen.return(undefined)
+      },
+    }
+  }
+
+  /** Cap cumulative bytes; yield plain Uint8Array chunks only. */
   async function* cappedStream(source: AsyncIterable<Uint8Array>): AsyncGenerator<Uint8Array> {
     let received = 0
     for await (const chunk of source) {
       received += chunk.byteLength
       if (received > maxStreamBytes)
         throw new Error(`response exceeded maxStreamBytes (${maxStreamBytes})`)
-      yield chunk
+      yield toPlainUint8Array(chunk)
     }
   }
 
-  async function runStream(args: RunArgs): Promise<NetworkStreamResponse> {
+  /** Drain a redirect body without trusting it to be small. */
+  async function drainRedirectBody(source: AsyncIterable<Uint8Array>): Promise<void> {
+    let drained = 0
+    const deadline = Date.now() + maxRedirectDrainMs
+    for await (const chunk of source) {
+      drained += chunk.byteLength
+      if (drained > maxRedirectDrainBytes || Date.now() > deadline) break
+    }
+  }
+
+  async function runStream(args: RunArgs): Promise<
+    Omit<NetworkStreamResponse, "body"> & {
+      body: AsyncIterable<Uint8Array>
+    }
+  > {
     const { parsed, addresses } = await preflight(args.currentUrl, args.method, args.controller)
 
     // Round-trip with address failover, streaming the body. Connection-level
@@ -509,9 +652,7 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
         throw new Error(
           `cross-origin redirect from ${args.originUrl} to ${target.origin} is not allowed`
         )
-      for await (const _chunk of cappedStream(result.stream)) {
-        void _chunk // discard redirect body
-      }
+      await drainRedirectBody(result.stream)
       return runStream({
         currentUrl: target.toString(),
         method: args.method,
@@ -521,6 +662,12 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
         redirectsLeft: args.redirectsLeft - 1,
         controller: args.controller,
       })
+    }
+
+    const declaredLength = Number(result.headers["content-length"])
+    if (Number.isFinite(declaredLength) && declaredLength > maxStreamBytes) {
+      await result.stream[Symbol.asyncIterator]().return?.(undefined)
+      throw new Error(`content-length ${declaredLength} exceeds maxStreamBytes (${maxStreamBytes})`)
     }
 
     return {

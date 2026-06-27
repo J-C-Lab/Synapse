@@ -1,5 +1,6 @@
 import type { CapabilityAuditEntry, CapabilityRequest } from "./capability-gate"
 import type { GrantIdentity } from "./grant-store"
+import { rootIdForPattern } from "@synapse/plugin-manifest"
 import { describe, expect, it, vi } from "vitest"
 import { BackgroundInvoker } from "./background-invoker"
 import { CapabilityDenied, CapabilityGate } from "./capability-gate"
@@ -187,6 +188,7 @@ function gateWithBudget(
     declared?: { id: string; scope?: unknown }[]
     granted?: boolean
     prompt?: () => Promise<boolean>
+    approve?: () => Promise<boolean>
   } = {}
 ) {
   const audit: CapabilityAuditEntry[] = []
@@ -200,9 +202,11 @@ function gateWithBudget(
     ],
     grants: { isGranted: async () => opts.granted ?? true, grant: async () => {} },
     prompt: opts.prompt ?? (async () => true),
-    approve: async () => {
-      throw new Error("approve() must NOT be called for trigger origin")
-    },
+    approve:
+      opts.approve ??
+      (async () => {
+        throw new Error("approve() must NOT be called for trigger origin")
+      }),
     audit: (entry) => audit.push(entry),
     budgetBreaker: {
       isTriggerOrigin: (id) => id === "inv-1",
@@ -274,6 +278,86 @@ describe("capabilityGate budget breaker", () => {
       })
     ).rejects.toThrow(/not granted at enable time/)
     expect(prompt).not.toHaveBeenCalled()
+  })
+
+  it("allows a reversible elevated fs:write trigger-origin call without per-call approval", async () => {
+    const approve = vi.fn(async () => true)
+    const { gate } = gateWithBudget(() => "debited", {
+      declared: [{ id: "fs:write", scope: { paths: ["~/Downloads/**"] } }],
+      approve,
+    })
+
+    await gate.ensure({
+      capability: "fs:write",
+      actor: "background",
+      trigger: "fs.watch:downloads",
+      operation: "move",
+      requestedScope: { rootId: rootIdForPattern("~/Downloads/**"), relativePath: "a.txt" },
+      invocationId: "inv-1",
+      reversible: true,
+    })
+
+    expect(approve).not.toHaveBeenCalled()
+  })
+
+  it("allows a reversible elevated fs:write background-agent call without per-call approval", async () => {
+    const approve = vi.fn(async () => true)
+    const { gate } = gateWithBudget(() => "debited", {
+      declared: [{ id: "fs:write", scope: { paths: ["~/Downloads/**"] } }],
+      approve,
+    })
+
+    await gate.ensure({
+      capability: "fs:write",
+      actor: "background-agent",
+      trigger: "fs.watch:downloads",
+      operation: "move",
+      requestedScope: { rootId: rootIdForPattern("~/Downloads/**"), relativePath: "a.txt" },
+      invocationId: "inv-1",
+      reversible: true,
+    })
+
+    expect(approve).not.toHaveBeenCalled()
+  })
+
+  it("escalates an irreversible elevated fs:write trigger-origin call to per-call approval", async () => {
+    const approve = vi.fn(async () => true)
+    const { gate } = gateWithBudget(() => "debited", {
+      declared: [{ id: "fs:write", scope: { paths: ["~/Downloads/**"] } }],
+      approve,
+    })
+
+    await gate.ensure({
+      capability: "fs:write",
+      actor: "background",
+      trigger: "fs.watch:downloads",
+      operation: "writeText",
+      requestedScope: { rootId: rootIdForPattern("~/Downloads/**"), relativePath: "a.txt" },
+      invocationId: "inv-1",
+      reversible: false,
+    })
+
+    expect(approve).toHaveBeenCalledTimes(1)
+  })
+
+  it("denies an irreversible trigger-origin write when approval is refused", async () => {
+    const approve = vi.fn(async () => false)
+    const { gate } = gateWithBudget(() => "debited", {
+      declared: [{ id: "fs:write", scope: { paths: ["~/Downloads/**"] } }],
+      approve,
+    })
+
+    await expect(
+      gate.ensure({
+        capability: "fs:write",
+        actor: "background",
+        trigger: "fs.watch:downloads",
+        operation: "writeText",
+        requestedScope: { rootId: rootIdForPattern("~/Downloads/**"), relativePath: "a.txt" },
+        invocationId: "inv-1",
+        reversible: false,
+      })
+    ).rejects.toBeInstanceOf(CapabilityDenied)
   })
 
   it("enforces per-trigger budget for consent-tier clipboard:read", async () => {

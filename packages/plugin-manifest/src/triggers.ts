@@ -4,7 +4,7 @@ import type { NormalizedCapability } from "./types"
 import { createHash } from "node:crypto"
 import { getCapability, stableStringify } from "./capabilities"
 import { validateCronExpression } from "./cron-schedule"
-import { fsPathAdapter, validateWatchEvents } from "./fs-path-scope"
+import { fsPathAdapter, validateSettle, validateWatchEvents } from "./fs-path-scope"
 import { validateHotkeyTriggerScope } from "./hotkey-scope"
 
 export type TriggerType = "timer" | "cron" | "clipboard" | "fs.watch" | "hotkey"
@@ -18,6 +18,14 @@ export interface ClipboardTriggerScope {
 export interface TriggerBudget {
   maxCalls: number
   period: "1m" | "1h" | "1d"
+}
+
+export interface AgentTriggerBudget {
+  maxRuns: number
+  period: "1m" | "1h" | "1d"
+  maxToolCallsPerRun: number
+  maxTokensPerRun: number
+  timeoutMs: number
 }
 
 export interface TriggerUse {
@@ -37,6 +45,7 @@ interface TriggerDeclarationBase {
   handler: string
   uses: TriggerUse[]
   limits?: TriggerLimits
+  agent?: AgentTriggerBudget
 }
 
 export interface ScheduledTriggerDeclaration extends TriggerDeclarationBase {
@@ -94,6 +103,24 @@ function validateUse(use: unknown): void {
   if (use.scope !== undefined && adapter) adapter.validate(use.scope)
 }
 
+function validatePositiveNumber(value: unknown, path: string): void {
+  if (typeof value !== "number" || value <= 0) {
+    throw new TypeError(`${path} must be a positive number`)
+  }
+}
+
+function validateAgentBudget(agent: unknown): void {
+  if (agent === undefined) return
+  if (!isRecord(agent)) throw new TypeError("trigger agent budget must be an object")
+  validatePositiveNumber(agent.maxRuns, "trigger agent.maxRuns")
+  if (typeof agent.period !== "string" || !PERIODS.has(agent.period)) {
+    throw new TypeError("trigger agent.period must be in 1m|1h|1d")
+  }
+  validatePositiveNumber(agent.maxToolCallsPerRun, "trigger agent.maxToolCallsPerRun")
+  validatePositiveNumber(agent.maxTokensPerRun, "trigger agent.maxTokensPerRun")
+  validatePositiveNumber(agent.timeoutMs, "trigger agent.timeoutMs")
+}
+
 function validateClipboardScope(scope: unknown): void {
   if (scope === undefined) return
   if (!isRecord(scope)) throw new TypeError("clipboard trigger `scope` must be an object")
@@ -111,6 +138,7 @@ function validateFsWatchScope(scope: unknown): void {
   if (!isRecord(scope)) throw new TypeError("fs.watch trigger requires a `scope` object")
   fsPathAdapter.validate({ paths: scope.paths })
   validateWatchEvents(scope.events)
+  validateSettle(scope.settle)
 }
 
 function validateTriggerShape(t: Record<string, unknown>): void {
@@ -166,6 +194,7 @@ export function validateTriggers(triggers: unknown): void {
     if (!Array.isArray(t.uses) || t.uses.length === 0)
       throw new TypeError("trigger requires at least one `uses` entry")
     for (const use of t.uses) validateUse(use)
+    validateAgentBudget(t.agent)
     validateTriggerShape(t)
   }
 }

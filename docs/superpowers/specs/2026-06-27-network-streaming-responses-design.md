@@ -1,13 +1,16 @@
 # Network Streaming Responses Design (lightweight)
 
 > Date: 2026-06-27
-> Status: **design approved after streaming-invariant amendments.** The original
-> direction (new `ctx.network.fetchStream()`, buffered `fetch()` untouched) is
-> accepted. Implementation is gated on the **Streaming-specific invariants**
-> below — they close four implementation-level holes (stream lifecycle leak,
-> unbounded redirect body, Node `Buffer`/`Readable` crossing the sandbox, and
-> long-lived-stream concurrency exhaustion) that a buffered-only mental model
-> misses. Closes the scoped-network backlog item "buffered-only, no streaming".
+> Status: **streaming invariants 2, 3, 4, 5a, 6, 7, 8 implemented** in
+> `network-fetcher.ts` (2026-06-27). Invariant 1 was already correct; invariant
+> 5b (per-hop gate) unchanged. **Connect-timeout** (subset of invariant 8) deferred
+> to a transport integration test against a loopback server. Buffered `fetch()`
+> untouched. The original direction (new `ctx.network.fetchStream()`, buffered
+> `fetch()` untouched) was approved after streaming-invariant amendments, which
+> close four implementation-level holes: stream lifecycle leak, unbounded
+> redirect body, Node `Buffer`/`Readable` crossing the sandbox, and long-lived
+> stream concurrency exhaustion. Closes the scoped-network backlog item
+> "buffered-only, no streaming".
 
 ## Why amendments before implementation
 

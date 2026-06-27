@@ -1,5 +1,6 @@
 import type { TriggerDeclaration } from "./triggers"
 import { describe, expect, it } from "vitest"
+import { parseManifest } from "./schema"
 import {
   mergeDeclaredWithTriggerUses,
   normalizeTriggers,
@@ -46,6 +47,82 @@ describe("validateTriggers", () => {
           ],
         },
       ])
+    ).not.toThrow()
+  })
+
+  it("accepts a well-formed agent budget on a trigger", () => {
+    expect(() =>
+      validateTriggers([
+        {
+          id: "watch-dls",
+          type: "fs.watch",
+          handler: "triggers.onDownloads",
+          scope: { paths: ["~/Downloads/**"], events: ["create"] },
+          uses: [{ capability: "notification", budget: { maxCalls: 20, period: "1d" } }],
+          agent: {
+            maxRuns: 20,
+            period: "1d",
+            maxToolCallsPerRun: 8,
+            maxTokensPerRun: 4000,
+            timeoutMs: 30000,
+          },
+        },
+      ])
+    ).not.toThrow()
+  })
+
+  it("rejects invalid agent budgets", () => {
+    expect(() =>
+      validateTriggers([
+        {
+          id: "watch-dls",
+          type: "fs.watch",
+          handler: "triggers.onDownloads",
+          scope: { paths: ["~/Downloads/**"] },
+          uses: [{ capability: "notification", budget: { maxCalls: 20, period: "1d" } }],
+          agent: {
+            maxRuns: 0,
+            period: "1d",
+            maxToolCallsPerRun: 8,
+            maxTokensPerRun: 4000,
+            timeoutMs: 30000,
+          },
+        },
+      ])
+    ).toThrow(/agent\.maxRuns/)
+  })
+
+  it("parseManifest accepts trigger agent budgets", () => {
+    expect(() =>
+      parseManifest({
+        manifestVersion: 2,
+        id: "com.example.agent",
+        name: "agent",
+        displayName: "Agent",
+        description: "agent",
+        version: "1.0.0",
+        author: "t",
+        engines: { synapse: "^0.3.0" },
+        main: "dist/index.js",
+        contributes: { commands: [{ id: "agent.run", title: "Run", mode: "view" }] },
+        capabilities: [{ id: "notification" }],
+        triggers: [
+          {
+            id: "watch-dls",
+            type: "fs.watch",
+            handler: "triggers.onDownloads",
+            scope: { paths: ["~/Downloads/**"], events: ["create"] },
+            uses: [{ capability: "notification", budget: { maxCalls: 20, period: "1d" } }],
+            agent: {
+              maxRuns: 20,
+              period: "1d",
+              maxToolCallsPerRun: 8,
+              maxTokensPerRun: 4000,
+              timeoutMs: 30000,
+            },
+          },
+        ],
+      })
     ).not.toThrow()
   })
 
@@ -306,5 +383,27 @@ describe("normalizeTriggers + hash", () => {
       },
     ]
     expect(triggerDeclarationHash(widened)).not.toBe(triggerDeclarationHash(VALID))
+  })
+
+  it("changes the hash when an agent budget changes", () => {
+    const withAgent: TriggerDeclaration[] = [
+      {
+        ...VALID[0]!,
+        agent: {
+          maxRuns: 20,
+          period: "1d",
+          maxToolCallsPerRun: 8,
+          maxTokensPerRun: 4000,
+          timeoutMs: 30000,
+        },
+      },
+    ]
+    const widened: TriggerDeclaration[] = [
+      {
+        ...withAgent[0]!,
+        agent: { ...withAgent[0]!.agent!, maxRuns: 21 },
+      },
+    ]
+    expect(triggerDeclarationHash(widened)).not.toBe(triggerDeclarationHash(withAgent))
   })
 })
