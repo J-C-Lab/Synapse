@@ -46,4 +46,20 @@ describe("backgroundInvoker", () => {
     expect("triggerOrigin" in opts).toBe(false)
     expect(opts.invocationId).toBe(invocationId)
   })
+
+  it("stores allowedUses on the host record but not in contextOptions", () => {
+    const inv = new BackgroundInvoker(() => 1)
+    const allowedUses = [{ capability: "fs:write", budget: { maxCalls: 1, period: "1h" as const } }]
+    const { invocationId } = inv.mint({
+      pluginId: "p",
+      triggerId: "downloads",
+      actor: "background-agent",
+      trigger: "fs.watch:downloads",
+      signal: new AbortController().signal,
+      allowedUses,
+    })
+
+    expect(inv.get(invocationId)?.allowedUses).toBe(allowedUses)
+    expect(inv.contextOptions(invocationId)).not.toHaveProperty("allowedUses")
+  })
 })

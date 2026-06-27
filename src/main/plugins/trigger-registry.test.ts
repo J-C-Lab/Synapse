@@ -4,7 +4,7 @@ import { BackgroundInvoker } from "./background-invoker"
 import { AdmissionBreaker } from "./trigger-admission"
 import { TriggerRegistry } from "./trigger-registry"
 
-function setup() {
+function setup(dispatchOverride?: TriggerDispatch) {
   const fires: Record<string, (e: unknown) => void> = {}
   const cronFires: Record<string, (e: unknown) => void> = {}
   const disposed: string[] = []
@@ -36,10 +36,11 @@ function setup() {
       return () => {}
     },
   }
-  const dispatch = vi.fn<TriggerDispatch>(async () => {})
+  const dispatch = vi.fn<TriggerDispatch>(dispatchOverride ?? (async () => {}))
+  const invoker = new BackgroundInvoker(() => 0)
   const registry = new TriggerRegistry({
     admission: new AdmissionBreaker(() => 0),
-    invoker: new BackgroundInvoker(() => 0),
+    invoker,
     timerAdapter: timerAdapter as never,
     clipboardAdapter: clipboardAdapter as never,
     fsWatchAdapter: fsWatchAdapter as never,
@@ -52,6 +53,7 @@ function setup() {
     cronFires,
     clipFires,
     hotkeyFires,
+    invoker,
     disposed,
     cronDisposed,
     clipDisposed,
@@ -79,6 +81,19 @@ describe("triggerRegistry", () => {
       triggerId: "t",
       handler: "triggers.onTick",
     })
+  })
+
+  it("mints trigger invocations with host-only allowedUses", async () => {
+    let allowedUses: unknown
+    const { registry, fires, invoker, dispatch } = setup(async (request) => {
+      allowedUses = invoker.get(request.invocationId)?.allowedUses
+    })
+
+    registry.register("p", [TRIG])
+    fires.t?.({ firedAt: 1 })
+
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1))
+    expect(allowedUses).toEqual(TRIG.uses)
   })
 
   it("deregisters one trigger without touching siblings", () => {

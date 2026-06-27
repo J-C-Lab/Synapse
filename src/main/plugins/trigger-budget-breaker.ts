@@ -28,7 +28,8 @@ export function createBudgetBreakerPort(deps: {
       const decl =
         deps.registry.getDeclaration(rec.pluginId, rec.triggerId) ??
         deps.manifestFor(rec.pluginId)?.triggers?.find((t) => t.id === rec.triggerId)
-      const use = decl?.uses.find((u) => u.capability === request.capability)
+      const uses = rec.allowedUses ?? decl?.uses ?? []
+      const use = uses.find((u) => u.capability === request.capability)
       if (!use) return "not-in-uses"
       const ok = deps.ledger.tryDebit(
         {

@@ -145,4 +145,52 @@ describe("createBudgetBreakerPort", () => {
       })
     ).toBe("not-in-uses")
   })
+
+  it("uses host-minted allowedUses instead of the manifest when present", () => {
+    const invoker = new BackgroundInvoker(() => 0)
+    const { invocationId } = invoker.mint({
+      pluginId: "p",
+      triggerId: "downloads",
+      actor: "background-agent",
+      trigger: "fs.watch:downloads",
+      signal: new AbortController().signal,
+      allowedUses: [{ capability: "fs:read", budget: { maxCalls: 1, period: "1h" } }],
+    })
+    const port = createBudgetBreakerPort({
+      invoker,
+      ledger: new BudgetLedger(() => 0),
+      manifestFor: () =>
+        ({
+          triggers: [
+            {
+              id: "downloads",
+              type: "fs.watch",
+              handler: "triggers.onDownloads",
+              scope: { paths: ["~/Downloads/**"] },
+              uses: [{ capability: "fs:write", budget: { maxCalls: 1, period: "1h" } }],
+            },
+          ],
+        }) as never,
+      registry: { getDeclaration: () => undefined },
+    })
+
+    expect(
+      port.tryDebit({
+        capability: "fs:write",
+        actor: "background-agent",
+        trigger: "fs.watch:downloads",
+        operation: "move",
+        invocationId,
+      })
+    ).toBe("not-in-uses")
+    expect(
+      port.tryDebit({
+        capability: "fs:read",
+        actor: "background-agent",
+        trigger: "fs.watch:downloads",
+        operation: "read",
+        invocationId,
+      })
+    ).toBe("debited")
+  })
 })

@@ -156,6 +156,7 @@ export class TriggerRegistry {
       actor: "background",
       trigger: `${decl.type}:${decl.id}`,
       signal: invocationController.signal,
+      allowedUses: decl.uses,
     })
     try {
       await this.deps.dispatch({

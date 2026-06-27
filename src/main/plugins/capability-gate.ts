@@ -9,7 +9,7 @@ import { getCapability } from "@synapse/plugin-manifest"
 // work. Trigger-origin calls (host-minted invocationId) require enable-time grants
 // and debit per-trigger `uses` budgets — no JIT prompt and no per-call approve.
 
-export type CapabilityActor = "user" | "agent" | "background"
+export type CapabilityActor = "user" | "agent" | "background" | "background-agent"
 
 export interface CapabilityRequest {
   capability: string
@@ -184,7 +184,11 @@ export class CapabilityGate implements CapabilityGatePort {
     }
 
     if (cap.tier === "elevated") {
-      if (request.actor === "agent" || request.actor === "background") {
+      if (
+        request.actor === "agent" ||
+        request.actor === "background" ||
+        request.actor === "background-agent"
+      ) {
         const ok = await this.options.approve({ identity: this.options.identity, request })
         if (!ok) deny("per-call approval refused", grantedNow)
       }

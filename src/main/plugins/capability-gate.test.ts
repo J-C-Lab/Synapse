@@ -300,6 +300,26 @@ describe("capabilityGate budget breaker", () => {
     expect(approve).not.toHaveBeenCalled()
   })
 
+  it("allows a reversible elevated fs:write background-agent call without per-call approval", async () => {
+    const approve = vi.fn(async () => true)
+    const { gate } = gateWithBudget(() => "debited", {
+      declared: [{ id: "fs:write", scope: { paths: ["~/Downloads/**"] } }],
+      approve,
+    })
+
+    await gate.ensure({
+      capability: "fs:write",
+      actor: "background-agent",
+      trigger: "fs.watch:downloads",
+      operation: "move",
+      requestedScope: { rootId: rootIdForPattern("~/Downloads/**"), relativePath: "a.txt" },
+      invocationId: "inv-1",
+      reversible: true,
+    })
+
+    expect(approve).not.toHaveBeenCalled()
+  })
+
   it("escalates an irreversible elevated fs:write trigger-origin call to per-call approval", async () => {
     const approve = vi.fn(async () => true)
     const { gate } = gateWithBudget(() => "debited", {
