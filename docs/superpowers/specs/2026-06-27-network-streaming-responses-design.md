@@ -5,7 +5,12 @@
 > `network-fetcher.ts` (2026-06-27). Invariant 1 was already correct; invariant
 > 5b (per-hop gate) unchanged. **Connect-timeout** (subset of invariant 8) deferred
 > to a transport integration test against a loopback server. Buffered `fetch()`
-> untouched.
+> untouched. The original direction (new `ctx.network.fetchStream()`, buffered
+> `fetch()` untouched) was approved after streaming-invariant amendments, which
+> close four implementation-level holes: stream lifecycle leak, unbounded
+> redirect body, Node `Buffer`/`Readable` crossing the sandbox, and long-lived
+> stream concurrency exhaustion. Closes the scoped-network backlog item
+> "buffered-only, no streaming".
 
 ## Why amendments before implementation
 
