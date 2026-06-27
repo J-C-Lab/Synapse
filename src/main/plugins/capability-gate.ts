@@ -150,6 +150,11 @@ export class CapabilityGate implements CapabilityGatePort {
       if (debit === "not-in-uses") deny("capability not in trigger uses")
       if (debit === "exhausted") deny("budget exhausted")
 
+      if (cap.tier === "elevated" && request.reversible === false) {
+        const ok = await this.options.approve({ identity: this.options.identity, request })
+        if (!ok) deny("irreversible operation: per-call approval refused")
+      }
+
       this.emit(request, "allow", false, "permitted", cap.tier)
       return
     }
