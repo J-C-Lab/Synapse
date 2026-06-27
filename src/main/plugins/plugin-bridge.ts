@@ -2,7 +2,8 @@ import type { FsPathScope, NormalizedCapability } from "@synapse/plugin-manifest
 import type {
   ClipboardContent,
   NetworkRequestInit,
-  NotificationAPI,
+  NotificationShowOptions,
+  NotificationShowResult,
   PluginContext,
   StorageAPI,
   SystemAPI,
@@ -42,6 +43,7 @@ import {
 } from "./fs-write-resolver"
 import { MoveJournal } from "./move-journal"
 import { createNetworkFetcher } from "./network-fetcher"
+import { NotificationActionRegistry } from "./notification-actions"
 
 export interface PluginRuntimeSnapshot {
   locale: string
@@ -58,7 +60,20 @@ export interface ClipboardAdapter {
 }
 
 export interface NotificationAdapter {
-  show: NotificationAPI["show"]
+  show: (options: HostNotificationShowOptions) => Promise<void>
+}
+
+export interface HostNotificationAction {
+  title: string
+  actionId: string
+}
+
+export interface HostNotificationShowOptions {
+  notificationId: string
+  title: string
+  body?: string
+  silent?: boolean
+  actions?: HostNotificationAction[]
 }
 
 export interface SystemAdapter {
@@ -106,6 +121,8 @@ export interface PluginBridgeOptions {
   ) => () => void
   /** Test seam: replace the host-owned fs:write move journal. */
   moveJournal?: MoveJournal
+  notificationActions?: NotificationActionRegistry
+  notificationActionTtlMs?: number
 }
 
 /** Inputs the host supplies when building a `ToolContext` for one tool call. */
@@ -155,6 +172,8 @@ export class PluginBridge {
   private readonly registerClipboardListener?: PluginBridgeOptions["registerClipboardListener"]
   private readonly clipboardWatchUnlisten = new Map<string, Set<() => void>>()
   private readonly moveJournal: MoveJournal
+  private readonly notificationActions: NotificationActionRegistry
+  private readonly notificationActionTtlMs: number
 
   constructor(private readonly options: PluginBridgeOptions) {
     this.storageFlushMs = options.storageFlushMs ?? 250
@@ -168,6 +187,8 @@ export class PluginBridge {
     this.moveJournal =
       options.moveJournal ??
       new MoveJournal(path.join(options.userDataDir, "plugins", "move-journal.json"))
+    this.notificationActions = options.notificationActions ?? new NotificationActionRegistry()
+    this.notificationActionTtlMs = options.notificationActionTtlMs ?? 10 * 60_000
   }
 
   createContext(
@@ -304,7 +325,7 @@ export class PluginBridge {
       notifications: {
         show: async (options) => {
           await ensure({ capability: "notification", operation: "show" })
-          await this.options.adapters.notifications.show(options)
+          return this.showNotification(pluginId, options)
         },
       },
       system: {
@@ -423,12 +444,52 @@ export class PluginBridge {
           fromRel,
           toRootId,
           toRel,
+          fromPattern,
+          toPattern,
           size: info.size,
         })
         await fsWriteMove(homeDir, fromPattern, fromRel, toPattern, toRel)
         return { journalId }
       },
     }
+  }
+
+  async handleNotificationAction(notificationId: string, actionId: string): Promise<void> {
+    const action = this.notificationActions.resolve(notificationId, actionId)
+    if (!action || action === "expired") return
+    if (action.journalId) await this.undoMove(action.pluginId, action.journalId)
+  }
+
+  async undoMove(pluginId: string, journalId: string): Promise<void> {
+    const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? ""
+    await this.moveJournal.rollback({ pluginId, journalId, homeDir })
+  }
+
+  moveJournalForTest(): MoveJournal {
+    return this.moveJournal
+  }
+
+  private async showNotification(
+    pluginId: string,
+    options: NotificationShowOptions
+  ): Promise<NotificationShowResult> {
+    const actions = options.actions ?? []
+    const registered = this.notificationActions.register({
+      pluginId,
+      actions,
+      ttlMs: this.notificationActionTtlMs,
+    })
+    await this.options.adapters.notifications.show({
+      notificationId: registered.notificationId,
+      title: options.title,
+      body: options.body,
+      silent: options.silent,
+      actions: actions.map((action, index) => ({
+        title: action.title,
+        actionId: registered.actionIds[index]!,
+      })),
+    })
+    return { notificationId: registered.notificationId }
   }
 
   private async pathExists(

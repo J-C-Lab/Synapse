@@ -63,4 +63,59 @@ describe("move-journal", () => {
     await journal.markRolledBack(id)
     expect((await journal.get(id))?.rolledBackAt).toBeTypeOf("number")
   })
+
+  it("rolls back a committed move only once when the target size is unchanged", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-home-"))
+    try {
+      await fs.mkdir(path.join(home, "Downloads", "Documents"), { recursive: true })
+      await fs.writeFile(path.join(home, "Downloads", "Documents", "a.txt"), "abc", "utf8")
+      const journal = new MoveJournal(journalPath, () => 10)
+      const id = await journal.commit({
+        pluginId: "p",
+        fromRootId: "downloads",
+        fromRel: "a.txt",
+        toRootId: "downloads",
+        toRel: "Documents/a.txt",
+        fromPattern: "~/Downloads/**",
+        toPattern: "~/Downloads/**",
+        size: 3,
+      })
+
+      await journal.rollback({ pluginId: "p", journalId: id, homeDir: home })
+
+      expect(await fs.readFile(path.join(home, "Downloads", "a.txt"), "utf8")).toBe("abc")
+      await expect(fs.access(path.join(home, "Downloads", "Documents", "a.txt"))).rejects.toThrow()
+      expect((await journal.get(id))?.rolledBackAt).toBe(10)
+      await expect(
+        journal.rollback({ pluginId: "p", journalId: id, homeDir: home })
+      ).rejects.toThrow(/already rolled back/)
+    } finally {
+      await fs.rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it("refuses rollback when the moved target size changed", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-home-"))
+    try {
+      await fs.mkdir(path.join(home, "Downloads", "Documents"), { recursive: true })
+      await fs.writeFile(path.join(home, "Downloads", "Documents", "a.txt"), "changed", "utf8")
+      const journal = new MoveJournal(journalPath)
+      const id = await journal.commit({
+        pluginId: "p",
+        fromRootId: "downloads",
+        fromRel: "a.txt",
+        toRootId: "downloads",
+        toRel: "Documents/a.txt",
+        fromPattern: "~/Downloads/**",
+        toPattern: "~/Downloads/**",
+        size: 3,
+      })
+
+      await expect(
+        journal.rollback({ pluginId: "p", journalId: id, homeDir: home })
+      ).rejects.toThrow(/size changed/)
+    } finally {
+      await fs.rm(home, { recursive: true, force: true })
+    }
+  })
 })

@@ -37,7 +37,16 @@ export type {
   TriggerHandler,
 } from "./commands"
 
-export type { ClipboardAPI, NotificationAPI, PluginContext, StorageAPI, SystemAPI } from "./context"
+export type {
+  ClipboardAPI,
+  NotificationAction,
+  NotificationAPI,
+  NotificationShowOptions,
+  NotificationShowResult,
+  PluginContext,
+  StorageAPI,
+  SystemAPI,
+} from "./context"
 
 export type { FsAPI, FsWatchEvent } from "./fs"
 

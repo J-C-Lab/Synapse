@@ -288,6 +288,83 @@ describe("pluginBridge fs:write", () => {
   })
 })
 
+describe("pluginBridge notification actions", () => {
+  it("returns a host notification id and sends only host-minted action ids to the adapter", async () => {
+    const ensure = vi.fn(async () => {})
+    const show = vi.fn<PluginBridgeAdapters["notifications"]["show"]>(async () => {})
+    const bridge = bridgeWithGate(
+      { ensure, declared: ["notification"] },
+      { notifications: { show } }
+    )
+    const pluginCtx = bridge.createContext(
+      "com.synapse.test",
+      manifest({ permissions: ["notification"] })
+    )
+
+    const result = await pluginCtx.notifications.show({
+      title: "Moved file",
+      actions: [{ title: "Undo", journalId: "journal-1", actionId: "plugin-id" } as never],
+    })
+
+    expect(result.notificationId).toMatch(/.+/)
+    expect(show).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notificationId: result.notificationId,
+        actions: [
+          expect.objectContaining({
+            title: "Undo",
+            actionId: expect.any(String),
+          }),
+        ],
+      })
+    )
+    expect(show.mock.calls[0]?.[0].actions?.[0]?.actionId).not.toBe("plugin-id")
+  })
+
+  it("handles an Undo notification action by rolling back the owning journal", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-home-"))
+    const previousHome = process.env.HOME
+    process.env.HOME = home
+    try {
+      await fs.mkdir(path.join(home, "Downloads", "Documents"), { recursive: true })
+      await fs.writeFile(path.join(home, "Downloads", "Documents", "a.txt"), "abc", "utf8")
+      const ensure = vi.fn(async () => {})
+      const show = vi.fn<PluginBridgeAdapters["notifications"]["show"]>(async () => {})
+      const bridge = bridgeWithGate(
+        { ensure, declared: ["notification"] },
+        { notifications: { show } }
+      )
+      const journalId = await bridge.moveJournalForTest().commit({
+        pluginId: "com.synapse.test",
+        fromRootId: "downloads",
+        fromRel: "a.txt",
+        toRootId: "downloads",
+        toRel: "Documents/a.txt",
+        fromPattern: "~/Downloads/**",
+        toPattern: "~/Downloads/**",
+        size: 3,
+      })
+      const pluginCtx = bridge.createContext(
+        "com.synapse.test",
+        manifest({ permissions: ["notification"] })
+      )
+      const result = await pluginCtx.notifications.show({
+        title: "Moved file",
+        actions: [{ title: "Undo", journalId }],
+      })
+      const actionId = show.mock.calls[0]?.[0].actions?.[0]?.actionId
+
+      await bridge.handleNotificationAction(result.notificationId, actionId!)
+
+      expect(await fs.readFile(path.join(home, "Downloads", "a.txt"), "utf8")).toBe("abc")
+      await expect(fs.access(path.join(home, "Downloads", "Documents", "a.txt"))).rejects.toThrow()
+    } finally {
+      process.env.HOME = previousHome
+      await fs.rm(home, { recursive: true, force: true })
+    }
+  })
+})
+
 function bridgeWithGate(
   gate: {
     ensure: (request: CapabilityRequest) => Promise<void>

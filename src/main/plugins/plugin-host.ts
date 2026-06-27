@@ -197,6 +197,15 @@ export class PluginHost {
       createHotkeyAdapter({
         reservedAccelerators: options.reservedAccelerators,
       })
+    const adapters =
+      options.adapters ??
+      createElectronPluginAdapters(options.userDataDir, {
+        onNotificationAction: (notificationId, actionId) => {
+          void this.bridge
+            ?.handleNotificationAction(notificationId, actionId)
+            .catch((err) => logger.child("plugin-host").warn("notification action failed", { err }))
+        },
+      })
     this.triggerRegistry = new TriggerRegistry({
       admission: this.admission,
       invoker: this.invoker,
@@ -209,7 +218,7 @@ export class PluginHost {
     })
     this.bridge = new PluginBridge({
       userDataDir: options.userDataDir,
-      adapters: options.adapters ?? createElectronPluginAdapters(options.userDataDir),
+      adapters,
       runtime: options.runtime,
       preferences: (pluginId, manifest) => this.preferencesFor(pluginId, manifest),
       governance: this.capabilityGovernance,

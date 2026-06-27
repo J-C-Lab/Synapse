@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { readJsonFile, writeJsonFile } from "../lan/atomic-json-store"
+import { safeScopedStat } from "./fs-path-resolver"
+import { fsWriteMove } from "./fs-write-resolver"
 
 export interface MoveJournalCommit {
   pluginId: string
@@ -7,6 +9,8 @@ export interface MoveJournalCommit {
   fromRel: string
   toRootId: string
   toRel: string
+  fromPattern?: string
+  toPattern?: string
   /** Size at commit time, used by rollback to confirm the file is unchanged. */
   size: number
 }
@@ -15,6 +19,12 @@ export interface MoveJournalEntry extends MoveJournalCommit {
   journalId: string
   committedAt: number
   rolledBackAt?: number
+}
+
+export interface MoveJournalRollbackInput {
+  pluginId: string
+  journalId: string
+  homeDir: string
 }
 
 export class MoveJournal {
@@ -54,6 +64,31 @@ export class MoveJournal {
       const entries = await this.load()
       const entry = entries.find((candidate) => candidate.journalId === journalId)
       if (entry) entry.rolledBackAt = this.now()
+      await this.persist(entries)
+    })
+  }
+
+  async rollback(input: MoveJournalRollbackInput): Promise<void> {
+    await this.runExclusive(async () => {
+      const entries = await this.load()
+      const entry = entries.find((candidate) => candidate.journalId === input.journalId)
+      if (!entry || entry.pluginId !== input.pluginId)
+        throw new Error("move journal entry not found")
+      if (entry.rolledBackAt !== undefined) throw new Error("move already rolled back")
+      if (!entry.fromPattern || !entry.toPattern) throw new Error("move journal is not reversible")
+
+      const current = await safeScopedStat(input.homeDir, entry.toPattern, entry.toRel)
+      if (!current) throw new Error("move rollback target is missing")
+      if (current.size !== entry.size) throw new Error("move rollback target size changed")
+
+      await fsWriteMove(
+        input.homeDir,
+        entry.toPattern,
+        entry.toRel,
+        entry.fromPattern,
+        entry.fromRel
+      )
+      entry.rolledBackAt = this.now()
       await this.persist(entries)
     })
   }

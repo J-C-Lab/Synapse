@@ -37,8 +37,24 @@ export interface ClipboardAPI {
   writeText: (text: string) => Promise<void>
 }
 
+export interface NotificationAction {
+  title: string
+  journalId?: string
+}
+
+export interface NotificationShowOptions {
+  title: string
+  body?: string
+  silent?: boolean
+  actions?: NotificationAction[]
+}
+
+export interface NotificationShowResult {
+  notificationId: string
+}
+
 export interface NotificationAPI {
-  show: (options: { title: string; body?: string; silent?: boolean }) => Promise<void>
+  show: (options: NotificationShowOptions) => Promise<NotificationShowResult>
 }
 
 export interface SystemAPI {
