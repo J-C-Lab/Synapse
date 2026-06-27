@@ -18,6 +18,28 @@ const semverSchema = z.string().regex(/^\d+\.\d+\.\d+(?:[-+][0-9A-Z.-]+)?$/i)
 
 const localizedStringSchema = z.union([z.string().min(1), z.record(z.string(), z.string().min(1))])
 
+const credentialInjectSchemeSchema = z.union([
+  z.literal("bearer"),
+  z.object({ header: z.string().min(1) }).strict(),
+])
+
+const credentialDeclarationSchema = z
+  .object({
+    id: z
+      .string()
+      .min(1)
+      .regex(/^[\w.-]+$/, "credential id must match [a-zA-Z0-9._-]+"),
+    type: z.enum(["oauth2-pkce", "static"]),
+    label: localizedStringSchema,
+    clientId: z.string().min(1).optional(),
+    authorizationEndpoint: z.string().url().optional(),
+    tokenEndpoint: z.string().url().optional(),
+    revocationEndpoint: z.string().url().optional(),
+    scopes: z.array(z.string().min(1)).optional(),
+    inject: z.object({ scheme: credentialInjectSchemeSchema }).strict(),
+  })
+  .strict()
+
 const relativePathSchema = z.string().min(1).refine(isSafeRelativePath, {
   message: "Path must be relative and stay inside the plugin directory",
 })
@@ -277,6 +299,7 @@ export const manifestSchema = z
         commands: z.array(commandSchema).min(1),
         preferences: z.array(preferenceSchema).optional(),
         tools: z.array(toolSchema).optional(),
+        credentials: z.array(credentialDeclarationSchema).optional(),
       })
       .strict(),
     capabilities: z.array(capabilityEntrySchema),

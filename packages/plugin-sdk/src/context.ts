@@ -1,4 +1,5 @@
 import type { ClipboardContent } from "./clipboard"
+import type { CredentialsAPI } from "./credentials"
 import type { FsAPI } from "./fs"
 import type { NetworkAPI } from "./network"
 
@@ -111,6 +112,11 @@ export interface PluginContext {
    * are never exposed in trigger events — resolve/read through these gated APIs.
    */
   fs: FsAPI
+
+  /**
+   * Declared credential status and connect requests. Tokens never enter the sandbox.
+   */
+  credentials: CredentialsAPI
 
   /** Routed to the host's plugin log channel. Avoid `console` from inside the sandbox. */
   log: (...args: unknown[]) => void

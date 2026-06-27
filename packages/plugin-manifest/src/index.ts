@@ -16,6 +16,14 @@ export {
 
 export type { CapabilityDescriptor, CapabilityScopeAdapter, CapabilityTier } from "./capabilities"
 
+export { credentialBrokerAdapter, injectScopesOverlap } from "./credential-scope"
+export type { CredentialBrokerRequestedScope, CredentialBrokerScope } from "./credential-scope"
+export {
+  CREDENTIAL_ID_RE,
+  credentialDeclarationHash,
+  validateCredentialDeclarations,
+} from "./credentials"
+export type { CredentialDeclaration, CredentialInjectScheme } from "./credentials"
 export {
   nextCronFire,
   normalizeCronExpression,
@@ -65,6 +73,8 @@ export { networkHttpsAdapter } from "./network-scope"
 export type { NetworkHttpsRequestedScope, NetworkHttpsScope } from "./network-scope"
 
 export { normalizeLegacyCapabilities } from "./normalize-legacy"
+
+export { validateOAuthEndpoint } from "./oauth-endpoints"
 
 export { manifestSchema, ManifestValidationError, parseManifest } from "./schema"
 

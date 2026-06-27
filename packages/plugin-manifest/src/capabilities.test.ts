@@ -8,15 +8,17 @@ import {
   normalizeCapabilities,
   stableStringify,
 } from "./capabilities"
+import { credentialBrokerAdapter } from "./credential-scope"
 import { fsPathAdapter } from "./fs-path-scope"
 
 describe("capability registry", () => {
-  it("exposes the fourteen known capabilities", () => {
+  it("exposes the fifteen known capabilities", () => {
     expect(capabilityIds().sort()).toEqual(
       [
         "clipboard:read",
         "clipboard:watch",
         "clipboard:write",
+        "credentials:broker",
         "fs:read",
         "fs:resolvePath",
         "fs:watch",
@@ -53,6 +55,7 @@ describe("capability registry", () => {
   it("registers scope adapters for scoped capabilities", () => {
     const scoped = new Set([
       "network:https",
+      "credentials:broker",
       "fs:watch",
       "fs:read",
       "fs:resolvePath",
@@ -63,6 +66,13 @@ describe("capability registry", () => {
       if (scoped.has(cap.id)) expect(cap.scopeAdapter).toBeDefined()
       else expect(cap.scopeAdapter).toBeUndefined()
     }
+  })
+
+  it("registers credentials:broker as an elevated, scope-enforced capability with its adapter", () => {
+    const cap = getCapability("credentials:broker")
+    expect(cap?.tier).toBe("elevated")
+    expect(cap?.scopeEnforced).toBe(true)
+    expect(cap?.scopeAdapter).toBe(credentialBrokerAdapter)
   })
 
   it("registers fs:write as an elevated, scope-enforced capability using the fs path adapter", () => {

@@ -116,6 +116,7 @@ export interface PluginManifest {
     commands: ManifestCommand[]
     preferences?: ManifestPreference[]
     tools?: ManifestTool[]
+    credentials?: import("./credentials").CredentialDeclaration[]
   }
   capabilities: NormalizedCapability[]
   /** Background event triggers. Sole source of trigger registration. */

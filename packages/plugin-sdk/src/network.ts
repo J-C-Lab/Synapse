@@ -37,6 +37,15 @@ export interface NetworkRequestInit {
   signal?: AbortSignal
 }
 
+/** Thrown when a fetch targets a credential inject scope but the credential is
+ *  not connected (or not authorized for this trigger invocation). */
+export class CredentialNotConnectedError extends Error {
+  constructor(public readonly credentialId: string) {
+    super(`credential "${credentialId}" is not connected`)
+    this.name = "CredentialNotConnectedError"
+  }
+}
+
 export interface NetworkAPI {
   /**
    * Fetch over HTTPS, constrained to the plugin's declared `network:https`

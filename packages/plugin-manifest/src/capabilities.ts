@@ -1,5 +1,6 @@
 import type { JsonSchema, NormalizedCapability } from "./types"
 import { createHash } from "node:crypto"
+import { credentialBrokerAdapter } from "./credential-scope"
 import { fsPathAdapter } from "./fs-path-scope"
 import { hotkeyScopeAdapter } from "./hotkey-scope"
 import { networkHttpsAdapter } from "./network-scope"
@@ -80,6 +81,12 @@ const ALL: CapabilityDescriptor[] = [
   { id: "fs:resolvePath", tier: "consent", scopeEnforced: true, scopeAdapter: fsPathAdapter },
   { id: "fs:write", tier: "elevated", scopeEnforced: true, scopeAdapter: fsPathAdapter },
   { id: "hotkey:global", tier: "elevated", scopeEnforced: true, scopeAdapter: hotkeyScopeAdapter },
+  {
+    id: "credentials:broker",
+    tier: "elevated",
+    scopeEnforced: true,
+    scopeAdapter: credentialBrokerAdapter,
+  },
 ]
 
 export const CAPABILITIES: ReadonlyMap<string, CapabilityDescriptor> = new Map(

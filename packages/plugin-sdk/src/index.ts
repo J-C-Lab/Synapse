@@ -48,6 +48,8 @@ export type {
   SystemAPI,
 } from "./context"
 
+export type { CredentialsAPI, CredentialStatus } from "./credentials"
+
 export type { FsAPI, FsWatchEvent } from "./fs"
 
 export type { HotkeyEvent } from "./hotkey"
@@ -61,6 +63,8 @@ export type {
   NetworkStreamBody,
   NetworkStreamResponse,
 } from "./network"
+
+export { CredentialNotConnectedError } from "./network"
 
 export type { ToolCaller, ToolContentBlock, ToolContext, ToolHandler, ToolResult } from "./tools"
 
