@@ -894,3 +894,42 @@ describe("network-fetcher streaming", () => {
     await expect(fetcher.fetchStream("https://api.github.com/c")).resolves.toBeDefined()
   })
 })
+
+describe("network-fetcher credential injection", () => {
+  it("injects a credential header for an in-scope request via the injectCredential port", async () => {
+    const seen: Record<string, string> = {}
+    const transport = vi.fn(async (args: TransportArgs) => {
+      Object.assign(seen, args.headers)
+      return {
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        body: Buffer.from("{}"),
+      }
+    })
+    const fetcher = createNetworkFetcher({
+      ...makeConfig({ transport }),
+      injectCredential: ({ host, method, path }, pluginHeaders) =>
+        host === "api.github.com" &&
+        method === "GET" &&
+        path === "/repos/foo" &&
+        !("authorization" in pluginHeaders)
+          ? { name: "authorization", value: "Bearer ghp_secret" }
+          : undefined,
+    })
+    await fetcher.fetch("https://api.github.com/repos/foo")
+    expect(seen.authorization).toBe("Bearer ghp_secret")
+  })
+
+  it("rejects the fetch when injectCredential throws a conflict", async () => {
+    const fetcher = createNetworkFetcher({
+      ...makeConfig({ transport: okTransport() }),
+      injectCredential: () => {
+        throw new Error("conflict")
+      },
+    })
+    await expect(
+      fetcher.fetch("https://api.github.com/repos/foo", { headers: { authorization: "Bearer x" } })
+    ).rejects.toThrow(/conflict/)
+  })
+})

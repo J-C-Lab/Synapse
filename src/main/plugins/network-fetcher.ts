@@ -100,6 +100,17 @@ export interface NetworkFetcherConfig {
   pluginId: string
   /** Trigger-origin background calls carry this for budget-breaker routing. */
   invocationId?: string
+  /** Optional host-side credential injector. Called with the per-hop request and
+   *  the (lowercased-key) headers about to be sent; returns the header to attach
+   *  or undefined. Throwing aborts the fetch (plugin-set-header conflict). Plan 2
+   *  supplies the real vault-backed implementation. */
+  injectCredential?: (
+    request: { host: string; method: string; path: string },
+    pluginHeaders: Record<string, string>
+  ) =>
+    | { name: string; value: string }
+    | undefined
+    | Promise<{ name: string; value: string } | undefined>
   resolve?: (host: string) => Promise<ResolvedAddress[]> // default resolvePublicIps
   transport?: NetworkTransport // default node:https transport
   streamTransport?: NetworkStreamTransport // default node:https stream transport
@@ -293,6 +304,7 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
   const streamIdleTimeoutMs = config.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS
   const maxStreamDurationMs = config.maxStreamDurationMs ?? DEFAULT_MAX_STREAM_DURATION_MS
   const maxConcurrentStreams = config.maxConcurrentStreams ?? DEFAULT_MAX_CONCURRENT_STREAMS
+  const injectCredential = config.injectCredential
 
   // Every in-flight fetch's controller, so abortAll() (revoke teardown) can
   // tear them all down at once.
@@ -404,6 +416,20 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
   async function run(args: RunArgs): Promise<NetworkResponse> {
     const { parsed, addresses } = await preflight(args.currentUrl, args.method, args.controller)
 
+    // Credential injection for THIS hop. preflight already dropped Authorization
+    // on redirects, so a hop outside the inject scope carries no credential and a
+    // hop back inside re-attaches. A conflict throw aborts the whole fetch.
+    let hopHeaders = args.headers
+    if (injectCredential) {
+      const lowered: Record<string, string> = {}
+      for (const [k, v] of Object.entries(args.headers)) lowered[k.toLowerCase()] = v
+      const injected = await injectCredential(
+        { host: parsed.hostname, method: args.method, path: normalizePath(parsed.pathname) },
+        lowered
+      )
+      if (injected) hopHeaders = { ...args.headers, [injected.name]: injected.value }
+    }
+
     // 10. Raw round-trip with address failover: try each validated public IP in
     // turn until one yields a response. A connection-level failure rolls over to
     // the next address; an aborted request (timeout / revoke) stops immediately.
@@ -415,7 +441,7 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
         result = await transport({
           url: parsed,
           method: args.method,
-          headers: args.headers,
+          headers: hopHeaders,
           body: args.body,
           pinnedAddress,
           signal: args.controller.signal,
@@ -619,6 +645,18 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
   > {
     const { parsed, addresses } = await preflight(args.currentUrl, args.method, args.controller)
 
+    // Credential injection for THIS hop (same semantics as buffered fetch).
+    let hopHeaders = args.headers
+    if (injectCredential) {
+      const lowered: Record<string, string> = {}
+      for (const [k, v] of Object.entries(args.headers)) lowered[k.toLowerCase()] = v
+      const injected = await injectCredential(
+        { host: parsed.hostname, method: args.method, path: normalizePath(parsed.pathname) },
+        lowered
+      )
+      if (injected) hopHeaders = { ...args.headers, [injected.name]: injected.value }
+    }
+
     // Round-trip with address failover, streaming the body. Connection-level
     // failure rolls over; abort stops immediately.
     let result: StreamTransportResult | undefined
@@ -628,7 +666,7 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
         result = await streamTransport({
           url: parsed,
           method: args.method,
-          headers: args.headers,
+          headers: hopHeaders,
           body: args.body,
           pinnedAddress,
           signal: args.controller.signal,

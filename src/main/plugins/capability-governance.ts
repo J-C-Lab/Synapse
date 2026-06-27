@@ -4,7 +4,11 @@ import type { GrantIdentity } from "./grant-store"
 import type { PluginManifest, PluginSourceKind } from "./types"
 import { createHash } from "node:crypto"
 import * as path from "node:path"
-import { capabilityDeclarationHash, triggerDeclarationHash } from "@synapse/plugin-manifest"
+import {
+  capabilityDeclarationHash,
+  credentialDeclarationHash,
+  triggerDeclarationHash,
+} from "@synapse/plugin-manifest"
 import { createFileSink } from "../logging/file-sink"
 import { createCapabilityAudit } from "./capability-audit"
 import { GrantStore, grantStoreFilePath } from "./grant-store"
@@ -23,8 +27,9 @@ export function buildGrantIdentity(
 ): GrantIdentity {
   const capHash = capabilityDeclarationHash(manifest.capabilities)
   const trigHash = triggerDeclarationHash(manifest.triggers ?? [])
+  const credHash = credentialDeclarationHash(manifest.contributes.credentials ?? [])
   const declarationHash = createHash("sha256")
-    .update(`${capHash}\n${trigHash}`)
+    .update(`${capHash}\n${trigHash}\n${credHash}`)
     .digest("hex")
     .slice(0, 16)
   return {

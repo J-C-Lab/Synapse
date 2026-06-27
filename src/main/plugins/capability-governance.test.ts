@@ -48,4 +48,49 @@ describe("buildGrantIdentity trigger sensitivity", () => {
     )
     expect(a.capabilityDeclarationHash).not.toBe(b.capabilityDeclarationHash)
   })
+
+  it("changes the identity hash when a credential declaration changes", () => {
+    const base = {
+      ...baseManifest,
+      capabilities: [
+        { id: "network:https", scope: { hosts: ["api.github.com"], paths: ["/repos/**"] } },
+        {
+          id: "credentials:broker",
+          scope: {
+            credentialIds: ["gh"],
+            inject: [
+              { credentialId: "gh", scope: { hosts: ["api.github.com"], paths: ["/repos/**"] } },
+            ],
+          },
+        },
+      ],
+      contributes: {
+        ...baseManifest.contributes,
+        credentials: [
+          { id: "gh", type: "static", label: { en: "G" }, inject: { scheme: "bearer" } },
+        ],
+      },
+    }
+    const changed = {
+      ...base,
+      contributes: {
+        ...base.contributes,
+        credentials: [
+          {
+            id: "gh",
+            type: "oauth2-pkce",
+            label: { en: "G" },
+            clientId: "abc",
+            authorizationEndpoint: "https://github.com/login/oauth/authorize",
+            tokenEndpoint: "https://github.com/login/oauth/access_token",
+            scopes: ["repo"],
+            inject: { scheme: "bearer" },
+          },
+        ],
+      },
+    }
+    const a = buildGrantIdentity("com.example.x", base as never, "user")
+    const b = buildGrantIdentity("com.example.x", changed as never, "user")
+    expect(a.capabilityDeclarationHash).not.toBe(b.capabilityDeclarationHash)
+  })
 })
