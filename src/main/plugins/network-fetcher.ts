@@ -61,6 +61,8 @@ export interface NetworkFetcherConfig {
   actor: CapabilityActor
   trigger: string
   pluginId: string
+  /** Trigger-origin background calls carry this for budget-breaker routing. */
+  invocationId?: string
   resolve?: (host: string) => Promise<ResolvedAddress[]> // default resolvePublicIps
   transport?: NetworkTransport // default node:https transport
   maxRequestBytes?: number // default 10 MiB
@@ -292,8 +294,7 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
 
     // 7. Resolve to PUBLIC IPs only; throws on any private addr (SSRF/rebinding).
     const addresses = await resolve(parsed.hostname)
-    const pinnedAddress = addresses[0]
-    if (!pinnedAddress) throw new Error(`no addresses resolved for ${parsed.hostname}`)
+    if (addresses.length === 0) throw new Error(`no addresses resolved for ${parsed.hostname}`)
 
     // 9. Consent gate BEFORE any byte leaves the process.
     await config.gate.ensure({
@@ -303,19 +304,34 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
       operation,
       requestedScope: requested,
       signal: args.controller.signal,
+      invocationId: config.invocationId,
     })
 
-    // 10. Single raw round-trip to the pinned address. No auto-redirect.
-    const result = await transport({
-      url: parsed,
-      method: args.method,
-      headers: args.headers,
-      body: args.body,
-      pinnedAddress,
-      signal: args.controller.signal,
-      timeoutMs,
-      maxResponseBytes,
-    })
+    // 10. Raw round-trip with address failover: try each validated public IP in
+    // turn until one yields a response. A connection-level failure rolls over to
+    // the next address; an aborted request (timeout / revoke) stops immediately.
+    // No auto-redirect — that is handled below.
+    let result: TransportResult | undefined
+    let lastError: unknown
+    for (const pinnedAddress of addresses) {
+      try {
+        result = await transport({
+          url: parsed,
+          method: args.method,
+          headers: args.headers,
+          body: args.body,
+          pinnedAddress,
+          signal: args.controller.signal,
+          timeoutMs,
+          maxResponseBytes,
+        })
+        break
+      } catch (err) {
+        if (args.controller.signal.aborted) throw err
+        lastError = err
+      }
+    }
+    if (!result) throw lastError ?? new Error(`all addresses failed for ${parsed.hostname}`)
 
     // 11. Manual redirect handling.
     if (REDIRECT_STATUSES.has(result.status) && result.headers.location) {

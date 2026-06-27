@@ -422,3 +422,60 @@ describe("network-fetcher abortAll", () => {
     await expect(promise).rejects.toThrow()
   })
 })
+
+// ---- Address failover -------------------------------------------------------
+
+describe("network-fetcher address failover", () => {
+  const ADDR_A: ResolvedAddress = { address: "140.82.112.3", family: 4 }
+  const ADDR_B: ResolvedAddress = { address: "140.82.112.4", family: 4 }
+
+  it("rolls over to the next validated address when the first connection fails", async () => {
+    const transport: NetworkTransport = vi.fn(async (args: TransportArgs) => {
+      if (args.pinnedAddress.address === ADDR_A.address) throw new Error("ECONNREFUSED")
+      return {
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        body: Buffer.from("ok"),
+      }
+    })
+    const fetcher = createNetworkFetcher(
+      makeConfig({ resolve: fakeResolve([ADDR_A, ADDR_B]), transport: transport as never })
+    )
+
+    const res = await fetcher.fetch("https://api.github.com/x")
+    expect(res.status).toBe(200)
+    expect((transport as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2)
+  })
+
+  it("throws the last error when every address fails", async () => {
+    const transport: NetworkTransport = vi.fn(async () => {
+      throw new Error("ECONNREFUSED")
+    })
+    const fetcher = createNetworkFetcher(
+      makeConfig({ resolve: fakeResolve([ADDR_A, ADDR_B]), transport: transport as never })
+    )
+
+    await expect(fetcher.fetch("https://api.github.com/x")).rejects.toThrow(/ECONNREFUSED/)
+    expect((transport as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2)
+  })
+
+  it("stops failover immediately once the request is aborted", async () => {
+    const controller = new AbortController()
+    const transport: NetworkTransport = vi.fn(async (args: TransportArgs) => {
+      controller.abort()
+      // Simulate the transport observing the abort and rejecting.
+      void args
+      throw new Error("aborted")
+    })
+    const fetcher = createNetworkFetcher(
+      makeConfig({ resolve: fakeResolve([ADDR_A, ADDR_B]), transport: transport as never })
+    )
+
+    await expect(
+      fetcher.fetch("https://api.github.com/x", { signal: controller.signal })
+    ).rejects.toThrow(/aborted/)
+    // Aborted on the first attempt → no roll-over to the second address.
+    expect((transport as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
+  })
+})
