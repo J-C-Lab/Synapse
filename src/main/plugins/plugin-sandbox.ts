@@ -7,6 +7,7 @@ import type {
   PluginInvokeRequest,
   PluginSandboxModule,
   PluginToolInvokeRequest,
+  PluginTriggerDispatch,
 } from "./types"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
@@ -359,6 +360,23 @@ export class PluginSandbox {
         pluginCtx
       )
     )
+  }
+
+  async dispatchTrigger(request: PluginTriggerDispatch): Promise<void> {
+    const plugin = this.loaded.get(request.pluginId)
+    if (!plugin) throw new PluginSandboxError(`Plugin is not loaded: ${request.pluginId}`)
+
+    const exportName = request.handler.slice("triggers.".length)
+    const handler = plugin.module.triggers?.[exportName]
+    if (typeof handler !== "function") return
+
+    const pluginCtx = this.options.bridge.createContext(request.pluginId, plugin.manifest, {
+      actor: "background",
+      trigger: request.trigger,
+      signal: request.signal,
+      invocationId: request.invocationId,
+    })
+    await this.withTimeout(Promise.resolve(handler(request.event, pluginCtx)))
   }
 
   getLoadedModule(pluginId: string): PluginSandboxModule | undefined {

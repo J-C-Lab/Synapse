@@ -1,5 +1,7 @@
 import type { JsonSchema, NormalizedCapability } from "./types"
 import { createHash } from "node:crypto"
+import { fsPathAdapter } from "./fs-path-scope"
+import { hotkeyScopeAdapter } from "./hotkey-scope"
 import { networkHttpsAdapter } from "./network-scope"
 
 // The capability registry — the single source of truth for what a plugin may be
@@ -73,6 +75,10 @@ const ALL: CapabilityDescriptor[] = [
   // Scope-enforced: the adapter constrains every declared/granted network scope
   // and decides containment for each call. Declaring it requires a valid scope.
   { id: "network:https", tier: "elevated", scopeEnforced: true, scopeAdapter: networkHttpsAdapter },
+  { id: "fs:watch", tier: "elevated", scopeEnforced: true, scopeAdapter: fsPathAdapter },
+  { id: "fs:read", tier: "consent", scopeEnforced: true, scopeAdapter: fsPathAdapter },
+  { id: "fs:resolvePath", tier: "consent", scopeEnforced: true, scopeAdapter: fsPathAdapter },
+  { id: "hotkey:global", tier: "elevated", scopeEnforced: true, scopeAdapter: hotkeyScopeAdapter },
 ]
 
 export const CAPABILITIES: ReadonlyMap<string, CapabilityDescriptor> = new Map(

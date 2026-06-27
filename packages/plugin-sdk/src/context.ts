@@ -1,4 +1,5 @@
 import type { ClipboardContent } from "./clipboard"
+import type { FsAPI } from "./fs"
 import type { NetworkAPI } from "./network"
 
 /**
@@ -88,6 +89,12 @@ export interface PluginContext {
    * cross-origin redirects, and there is no cookie jar.
    */
   network: NetworkAPI
+
+  /**
+   * Declared-path filesystem helpers for background triggers. Absolute paths
+   * are never exposed in trigger events — resolve/read through these gated APIs.
+   */
+  fs: FsAPI
 
   /** Routed to the host's plugin log channel. Avoid `console` from inside the sandbox. */
   log: (...args: unknown[]) => void

@@ -35,6 +35,7 @@ export type LanPairing = SynapseLanPairing
 export type LanTransfer = SynapseLanTransfer
 export type PluginRegistryEntry = SynapsePluginRegistryEntry
 export type PluginCapabilityRow = SynapsePluginCapabilityRow
+export type PluginTriggerRow = SynapsePluginTriggerRow
 export type CapabilityGrantRequestEvent = SynapseCapabilityGrantRequestEvent
 export type CapabilityApprovalRequestEvent = SynapseCapabilityApprovalRequestEvent
 export type MarketplaceEntry = SynapseMarketplaceEntry
@@ -215,6 +216,22 @@ export function onCapabilityApprovalRequest(
   handler: (event: CapabilityApprovalRequestEvent) => void
 ): () => void {
   return api().onCapabilityApprovalRequest(handler)
+}
+
+export async function listTriggers(): Promise<PluginTriggerRow[]> {
+  return unwrapIpcResult(await api().listTriggers())
+}
+
+export async function pauseTrigger(pluginId: string, triggerId: string): Promise<void> {
+  unwrapIpcResult(await api().pauseTrigger(pluginId, triggerId))
+}
+
+export async function resumeTrigger(pluginId: string, triggerId: string): Promise<void> {
+  unwrapIpcResult(await api().resumeTrigger(pluginId, triggerId))
+}
+
+export async function killTrigger(pluginId: string, triggerId: string): Promise<void> {
+  unwrapIpcResult(await api().killTrigger(pluginId, triggerId))
 }
 
 export async function getPlugin(pluginId: string): Promise<PluginRegistryEntry | null> {

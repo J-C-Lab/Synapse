@@ -4,12 +4,10 @@ import { createHash } from "node:crypto"
 import { getCapability } from "@synapse/plugin-manifest"
 
 // The runtime decision engine. A grant is not a one-time pass — it is a
-// context-bearing capability-call decision. `ensure` evaluates each call with
-// full context (who triggered it, what operation, what scope, why), JIT-prompts
-// for ungranted consent/elevated capabilities, and ALWAYS re-approves elevated
-// capabilities driven by the agent or by background activity, even with a
-// standing grant. The synchronous `assertDeclared` mirrors the manifest/load
-// declaration check.
+// context-bearing capability-call decision. Non-trigger calls JIT-prompt for
+// ungranted consent/elevated capabilities and re-approve elevated agent/background
+// work. Trigger-origin calls (host-minted invocationId) require enable-time grants
+// and debit per-trigger `uses` budgets — no JIT prompt and no per-call approve.
 
 export type CapabilityActor = "user" | "agent" | "background"
 
@@ -26,6 +24,8 @@ export interface CapabilityRequest {
   reason?: string
   /** When aborted (tool timeout, capability revoke, renderer reload), pending prompts deny. */
   signal?: AbortSignal
+  /** Set by the host for trigger-origin background calls; resolves the budget path. */
+  invocationId?: string
 }
 
 export class CapabilityDenied extends Error {
@@ -64,6 +64,14 @@ export interface CapabilityAuditEntry {
   why: string
 }
 
+export type BudgetDebitOutcome = "debited" | "not-in-uses" | "exhausted"
+
+export interface BudgetBreakerPort {
+  isTriggerOrigin: (invocationId: string | undefined) => boolean
+  /** Debits the trigger's declared use budget, or reports why the call is refused. */
+  tryDebit: (request: CapabilityRequest) => BudgetDebitOutcome
+}
+
 export interface CapabilityGateOptions {
   identity: GrantIdentity
   declared: readonly NormalizedCapability[]
@@ -71,6 +79,7 @@ export interface CapabilityGateOptions {
   prompt: GrantPromptPort
   approve: CapabilityApprover
   audit: (entry: CapabilityAuditEntry) => void
+  budgetBreaker?: BudgetBreakerPort
 }
 
 /** Minimal gate surface used by {@link PluginBridge} (and tests). */
@@ -119,6 +128,30 @@ export class CapabilityGate implements CapabilityGatePort {
       }
     }
 
+    const isTriggerOrigin =
+      request.invocationId !== undefined &&
+      this.options.budgetBreaker?.isTriggerOrigin(request.invocationId) === true
+
+    if (isTriggerOrigin) {
+      if (!this.options.budgetBreaker) deny("trigger origin not configured")
+
+      if (cap.tier !== "auto") {
+        const granted = await this.options.grants.isGranted(
+          this.options.identity,
+          request.capability,
+          request.requestedScope
+        )
+        if (!granted) deny("not granted at enable time")
+      }
+
+      const debit = this.options.budgetBreaker!.tryDebit(request)
+      if (debit === "not-in-uses") deny("capability not in trigger uses")
+      if (debit === "exhausted") deny("budget exhausted")
+
+      this.emit(request, "allow", false, "permitted", cap.tier)
+      return
+    }
+
     let grantedNow = false
     if (cap.tier !== "auto") {
       const granted = await this.options.grants.isGranted(
@@ -143,11 +176,11 @@ export class CapabilityGate implements CapabilityGatePort {
       }
     }
 
-    // A standing grant is necessary, not sufficient: an elevated capability
-    // driven by the agent or by background activity is re-approved per call.
-    if (cap.tier === "elevated" && (request.actor === "agent" || request.actor === "background")) {
-      const ok = await this.options.approve({ identity: this.options.identity, request })
-      if (!ok) deny("per-call approval refused", grantedNow)
+    if (cap.tier === "elevated") {
+      if (request.actor === "agent" || request.actor === "background") {
+        const ok = await this.options.approve({ identity: this.options.identity, request })
+        if (!ok) deny("per-call approval refused", grantedNow)
+      }
     }
 
     this.emit(request, "allow", grantedNow, "permitted", cap.tier)

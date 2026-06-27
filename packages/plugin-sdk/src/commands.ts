@@ -81,9 +81,17 @@ export interface PluginModule {
   commands: Record<string, CommandHandler>
   events?: PluginEventHandlers
   /**
+   * Manifest-declared background trigger handlers. Each export name must match
+   * a `triggers[].handler` of the form `triggers.<exportName>`.
+   */
+  triggers?: Record<string, TriggerHandler>
+  /**
    * Headless tools the plugin exposes to AI agents (and external MCP clients).
    * Each key must match a `contributes.tools[].name` in the manifest. Tools
    * are independent of `commands` — a plugin may ship either or both.
    */
   tools?: Record<string, ToolHandler>
 }
+
+/** Handler invoked when a manifest trigger fires in the background. */
+export type TriggerHandler = (event: unknown, ctx: import("./context").PluginContext) => unknown

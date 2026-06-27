@@ -4,9 +4,21 @@ import { AlertCircle, Download, PackageSearch, RefreshCw, Trash2 } from "lucide-
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
+import { ActiveBackgroundPanel } from "@/components/plugins/active-background-panel"
+import { DeclaredTriggersPanel } from "@/components/plugins/declared-triggers-panel"
 import { PluginCapabilityList } from "@/components/plugins/plugin-capability-list"
 import { localize } from "@/components/plugins/view-utils"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -48,6 +60,21 @@ type ManifestPreference = NonNullable<
   NonNullable<PluginRegistryEntry["manifest"]>["contributes"]["preferences"]
 >[number]
 
+type ManifestWithTriggers = NonNullable<PluginRegistryEntry["manifest"]> & {
+  triggers?: Array<{
+    id: string
+    type: string
+    handler: string
+    uses: Array<{
+      capability: string
+      budget: { maxCalls: number; period: string }
+      scope?: unknown
+    }>
+    scope?: { contentTypes?: string[] }
+    schedule?: { intervalMs: number } | string
+  }>
+}
+
 const ALL_PLUGIN_SOURCE = "all"
 const ALL_PLUGIN_STATUS = "all"
 const PLUGIN_SOURCE_FILTERS: Array<PluginRegistryEntry["source"]["kind"]> = [
@@ -85,6 +112,7 @@ export function PluginsPage() {
   const [pending, setPending] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
   const [dragActive, setDragActive] = useState(false)
+  const [enableConfirm, setEnableConfirm] = useState<PluginRegistryEntry | null>(null)
   const [trustedSourcePolicy, setTrustedSourcePolicy] =
     useState<SynapseTrustedSourcePolicy>("official-marketplace")
 
@@ -166,11 +194,20 @@ export function PluginsPage() {
     })
   }
 
-  async function onToggle(plugin: PluginRegistryEntry, enabled: boolean) {
+  async function applyEnabled(plugin: PluginRegistryEntry, enabled: boolean) {
     await mutate(`toggle:${plugin.pluginId}`, async () => {
       upsertPlugin(await setPluginEnabled(plugin.pluginId, enabled))
       toast.success(t(enabled ? "plugins.toasts.enabled" : "plugins.toasts.disabled"))
     })
+  }
+
+  async function onToggle(plugin: PluginRegistryEntry, enabled: boolean) {
+    const triggers = (plugin.manifest as ManifestWithTriggers | undefined)?.triggers
+    if (enabled && triggers?.length) {
+      setEnableConfirm(plugin)
+      return
+    }
+    await applyEnabled(plugin, enabled)
   }
 
   async function onReload(plugin: PluginRegistryEntry) {
@@ -386,6 +423,41 @@ export function PluginsPage() {
           </div>
         )}
       </PageFrame>
+
+      <AlertDialog
+        open={enableConfirm !== null}
+        onOpenChange={(open) => {
+          if (!open) setEnableConfirm(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("plugins.triggers.enableConfirmTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("plugins.triggers.enableConfirmBody")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {enableConfirm ? (
+            <DeclaredTriggersPanel
+              triggers={
+                (enableConfirm.manifest as ManifestWithTriggers | undefined)?.triggers ?? []
+              }
+            />
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("plugins.capabilities.deny")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const plugin = enableConfirm
+                setEnableConfirm(null)
+                if (plugin) void applyEnabled(plugin, true)
+              }}
+            >
+              {t("plugins.capabilities.allow")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
@@ -528,6 +600,23 @@ function PluginCard({
           <PluginCapabilityList
             pluginId={plugin.pluginId}
             emptyLabel={t("plugins.permissions.none")}
+          />
+        </div>
+
+        {(manifest as ManifestWithTriggers | undefined)?.triggers?.length ? (
+          <div className="space-y-2">
+            <h3 className="text-sm font-medium">{t("plugins.triggers.declaredTitle")}</h3>
+            <DeclaredTriggersPanel triggers={(manifest as ManifestWithTriggers).triggers ?? []} />
+          </div>
+        ) : null}
+
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium">
+            {t("plugins.triggers.activeTitle", { defaultValue: "Active triggers" })}
+          </h3>
+          <ActiveBackgroundPanel
+            pluginId={plugin.pluginId}
+            emptyLabel={t("plugins.triggers.none", { defaultValue: "No active triggers" })}
           />
         </div>
 

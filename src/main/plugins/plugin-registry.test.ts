@@ -318,6 +318,7 @@ function fakeSandbox(pluginModule?: PluginModule): PluginSandboxRuntime {
     }),
     disposeCommand: vi.fn(async () => {}),
     dispatchEvent: vi.fn<PluginSandboxRuntime["dispatchEvent"]>(async () => {}),
+    dispatchTrigger: vi.fn<PluginSandboxRuntime["dispatchTrigger"]>(async () => {}),
     abortPluginCapability: vi.fn(),
   }
 }

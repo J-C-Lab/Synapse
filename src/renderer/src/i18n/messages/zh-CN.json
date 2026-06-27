@@ -254,6 +254,42 @@
         "elevated": "提升"
       }
     },
+    "triggers": {
+      "declaredTitle": "已声明的后台触发器",
+      "activeTitle": "运行中的触发器",
+      "none": "无活跃触发器",
+      "enableConfirmTitle": "启用后台触发器？",
+      "enableConfirmBody": "启用后将注册下列触发器，并一次性授予其在后台可调用的能力（含已声明的全局快捷键、文件夹监视、网络访问、剪贴板读取等）。这是同意时刻，运行期不再逐次弹窗；超出预算会被静默拒绝并在面板中显示。",
+      "implicitFsWatchGrant": "fs:watch — 启用期间监视已声明目录",
+      "implicitHotkeyGrant": "hotkey:global — 启用期间注册已声明快捷键",
+      "clipboardDisclosureTitle": "剪贴板监视",
+      "clipboardDisclosureBody": "该插件在启用期间监视剪贴板变化。触发器事件仅含元数据；读取剪贴板全文需另行调用已声明的能力。",
+      "fsWatchDisclosureTitle": "文件系统监视",
+      "fsWatchDisclosureBody": "该插件在启用期间监视已声明的目录。事件仅含相对路径；解析或读取文件请通过 ctx.fs 调用。",
+      "hotkeyDisclosureTitle": "全局快捷键",
+      "hotkeyDisclosureBody": "该插件在启用期间注册全局键盘快捷键——即使 Synapse 未聚焦也会触发。系统快捷键（复制、粘贴、退出、Alt+F4 等）与启动器快捷键始终被禁止注册。",
+      "watchPaths": "监视路径：{{paths}}",
+      "hotkeyAccelerator": "快捷键：{{accelerator}}",
+      "hotkeyCaptureWarning": "启用后将全局接管 {{accelerator}}，即使 Synapse 未聚焦也会触发。",
+      "scheduleLine": "计划：{{schedule}}",
+      "handler": "处理器：{{handler}}",
+      "contentTypes": "内容类型：{{types}}",
+      "budgetLine": "每 {{period}} 最多 {{max}} 次",
+      "pause": "暂停",
+      "resume": "恢复",
+      "kill": "终止",
+      "paused": "触发器已暂停。",
+      "resumed": "触发器已恢复。",
+      "killed": "触发器已终止。",
+      "status": {
+        "ok": "正常",
+        "paused": "已暂停",
+        "throttled": "已限流",
+        "faulted": "故障",
+        "budget-exhausted": "预算耗尽",
+        "unknown": "未知"
+      }
+    },
     "toasts": {
       "enabled": "插件已启用。",
       "disabled": "插件已停用。",

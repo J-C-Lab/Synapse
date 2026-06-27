@@ -10,12 +10,16 @@ import {
 } from "./capabilities"
 
 describe("capability registry", () => {
-  it("exposes the nine known capabilities", () => {
+  it("exposes the thirteen known capabilities", () => {
     expect(capabilityIds().sort()).toEqual(
       [
         "clipboard:read",
         "clipboard:watch",
         "clipboard:write",
+        "fs:read",
+        "fs:resolvePath",
+        "fs:watch",
+        "hotkey:global",
         "network:https",
         "notification",
         "storage:plugin",
@@ -44,11 +48,16 @@ describe("capability registry", () => {
     expect(getCapability("clipboard:read")?.id).not.toBe(getCapability("clipboard:watch")?.id)
   })
 
-  it("registers exactly one live scope adapter (network:https)", () => {
-    // network:https owns a live adapter (wired in Task 12); every other
-    // capability is unscoped and carries no adapter — no false restriction.
+  it("registers scope adapters for scoped capabilities", () => {
+    const scoped = new Set([
+      "network:https",
+      "fs:watch",
+      "fs:read",
+      "fs:resolvePath",
+      "hotkey:global",
+    ])
     for (const cap of CAPABILITIES.values()) {
-      if (cap.id === "network:https") expect(cap.scopeAdapter).toBeDefined()
+      if (scoped.has(cap.id)) expect(cap.scopeAdapter).toBeDefined()
       else expect(cap.scopeAdapter).toBeUndefined()
     }
   })

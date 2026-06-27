@@ -103,6 +103,18 @@ export interface PluginEventRequest {
   payload: { content: ClipboardContent }
 }
 
+export interface PluginTriggerDispatch {
+  pluginId: string
+  triggerId: string
+  /** Capability-gate trigger label, e.g. "timer:t". */
+  trigger: string
+  /** Manifest handler path, e.g. "triggers.onTick". */
+  handler: string
+  invocationId: string
+  event: unknown
+  signal: AbortSignal
+}
+
 export interface PluginSandboxModule {
   pluginId: string
   manifest: PluginManifest
@@ -152,6 +164,7 @@ export interface PluginSandboxRuntime {
   invokeTool: (request: PluginToolInvokeRequest) => Promise<ToolResult>
   disposeCommand: (pluginId: string, commandId: string) => Promise<void>
   dispatchEvent: (request: PluginEventRequest) => Promise<void>
+  dispatchTrigger: (request: PluginTriggerDispatch) => Promise<void>
   abortPluginCapability: (pluginId: string, capability: string) => void
 }
 

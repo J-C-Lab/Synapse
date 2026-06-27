@@ -56,6 +56,7 @@ import { LauncherService } from "./ipc/launcher-service"
 import { registerMarketplaceIpc } from "./ipc/marketplace"
 import { registerMemoryIpc } from "./ipc/memory"
 import { registerPluginIpc } from "./ipc/plugins"
+import { registerTriggersIpc, TriggerIpcService } from "./ipc/triggers"
 import { registerUpdatesIpc } from "./ipc/updates"
 import { BonjourLanDiscoveryAdapter } from "./lan/bonjour-discovery-adapter"
 import { LanCredentialLoadError } from "./lan/credential-store"
@@ -317,6 +318,9 @@ function registerIpc(): void {
     pickPackageFile: pickSynapsePackageFile,
   })
   registerCapabilitiesIpc(ipcMain, capabilityService, {
+    isTrustedSender: isTrustedIpcSender,
+  })
+  registerTriggersIpc(ipcMain, new TriggerIpcService(() => plugins), {
     isTrustedSender: isTrustedIpcSender,
   })
   registerAiIpc(ipcMain, agent, { isTrustedSender: isTrustedIpcSender })
@@ -637,6 +641,7 @@ function initPluginHost(): PluginHost {
       prompt: capabilityService.grantPrompt,
       approve: capabilityService.capabilityApprover,
     },
+    reservedAccelerators: () => [launcher.getSettings().hotkey],
   })
 }
 

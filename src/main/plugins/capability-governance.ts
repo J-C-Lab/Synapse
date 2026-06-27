@@ -2,8 +2,9 @@ import type { ToolCaller } from "@synapse/plugin-sdk"
 import type { CapabilityApprover, CapabilityAuditEntry, GrantPromptPort } from "./capability-gate"
 import type { GrantIdentity } from "./grant-store"
 import type { PluginManifest, PluginSourceKind } from "./types"
+import { createHash } from "node:crypto"
 import * as path from "node:path"
-import { capabilityDeclarationHash } from "@synapse/plugin-manifest"
+import { capabilityDeclarationHash, triggerDeclarationHash } from "@synapse/plugin-manifest"
 import { createFileSink } from "../logging/file-sink"
 import { createCapabilityAudit } from "./capability-audit"
 import { GrantStore, grantStoreFilePath } from "./grant-store"
@@ -20,11 +21,17 @@ export function buildGrantIdentity(
   manifest: PluginManifest,
   sourceKind: PluginSourceKind
 ): GrantIdentity {
+  const capHash = capabilityDeclarationHash(manifest.capabilities)
+  const trigHash = triggerDeclarationHash(manifest.triggers ?? [])
+  const declarationHash = createHash("sha256")
+    .update(`${capHash}\n${trigHash}`)
+    .digest("hex")
+    .slice(0, 16)
   return {
     pluginId,
     publisherId: "unsigned",
     signingKeyFingerprint: `local:${sourceKind}`,
-    capabilityDeclarationHash: capabilityDeclarationHash(manifest.capabilities),
+    capabilityDeclarationHash: declarationHash,
   }
 }
 
