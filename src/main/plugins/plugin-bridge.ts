@@ -224,6 +224,7 @@ export class PluginBridge {
       actor: callerToActor(options.caller),
       trigger: `tool:${options.toolName}`,
       signal: options.signal,
+      invocationId: options.caller.invocationId,
     }
 
     return {
