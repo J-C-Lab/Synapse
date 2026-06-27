@@ -78,6 +78,7 @@ const ALL: CapabilityDescriptor[] = [
   { id: "fs:watch", tier: "elevated", scopeEnforced: true, scopeAdapter: fsPathAdapter },
   { id: "fs:read", tier: "consent", scopeEnforced: true, scopeAdapter: fsPathAdapter },
   { id: "fs:resolvePath", tier: "consent", scopeEnforced: true, scopeAdapter: fsPathAdapter },
+  { id: "fs:write", tier: "elevated", scopeEnforced: true, scopeAdapter: fsPathAdapter },
   { id: "hotkey:global", tier: "elevated", scopeEnforced: true, scopeAdapter: hotkeyScopeAdapter },
 ]
 
