@@ -88,6 +88,11 @@ const electronAPI = {
     ipcRenderer.invoke("capabilities:grant-resolve", { promptId, allow }),
   resolveCapabilityApproval: (promptId: string, allow: boolean) =>
     ipcRenderer.invoke("capabilities:approval-resolve", { promptId, allow }),
+  listPluginCredentials: (pluginId: string) => ipcRenderer.invoke("credentials:list", pluginId),
+  connectPluginCredential: (pluginId: string, credentialId: string) =>
+    ipcRenderer.invoke("credentials:connect", { pluginId, credentialId }),
+  disconnectPluginCredential: (pluginId: string, credentialId: string) =>
+    ipcRenderer.invoke("credentials:disconnect", { pluginId, credentialId }),
   listTriggers: () => ipcRenderer.invoke("triggers:list"),
   pauseTrigger: (pluginId: string, triggerId: string) =>
     ipcRenderer.invoke("triggers:pause", { pluginId, triggerId }),

@@ -258,6 +258,24 @@
       "title": "权限",
       "none": "未请求权限"
     },
+    "credentials": {
+      "title": "已连接账号",
+      "none": "未声明凭据",
+      "connect": "连接",
+      "reconnect": "重新连接",
+      "disconnectAccount": "断开账号",
+      "connected": "账号已连接。",
+      "disconnected": "账号已断开。",
+      "type": {
+        "static": "API 密钥",
+        "oauth": "OAuth"
+      },
+      "status": {
+        "connected": "已连接",
+        "disconnected": "未连接",
+        "needs-reconnect": "需要重新连接"
+      }
+    },
     "capabilities": {
       "granted": "已授权",
       "notGranted": "未授权",
@@ -348,7 +366,8 @@
       "fs:watch": "察觉新增或变化的文件",
       "fs:resolvePath": "定位允许文件夹中的文件",
       "hotkey:global": "使用全局快捷键",
-      "network:https": "访问网络"
+      "network:https": "访问网络",
+      "credentials:broker": "代表你使用已连接的账号"
     }
   },
   "marketplace": {

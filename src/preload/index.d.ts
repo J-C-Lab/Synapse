@@ -201,6 +201,15 @@ declare global {
     scopeEnforced: boolean
   }
 
+  interface SynapsePluginCredentialRow {
+    id: string
+    type: "static" | "oauth2-pkce"
+    label: Record<string, string> | string
+    status: "connected" | "disconnected" | "needs-reconnect"
+    injectSummary: string
+    pendingConnect: boolean
+  }
+
   interface SynapsePluginTriggerBudgetRow {
     capabilityId: string
     used: number
@@ -477,6 +486,17 @@ declare global {
       resolveCapabilityApproval: (
         promptId: string,
         allow: boolean
+      ) => Promise<SynapsePluginIpcResult<void>>
+      listPluginCredentials: (
+        pluginId: string
+      ) => Promise<SynapsePluginIpcResult<SynapsePluginCredentialRow[]>>
+      connectPluginCredential: (
+        pluginId: string,
+        credentialId: string
+      ) => Promise<SynapsePluginIpcResult<void>>
+      disconnectPluginCredential: (
+        pluginId: string,
+        credentialId: string
       ) => Promise<SynapsePluginIpcResult<void>>
       listTriggers: () => Promise<SynapsePluginIpcResult<SynapsePluginTriggerRow[]>>
       pauseTrigger: (pluginId: string, triggerId: string) => Promise<SynapsePluginIpcResult<void>>

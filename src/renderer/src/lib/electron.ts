@@ -35,6 +35,7 @@ export type LanPairing = SynapseLanPairing
 export type LanTransfer = SynapseLanTransfer
 export type PluginRegistryEntry = SynapsePluginRegistryEntry
 export type PluginCapabilityRow = SynapsePluginCapabilityRow
+export type PluginCredentialRow = SynapsePluginCredentialRow
 export type PluginTriggerRow = SynapsePluginTriggerRow
 export type CapabilityGrantRequestEvent = SynapseCapabilityGrantRequestEvent
 export type CapabilityApprovalRequestEvent = SynapseCapabilityApprovalRequestEvent
@@ -196,6 +197,24 @@ export async function listPluginCapabilities(pluginId: string): Promise<PluginCa
 
 export async function revokePluginCapability(pluginId: string, capability: string): Promise<void> {
   unwrapIpcResult(await api().revokePluginCapability(pluginId, capability))
+}
+
+export async function listPluginCredentials(pluginId: string): Promise<PluginCredentialRow[]> {
+  return unwrapIpcResult(await api().listPluginCredentials(pluginId))
+}
+
+export async function connectPluginCredential(
+  pluginId: string,
+  credentialId: string
+): Promise<void> {
+  unwrapIpcResult(await api().connectPluginCredential(pluginId, credentialId))
+}
+
+export async function disconnectPluginCredential(
+  pluginId: string,
+  credentialId: string
+): Promise<void> {
+  unwrapIpcResult(await api().disconnectPluginCredential(pluginId, credentialId))
 }
 
 export async function resolveCapabilityGrant(promptId: string, allow: boolean): Promise<void> {

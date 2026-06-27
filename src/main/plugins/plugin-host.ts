@@ -15,6 +15,8 @@ import type {
   CreateCapabilityGovernanceOptions,
 } from "./capability-governance"
 import type { ClipboardPollHub } from "./clipboard-adapter"
+import type { SecretPromptPort } from "./credential-secret-prompt"
+import type { SafeStoragePort } from "./credential-vault"
 import type { MigrationMarker } from "./grant-migration"
 import type { MarketplaceApi } from "./marketplace-api"
 import type { MarketplaceEntry } from "./marketplace-registry"
@@ -41,6 +43,7 @@ import { BackgroundInvoker } from "./background-invoker"
 import { CapabilityDenied, CapabilityGate } from "./capability-gate"
 import { buildGrantIdentity, createCapabilityGovernance } from "./capability-governance"
 import { createClipboardAdapter } from "./clipboard-adapter"
+import { createFixedSecretPrompt, CredentialBroker } from "./credential-broker"
 import { createElectronPluginAdapters } from "./electron-adapters"
 import { createFsWatchAdapter } from "./fs-watch-adapter"
 import { createMigrationMarker, migrateGrants } from "./grant-migration"
@@ -97,6 +100,9 @@ export interface PluginHostOptions {
   reservedAccelerators?: () => readonly string[]
   /** Supplies the currently selected chat provider/model for trigger-woken agents. */
   backgroundAgentProvider?: () => Promise<{ provider: ChatProvider; model?: string }>
+  safeStorage?: SafeStoragePort
+  secretPrompt?: SecretPromptPort
+  credentialBroker?: CredentialBroker
 }
 
 /**
@@ -141,6 +147,7 @@ export class PluginInstallError extends Error {
 
 export class PluginHost {
   readonly bridge: PluginBridge
+  readonly credentialBroker: CredentialBroker
   readonly sandbox: PluginSandbox
   readonly registry: PluginRegistry
   readonly tools: PluginToolBridge
@@ -182,6 +189,15 @@ export class PluginHost {
       ...options.capabilityGovernance,
       grants: this.grants,
     })
+    this.credentialBroker =
+      options.credentialBroker ??
+      new CredentialBroker({
+        userDataDir: options.userDataDir,
+        safeStorage: options.safeStorage ?? unavailableSafeStorage(),
+        secretPrompt: options.secretPrompt ?? createFixedSecretPrompt(null),
+        audit: this.capabilityGovernance.audit,
+        grants: this.grants,
+      })
     this.migrationMarker = options.migrationMarker ?? createMigrationMarker(options.userDataDir)
     let readClipboardForHost: () => Promise<ClipboardContent | undefined> = async () => undefined
     const clipboardPoll =
@@ -232,6 +248,8 @@ export class PluginHost {
       }),
       registerClipboardListener: (key, listener) =>
         this.clipboardPoll.registerContentListener(key, listener),
+      credentialBroker: this.credentialBroker,
+      invoker: this.invoker,
     })
     readClipboardForHost = () => this.bridge.readClipboardForHost()
     this.sandbox = new PluginSandbox({ bridge: this.bridge })
@@ -253,6 +271,15 @@ export class PluginHost {
       await this.registry.load(discovered)
       await migrateGrants(this.registry.list(), this.grants, this.migrationMarker)
       await this.syncTriggerRegistrations()
+      for (const entry of this.registry.list()) {
+        if (entry.manifest) {
+          await this.credentialBroker.armOAuthTimers(
+            entry.pluginId,
+            entry.manifest,
+            entry.source.kind
+          )
+        }
+      }
     } finally {
       this.registry.on("changed", this.handleRegistryChanged)
       await this.syncClipboardWatcher()
@@ -607,12 +634,41 @@ export class PluginHost {
     if (!entry) throw new Error(`Plugin not found: ${pluginId}`)
     if (!entry.manifest) throw new Error(`Plugin manifest unavailable: ${pluginId}`)
 
+    if (capability === "credentials:broker") {
+      for (const cred of entry.manifest.contributes.credentials ?? []) {
+        await this.credentialBroker.disconnect(pluginId, entry.manifest, entry.source.kind, cred.id)
+      }
+    }
+
     const identity = buildGrantIdentity(pluginId, entry.manifest, entry.source.kind)
     await this.grants.revoke(identity, capability, "user")
     this.triggerRegistry.deregisterPlugin(pluginId)
     this.registry.revokeCapability(pluginId, capability)
     this.bridge.revokeCapability(pluginId, capability)
     this.sandbox.abortPluginCapability(pluginId, capability)
+  }
+
+  listCredentials(pluginId: string) {
+    const entry = this.get(pluginId)
+    if (!entry?.manifest) return Promise.resolve([])
+    return this.credentialBroker.list(pluginId, entry.manifest, entry.source.kind)
+  }
+
+  async connectCredential(pluginId: string, credentialId: string): Promise<void> {
+    const entry = this.get(pluginId)
+    if (!entry?.manifest) throw new Error(`Plugin manifest unavailable: ${pluginId}`)
+    await this.credentialBroker.connect(pluginId, entry.manifest, entry.source.kind, credentialId)
+  }
+
+  async disconnectCredential(pluginId: string, credentialId: string): Promise<void> {
+    const entry = this.get(pluginId)
+    if (!entry?.manifest) throw new Error(`Plugin manifest unavailable: ${pluginId}`)
+    await this.credentialBroker.disconnect(
+      pluginId,
+      entry.manifest,
+      entry.source.kind,
+      credentialId
+    )
   }
 
   private preferencesFor(pluginId: string, manifest: PluginManifest): Record<string, unknown> {
@@ -1035,6 +1091,18 @@ function isInsideOrSameDirectory(target: string, parent: string): boolean {
 
 function isFileNotFound(err: unknown): boolean {
   return Boolean(err && typeof err === "object" && (err as { code?: string }).code === "ENOENT")
+}
+
+function unavailableSafeStorage(): SafeStoragePort {
+  return {
+    isEncryptionAvailable: () => false,
+    encryptString: () => {
+      throw new Error("system secure storage is unavailable")
+    },
+    decryptString: () => {
+      throw new Error("system secure storage is unavailable")
+    },
+  }
 }
 
 function validatePreferenceValue(

@@ -5,6 +5,7 @@ import {
   isEngineCompatible,
   ManifestValidationError,
   parseManifest,
+  validateCredentialDeclarations,
 } from "@synapse/plugin-manifest"
 import { PLUGIN_HOST_VERSION } from "./types"
 
@@ -45,6 +46,15 @@ export function parsePluginManifest(
     throw new ManifestValidationError("Plugin manifest targets an incompatible Synapse version", [
       `engines.synapse=${manifest.engines.synapse}, host=${hostVersion}`,
     ])
+  }
+
+  try {
+    validateCredentialDeclarations(manifest)
+  } catch (err) {
+    throw new ManifestValidationError(
+      err instanceof Error ? err.message : "Invalid credential declarations",
+      [err instanceof Error ? err.message : String(err)]
+    )
   }
 
   return manifest

@@ -258,6 +258,24 @@
       "title": "Permissions",
       "none": "No permissions requested"
     },
+    "credentials": {
+      "title": "Connected accounts",
+      "none": "No credentials declared",
+      "connect": "Connect",
+      "reconnect": "Reconnect",
+      "disconnectAccount": "Disconnect account",
+      "connected": "Account connected.",
+      "disconnected": "Account disconnected.",
+      "type": {
+        "static": "API key",
+        "oauth": "OAuth"
+      },
+      "status": {
+        "connected": "Connected",
+        "disconnected": "Disconnected",
+        "needs-reconnect": "Needs reconnect"
+      }
+    },
     "capabilities": {
       "granted": "Granted",
       "notGranted": "Not granted",
@@ -348,7 +366,8 @@
       "fs:watch": "Notice new or changed files",
       "fs:resolvePath": "Locate files in allowed folders",
       "hotkey:global": "Use a global keyboard shortcut",
-      "network:https": "Access the internet"
+      "network:https": "Access the internet",
+      "credentials:broker": "Use connected accounts on your behalf"
     }
   },
   "marketplace": {

@@ -10,6 +10,7 @@ import type {
   ToolCaller,
   ToolContext,
 } from "@synapse/plugin-sdk"
+import type { BackgroundInvoker } from "./background-invoker"
 import type {
   BudgetBreakerPort,
   CapabilityActor,
@@ -17,6 +18,7 @@ import type {
   CapabilityRequest,
 } from "./capability-gate"
 import type { CapabilityGovernance } from "./capability-governance"
+import type { CredentialBroker } from "./credential-broker"
 import type { NetworkFetcher } from "./network-fetcher"
 import type { PluginManifest, PluginSourceKind } from "./types"
 import { promises as fs } from "node:fs"
@@ -123,6 +125,8 @@ export interface PluginBridgeOptions {
   moveJournal?: MoveJournal
   notificationActions?: NotificationActionRegistry
   notificationActionTtlMs?: number
+  credentialBroker?: CredentialBroker
+  invoker?: BackgroundInvoker
 }
 
 /** Inputs the host supplies when building a `ToolContext` for one tool call. */
@@ -138,7 +142,7 @@ export interface ToolContextOptions {
 /** The capability slice shared by command and tool contexts. */
 type PluginCapabilities = Pick<
   PluginContext,
-  "storage" | "clipboard" | "notifications" | "system" | "network" | "fs" | "log"
+  "storage" | "clipboard" | "notifications" | "system" | "network" | "fs" | "credentials" | "log"
 >
 
 interface StorageState {
@@ -292,12 +296,24 @@ export class PluginBridge {
 
     // The fetcher runs its own gate.ensure inside fetch(), so network needs no
     // separate ensure() wrapper here. Track it per-plugin for revoke teardown.
+    const sourceKind = this.sourceKindFor(pluginId)
+    const invRecord = invocation.invocationId
+      ? this.options.invoker?.get(invocation.invocationId)
+      : undefined
+    const injectCredential = this.options.credentialBroker?.createInjectCredential({
+      pluginId,
+      manifest,
+      sourceKind,
+      isTriggerOrigin: this.budgetBreaker?.isTriggerOrigin(invocation.invocationId) ?? false,
+      allowedUses: invRecord?.allowedUses,
+    })
     const fetcher = createNetworkFetcher({
       gate,
       actor: invocation.actor,
       trigger: invocation.trigger,
       pluginId,
       invocationId: invocation.invocationId,
+      injectCredential,
     })
     this.registerFetcher(pluginId, fetcher)
 
@@ -357,8 +373,34 @@ export class PluginBridge {
           fetcher.fetchStream(url, withInvocationSignal(init, invocation.signal)),
       },
       fs: this.createFsAPI(pluginId, manifest, ensure),
+      credentials: this.createCredentialsAPI(pluginId, manifest, ensure, sourceKind),
       log: (...args) => {
         logger.child(`plugin:${pluginId}`).warn(args.map((arg) => String(arg)).join(" "))
+      },
+    }
+  }
+
+  private createCredentialsAPI(
+    pluginId: string,
+    manifest: PluginManifest,
+    ensure: (
+      request: Omit<CapabilityRequest, "actor" | "trigger" | "signal" | "invocationId">
+    ) => Promise<void>,
+    sourceKind: PluginSourceKind
+  ): PluginContext["credentials"] {
+    const broker = this.options.credentialBroker
+    const hasCredentials = (manifest.contributes.credentials?.length ?? 0) > 0
+    return {
+      status: async (id) => {
+        if (!hasCredentials) return "disconnected"
+        await ensure({ capability: "credentials:broker", operation: `status ${id}` })
+        if (!broker) return "disconnected"
+        return broker.status(pluginId, manifest, sourceKind, id)
+      },
+      requestConnect: async (id) => {
+        if (!hasCredentials) throw new Error(`credential ${id} is not declared`)
+        await ensure({ capability: "credentials:broker", operation: `requestConnect ${id}` })
+        broker?.requestConnect(pluginId, id)
       },
     }
   }

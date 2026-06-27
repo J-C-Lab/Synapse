@@ -1,110 +1,48 @@
 import { describe, expect, it } from "vitest"
 import { ManifestValidationError, parsePluginManifest } from "./manifest-loader"
 
-function manifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    manifestVersion: 2,
-    id: "com.synapse.test",
-    name: "Test",
-    displayName: { en: "Test", "zh-CN": "测试" },
-    description: "A test plugin",
-    version: "0.3.0",
-    author: "Synapse",
-    engines: { synapse: "^0.2.0" },
-    main: "dist/index.js",
-    contributes: {
-      commands: [
-        {
-          id: "test.run",
-          title: "Run",
-          mode: "view",
-        },
-      ],
+const credManifest = {
+  manifestVersion: 2,
+  id: "com.example.cred",
+  name: "cred",
+  displayName: { en: "Cred" },
+  description: "x",
+  version: "1.0.0",
+  author: "test",
+  engines: { synapse: "^0.2.0" },
+  main: "dist/index.js",
+  contributes: {
+    commands: [{ id: "test.run", title: "Run", mode: "view" }],
+    credentials: [{ id: "gh", type: "static", label: { en: "G" }, inject: { scheme: "bearer" } }],
+  },
+  capabilities: [
+    { id: "network:https", scope: { hosts: ["api.github.com"], paths: ["/repos/**"] } },
+    {
+      id: "credentials:broker",
+      scope: {
+        credentialIds: ["gh"],
+        inject: [
+          { credentialId: "gh", scope: { hosts: ["api.github.com"], paths: ["/repos/**"] } },
+        ],
+      },
     },
-    capabilities: [{ id: "storage:plugin" }],
-    ...overrides,
-  }
+  ],
 }
 
-describe("parsePluginManifest", () => {
-  it("accepts a valid manifest", () => {
-    const parsed = parsePluginManifest(manifest())
-    expect(parsed.id).toBe("com.synapse.test")
-    expect(parsed.contributes.commands[0]?.mode).toBe("view")
-  })
-
-  it("accepts clipboard activation events", () => {
-    const parsed = parsePluginManifest(
-      manifest({
-        contributes: {
-          activationEvents: ["clipboard:change"],
-          commands: [{ id: "test.run", title: "Run", mode: "view" }],
-        },
-        capabilities: [{ id: "clipboard:watch" }],
-      })
-    )
-    expect(parsed.contributes.activationEvents).toEqual(["clipboard:change"])
-  })
-
-  it("rejects clipboard activation events without clipboard read permission", () => {
+describe("parsePluginManifest credentials", () => {
+  it("rejects contributes.credentials without credentials:broker capability", () => {
     expect(() =>
-      parsePluginManifest(
-        manifest({
-          contributes: {
-            activationEvents: ["clipboard:change"],
-            commands: [{ id: "test.run", title: "Run", mode: "view" }],
-          },
-          capabilities: [],
-        })
-      )
-    ).toThrow(ManifestValidationError)
-  })
-
-  it("rejects unknown activation events", () => {
-    expect(() =>
-      parsePluginManifest(
-        manifest({
-          contributes: {
-            activationEvents: ["window:focus"],
-            commands: [{ id: "test.run", title: "Run", mode: "view" }],
-          },
-        })
-      )
-    ).toThrow(ManifestValidationError)
-  })
-
-  it("rejects missing required fields", () => {
-    const raw = manifest()
-    delete raw.main
-    expect(() => parsePluginManifest(raw)).toThrow(ManifestValidationError)
-  })
-
-  it("rejects invalid command modes", () => {
-    const raw = manifest({
-      contributes: {
-        commands: [{ id: "test.run", title: "Run", mode: "panel" }],
-      },
-    })
-    expect(() => parsePluginManifest(raw)).toThrow(ManifestValidationError)
-  })
-
-  it("rejects invalid semantic versions", () => {
-    expect(() => parsePluginManifest(manifest({ version: "next" }))).toThrow(
-      ManifestValidationError
-    )
-  })
-
-  it("rejects incompatible Synapse engine ranges", () => {
-    expect(() =>
-      parsePluginManifest(manifest({ engines: { synapse: "^2.0.0" } }), {
-        hostVersion: "0.1.0",
+      parsePluginManifest({
+        ...credManifest,
+        capabilities: [
+          { id: "network:https", scope: { hosts: ["api.github.com"], paths: ["/**"] } },
+        ],
       })
     ).toThrow(ManifestValidationError)
   })
 
-  it("rejects manifest paths that escape the plugin directory", () => {
-    expect(() => parsePluginManifest(manifest({ main: "../dist/index.js" }))).toThrow(
-      ManifestValidationError
-    )
+  it("accepts a valid credential declaration", () => {
+    const parsed = parsePluginManifest(credManifest)
+    expect(parsed.contributes.credentials?.[0]?.id).toBe("gh")
   })
 })

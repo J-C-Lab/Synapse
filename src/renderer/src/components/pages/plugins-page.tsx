@@ -7,6 +7,7 @@ import { toast } from "sonner"
 import { ActiveBackgroundPanel } from "@/components/plugins/active-background-panel"
 import { DeclaredTriggersPanel } from "@/components/plugins/declared-triggers-panel"
 import { PluginCapabilityList } from "@/components/plugins/plugin-capability-list"
+import { PluginCredentialsPanel } from "@/components/plugins/plugin-credentials-panel"
 import { localize } from "@/components/plugins/view-utils"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
@@ -683,6 +684,17 @@ function PluginDetails({
           emptyLabel={t("plugins.permissions.none")}
         />
       </div>
+
+      {(manifest?.contributes as { credentials?: unknown[] } | undefined)?.credentials?.length ? (
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium">{t("plugins.credentials.title")}</h3>
+          <PluginCredentialsPanel
+            pluginId={plugin.pluginId}
+            locale={locale}
+            emptyLabel={t("plugins.credentials.none")}
+          />
+        </div>
+      ) : null}
 
       {(manifest as ManifestWithTriggers | undefined)?.triggers?.length ? (
         <div className="space-y-2">

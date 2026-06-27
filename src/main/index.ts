@@ -51,6 +51,7 @@ import { registerAiIpc } from "./ipc/ai"
 import { CapabilityIpcService, registerCapabilitiesIpc } from "./ipc/capabilities"
 import { attachCapabilityPromptLifecycle } from "./ipc/capability-prompt-lifecycle"
 import { createCapabilityPromptSender } from "./ipc/capability-prompt-router"
+import { registerCredentialsIpc } from "./ipc/credentials"
 import { registerLanIpc } from "./ipc/lan"
 import { LauncherService } from "./ipc/launcher-service"
 import { registerMarketplaceIpc } from "./ipc/marketplace"
@@ -72,6 +73,7 @@ import { MarketplaceAccountService } from "./marketplace/account-service"
 import { marketplaceTokenFilePath, MarketplaceTokenStore } from "./marketplace/token-store"
 import { defaultNotificationIcon, showStartupNotification } from "./notifications"
 import { createCapabilityAudit } from "./plugins/capability-audit"
+import { createElectronSecretPrompt } from "./plugins/credential-broker"
 import { GrantStore, grantStoreFilePath } from "./plugins/grant-store"
 import { createMarketplaceApi } from "./plugins/marketplace-api"
 import { PluginHost } from "./plugins/plugin-host"
@@ -318,6 +320,9 @@ function registerIpc(): void {
     pickPackageFile: pickSynapsePackageFile,
   })
   registerCapabilitiesIpc(ipcMain, capabilityService, {
+    isTrustedSender: isTrustedIpcSender,
+  })
+  registerCredentialsIpc(ipcMain, () => plugins, {
     isTrustedSender: isTrustedIpcSender,
   })
   registerTriggersIpc(ipcMain, new TriggerIpcService(() => plugins), {
@@ -643,6 +648,15 @@ function initPluginHost(): PluginHost {
     },
     backgroundAgentProvider: () => agent.createBackgroundAgentProvider(),
     reservedAccelerators: () => [launcher.getSettings().hotkey],
+    safeStorage: {
+      isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+      encryptString: (plainText) => safeStorage.encryptString(plainText),
+      decryptString: (encrypted) => safeStorage.decryptString(encrypted),
+    },
+    secretPrompt: createElectronSecretPrompt(
+      () => BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0],
+      BrowserWindow
+    ),
   })
 }
 
@@ -720,8 +734,8 @@ async function disableFloatingBall(): Promise<void> {
 
 function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    width: 1024,
-    height: 720,
+    width: 1400,
+    height: 900,
     minWidth: 640,
     minHeight: 480,
     title: lanSimulation ? `Synapse - ${lanSimulation.deviceName}` : "Synapse",
