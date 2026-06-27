@@ -641,6 +641,7 @@ function initPluginHost(): PluginHost {
       prompt: capabilityService.grantPrompt,
       approve: capabilityService.capabilityApprover,
     },
+    backgroundAgentProvider: () => agent.createBackgroundAgentProvider(),
     reservedAccelerators: () => [launcher.getSettings().hotkey],
   })
 }

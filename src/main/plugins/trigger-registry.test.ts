@@ -1,10 +1,13 @@
 import type { TriggerDispatch } from "./trigger-registry"
+import type { PluginAgentTriggerDispatch } from "./types"
 import { describe, expect, it, vi } from "vitest"
 import { BackgroundInvoker } from "./background-invoker"
 import { AdmissionBreaker } from "./trigger-admission"
 import { TriggerRegistry } from "./trigger-registry"
 
-function setup(dispatchOverride?: TriggerDispatch) {
+function setup(
+  options: { dispatch?: TriggerDispatch; dispatchAgent?: PluginAgentTriggerDispatch } = {}
+) {
   const fires: Record<string, (e: unknown) => void> = {}
   const cronFires: Record<string, (e: unknown) => void> = {}
   const disposed: string[] = []
@@ -28,7 +31,13 @@ function setup(dispatchOverride?: TriggerDispatch) {
       return () => clipDisposed.push(key)
     },
   }
-  const fsWatchAdapter = { register: () => () => {} }
+  const fsFires: Record<string, (e: unknown) => void> = {}
+  const fsWatchAdapter = {
+    register: (pluginId: string, id: string, _scope: unknown, fire: (e: unknown) => void) => {
+      fsFires[`${pluginId}:${id}`] = fire
+      return () => {}
+    },
+  }
   const hotkeyFires: Record<string, (e: unknown) => void> = {}
   const hotkeyAdapter = {
     register: (pluginId: string, id: string, _scope: unknown, fire: (e: unknown) => void) => {
@@ -36,7 +45,10 @@ function setup(dispatchOverride?: TriggerDispatch) {
       return () => {}
     },
   }
-  const dispatch = vi.fn<TriggerDispatch>(dispatchOverride ?? (async () => {}))
+  const dispatch = vi.fn<TriggerDispatch>(options.dispatch ?? (async () => {}))
+  const dispatchAgent = options.dispatchAgent
+    ? vi.fn<PluginAgentTriggerDispatch>(options.dispatchAgent)
+    : undefined
   const invoker = new BackgroundInvoker(() => 0)
   const registry = new TriggerRegistry({
     admission: new AdmissionBreaker(() => 0),
@@ -46,11 +58,13 @@ function setup(dispatchOverride?: TriggerDispatch) {
     fsWatchAdapter: fsWatchAdapter as never,
     hotkeyAdapter: hotkeyAdapter as never,
     dispatch,
+    dispatchAgent,
   })
   return {
     registry,
     fires,
     cronFires,
+    fsFires,
     clipFires,
     hotkeyFires,
     invoker,
@@ -58,6 +72,7 @@ function setup(dispatchOverride?: TriggerDispatch) {
     cronDisposed,
     clipDisposed,
     dispatch,
+    dispatchAgent,
   }
 }
 
@@ -85,8 +100,10 @@ describe("triggerRegistry", () => {
 
   it("mints trigger invocations with host-only allowedUses", async () => {
     let allowedUses: unknown
-    const { registry, fires, invoker, dispatch } = setup(async (request) => {
-      allowedUses = invoker.get(request.invocationId)?.allowedUses
+    const { registry, fires, invoker, dispatch } = setup({
+      dispatch: async (request) => {
+        allowedUses = invoker.get(request.invocationId)?.allowedUses
+      },
     })
 
     registry.register("p", [TRIG])
@@ -94,6 +111,47 @@ describe("triggerRegistry", () => {
 
     await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1))
     expect(allowedUses).toEqual(TRIG.uses)
+  })
+
+  it("routes agent-budgeted fs watch triggers to the background agent", async () => {
+    let actor: unknown
+    const { registry, fsFires, invoker, dispatch, dispatchAgent } = setup({
+      dispatchAgent: async (request) => {
+        actor = invoker.get(request.invocationId)?.actor
+      },
+    })
+    const agent = {
+      maxRuns: 1,
+      period: "1d" as const,
+      maxToolCallsPerRun: 1,
+      maxTokensPerRun: 100,
+      timeoutMs: 1000,
+    }
+    const uses = [{ capability: "notification", budget: { maxCalls: 5, period: "1h" as const } }]
+
+    registry.register("p", [
+      {
+        id: "downloads",
+        type: "fs.watch",
+        handler: "triggers.onDownloads",
+        scope: { paths: ["~/Downloads/**"] },
+        uses,
+        agent,
+      },
+    ])
+    fsFires["p:downloads"]?.({ relativePath: "report.pdf" })
+
+    await vi.waitFor(() => expect(dispatchAgent).toHaveBeenCalledTimes(1))
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(actor).toBe("background-agent")
+    expect(dispatchAgent?.mock.calls[0]?.[0]).toMatchObject({
+      pluginId: "p",
+      triggerId: "downloads",
+      trigger: "fs.watch:downloads",
+      allowedUses: uses,
+      agent,
+      event: { relativePath: "report.pdf" },
+    })
   })
 
   it("deregisters one trigger without touching siblings", () => {

@@ -141,6 +141,13 @@ export class AgentService {
     return descriptor.create(apiKey)
   }
 
+  async createBackgroundAgentProvider(): Promise<{ provider: ChatProvider; model: string }> {
+    const { providerId, model } = await this.selection()
+    const apiKey = await this.options.credentials.get(providerId)
+    if (!apiKey) throw new AgentMissingKeyError()
+    return { provider: this.createProviderFor(providerId, apiKey), model }
+  }
+
   async getStatus(): Promise<AiStatus> {
     const { providerId, model } = await this.selection()
     const settings = this.options.settings ? await this.options.settings.get() : undefined

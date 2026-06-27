@@ -5,6 +5,7 @@ import type { FsWatchAdapter } from "./fs-watch-adapter"
 import type { HotkeyAdapter } from "./hotkey-adapter"
 import type { TimerAdapter } from "./timer-adapter"
 import type { AdmissionBreaker } from "./trigger-admission"
+import type { PluginAgentTriggerDispatch } from "./types"
 import { logger } from "../logging"
 
 export interface TriggerDispatch {
@@ -27,6 +28,7 @@ export interface TriggerRegistryDeps {
   fsWatchAdapter: FsWatchAdapter
   hotkeyAdapter: HotkeyAdapter
   dispatch: TriggerDispatch
+  dispatchAgent?: PluginAgentTriggerDispatch
 }
 
 interface TriggerRuntime {
@@ -153,21 +155,35 @@ export class TriggerRegistry {
     const record = this.deps.invoker.mint({
       pluginId,
       triggerId: decl.id,
-      actor: "background",
+      actor: decl.agent ? "background-agent" : "background",
       trigger: `${decl.type}:${decl.id}`,
       signal: invocationController.signal,
       allowedUses: decl.uses,
     })
     try {
-      await this.deps.dispatch({
-        pluginId,
-        triggerId: decl.id,
-        trigger: `${decl.type}:${decl.id}`,
-        handler: decl.handler,
-        invocationId: record.invocationId,
-        event,
-        signal: invocationController.signal,
-      })
+      if (decl.agent) {
+        if (!this.deps.dispatchAgent) throw new Error("background agent dispatcher not configured")
+        await this.deps.dispatchAgent({
+          pluginId,
+          triggerId: decl.id,
+          trigger: `${decl.type}:${decl.id}`,
+          invocationId: record.invocationId,
+          event,
+          signal: invocationController.signal,
+          allowedUses: decl.uses,
+          agent: decl.agent,
+        })
+      } else {
+        await this.deps.dispatch({
+          pluginId,
+          triggerId: decl.id,
+          trigger: `${decl.type}:${decl.id}`,
+          handler: decl.handler,
+          invocationId: record.invocationId,
+          event,
+          signal: invocationController.signal,
+        })
+      }
       this.deps.admission.recordSuccess(pluginId, decl.id)
     } catch (err) {
       this.deps.admission.recordFault(pluginId, decl.id)

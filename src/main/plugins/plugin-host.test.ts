@@ -1,4 +1,5 @@
 import type { ClipboardContent } from "@synapse/plugin-sdk"
+import type { ChatContentBlock, ChatProvider } from "../ai/providers/types"
 import type { TimerAdapter } from "./timer-adapter"
 import type { PluginCommandResult, PluginManifest, PluginRegistryEntry } from "./types"
 import { createHash } from "node:crypto"
@@ -6,6 +7,7 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { emptyUsage } from "../ai/providers/types"
 import { CapabilityIpcService } from "../ipc/capabilities"
 import { buildGrantIdentity } from "./capability-governance"
 import { GrantStore } from "./grant-store"
@@ -35,6 +37,22 @@ const noopAdapters = {
     openPath: async () => {},
     captureScreen: async () => ({ path: "" }),
   },
+}
+
+function fakeProvider(onStream?: () => void): ChatProvider {
+  return {
+    id: "fake",
+    async *stream() {
+      onStream?.()
+      const content: ChatContentBlock[] = [{ type: "text", text: "done" }]
+      yield {
+        type: "message",
+        message: { role: "assistant", content },
+        usage: emptyUsage(),
+        stopReason: "end_turn",
+      }
+    },
+  }
 }
 
 function hostOptions(
@@ -905,5 +923,56 @@ describe("pluginHost trigger registration", () => {
     expect(host.triggerSnapshot().some((s) => s.triggerId === "tick")).toBe(true)
     await host.setEnabled(pluginId, false)
     expect(host.triggerSnapshot().some((s) => s.triggerId === "tick")).toBe(false)
+  })
+
+  it("runs agent-budgeted triggers through the background agent dispatcher", async () => {
+    const fires: Record<string, Parameters<TimerAdapter["register"]>[2]> = {}
+    const timerAdapter: TimerAdapter = {
+      register: (id, _schedule, fire) => {
+        fires[id] = fire
+        return () => {}
+      },
+      registerCron: () => () => {},
+    }
+    const providerStreamed = vi.fn()
+    const host = new PluginHost(
+      hostOptions({
+        migrationMarker: migrationAlreadyDone(),
+        timerAdapter,
+        adapters: noopAdapters,
+        backgroundAgentProvider: async () => ({
+          provider: fakeProvider(providerStreamed),
+          model: "fake-model",
+        }),
+      })
+    )
+    const sandboxDispatch = vi.spyOn(host.sandbox, "dispatchTrigger")
+    const pluginId = "com.synapse.agent-trigger"
+    await writeHostPlugin({
+      id: pluginId,
+      permissions: ["notification"],
+      triggers: [
+        {
+          id: "tick",
+          type: "timer",
+          schedule: { intervalMs: 60_000 },
+          handler: "triggers.onTick",
+          uses: [{ capability: "notification", budget: { maxCalls: 1, period: "1h" } }],
+          agent: {
+            maxRuns: 1,
+            period: "1d",
+            maxToolCallsPerRun: 1,
+            maxTokensPerRun: 100,
+            timeoutMs: 1000,
+          },
+        },
+      ],
+    })
+
+    await host.init()
+    fires.tick?.({ scheduledAt: 0, firedAt: 1, driftMs: 0 })
+
+    await vi.waitFor(() => expect(providerStreamed).toHaveBeenCalledTimes(1))
+    expect(sandboxDispatch).not.toHaveBeenCalled()
   })
 })

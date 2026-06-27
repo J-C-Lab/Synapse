@@ -3,6 +3,7 @@
 // Imported for local use below and re-exported so existing `./types` imports
 // across the main process keep working unchanged.
 import type {
+  AgentTriggerBudget,
   CommandMode,
   ManifestCommand,
   ManifestPreference,
@@ -12,6 +13,7 @@ import type {
   NormalizedCapability,
   PluginActivationEvent,
   PluginManifest,
+  TriggerUse,
 } from "@synapse/plugin-manifest"
 
 import type {
@@ -113,6 +115,22 @@ export interface PluginTriggerDispatch {
   invocationId: string
   event: unknown
   signal: AbortSignal
+}
+
+export interface PluginAgentTriggerDispatchRequest {
+  pluginId: string
+  triggerId: string
+  /** Capability-gate trigger label, e.g. "fs.watch:downloads". */
+  trigger: string
+  invocationId: string
+  event: unknown
+  signal: AbortSignal
+  allowedUses: TriggerUse[]
+  agent: AgentTriggerBudget
+}
+
+export interface PluginAgentTriggerDispatch {
+  (request: PluginAgentTriggerDispatchRequest): Promise<void>
 }
 
 export interface PluginSandboxModule {
