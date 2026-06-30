@@ -194,7 +194,7 @@
                 "credentialId": "github",
                 "scope": {
                   "hosts": ["api.github.com"],
-                  "methods": ["GET"],
+                  "methods": ["GET", "PATCH", "PUT", "POST", "DELETE"],
                   "paths": ["/notifications/**", "/repos/**", "/user"]
                 }
               }

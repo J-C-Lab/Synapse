@@ -12,6 +12,20 @@ const identity = {
   capabilityDeclarationHash: "abc",
 }
 
+const githubManifestBrokerScope = {
+  credentialIds: ["github"],
+  inject: [
+    {
+      credentialId: "github",
+      scope: {
+        hosts: ["api.github.com"],
+        methods: ["GET", "PATCH", "PUT", "POST", "DELETE"],
+        paths: ["/notifications/**", "/repos/**", "/user"],
+      },
+    },
+  ],
+} as const
+
 const githubPollInboxTriggerUses = [
   {
     capability: "network:https",
@@ -24,19 +38,7 @@ const githubPollInboxTriggerUses = [
   },
   {
     capability: "credentials:broker",
-    scope: {
-      credentialIds: ["github"],
-      inject: [
-        {
-          credentialId: "github",
-          scope: {
-            hosts: ["api.github.com"],
-            methods: ["GET"],
-            paths: ["/notifications/**", "/repos/**", "/user"],
-          },
-        },
-      ],
-    },
+    scope: githubManifestBrokerScope,
     budget: { maxCalls: 80, period: "1h" as const },
   },
 ] as const
@@ -135,25 +137,21 @@ describe("grantTriggerUses", () => {
         path: "/notifications/threads/1",
       })
     ).toBe(true)
+    expect(
+      await store.isGranted(identity, "credentials:broker", {
+        credentialId: "github",
+        host: "api.github.com",
+        method: "POST",
+        path: "/repos/synapse/desktop/issues/1/comments",
+      })
+    ).toBe(true)
     await fs.rm(dir, { recursive: true, force: true })
   })
 
   it("does not replace a broader credentials:broker grant with a narrower trigger use", async () => {
     const dir = await fs.mkdtemp(path.join(tmpdir(), "synapse-trigger-grants-broker-"))
     const store = new GrantStore(grantStoreFilePath(dir))
-    const manifestBrokerScope = {
-      credentialIds: ["github"],
-      inject: [
-        {
-          credentialId: "github",
-          scope: {
-            hosts: ["api.github.com"],
-            methods: ["GET", "PATCH", "PUT", "POST", "DELETE"],
-            paths: ["/notifications/**", "/repos/**", "/user"],
-          },
-        },
-      ],
-    }
+    const manifestBrokerScope = githubManifestBrokerScope
     await store.grant(identity, "credentials:broker", "user", manifestBrokerScope)
 
     await grantTriggerUses(store, identity, [
