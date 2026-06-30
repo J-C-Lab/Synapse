@@ -2,6 +2,8 @@ import type { PluginManifest } from "./types"
 import * as path from "node:path"
 import { z } from "zod"
 import { capabilityIds, getCapability, stableStringify } from "./capabilities"
+import { declaredCredentialBrokerScopeContains } from "./credential-scope"
+import { declaredNetworkScopeContains } from "./network-scope"
 import { validateTriggers } from "./triggers"
 
 const idSchema = z
@@ -169,10 +171,14 @@ function toolCapabilityContained(
   if (!desc.scopeAdapter) return false
   const declaredScope = desc.scopeAdapter.canonicalize(top.scope)
   const toolScope = desc.scopeAdapter.canonicalize(toolCap.scope)
-  return (
-    stableStringify(declaredScope) === stableStringify(toolScope) ||
-    desc.scopeAdapter.contains(declaredScope, toolCap.scope)
-  )
+  if (stableStringify(declaredScope) === stableStringify(toolScope)) return true
+  if (toolCap.id === "network:https") {
+    return declaredNetworkScopeContains(top.scope, toolCap.scope)
+  }
+  if (toolCap.id === "credentials:broker") {
+    return declaredCredentialBrokerScopeContains(top.scope, toolCap.scope)
+  }
+  return desc.scopeAdapter.contains(declaredScope, toolCap.scope)
 }
 
 const triggerBudgetSchema = z

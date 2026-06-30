@@ -2,7 +2,12 @@ import type { AgentTriggerBudget, NormalizedCapability, TriggerUse } from "@syna
 import type { AgentRunResult } from "./agent-runtime"
 import type { ChatMessage, ChatProvider, ProviderStreamEvent } from "./providers/types"
 import type { ToolHostPort } from "./tool-registry"
-import { getCapability, stableStringify } from "@synapse/plugin-manifest"
+import {
+  declaredCredentialBrokerScopeContains,
+  declaredNetworkScopeContains,
+  getCapability,
+  stableStringify,
+} from "@synapse/plugin-manifest"
 import { AgentBudgetLedger } from "../plugins/agent-budget"
 import { AgentRuntime } from "./agent-runtime"
 import { emptyUsage, totalTokens } from "./providers/types"
@@ -128,10 +133,14 @@ function triggerUseContainsCapability(use: TriggerUse, requested: NormalizedCapa
   if (use.scope === undefined || requested.scope === undefined) return false
   const allowedScope = descriptor.scopeAdapter.canonicalize(use.scope)
   const requestedScope = descriptor.scopeAdapter.canonicalize(requested.scope)
-  return (
-    stableStringify(allowedScope) === stableStringify(requestedScope) ||
-    descriptor.scopeAdapter.contains(allowedScope, requested.scope)
-  )
+  if (stableStringify(allowedScope) === stableStringify(requestedScope)) return true
+  if (requested.id === "network:https") {
+    return declaredNetworkScopeContains(use.scope, requested.scope)
+  }
+  if (requested.id === "credentials:broker") {
+    return declaredCredentialBrokerScopeContains(use.scope, requested.scope)
+  }
+  return descriptor.scopeAdapter.contains(allowedScope, requested.scope)
 }
 
 function backgroundUserMessage(input: BackgroundAgentRunInput): ChatMessage {

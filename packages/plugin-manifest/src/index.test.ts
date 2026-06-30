@@ -274,6 +274,66 @@ describe("parseManifest — tools", () => {
     expect(parsed.contributes.tools?.[0]?.capabilities).toEqual([{ id: "storage:plugin" }])
   })
 
+  it("accepts scoped tool capabilities that are subsets of the plugin declaration", () => {
+    const networkScope = {
+      hosts: ["api.github.com"],
+      methods: ["GET", "PATCH", "PUT", "POST", "DELETE"],
+      paths: ["/notifications/**", "/repos/**", "/user"],
+    }
+    const brokerScope = {
+      credentialIds: ["github"],
+      inject: [
+        {
+          credentialId: "github",
+          scope: networkScope,
+        },
+      ],
+    }
+    const parsed = parseManifest(
+      manifest({
+        contributes: {
+          commands: [{ id: "test.run", title: "Run", mode: "view" }],
+          tools: [
+            tool({
+              name: "readInbox",
+              capabilities: [
+                {
+                  id: "network:https",
+                  scope: {
+                    hosts: ["api.github.com"],
+                    methods: ["GET"],
+                    paths: ["/notifications/**", "/repos/**", "/user"],
+                  },
+                },
+                {
+                  id: "credentials:broker",
+                  scope: {
+                    credentialIds: ["github"],
+                    inject: [
+                      {
+                        credentialId: "github",
+                        scope: {
+                          hosts: ["api.github.com"],
+                          methods: ["GET"],
+                          paths: ["/notifications/**", "/repos/**", "/user"],
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            }),
+          ],
+        },
+        capabilities: [
+          { id: "network:https", scope: networkScope },
+          { id: "credentials:broker", scope: brokerScope },
+        ],
+      })
+    )
+    expect(parsed.contributes.tools?.[0]?.name).toBe("readInbox")
+  })
+
   it("rejects a non-object input schema", () => {
     expect(() =>
       parseManifest(

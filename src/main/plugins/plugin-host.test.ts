@@ -976,3 +976,38 @@ describe("pluginHost trigger registration", () => {
     expect(sandboxDispatch).not.toHaveBeenCalled()
   })
 })
+
+describe("github inbox bundled plugin", () => {
+  it("registers GitHub Inbox tools with safe approval annotations", async () => {
+    const host = new PluginHost({
+      userDataDir: dir,
+      resourcesDir: path.resolve("resources"),
+      adapters: noopAdapters,
+      capabilityGovernance: {
+        userDataDir: dir,
+        approve: async () => true,
+        prompt: async () => true,
+      },
+    })
+
+    await host.init()
+    const tools = host.listTools().filter((tool) => tool.pluginId === "com.synapse.github-inbox")
+
+    expect(tools.map((tool) => tool.manifestTool.name)).toEqual([
+      "getInboxSnapshot",
+      "executeGitHubAction",
+    ])
+    expect(
+      tools.find((tool) => tool.manifestTool.name === "getInboxSnapshot")?.manifestTool.annotations
+    ).toMatchObject({
+      readOnlyHint: true,
+    })
+    expect(
+      tools.find((tool) => tool.manifestTool.name === "executeGitHubAction")?.manifestTool
+        .annotations
+    ).toMatchObject({
+      destructiveHint: true,
+      requiresConfirmation: true,
+    })
+  })
+})
