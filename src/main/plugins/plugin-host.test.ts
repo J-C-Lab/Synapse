@@ -1,5 +1,6 @@
 import type { ClipboardContent } from "@synapse/plugin-sdk"
 import type { ChatContentBlock, ChatProvider } from "../ai/providers/types"
+import type { FsWatchAdapter } from "./fs-watch-adapter"
 import type { TimerAdapter } from "./timer-adapter"
 import type { PluginCommandResult, PluginManifest, PluginRegistryEntry } from "./types"
 import { createHash } from "node:crypto"
@@ -37,6 +38,10 @@ const noopAdapters = {
     openPath: async () => {},
     captureScreen: async () => ({ path: "" }),
   },
+}
+
+const noopFsWatchAdapter: FsWatchAdapter = {
+  register: () => () => {},
 }
 
 function fakeProvider(onStream?: () => void): ChatProvider {
@@ -989,6 +994,7 @@ describe("github inbox bundled plugin", () => {
       userDataDir: dir,
       resourcesDir: path.resolve("resources"),
       adapters: noopAdapters,
+      fsWatchAdapter: noopFsWatchAdapter,
       capabilityGovernance: {
         userDataDir: dir,
         approve: async () => true,

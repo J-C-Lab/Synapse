@@ -4,6 +4,7 @@ import type {
   ChatProvider,
   ProviderToolSchema,
 } from "../ai/providers/types"
+import type { FsWatchAdapter } from "./fs-watch-adapter"
 import type { TimerAdapter } from "./timer-adapter"
 import { promises as fs } from "node:fs"
 import * as os from "node:os"
@@ -13,6 +14,10 @@ import { emptyUsage } from "../ai/providers/types"
 import { PluginHost } from "./plugin-host"
 
 let dir: string
+
+const noopFsWatchAdapter: FsWatchAdapter = {
+  register: () => () => {},
+}
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-github-inbox-"))
@@ -40,6 +45,7 @@ describe("github inbox plugin", () => {
       userDataDir: dir,
       resourcesDir: path.resolve("resources"),
       timerAdapter,
+      fsWatchAdapter: noopFsWatchAdapter,
       adapters: {
         clipboard: { read: async () => undefined, write: async () => {} },
         notifications: { show: async () => {} },
