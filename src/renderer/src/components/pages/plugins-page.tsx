@@ -7,6 +7,7 @@ import { toast } from "sonner"
 import { ActiveBackgroundPanel } from "@/components/plugins/active-background-panel"
 import { DeclaredTriggersPanel } from "@/components/plugins/declared-triggers-panel"
 import { PluginCapabilityList } from "@/components/plugins/plugin-capability-list"
+import { PluginCapabilityProfileCard } from "@/components/plugins/plugin-capability-profile"
 import { PluginCredentialsPanel } from "@/components/plugins/plugin-credentials-panel"
 import { localize } from "@/components/plugins/view-utils"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -41,6 +42,7 @@ import {
 } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
+import { useCapabilityProfile } from "@/hooks/use-capability-profile"
 import {
   droppedFilePath,
   ElectronIpcError,
@@ -656,6 +658,7 @@ function PluginDetails({
 }) {
   const { t } = useTranslation()
   const manifest = plugin.manifest
+  const profile = useCapabilityProfile(plugin.pluginId)
   const reloadPending = pending === `reload:${plugin.pluginId}`
   const uninstallPending = pending === `uninstall:${plugin.pluginId}`
   const canUninstall = plugin.source.kind !== "builtin"
@@ -679,6 +682,7 @@ function PluginDetails({
 
       <div className="space-y-2">
         <h3 className="text-sm font-medium">{t("plugins.permissions.title")}</h3>
+        {profile ? <PluginCapabilityProfileCard profile={profile} /> : null}
         <PluginCapabilityList
           pluginId={plugin.pluginId}
           emptyLabel={t("plugins.permissions.none")}

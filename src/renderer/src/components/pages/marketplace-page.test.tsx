@@ -25,6 +25,8 @@ const mocks = vi.hoisted(() => ({
   searchMarketplace: vi.fn(),
   listPlugins: vi.fn(),
   getMarketplaceDetail: vi.fn(),
+  getPluginCapabilityProfile: vi.fn().mockResolvedValue(null),
+  previewPluginCapabilityProfile: vi.fn().mockResolvedValue(null),
   installMarketplaceBackendPlugin: vi.fn(),
   onPluginRegistryChanged: vi.fn(() => () => undefined),
   getMarketplaceAccount: vi.fn(),

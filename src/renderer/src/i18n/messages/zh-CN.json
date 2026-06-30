@@ -370,6 +370,41 @@
       "credentials:broker": "代表你使用已连接的账号"
     }
   },
+  "profile": {
+    "title": "能力",
+    "risk": { "low": "低风险", "medium": "中风险", "high": "高风险" },
+    "grant": {
+      "partial": "部分已授权",
+      "active": "已授权"
+    },
+    "summary": {
+      "cloud": "连接 {{hosts}}",
+      "cloudPending": "请求访问 {{hosts}}（尚未授权）",
+      "credentialsBrokered": "凭证由 Synapse 保管，插件读不到你的 token",
+      "credentialsBrokeredPending": "连接并授权后可使用托管凭证",
+      "background": "在后台运行",
+      "backgroundPending": "含后台自动化（能力授权后才会运行）",
+      "localRead": "读取你授权范围内的本地文件",
+      "localReadPending": "可在允许目录内读取本地文件（尚未授权）",
+      "agentCallable": "向 agent 暴露 {{count}} 个可调用工具"
+    },
+    "warning": {
+      "remoteWriteback": "可写回远端服务；写回需你确认",
+      "remoteWritebackPending": "网络授权后可写回远端服务",
+      "localWrite": "可在你允许的目录内写入本地文件",
+      "localWritePending": "写入授权生效后可修改本地文件",
+      "approvalRequired": "高危动作需逐次确认",
+      "unknownCapability": "声明了当前版本不识别的能力",
+      "ungrantedCapabilities": "部分声明的能力尚未授权"
+    },
+    "control": {
+      "revoke": "可撤销",
+      "disconnect": "断开凭证",
+      "pause-background": "暂停后台",
+      "approval-required": "需确认",
+      "audit": "可审计"
+    }
+  },
   "marketplace": {
     "title": "应用市场",
     "subtitle": "发现并安装 Synapse 插件。",

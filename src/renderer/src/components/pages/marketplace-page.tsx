@@ -25,6 +25,7 @@ import {
 import { useCallback, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
+import { PluginCapabilityProfileCard } from "@/components/plugins/plugin-capability-profile"
 import { localize } from "@/components/plugins/view-utils"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -43,6 +44,7 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/h
 import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { useCapabilityProfile, useCatalogCapabilityProfile } from "@/hooks/use-capability-profile"
 import {
   ElectronIpcError,
   getMarketplaceAccount,
@@ -982,6 +984,9 @@ function PluginDetailDialog({
   const manifest = latest?.manifestSnapshot
   const capabilities = (manifest?.capabilities ?? []).map((cap) => cap.id)
   const tools = manifest?.contributes.tools ?? []
+  const installedProfile = useCapabilityProfile(installed?.pluginId ?? undefined)
+  const catalogProfile = useCatalogCapabilityProfile(manifest, Boolean(installed))
+  const profile = installedProfile ?? catalogProfile
 
   async function install() {
     if (!detail || !latest) return
@@ -1066,6 +1071,8 @@ function PluginDetailDialog({
             </div>
 
             {canRate && <RatingControl myStars={myStars} onRate={rate} />}
+
+            {profile ? <PluginCapabilityProfileCard profile={profile} /> : null}
 
             <section className="space-y-2">
               <h3 className="flex items-center gap-2 text-sm font-medium">
