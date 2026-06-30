@@ -82,7 +82,7 @@ jobs:
       # NOTE: actions/cache uses minimatch internally, which requires forward
       # slashes even on Windows — backslash paths silently match nothing.
       - name: Cache Electron binaries
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/electron
