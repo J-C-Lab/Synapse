@@ -6,6 +6,7 @@ import type { SearchWindowDeps } from "./search-window"
 import type { AutoUpdaterPort } from "./updates/update-service"
 import { Buffer } from "node:buffer"
 import { spawn } from "node:child_process"
+import * as os from "node:os"
 import * as path from "node:path"
 import process from "node:process"
 import { pathToFileURL } from "node:url"
@@ -43,6 +44,8 @@ import {
   PluginIntrospectionToolSource,
 } from "./ai/plugin-introspection-tools"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/catalog"
+import { createNodeShellExecutor } from "./ai/shell/shell-executor"
+import { SHELL_FQ_PREFIX, ShellToolSource } from "./ai/shell/shell-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
 import {
   destroyFloatingBallWindow,
@@ -562,6 +565,8 @@ function coercePatch(value: unknown): Partial<{
   floatingBallFeatures: "appLauncher"[]
   lanEnabled: boolean
   trustedSourcePolicy: "official-marketplace" | "any-url" | "local-syn"
+  allowAgentShell?: boolean
+  agentShellRoots?: string[]
 }> {
   if (!value || typeof value !== "object") return {}
   const v = value as Record<string, unknown>
@@ -592,6 +597,10 @@ function coercePatch(value: unknown): Partial<{
     v.trustedSourcePolicy === "local-syn"
   ) {
     out.trustedSourcePolicy = v.trustedSourcePolicy
+  }
+  if (typeof v.allowAgentShell === "boolean") out.allowAgentShell = v.allowAgentShell
+  if (Array.isArray(v.agentShellRoots)) {
+    out.agentShellRoots = v.agentShellRoots.filter((p): p is string => typeof p === "string")
   }
   return out
 }
@@ -700,18 +709,33 @@ function createAgentService(): AgentService {
     )
   )
 
+  function effectiveShellRoots(): string[] {
+    const roots = launcher.getSettings().agentShellRoots
+    return roots.length > 0 ? roots : [os.homedir()]
+  }
+
+  const shellSource = new ShellToolSource({
+    executor: createNodeShellExecutor({ timeoutMs: 30_000, maxOutputBytes: 100_000 }),
+    allowedRoots: effectiveShellRoots,
+    defaultCwd: () => effectiveShellRoots()[0]!,
+    enabled: () => launcher.getSettings().allowAgentShell,
+    audit: (entry) => logger.child("ai").info("agent shell", { ...entry }),
+  })
+
   // The model sees one flat tool list: local plugin tools, external MCP tools
-  // (`mcp:<id>/<tool>`), and built-in memory tools (`memory:…`). Invocations
-  // route by ownership.
+  // (`mcp:<id>/<tool>`), built-in memory tools (`memory:…`), and optionally
+  // governed shell (`shell:…`). Invocations route by ownership.
   const tools = new AiToolRegistry(
     new CompositeToolHost([
       introspectionSource,
+      shellSource,
       asFallbackSource(
         plugins,
         (fqName) =>
           fqName.startsWith(MCP_FQ_PREFIX) ||
           fqName.startsWith(MEMORY_FQ_PREFIX) ||
-          fqName.startsWith(PLUGIN_INTROSPECT_PREFIX)
+          fqName.startsWith(PLUGIN_INTROSPECT_PREFIX) ||
+          fqName.startsWith(SHELL_FQ_PREFIX)
       ),
       manager,
       new MemoryToolSource(memory),
@@ -721,6 +745,7 @@ function createAgentService(): AgentService {
   return new AgentService({
     credentials,
     tools,
+    getShellEnabled: () => launcher.getSettings().allowAgentShell,
     conversations: new ConversationStore(path.join(userDataDir, "ai", "conversations")),
     providers: defaultProviderCatalog(),
     settings: new AiSettingsStore(aiSettingsFilePath(userDataDir), DEFAULT_PROVIDER_ID),
