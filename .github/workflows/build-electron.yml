@@ -3,7 +3,7 @@ name: Build Electron
 # ============================================================================
 # Electron Desktop Application Build
 # ============================================================================
-# Builds the Electron desktop application for Windows, macOS, and Linux.
+# Builds the Electron desktop application for Windows and macOS.
 # This workflow works OUT-OF-THE-BOX without requiring any secrets.
 #
 # OPTIONAL SECRETS (for code signing - DISABLED by default):
@@ -35,9 +35,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: ubuntu-latest
-            arch: x64
-            build_flag: --linux
           - platform: windows-latest
             arch: x64
             build_flag: --win

@@ -9,7 +9,7 @@ name: CI/CD Pipeline
 # Workflow Structure:
 # ├── quality.yml        - Code quality & security checks (ESLint, TypeScript, audit)
 # ├── test.yml           - Test suite with coverage & electron-vite build
-# ├── build-electron.yml - Electron desktop app builds (Windows, macOS, Linux)
+# ├── build-electron.yml - Electron desktop app builds (Windows, macOS)
 # └── release.yml        - GitHub release creation (triggered by version tags)
 #
 # This workflow works OUT-OF-THE-BOX without requiring any secrets.
