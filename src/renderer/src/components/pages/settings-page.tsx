@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next"
+import { AgentShellSettings } from "@/components/agent-shell-settings"
 import { AppearanceSettings } from "@/components/appearance-settings"
 import { FloatingBallSettings } from "@/components/floating-ball-settings"
 import { LauncherSettings } from "@/components/launcher-settings"
@@ -16,6 +17,7 @@ export function SettingsPage() {
       <TrustedSourceSettings />
       <FloatingBallSettings />
       <LauncherSettings />
+      <AgentShellSettings />
     </div>
   )
 }

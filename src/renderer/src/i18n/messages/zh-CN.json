@@ -137,7 +137,13 @@
   },
   "settings": {
     "title": "设置",
-    "subtitle": "调整外观和功能行为。"
+    "subtitle": "调整外观和功能行为。",
+    "agentShell": {
+      "title": "允许助手运行本地命令",
+      "description": "高危。助手可在你的电脑上执行 shell 命令。每条命令都需你确认，且仅在允许的目录内运行。命令一旦执行无法做细粒度限网/限路径。",
+      "rootsLabel": "允许的目录",
+      "rootsEmpty": "未设置时默认为你的主目录。"
+    }
   },
   "trustedSources": {
     "title": "可信插件来源",
