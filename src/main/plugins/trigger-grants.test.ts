@@ -84,6 +84,88 @@ describe("grantTriggerUses", () => {
     await fs.rm(dir, { recursive: true, force: true })
   })
 
+  it("does not replace a broader credentials:broker grant with a narrower trigger use", async () => {
+    const dir = await fs.mkdtemp(path.join(tmpdir(), "synapse-trigger-grants-broker-"))
+    const store = new GrantStore(grantStoreFilePath(dir))
+    const manifestBrokerScope = {
+      credentialIds: ["github"],
+      inject: [
+        {
+          credentialId: "github",
+          scope: {
+            hosts: ["api.github.com"],
+            methods: ["GET", "PATCH", "PUT", "POST", "DELETE"],
+            paths: ["/notifications/**", "/repos/**", "/user"],
+          },
+        },
+      ],
+    }
+    await store.grant(identity, "credentials:broker", "user", manifestBrokerScope)
+
+    await grantTriggerUses(store, identity, [
+      {
+        id: "poll-inbox",
+        type: "timer",
+        schedule: { intervalMs: 3_600_000 },
+        handler: "triggers.onPollInbox",
+        uses: [
+          {
+            capability: "credentials:broker",
+            scope: { credentialIds: ["github"] },
+            budget: { maxCalls: 80, period: "1h" },
+          },
+        ],
+      },
+    ])
+
+    const broker = (await store.list(identity)).find((r) => r.capabilityId === "credentials:broker")
+    expect(broker?.grantScope).toEqual(manifestBrokerScope)
+    expect(
+      await store.isGranted(identity, "credentials:broker", {
+        credentialId: "github",
+        host: "api.github.com",
+        method: "GET",
+        path: "/notifications/threads/1",
+      })
+    ).toBe(true)
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  it("does not replace a broader network:https grant with a narrower trigger use", async () => {
+    const dir = await fs.mkdtemp(path.join(tmpdir(), "synapse-trigger-grants-network-"))
+    const store = new GrantStore(grantStoreFilePath(dir))
+    const manifestNetworkScope = {
+      hosts: ["api.github.com"],
+      methods: ["GET", "PATCH", "PUT", "POST", "DELETE"],
+      paths: ["/notifications/**", "/repos/**", "/user"],
+    }
+    await store.grant(identity, "network:https", "user", manifestNetworkScope)
+
+    await grantTriggerUses(store, identity, [
+      {
+        id: "poll-inbox",
+        type: "timer",
+        schedule: { intervalMs: 3_600_000 },
+        handler: "triggers.onPollInbox",
+        uses: [
+          {
+            capability: "network:https",
+            scope: {
+              hosts: ["api.github.com"],
+              methods: ["GET"],
+              paths: ["/notifications/**", "/repos/**", "/user"],
+            },
+            budget: { maxCalls: 80, period: "1h" },
+          },
+        ],
+      },
+    ])
+
+    const network = (await store.list(identity)).find((r) => r.capabilityId === "network:https")
+    expect(network?.grantScope).toEqual(manifestNetworkScope)
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
   it("revokes non-auto trigger uses on disable", async () => {
     const dir = await fs.mkdtemp(path.join(tmpdir(), "synapse-trigger-grants-"))
     const store = new GrantStore(grantStoreFilePath(dir))
