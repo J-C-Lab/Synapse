@@ -59,6 +59,8 @@ export interface AgentServiceOptions {
     configs: McpServerConfigStore
     manager: McpClientManager
   }
+  /** Whether run_shell is available (drives routing guidance). */
+  getShellEnabled?: () => boolean
 }
 
 export class AgentMissingKeyError extends Error {
@@ -262,6 +264,7 @@ export class AgentService {
       tools: this.options.tools,
       model,
       budgetTokens: budgetTokens > 0 ? budgetTokens : undefined,
+      shellEnabled: this.options.getShellEnabled?.() ?? false,
     })
 
     const existing = await this.options.conversations.get(conversationId)

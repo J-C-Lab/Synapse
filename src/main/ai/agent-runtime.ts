@@ -14,6 +14,21 @@ const DEFAULT_SYSTEM_PROMPT =
   "You are Synapse's built-in assistant. Help the user using the available tools. " +
   "Call a tool when it can answer precisely; otherwise answer directly and concisely."
 
+const ROUTING_GUIDANCE_BASE =
+  "When a task matches an installed plugin's specialty — cloud services with brokered " +
+  "credentials, governed/approved writeback, revocable or audited actions, or a specific " +
+  "declared scenario — prefer that plugin, and call describe_plugin first to confirm its " +
+  "capability boundary. Plugins exist for what shell and scripts cannot safely do."
+
+const ROUTING_GUIDANCE_SHELL =
+  " Use run_shell only for general, local, scriptable tasks where no suitable plugin exists; " +
+  "it always requires user confirmation."
+
+export function buildSystemPrompt(base: string, opts: { shellEnabled: boolean }): string {
+  const guidance = ROUTING_GUIDANCE_BASE + (opts.shellEnabled ? ROUTING_GUIDANCE_SHELL : "")
+  return `${base}\n\n${guidance}`
+}
+
 export interface AgentRuntimeOptions {
   provider: ChatProvider
   tools: AiToolRegistry
@@ -27,6 +42,8 @@ export interface AgentRuntimeOptions {
    */
   budgetTokens?: number
   defaultSystem?: string
+  /** Whether the governed run_shell tool is available this run (drives routing guidance). */
+  shellEnabled?: boolean
 }
 
 export interface ApprovalRequest {
@@ -69,7 +86,8 @@ export class AgentRuntime {
     const maxSteps = this.options.maxSteps ?? 10
     const maxTokens = this.options.maxTokens ?? 4096
     const budgetTokens = this.options.budgetTokens
-    const system = options.system ?? this.options.defaultSystem ?? DEFAULT_SYSTEM_PROMPT
+    const base = options.system ?? this.options.defaultSystem ?? DEFAULT_SYSTEM_PROMPT
+    const system = buildSystemPrompt(base, { shellEnabled: this.options.shellEnabled ?? false })
     let usage = emptyUsage()
 
     for (let step = 0; step < maxSteps; step++) {
