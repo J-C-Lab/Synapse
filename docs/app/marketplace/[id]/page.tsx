@@ -2,7 +2,48 @@ import type { PluginDetailResponse } from "@synapsepkg/marketplace-types"
 import type { Metadata } from "next"
 import Link from "next/link"
 import { notFound } from "next/navigation"
+import { derivePluginProfile, type ProfileLine } from "@synapsepkg/plugin-manifest"
 import { fetchPlugin, localize } from "@/lib/marketplace"
+
+const PROFILE_SUMMARY: Record<string, string> = {
+  "profile.summary.cloud": "Connects to {{hosts}}",
+  "profile.summary.cloudPending": "Requests access to {{hosts}} (not yet granted)",
+  "profile.summary.credentialsBrokered":
+    "Credentials are held by Synapse; the plugin cannot read your token",
+  "profile.summary.credentialsBrokeredPending":
+    "May use brokered credentials after you connect and grant access",
+  "profile.summary.background": "Runs in the background",
+  "profile.summary.backgroundPending":
+    "Has background automation (not active until capabilities are granted)",
+  "profile.summary.localRead": "Reads local files you scope",
+  "profile.summary.localReadPending": "May read local files in allowed folders (not yet granted)",
+  "profile.summary.agentCallable": "Exposes {{count}} tool(s) the agent can call",
+}
+
+const PROFILE_WARNING: Record<string, string> = {
+  "profile.warning.remoteWriteback":
+    "Can write back to remote services; writeback requires your confirmation",
+  "profile.warning.remoteWritebackPending":
+    "May write back to remote services once network access is granted",
+  "profile.warning.localWrite": "Can write to local files in the folders you allow",
+  "profile.warning.localWritePending": "May write local files once write access is granted",
+  "profile.warning.approvalRequired": "High-risk actions require per-call approval",
+  "profile.warning.unknownCapability": "Declares a capability this version does not recognize",
+  "profile.warning.ungrantedCapabilities": "Some declared capabilities are not granted yet",
+}
+
+const PROFILE_CONTROL: Record<string, string> = {
+  revoke: "Revocable",
+  disconnect: "Disconnect credentials",
+  "pause-background": "Pause background",
+  "approval-required": "Approval required",
+  audit: "Audited",
+}
+
+function renderLine(line: ProfileLine): string {
+  const template = PROFILE_SUMMARY[line.code] ?? PROFILE_WARNING[line.code] ?? line.code
+  return template.replace(/\{\{(\w+)\}\}/g, (_, key: string) => String(line.params?.[key] ?? ""))
+}
 
 function latestVersion(detail: PluginDetailResponse) {
   const target = detail.plugin.latestVersion
@@ -31,8 +72,9 @@ export default async function PluginDetailPage({ params }: { params: Promise<{ i
 
   const latest = latestVersion(detail)
   const manifest = latest?.manifestSnapshot
-  const permissions = manifest?.permissions ?? []
+  const permissions = (manifest?.capabilities ?? []).map((cap) => cap.id)
   const tools = manifest?.contributes.tools ?? []
+  const profile = manifest ? derivePluginProfile({ manifest }) : null
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-12">
@@ -56,6 +98,51 @@ export default async function PluginDetailPage({ params }: { params: Promise<{ i
           )}
         </div>
       </header>
+
+      {profile ? (
+        <section className="mt-8 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-medium">Capabilities</h2>
+            <span
+              className={`rounded-md px-2 py-0.5 text-xs capitalize ${
+                profile.riskLevel === "high"
+                  ? "bg-red-500/15 text-red-600"
+                  : profile.riskLevel === "medium"
+                    ? "bg-amber-500/15 text-amber-600"
+                    : "bg-emerald-500/15 text-emerald-600"
+              }`}
+            >
+              {profile.riskLevel} risk
+            </span>
+          </div>
+          {profile.summaries.length > 0 ? (
+            <ul className="mt-2 space-y-1 text-sm text-neutral-600 dark:text-neutral-400">
+              {profile.summaries.map((line) => (
+                <li key={line.code}>{renderLine(line)}</li>
+              ))}
+            </ul>
+          ) : null}
+          {profile.warnings.length > 0 ? (
+            <ul className="mt-2 space-y-1 text-sm text-amber-600">
+              {profile.warnings.map((line) => (
+                <li key={line.code}>⚠ {renderLine(line)}</li>
+              ))}
+            </ul>
+          ) : null}
+          {profile.controls.length > 0 ? (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {profile.controls.map((control) => (
+                <span
+                  key={control}
+                  className="rounded-md border border-neutral-200 px-2 py-0.5 text-xs text-neutral-500 dark:border-neutral-700"
+                >
+                  {PROFILE_CONTROL[control] ?? control}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="mt-8">
         <h2 className="text-sm font-medium">Permissions requested</h2>

@@ -6,9 +6,10 @@ import type {
   CapabilityGrantRequestEvent,
   CapabilityIpcServiceOptions,
 } from "./capabilities"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
+import { parseManifest } from "@synapse/plugin-manifest"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { buildGrantIdentity } from "../plugins/capability-governance"
 import { GrantStore } from "../plugins/grant-store"
@@ -51,6 +52,45 @@ describe("capabilityIpcService", () => {
     await service.revoke("com.synapse.test", "clipboard:watch")
 
     expect(host.revokeCapability).toHaveBeenCalledWith("com.synapse.test", "clipboard:watch")
+  })
+
+  it("getCapabilityProfile returns the derived profile with grant state", async () => {
+    const manifestPath = path.join(
+      __dirname,
+      "../../../resources/builtin-plugins/github-inbox/synapse.json"
+    )
+    const manifest = parseManifest(JSON.parse(readFileSync(manifestPath, "utf8")))
+    const entry = activeEntry(manifest)
+    const service = createService(entry)
+
+    const beforeGrant = await service.getCapabilityProfile("com.synapse.github-inbox")
+    expect(beforeGrant.riskLevel).toBe("high")
+    expect(beforeGrant.surfaces.remoteWriteback).toBe(true)
+    expect(beforeGrant.grantedSurfaces?.cloudAccess).toBe(false)
+    expect(beforeGrant.summaries.map((line) => line.code)).toContain("profile.summary.cloudPending")
+
+    const identity = buildGrantIdentity(entry.pluginId, manifest, entry.source.kind)
+    await grants.grant(identity, "network:https", "user")
+    await grants.grant(identity, "credentials:broker", "user")
+
+    const afterGrant = await service.getCapabilityProfile("com.synapse.github-inbox")
+    expect(afterGrant.grantedSurfaces?.cloudAccess).toBe(true)
+    expect(afterGrant.grantedSurfaces?.credentials).toBe(true)
+    expect(afterGrant.summaries.map((line) => line.code)).toContain("profile.summary.cloud")
+  })
+
+  it("previewFromManifest uses an empty grant set for catalog pending view", () => {
+    const manifestPath = path.join(
+      __dirname,
+      "../../../resources/builtin-plugins/github-inbox/synapse.json"
+    )
+    const manifest = parseManifest(JSON.parse(readFileSync(manifestPath, "utf8")))
+    const service = createService(undefined)
+
+    const profile = service.previewFromManifest(manifest)
+
+    expect(profile.grantedSurfaces?.cloudAccess).toBe(false)
+    expect(profile.summaries.map((line) => line.code)).toContain("profile.summary.cloudPending")
   })
 
   it("broadcasts a grant request and resolves via resolveGrantPrompt", async () => {

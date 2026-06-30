@@ -370,6 +370,41 @@
       "credentials:broker": "Use connected accounts on your behalf"
     }
   },
+  "profile": {
+    "title": "Capabilities",
+    "risk": { "low": "Low risk", "medium": "Medium risk", "high": "High risk" },
+    "grant": {
+      "partial": "Partially granted",
+      "active": "Granted"
+    },
+    "summary": {
+      "cloud": "Connects to {{hosts}}",
+      "cloudPending": "Requests access to {{hosts}} (not yet granted)",
+      "credentialsBrokered": "Credentials are held by Synapse; the plugin cannot read your token",
+      "credentialsBrokeredPending": "May use brokered credentials after you connect and grant access",
+      "background": "Runs in the background",
+      "backgroundPending": "Has background automation (not active until capabilities are granted)",
+      "localRead": "Reads local files you scope",
+      "localReadPending": "May read local files in allowed folders (not yet granted)",
+      "agentCallable": "Exposes {{count}} tool(s) the agent can call"
+    },
+    "warning": {
+      "remoteWriteback": "Can write back to remote services; writeback requires your confirmation",
+      "remoteWritebackPending": "May write back to remote services once network access is granted",
+      "localWrite": "Can write to local files in the folders you allow",
+      "localWritePending": "May write local files once write access is granted",
+      "approvalRequired": "High-risk actions require per-call approval",
+      "unknownCapability": "Declares a capability this version does not recognize",
+      "ungrantedCapabilities": "Some declared capabilities are not granted yet"
+    },
+    "control": {
+      "revoke": "Revocable",
+      "disconnect": "Disconnect credentials",
+      "pause-background": "Pause background",
+      "approval-required": "Approval required",
+      "audit": "Audited"
+    }
+  },
   "marketplace": {
     "title": "Marketplace",
     "subtitle": "Discover and install Synapse plugins.",

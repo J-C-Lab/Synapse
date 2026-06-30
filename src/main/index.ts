@@ -9,6 +9,7 @@ import { spawn } from "node:child_process"
 import * as path from "node:path"
 import process from "node:process"
 import { pathToFileURL } from "node:url"
+import { derivePluginProfile, profileToAgentText } from "@synapse/plugin-manifest"
 import {
   app,
   BrowserWindow,
@@ -37,6 +38,10 @@ import { MemoryService } from "./ai/memory/memory-service"
 import { aiMemoryFilePath, MemoryStore } from "./ai/memory/memory-store"
 import { MEMORY_FQ_PREFIX, MemoryToolSource } from "./ai/memory/memory-tools"
 import { OpenAiEmbeddingProvider } from "./ai/memory/openai-embedding-provider"
+import {
+  PLUGIN_INTROSPECT_PREFIX,
+  PluginIntrospectionToolSource,
+} from "./ai/plugin-introspection-tools"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/catalog"
 import { AiToolRegistry } from "./ai/tool-registry"
 import {
@@ -681,18 +686,37 @@ function createAgentService(): AgentService {
   )
   memoryService = memory
 
+  const pluginNote = (pluginId: string): string | undefined => {
+    const entry = plugins.get(pluginId)
+    return entry?.manifest
+      ? profileToAgentText(derivePluginProfile({ manifest: entry.manifest }))
+      : undefined
+  }
+
+  const introspectionSource = new PluginIntrospectionToolSource((pluginId) =>
+    capabilityService.getCapabilityProfile(pluginId).then(
+      (profile) => profile,
+      () => undefined
+    )
+  )
+
   // The model sees one flat tool list: local plugin tools, external MCP tools
   // (`mcp:<id>/<tool>`), and built-in memory tools (`memory:…`). Invocations
   // route by ownership.
   const tools = new AiToolRegistry(
     new CompositeToolHost([
+      introspectionSource,
       asFallbackSource(
         plugins,
-        (fqName) => fqName.startsWith(MCP_FQ_PREFIX) || fqName.startsWith(MEMORY_FQ_PREFIX)
+        (fqName) =>
+          fqName.startsWith(MCP_FQ_PREFIX) ||
+          fqName.startsWith(MEMORY_FQ_PREFIX) ||
+          fqName.startsWith(PLUGIN_INTROSPECT_PREFIX)
       ),
       manager,
       new MemoryToolSource(memory),
-    ])
+    ]),
+    pluginNote
   )
   return new AgentService({
     credentials,

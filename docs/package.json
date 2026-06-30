@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@synapsepkg/marketplace-types": "workspace:*",
+    "@synapsepkg/plugin-manifest": "workspace:*",
     "fumadocs-ui": "latest",
     "fumadocs-core": "latest",
     "fumadocs-mdx": "latest",

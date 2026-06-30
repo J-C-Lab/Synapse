@@ -1,6 +1,7 @@
 import type { CapabilityApprovalRequestEvent, CapabilityGrantRequestEvent } from "@/lib/electron"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
+import { PluginCapabilityProfileCard } from "@/components/plugins/plugin-capability-profile"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -10,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { useCapabilityProfile } from "@/hooks/use-capability-profile"
 import {
   isElectron,
   onCapabilityApprovalRequest,
@@ -27,6 +29,7 @@ export function CapabilityPromptHost() {
   const queueRef = useRef<PendingPrompt[]>([])
   const [pending, setPending] = useState<PendingPrompt | null>(null)
   const [busy, setBusy] = useState(false)
+  const profile = useCapabilityProfile(pending?.pluginId)
 
   const dequeue = useCallback(() => {
     queueRef.current.shift()
@@ -101,6 +104,7 @@ export function CapabilityPromptHost() {
                 })}
           </DialogDescription>
         </DialogHeader>
+        {profile ? <PluginCapabilityProfileCard profile={profile} /> : null}
         {pending?.reason ? <p className="text-sm text-muted-foreground">{pending.reason}</p> : null}
         <DialogFooter className="gap-2 sm:justify-end">
           <Button variant="outline" disabled={busy} onClick={() => void respond(false)}>

@@ -22,7 +22,11 @@ export interface ToolHostPort {
 export class AiToolRegistry {
   private safeToDescriptor = new Map<string, RegisteredToolDescriptor>()
 
-  constructor(private readonly host: ToolHostPort) {}
+  constructor(
+    private readonly host: ToolHostPort,
+    /** 可选：返回某插件的 agent 可读能力 note，前置到该插件每个工具的描述。 */
+    private readonly pluginNote?: (pluginId: string) => string | undefined
+  ) {}
 
   /** Current tools as model-facing schemas. Rebuilds the reverse map. */
   list(): ProviderToolSchema[] {
@@ -58,11 +62,15 @@ export class AiToolRegistry {
       const safeName = uniqueName(sanitizeToolName(descriptor.fqName), used)
       used.add(safeName)
       this.safeToDescriptor.set(safeName, descriptor)
+      const note = this.pluginNote?.(descriptor.pluginId)
+      const description = note
+        ? `${note}\n\n${descriptor.manifestTool.description}`
+        : descriptor.manifestTool.description
       return {
         descriptor,
         schema: {
           name: safeName,
-          description: descriptor.manifestTool.description,
+          description,
           inputSchema: descriptor.manifestTool.inputSchema,
         },
       }

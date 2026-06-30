@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   installPluginPackage: vi.fn(),
   isElectron: vi.fn(() => true),
   listPluginCapabilities: vi.fn(),
+  getPluginCapabilityProfile: vi.fn().mockResolvedValue(null),
   listPluginCredentials: vi.fn().mockResolvedValue([]),
   connectPluginCredential: vi.fn(),
   disconnectPluginCredential: vi.fn(),

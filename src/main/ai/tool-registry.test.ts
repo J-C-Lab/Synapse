@@ -72,6 +72,20 @@ describe("aiToolRegistry", () => {
       /Unknown tool/
     )
   })
+
+  it("prepends a plugin capability note to tool descriptions when a provider is given", () => {
+    const h = host([descriptor("com.example.demo/greet")])
+    const registry = new AiToolRegistry(h, (pluginId) =>
+      pluginId === "com.example.demo" ? "Capability note." : undefined
+    )
+    const [schema] = registry.list()
+    expect(schema.description).toBe("Capability note.\n\nTool com.example.demo/greet")
+  })
+
+  it("leaves descriptions unchanged when no provider is given", () => {
+    const [schema] = new AiToolRegistry(host([descriptor("memory:core/memory_list")])).list()
+    expect(schema.description).toBe("Tool memory:core/memory_list")
+  })
 })
 
 describe("renderToolResultText", () => {

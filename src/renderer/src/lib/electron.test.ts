@@ -73,6 +73,8 @@ function mockApi() {
     invokePluginCommand: vi.fn().mockResolvedValue(ok({ type: "toast" })),
     disposePluginCommand: vi.fn().mockResolvedValue(ok(undefined)),
     listPluginCapabilities: vi.fn().mockResolvedValue(ok([])),
+    getCapabilityProfile: vi.fn().mockResolvedValue(ok(null)),
+    previewPluginCapabilityProfile: vi.fn().mockResolvedValue(ok(null)),
     revokePluginCapability: vi.fn().mockResolvedValue(ok(undefined)),
     listPluginCredentials: vi.fn().mockResolvedValue(ok([])),
     connectPluginCredential: vi.fn().mockResolvedValue(ok(undefined)),

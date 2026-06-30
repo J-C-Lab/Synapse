@@ -80,6 +80,16 @@ export { normalizeLegacyCapabilities } from "./normalize-legacy"
 
 export { validateOAuthEndpoint } from "./oauth-endpoints"
 
+export { derivePluginProfile, profileToAgentText } from "./profile"
+
+export type {
+  DeriveProfileInput,
+  PluginCapabilityProfile,
+  ProfileControl,
+  ProfileLine,
+  ProfileSurfaces,
+  RiskLevel,
+} from "./profile"
 export { manifestSchema, ManifestValidationError, parseManifest } from "./schema"
 
 export {

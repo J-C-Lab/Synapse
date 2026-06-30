@@ -1,8 +1,12 @@
-import type { CapabilityTier } from "@synapse/plugin-manifest"
+import type {
+  CapabilityTier,
+  PluginCapabilityProfile,
+  PluginManifest,
+} from "@synapse/plugin-manifest"
 import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { CapabilityApprover, GrantPromptPort } from "../plugins/capability-gate"
 import type { PluginHost } from "../plugins/plugin-host"
-import { getCapability } from "@synapse/plugin-manifest"
+import { derivePluginProfile, getCapability, parseManifest } from "@synapse/plugin-manifest"
 import { buildGrantIdentity } from "../plugins/capability-governance"
 import { invokePluginIpcHandler, PluginIpcInvalidPayloadError } from "./plugins"
 
@@ -37,6 +41,8 @@ export interface CapabilityApprovalRequestEvent {
 
 export interface CapabilityIpcHandlers {
   list: (pluginId: unknown) => Promise<PluginCapabilityRow[]>
+  getProfile: (pluginId: unknown) => Promise<PluginCapabilityProfile>
+  previewFromManifest: (manifest: unknown) => PluginCapabilityProfile
   revoke: (payload: unknown) => Promise<void>
   resolveGrantPrompt: (payload: unknown) => void
   resolveApprovalPrompt: (payload: unknown) => void
@@ -153,6 +159,25 @@ export class CapabilityIpcService {
     return rows
   }
 
+  async getCapabilityProfile(pluginId: string): Promise<PluginCapabilityProfile> {
+    const entry = this.getHost().get(pluginId)
+    if (!entry?.manifest) throw new Error(`Plugin not found: ${pluginId}`)
+
+    const identity = buildGrantIdentity(pluginId, entry.manifest, entry.source.kind)
+    const granted = new Set<string>()
+    for (const { id } of entry.manifest.capabilities) {
+      if (getCapability(id) && (await this.getHost().grants.isGranted(identity, id))) {
+        granted.add(id)
+      }
+    }
+    return derivePluginProfile({ manifest: entry.manifest, grantedCapabilityIds: granted })
+  }
+
+  /** 装前目录视图：声明 + 空授权集 → pending 文案。 */
+  previewFromManifest(manifest: PluginManifest): PluginCapabilityProfile {
+    return derivePluginProfile({ manifest, grantedCapabilityIds: new Set() })
+  }
+
   async revoke(pluginId: string, capability: string): Promise<void> {
     await this.getHost().revokeCapability(pluginId, capability)
   }
@@ -192,6 +217,9 @@ export class CapabilityIpcService {
 export function createCapabilityIpcHandlers(service: CapabilityIpcService): CapabilityIpcHandlers {
   return {
     list: (pluginId) => service.listPluginCapabilities(requireString(pluginId, "pluginId")),
+    getProfile: (pluginId) => service.getCapabilityProfile(requireString(pluginId, "pluginId")),
+    previewFromManifest: (manifest) =>
+      service.previewFromManifest(parseManifest(requireRecord(manifest, "manifest"))),
     revoke: async (payload) => {
       const value = requireRecord(payload, "capabilities:revoke payload")
       await service.revoke(
@@ -232,6 +260,22 @@ export function registerCapabilitiesIpc(
       "capabilities:list",
       event,
       () => handlers.list(pluginId),
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("capabilities:profile", (event, pluginId: unknown) =>
+    invokePluginIpcHandler(
+      "capabilities:profile",
+      event,
+      () => handlers.getProfile(pluginId),
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("capabilities:preview-manifest", (event, manifest: unknown) =>
+    invokePluginIpcHandler(
+      "capabilities:preview-manifest",
+      event,
+      () => handlers.previewFromManifest(manifest),
       options.isTrustedSender
     )
   )
