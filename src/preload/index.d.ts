@@ -475,6 +475,16 @@ declare global {
       listPluginCapabilities: (
         pluginId: string
       ) => Promise<SynapsePluginIpcResult<SynapsePluginCapabilityRow[]>>
+      getCapabilityProfile: (
+        pluginId: string
+      ) => Promise<
+        SynapsePluginIpcResult<import("@synapse/plugin-manifest").PluginCapabilityProfile>
+      >
+      previewPluginCapabilityProfile: (
+        manifest: unknown
+      ) => Promise<
+        SynapsePluginIpcResult<import("@synapse/plugin-manifest").PluginCapabilityProfile>
+      >
       revokePluginCapability: (
         pluginId: string,
         capability: string

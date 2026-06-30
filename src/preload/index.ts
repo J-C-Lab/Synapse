@@ -82,6 +82,9 @@ const electronAPI = {
   disposePluginCommand: (pluginId: string, commandId: string) =>
     ipcRenderer.invoke("plugin:dispose-command", { pluginId, commandId }),
   listPluginCapabilities: (pluginId: string) => ipcRenderer.invoke("capabilities:list", pluginId),
+  getCapabilityProfile: (pluginId: string) => ipcRenderer.invoke("capabilities:profile", pluginId),
+  previewPluginCapabilityProfile: (manifest: unknown) =>
+    ipcRenderer.invoke("capabilities:preview-manifest", manifest),
   revokePluginCapability: (pluginId: string, capability: string) =>
     ipcRenderer.invoke("capabilities:revoke", { pluginId, capability }),
   resolveCapabilityGrant: (promptId: string, allow: boolean) =>

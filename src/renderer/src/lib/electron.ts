@@ -195,6 +195,20 @@ export async function listPluginCapabilities(pluginId: string): Promise<PluginCa
   return unwrapIpcResult(await api().listPluginCapabilities(pluginId))
 }
 
+export type { PluginCapabilityProfile, ProfileLine } from "@synapse/plugin-manifest"
+
+export async function getPluginCapabilityProfile(
+  pluginId: string
+): Promise<import("@synapse/plugin-manifest").PluginCapabilityProfile> {
+  return unwrapIpcResult(await api().getCapabilityProfile(pluginId))
+}
+
+export async function previewPluginCapabilityProfile(
+  manifest: import("@synapse/plugin-manifest").PluginManifest
+): Promise<import("@synapse/plugin-manifest").PluginCapabilityProfile> {
+  return unwrapIpcResult(await api().previewPluginCapabilityProfile(manifest))
+}
+
 export async function revokePluginCapability(pluginId: string, capability: string): Promise<void> {
   unwrapIpcResult(await api().revokePluginCapability(pluginId, capability))
 }
