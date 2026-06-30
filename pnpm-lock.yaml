@@ -231,6 +231,9 @@ importers:
       '@synapsepkg/marketplace-types':
         specifier: workspace:*
         version: link:../packages/marketplace-types
+      '@synapsepkg/plugin-manifest':
+        specifier: workspace:*
+        version: link:../packages/plugin-manifest
       fumadocs-core:
         specifier: latest
         version: 16.9.0(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.4)(@types/mdast@4.0.4)(@types/react@19.2.15)(lucide-react@1.16.0(react@19.2.6))(next@16.2.6(@babel/core@7.29.0)(@playwright/test@1.61.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(zod@4.4.3)
