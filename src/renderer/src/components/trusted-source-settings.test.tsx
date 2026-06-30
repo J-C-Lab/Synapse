@@ -17,6 +17,8 @@ const baseSettings: SynapseUserSettings = {
   floatingBallFeatures: [],
   lanEnabled: false,
   trustedSourcePolicy: "official-marketplace",
+  allowAgentShell: false,
+  agentShellRoots: [],
 }
 
 function installElectronApi(settings: SynapseUserSettings): NonNullable<Window["electronAPI"]> {

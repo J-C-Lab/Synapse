@@ -96,6 +96,8 @@ beforeEach(() => {
     floatingBallFeatures: ["appLauncher"],
     lanEnabled: false,
     trustedSourcePolicy: "official-marketplace",
+    allowAgentShell: false,
+    agentShellRoots: [],
   })
 })
 

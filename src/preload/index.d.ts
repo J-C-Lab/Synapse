@@ -36,6 +36,8 @@ declare global {
     floatingBallFeatures: SynapseFloatingBallFeature[]
     lanEnabled: boolean
     trustedSourcePolicy: SynapseTrustedSourcePolicy
+    allowAgentShell: boolean
+    agentShellRoots: string[]
   }
 
   type SynapseLanPlatform = "win32" | "darwin" | "linux" | "unknown"

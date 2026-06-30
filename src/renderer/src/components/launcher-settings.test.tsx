@@ -165,6 +165,8 @@ describe("launcher settings", () => {
       floatingBallFeatures: [],
       lanEnabled: false,
       trustedSourcePolicy: "official-marketplace",
+      allowAgentShell: false,
+      agentShellRoots: [],
     })
   })
 

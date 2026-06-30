@@ -87,6 +87,18 @@ describe("normalizeSettings", () => {
   it("keeps a default floating ball feature when the configured list is empty", () => {
     expect(normalizeSettings({ floatingBallFeatures: ["floatingBall"] })).toEqual(defaultSettings)
   })
+
+  it("defaults agent shell to disabled with no roots", () => {
+    const s = normalizeSettings({})
+    expect(s.allowAgentShell).toBe(false)
+    expect(s.agentShellRoots).toEqual([])
+  })
+
+  it("accepts allowAgentShell and string roots, ignoring non-strings", () => {
+    const s = normalizeSettings({ allowAgentShell: true, agentShellRoots: ["/work", 5, "/data"] })
+    expect(s.allowAgentShell).toBe(true)
+    expect(s.agentShellRoots).toEqual(["/work", "/data"])
+  })
 })
 
 describe("loadSettings / saveSettings", () => {

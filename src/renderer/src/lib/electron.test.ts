@@ -91,6 +91,8 @@ function mockApi() {
       floatingBallFeatures: ["appLauncher"],
       lanEnabled: false,
       trustedSourcePolicy: "official-marketplace",
+      allowAgentShell: false,
+      agentShellRoots: [],
     }),
     updateSettings: vi.fn().mockResolvedValue({
       hotkey: "CommandOrControl+Space",
@@ -100,6 +102,8 @@ function mockApi() {
       floatingBallFeatures: ["appLauncher"],
       lanEnabled: false,
       trustedSourcePolicy: "official-marketplace",
+      allowAgentShell: false,
+      agentShellRoots: [],
     }),
     onLauncherFocus: vi.fn().mockReturnValue(() => {}),
     onFloatingBallMenuState: vi.fn().mockReturnValue(() => {}),

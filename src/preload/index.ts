@@ -13,6 +13,8 @@ interface SettingsPatch {
   floatingBallFeatures?: "appLauncher"[]
   lanEnabled?: boolean
   trustedSourcePolicy?: "official-marketplace" | "any-url" | "local-syn"
+  allowAgentShell?: boolean
+  agentShellRoots?: string[]
 }
 type Settings = Required<SettingsPatch>
 
