@@ -63,6 +63,16 @@ function jsonBody(value) {
   return JSON.stringify(value)
 }
 
+function githubHeaders(init = {}) {
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    ...(init.headers || {}),
+  }
+  if (init.body !== undefined) headers["Content-Type"] = "application/json"
+  return headers
+}
+
 function notificationThreadUrl(threadId, suffix = "") {
   return `https://api.github.com/notifications/threads/${threadId}${suffix}`
 }
@@ -198,10 +208,7 @@ async function executeGitHubAction(input, ctx) {
   const request = buildGitHubActionRequest(input)
   const response = await ctx.network.fetch(request.url, {
     ...request.init,
-    headers: {
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
+    headers: githubHeaders(request.init),
   })
   if (!response.ok)
     throw new Error(`GitHub action failed: ${response.status} ${response.statusText}`)
@@ -214,11 +221,7 @@ async function executeGitHubAction(input, ctx) {
 async function githubJson(ctx, url, init = {}) {
   const response = await ctx.network.fetch(url, {
     ...init,
-    headers: {
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      ...(init.headers || {}),
-    },
+    headers: githubHeaders(init),
   })
   if (!response.ok)
     throw new Error(`GitHub request failed: ${response.status} ${response.statusText}`)
@@ -366,12 +369,54 @@ async function renderInboxView(ctx) {
   }
 }
 
+function formatActionPreview(action) {
+  const lines = [
+    `**Action:** \`${action.action}\``,
+    `**Rationale:** ${action.rationale}`,
+    "",
+    "**Target:**",
+    "```json",
+    JSON.stringify(action.target, null, 2),
+    "```",
+  ]
+  if (action.payload && Object.keys(action.payload).length > 0) {
+    lines.push("", "**Payload:**", "```json", JSON.stringify(action.payload, null, 2), "```")
+  }
+  return lines.join("\n")
+}
+
+function renderActionConfirmation(action) {
+  return {
+    type: "detail",
+    markdown: formatActionPreview(action),
+    metadata: [{ label: "GitHub action", value: action.action }],
+    actions: [
+      {
+        type: "custom",
+        id: "confirm-apply-action",
+        label: "Confirm and apply",
+        payload: action,
+      },
+      { type: "custom", id: "cancel-apply-action", label: "Cancel" },
+    ],
+  }
+}
+
 async function onPollInbox(_event, ctx) {
   const status = await ctx.credentials.status("github")
   if (status !== "connected") return
+  const result = await getInboxSnapshot({ limit: 20, includeParticipating: false }, ctx)
+  await writeDigest(ctx, {
+    fetchedAt: result.structured.fetchedAt,
+    threads: result.structured.threads,
+  })
+  const count = result.structured.threads.length
   await ctx.notifications.show({
     title: "GitHub Inbox",
-    body: "GitHub inbox triage is ready to review.",
+    body:
+      count === 0
+        ? "No new GitHub notifications need attention."
+        : `${count} GitHub notification${count === 1 ? "" : "s"} ready to review.`,
   })
 }
 
@@ -382,9 +427,13 @@ module.exports = {
         return renderInboxView(ctx)
       },
       async onAction(actionId, payload, ctx) {
-        if (actionId !== "apply-action") return undefined
-        await executeGitHubAction(payload, ctx)
-        return { type: "toast", level: "success", message: "GitHub action applied." }
+        if (actionId === "apply-action") return renderActionConfirmation(payload)
+        if (actionId === "cancel-apply-action") return renderInboxView(ctx)
+        if (actionId === "confirm-apply-action") {
+          await executeGitHubAction(payload, ctx)
+          return { type: "toast", level: "success", message: "GitHub action applied." }
+        }
+        return undefined
       },
     },
     "github-inbox.refresh": {
@@ -410,5 +459,8 @@ module.exports = {
     executeGitHubAction,
     getInboxSnapshot,
     normalizeComments,
+    onPollInbox,
+    renderActionConfirmation,
+    githubHeaders,
   },
 }

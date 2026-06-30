@@ -5,21 +5,32 @@ const require = createRequire(import.meta.url)
 const plugin = require("../../../resources/builtin-plugins/github-inbox/dist/index.js")
 
 function fakeCtx() {
-  const calls: Array<{ url: string; init: { method?: string; body?: string } }> = []
+  const calls: Array<{
+    url: string
+    init: { method?: string; body?: string; headers?: Record<string, string> }
+  }> = []
   return {
     calls,
     ctx: {
       network: {
-        fetch: vi.fn(async (url: string, init: { method?: string; body?: string } = {}) => {
-          calls.push({ url, init: { method: init.method, body: init.body } })
-          return {
-            ok: true,
-            status: 200,
-            statusText: "OK",
-            json: async () => ({}),
-            text: async () => "",
+        fetch: vi.fn(
+          async (
+            url: string,
+            init: { method?: string; body?: string; headers?: Record<string, string> } = {}
+          ) => {
+            calls.push({
+              url,
+              init: { method: init.method, body: init.body, headers: init.headers },
+            })
+            return {
+              ok: true,
+              status: 200,
+              statusText: "OK",
+              json: async () => ({}),
+              text: async () => "",
+            }
           }
-        }),
+        ),
       },
     },
   }
@@ -41,7 +52,13 @@ describe("github inbox action dispatcher", () => {
     expect(calls).toEqual([
       {
         url: "https://api.github.com/notifications/threads/123",
-        init: { method: "DELETE" },
+        init: {
+          method: "DELETE",
+          headers: {
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+        },
       },
     ])
   })
@@ -62,9 +79,24 @@ describe("github inbox action dispatcher", () => {
     expect(calls).toEqual([
       {
         url: "https://api.github.com/repos/synapse/desktop/issues/42/comments",
-        init: { method: "POST", body: JSON.stringify({ body: "Thanks, I will take a look." }) },
+        init: {
+          method: "POST",
+          body: JSON.stringify({ body: "Thanks, I will take a look." }),
+          headers: {
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+          },
+        },
       },
     ])
+  })
+
+  it("sends JSON content type on writeback requests with a body", async () => {
+    expect(plugin.__test.githubHeaders({ method: "POST", body: '{"ok":true}' })).toMatchObject({
+      "Content-Type": "application/json",
+      Accept: "application/vnd.github+json",
+    })
   })
 
   it("submits a PR review request changes action", async () => {
@@ -86,6 +118,11 @@ describe("github inbox action dispatcher", () => {
         init: {
           method: "POST",
           body: JSON.stringify({ event: "REQUEST_CHANGES", body: "Please add a regression test." }),
+          headers: {
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+          },
         },
       },
     ])

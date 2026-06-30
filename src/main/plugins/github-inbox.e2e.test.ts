@@ -56,12 +56,21 @@ describe("github inbox plugin", () => {
       },
       backgroundAgentProvider: async () => ({ provider, model: "fake-model" }),
     })
+    const sandboxDispatch = vi.spyOn(host.sandbox, "dispatchTrigger")
 
     await host.init()
     expect(host.get("com.synapse.github-inbox")?.status).toBe("active")
     expect(fire).toBeTypeOf("function")
     fire?.({ scheduledAt: 0, firedAt: 1, driftMs: 0 })
 
+    await vi.waitFor(() => expect(sandboxDispatch).toHaveBeenCalled())
+    expect(sandboxDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pluginId: "com.synapse.github-inbox",
+        triggerId: "poll-inbox",
+        handler: "triggers.onPollInbox",
+      })
+    )
     await vi.waitFor(() => expect(seenTools.length).toBeGreaterThan(0))
     expect(seenTools[0].map((tool) => tool.name)).toContain(
       "com_synapse_github-inbox_getInboxSnapshot"

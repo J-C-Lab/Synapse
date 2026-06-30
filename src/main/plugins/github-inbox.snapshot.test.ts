@@ -141,4 +141,67 @@ describe("github inbox snapshot", () => {
       id: "apply-action",
     })
   })
+
+  it("opens a confirmation detail view before applying a suggested action", async () => {
+    const action = {
+      action: "notification.markDone",
+      target: { threadId: "1" },
+      rationale: "Already handled.",
+    }
+
+    const view = await plugin.commands["github-inbox.open"].onAction("apply-action", action, {
+      storage: {
+        get: async () => undefined,
+        set: async () => {},
+      },
+      credentials: { status: async () => "connected" },
+    })
+
+    expect(view.type).toBe("detail")
+    expect(view.markdown).toContain("notification.markDone")
+    expect(view.actions[0]).toMatchObject({ type: "custom", id: "confirm-apply-action" })
+    expect(view.actions[1]).toMatchObject({ type: "custom", id: "cancel-apply-action" })
+  })
+
+  it("polls inbox, stores digest, and notifies when GitHub is connected", async () => {
+    const storage = new Map<string, unknown>()
+    const notifications: Array<{ title?: string; body?: string }> = []
+    const fetch = vi.fn(async (url: string) => {
+      if (url === "https://api.github.com/user") return response({ login: "octo" })
+      if (url.startsWith("https://api.github.com/notifications?")) {
+        return response([
+          {
+            id: "1",
+            repository: { full_name: "synapse/desktop" },
+            subject: { title: "Bug report", type: "Issue" },
+            reason: "mention",
+            unread: true,
+            updated_at: "2026-06-30T00:00:00Z",
+            url: "https://api.github.com/notifications/threads/1",
+          },
+        ])
+      }
+      throw new Error(`unexpected url ${url}`)
+    })
+
+    await plugin.__test.onPollInbox(
+      {},
+      {
+        storage: {
+          get: async (key: string) => storage.get(key),
+          set: async (key: string, value: unknown) => storage.set(key, value),
+        },
+        credentials: { status: async () => "connected" },
+        notifications: {
+          show: async (options: { title?: string; body?: string }) => {
+            notifications.push(options)
+          },
+        },
+        network: { fetch },
+      }
+    )
+
+    expect(storage.get("digest")).toMatchObject({ threads: [{ threadId: "1" }] })
+    expect(notifications[0]?.body).toMatch(/notification/)
+  })
 })

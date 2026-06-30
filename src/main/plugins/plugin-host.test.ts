@@ -973,7 +973,13 @@ describe("pluginHost trigger registration", () => {
     fires.tick?.({ scheduledAt: 0, firedAt: 1, driftMs: 0 })
 
     await vi.waitFor(() => expect(providerStreamed).toHaveBeenCalledTimes(1))
-    expect(sandboxDispatch).not.toHaveBeenCalled()
+    expect(sandboxDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pluginId,
+        triggerId: "tick",
+        handler: "triggers.onTick",
+      })
+    )
   })
 })
 
