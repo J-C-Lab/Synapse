@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { TrustedSourceSettings } from "./trusted-source-settings"
+import { AgentShellSettings } from "./agent-shell-settings"
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -28,12 +28,13 @@ function installElectronApi(settings: SynapseUserSettings): NonNullable<Window["
       ...settings,
       ...patch,
     })),
+    onSettingsChanged: vi.fn().mockReturnValue(() => {}),
   } as unknown as NonNullable<Window["electronAPI"]>
   window.electronAPI = api
   return api
 }
 
-describe("trusted source settings", () => {
+describe("agent shell settings", () => {
   beforeEach(() => {
     installElectronApi(baseSettings)
   })
@@ -43,23 +44,20 @@ describe("trusted source settings", () => {
     delete window.electronAPI
   })
 
-  it("loads the current trusted source policy", async () => {
-    render(<TrustedSourceSettings />)
-
-    expect(
-      await screen.findByRole("radio", { name: "trustedSources.policy.officialMarketplace" })
-    ).toBeChecked()
+  it("loads with shell disabled by default", async () => {
+    render(<AgentShellSettings />)
+    expect(await screen.findByRole("switch")).not.toBeChecked()
   })
 
-  it("saves a local-only .syn source policy", async () => {
+  it("toggles allowAgentShell via updateSettings", async () => {
     const user = userEvent.setup()
     const api = installElectronApi(baseSettings)
-    render(<TrustedSourceSettings />)
+    render(<AgentShellSettings />)
 
-    await user.click(await screen.findByRole("radio", { name: "trustedSources.policy.localSyn" }))
+    await user.click(await screen.findByRole("switch"))
 
-    await waitFor(() =>
-      expect(api.updateSettings).toHaveBeenCalledWith({ trustedSourcePolicy: "local-syn" })
-    )
+    await waitFor(() => {
+      expect(api.updateSettings).toHaveBeenCalledWith({ allowAgentShell: true })
+    })
   })
 })

@@ -34,6 +34,10 @@ export interface UserSettings {
   lanEnabled: boolean
   /** Which plugin package sources the desktop client should expose. */
   trustedSourcePolicy: TrustedSourcePolicy
+  /** Whether the assistant may run local shell commands (high-risk; off by default). */
+  allowAgentShell: boolean
+  /** Absolute directories the assistant's shell may run in. Empty = host falls back to home. */
+  agentShellRoots: string[]
 }
 
 export const defaultSettings: UserSettings = {
@@ -44,6 +48,8 @@ export const defaultSettings: UserSettings = {
   floatingBallFeatures: ["appLauncher"],
   lanEnabled: false,
   trustedSourcePolicy: "official-marketplace",
+  allowAgentShell: false,
+  agentShellRoots: [],
 }
 
 export function settingsFilePath(userDataDir: string): string {
@@ -80,6 +86,12 @@ export function normalizeSettings(raw: unknown): UserSettings {
       (TRUSTED_SOURCE_POLICIES as readonly string[]).includes(r.trustedSourcePolicy)
     ) {
       next.trustedSourcePolicy = r.trustedSourcePolicy as TrustedSourcePolicy
+    }
+    if (typeof r.allowAgentShell === "boolean") {
+      next.allowAgentShell = r.allowAgentShell
+    }
+    if (Array.isArray(r.agentShellRoots)) {
+      next.agentShellRoots = r.agentShellRoots.filter((p): p is string => typeof p === "string")
     }
   }
   return next

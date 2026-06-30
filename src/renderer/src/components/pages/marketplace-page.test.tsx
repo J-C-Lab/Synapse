@@ -113,6 +113,8 @@ beforeEach(() => {
     floatingBallFeatures: ["appLauncher"],
     lanEnabled: false,
     trustedSourcePolicy: "official-marketplace",
+    allowAgentShell: false,
+    agentShellRoots: [],
   })
   mocks.listMyMarketplacePlugins.mockResolvedValue({ items: [SUMMARY] })
   mocks.setMarketplaceVisibility.mockResolvedValue({
@@ -363,6 +365,8 @@ describe("marketplacePage", () => {
       floatingBallFeatures: ["appLauncher"],
       lanEnabled: false,
       trustedSourcePolicy: "local-syn",
+      allowAgentShell: false,
+      agentShellRoots: [],
     })
 
     renderPage(<MarketplacePage />)

@@ -137,7 +137,13 @@
   },
   "settings": {
     "title": "Settings",
-    "subtitle": "Tune appearance and feature behavior."
+    "subtitle": "Tune appearance and feature behavior.",
+    "agentShell": {
+      "title": "Allow the assistant to run local commands",
+      "description": "High-risk. The assistant can run shell commands on your machine. Every command needs your confirmation and runs only inside the allowed folders. Commands cannot be network- or path-sandboxed once they run.",
+      "rootsLabel": "Allowed folders",
+      "rootsEmpty": "Defaults to your home folder when none are set."
+    }
   },
   "trustedSources": {
     "title": "Trusted plugin sources",

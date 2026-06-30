@@ -2,7 +2,7 @@ import type { RegisteredToolDescriptor } from "../plugins/types"
 import type { ChatContentBlock, ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
 import type { ToolHostPort } from "./tool-registry"
 import { describe, expect, it, vi } from "vitest"
-import { AgentRuntime } from "./agent-runtime"
+import { AgentRuntime, buildSystemPrompt } from "./agent-runtime"
 import { emptyUsage } from "./providers/types"
 import { AiToolRegistry } from "./tool-registry"
 
@@ -61,6 +61,20 @@ function fakeHost(): ToolHostPort {
 function userMessage(text: string): ChatMessage {
   return { role: "user", content: [{ type: "text", text }] }
 }
+
+describe("buildSystemPrompt", () => {
+  it("always appends the plugin-vs-shell routing guidance", () => {
+    const prompt = buildSystemPrompt("BASE", { shellEnabled: false })
+    expect(prompt).toContain("BASE")
+    expect(prompt).toContain("prefer that plugin")
+    expect(prompt).not.toContain("run_shell")
+  })
+
+  it("mentions run_shell only when shell is enabled", () => {
+    const prompt = buildSystemPrompt("BASE", { shellEnabled: true })
+    expect(prompt).toContain("run_shell")
+  })
+})
 
 describe("agentRuntime", () => {
   it("runs a tool call and feeds the result back to the model", async () => {
