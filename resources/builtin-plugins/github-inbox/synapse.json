@@ -188,7 +188,17 @@
         {
           "capability": "credentials:broker",
           "scope": {
-            "credentialIds": ["github"]
+            "credentialIds": ["github"],
+            "inject": [
+              {
+                "credentialId": "github",
+                "scope": {
+                  "hosts": ["api.github.com"],
+                  "methods": ["GET"],
+                  "paths": ["/notifications/**", "/repos/**", "/user"]
+                }
+              }
+            ]
           },
           "budget": {
             "maxCalls": 80,

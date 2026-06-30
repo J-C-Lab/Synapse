@@ -12,6 +12,43 @@ const identity = {
   capabilityDeclarationHash: "abc",
 }
 
+const githubPollInboxTriggerUses = [
+  {
+    capability: "network:https",
+    scope: {
+      hosts: ["api.github.com"],
+      methods: ["GET"],
+      paths: ["/notifications/**", "/repos/**", "/user"],
+    },
+    budget: { maxCalls: 80, period: "1h" as const },
+  },
+  {
+    capability: "credentials:broker",
+    scope: {
+      credentialIds: ["github"],
+      inject: [
+        {
+          credentialId: "github",
+          scope: {
+            hosts: ["api.github.com"],
+            methods: ["GET"],
+            paths: ["/notifications/**", "/repos/**", "/user"],
+          },
+        },
+      ],
+    },
+    budget: { maxCalls: 80, period: "1h" as const },
+  },
+] as const
+
+const githubPollInboxTrigger = {
+  id: "poll-inbox",
+  type: "timer" as const,
+  schedule: { intervalMs: 3_600_000 },
+  handler: "triggers.onPollInbox",
+  uses: [...githubPollInboxTriggerUses],
+}
+
 describe("grantTriggerUses", () => {
   it("grants fs:watch from fs.watch trigger scope", async () => {
     const dir = await fs.mkdtemp(path.join(tmpdir(), "synapse-trigger-grants-fs-"))
@@ -84,6 +121,23 @@ describe("grantTriggerUses", () => {
     await fs.rm(dir, { recursive: true, force: true })
   })
 
+  it("grants credentials:broker trigger uses with inject scopes on a cold store", async () => {
+    const dir = await fs.mkdtemp(path.join(tmpdir(), "synapse-trigger-grants-cold-broker-"))
+    const store = new GrantStore(grantStoreFilePath(dir))
+
+    await grantTriggerUses(store, identity, [githubPollInboxTrigger])
+
+    expect(
+      await store.isGranted(identity, "credentials:broker", {
+        credentialId: "github",
+        host: "api.github.com",
+        method: "GET",
+        path: "/notifications/threads/1",
+      })
+    ).toBe(true)
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
   it("does not replace a broader credentials:broker grant with a narrower trigger use", async () => {
     const dir = await fs.mkdtemp(path.join(tmpdir(), "synapse-trigger-grants-broker-"))
     const store = new GrantStore(grantStoreFilePath(dir))
@@ -104,10 +158,7 @@ describe("grantTriggerUses", () => {
 
     await grantTriggerUses(store, identity, [
       {
-        id: "poll-inbox",
-        type: "timer",
-        schedule: { intervalMs: 3_600_000 },
-        handler: "triggers.onPollInbox",
+        ...githubPollInboxTrigger,
         uses: [
           {
             capability: "credentials:broker",
@@ -143,21 +194,8 @@ describe("grantTriggerUses", () => {
 
     await grantTriggerUses(store, identity, [
       {
-        id: "poll-inbox",
-        type: "timer",
-        schedule: { intervalMs: 3_600_000 },
-        handler: "triggers.onPollInbox",
-        uses: [
-          {
-            capability: "network:https",
-            scope: {
-              hosts: ["api.github.com"],
-              methods: ["GET"],
-              paths: ["/notifications/**", "/repos/**", "/user"],
-            },
-            budget: { maxCalls: 80, period: "1h" },
-          },
-        ],
+        ...githubPollInboxTrigger,
+        uses: [githubPollInboxTriggerUses[0]],
       },
     ])
 
