@@ -162,6 +162,17 @@ export class TriggerRegistry {
     })
     try {
       if (decl.agent) {
+        if (decl.handler) {
+          await this.deps.dispatch({
+            pluginId,
+            triggerId: decl.id,
+            trigger: `${decl.type}:${decl.id}`,
+            handler: decl.handler,
+            invocationId: record.invocationId,
+            event,
+            signal: invocationController.signal,
+          })
+        }
         if (!this.deps.dispatchAgent) throw new Error("background agent dispatcher not configured")
         await this.deps.dispatchAgent({
           pluginId,

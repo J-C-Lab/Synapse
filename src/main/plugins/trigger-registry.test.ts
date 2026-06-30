@@ -142,7 +142,13 @@ describe("triggerRegistry", () => {
     fsFires["p:downloads"]?.({ relativePath: "report.pdf" })
 
     await vi.waitFor(() => expect(dispatchAgent).toHaveBeenCalledTimes(1))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pluginId: "p",
+        triggerId: "downloads",
+        handler: "triggers.onDownloads",
+      })
+    )
     expect(actor).toBe("background-agent")
     expect(dispatchAgent?.mock.calls[0]?.[0]).toMatchObject({
       pluginId: "p",
@@ -151,6 +157,30 @@ describe("triggerRegistry", () => {
       allowedUses: uses,
       agent,
       event: { relativePath: "report.pdf" },
+    })
+  })
+
+  it("runs the trigger handler before the background agent when both are declared", async () => {
+    const { registry, fires, dispatch, dispatchAgent } = setup({
+      dispatchAgent: async () => {},
+    })
+    const agent = {
+      maxRuns: 1,
+      period: "1d" as const,
+      maxToolCallsPerRun: 1,
+      maxTokensPerRun: 100,
+      timeoutMs: 1000,
+    }
+
+    registry.register("p", [{ ...TRIG, agent }])
+    fires.t?.({ firedAt: 1 })
+
+    await vi.waitFor(() => expect(dispatchAgent).toHaveBeenCalledTimes(1))
+    expect(dispatch).toHaveBeenCalledTimes(1)
+    expect(dispatch.mock.calls[0]?.[0]).toMatchObject({
+      pluginId: "p",
+      triggerId: "t",
+      handler: "triggers.onTick",
     })
   })
 

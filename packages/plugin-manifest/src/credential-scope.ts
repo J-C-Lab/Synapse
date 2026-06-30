@@ -1,6 +1,6 @@
 import type { CapabilityScopeAdapter } from "./capabilities"
 import type { NetworkHttpsScope } from "./network-scope"
-import { networkHttpsAdapter } from "./network-scope"
+import { declaredNetworkScopeContains, networkHttpsAdapter } from "./network-scope"
 
 /** A `credentials:broker` scope: the declared credential set plus, per credential,
  *  the request scope its token may be injected into (itself a network:https scope). */
@@ -75,6 +75,26 @@ function merge(scopes: unknown[]): CredentialBrokerScope {
       scope: networkHttpsAdapter.merge(ss),
     })),
   })
+}
+
+/** True when every injection allowed by `subset` is also allowed by `container`. */
+export function declaredCredentialBrokerScopeContains(
+  container: unknown,
+  subset: unknown
+): boolean {
+  const c = canonicalize(container)
+  const s = canonicalize(subset)
+  if (!s.credentialIds.every((id) => c.credentialIds.includes(id))) return false
+  if (s.inject.length === 0) return true
+  if (c.inject.length === 0) {
+    return s.inject.every((entry) => c.credentialIds.includes(entry.credentialId))
+  }
+  for (const entry of s.inject) {
+    const containerEntry = c.inject.find((e) => e.credentialId === entry.credentialId)
+    if (!containerEntry) return false
+    if (!declaredNetworkScopeContains(containerEntry.scope, entry.scope)) return false
+  }
+  return true
 }
 
 function contains(containerScope: unknown, requestedScope: unknown): boolean {

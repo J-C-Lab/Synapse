@@ -16,7 +16,11 @@ export {
 
 export type { CapabilityDescriptor, CapabilityScopeAdapter, CapabilityTier } from "./capabilities"
 
-export { credentialBrokerAdapter, injectScopesOverlap } from "./credential-scope"
+export {
+  credentialBrokerAdapter,
+  declaredCredentialBrokerScopeContains,
+  injectScopesOverlap,
+} from "./credential-scope"
 export type { CredentialBrokerRequestedScope, CredentialBrokerScope } from "./credential-scope"
 export {
   CREDENTIAL_ID_RE,
@@ -68,7 +72,7 @@ export {
 
 export type { HotkeyScope, HotkeyTriggerScope } from "./hotkey-scope"
 
-export { networkHttpsAdapter } from "./network-scope"
+export { declaredNetworkScopeContains, networkHttpsAdapter } from "./network-scope"
 
 export type { NetworkHttpsRequestedScope, NetworkHttpsScope } from "./network-scope"
 

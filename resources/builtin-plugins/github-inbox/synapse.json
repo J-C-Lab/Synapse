@@ -1,0 +1,229 @@
+{
+  "manifestVersion": 2,
+  "id": "com.synapse.github-inbox",
+  "name": "github-inbox",
+  "displayName": "GitHub Inbox",
+  "description": "Triage GitHub notifications and execute confirmed writeback actions.",
+  "version": "0.1.0",
+  "author": "Synapse",
+  "engines": {
+    "synapse": "^0.2.0"
+  },
+  "main": "dist/index.js",
+  "contributes": {
+    "commands": [
+      {
+        "id": "github-inbox.open",
+        "title": "GitHub Inbox",
+        "mode": "view"
+      },
+      {
+        "id": "github-inbox.refresh",
+        "title": "Refresh GitHub Inbox",
+        "mode": "view"
+      }
+    ],
+    "credentials": [
+      {
+        "id": "github",
+        "type": "static",
+        "label": "GitHub token",
+        "inject": {
+          "scheme": "bearer"
+        }
+      }
+    ],
+    "tools": [
+      {
+        "name": "getInboxSnapshot",
+        "description": "Read GitHub notifications and compact linked issue/PR context for triage.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "type": "number"
+            },
+            "includeParticipating": {
+              "type": "boolean"
+            }
+          }
+        },
+        "annotations": {
+          "readOnlyHint": true
+        },
+        "capabilities": [
+          {
+            "id": "network:https",
+            "scope": {
+              "hosts": ["api.github.com"],
+              "methods": ["GET"],
+              "paths": ["/notifications/**", "/repos/**", "/user"]
+            }
+          },
+          {
+            "id": "credentials:broker",
+            "scope": {
+              "credentialIds": ["github"],
+              "inject": [
+                {
+                  "credentialId": "github",
+                  "scope": {
+                    "hosts": ["api.github.com"],
+                    "methods": ["GET"],
+                    "paths": ["/notifications/**", "/repos/**", "/user"]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "executeGitHubAction",
+        "description": "Execute one allowlisted GitHub inbox writeback action after user confirmation.",
+        "inputSchema": {
+          "type": "object",
+          "required": ["action", "target", "rationale"],
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "target": {
+              "type": "object"
+            },
+            "payload": {
+              "type": "object"
+            },
+            "rationale": {
+              "type": "string"
+            }
+          }
+        },
+        "annotations": {
+          "destructiveHint": true,
+          "requiresConfirmation": true
+        },
+        "capabilities": [
+          {
+            "id": "network:https",
+            "scope": {
+              "hosts": ["api.github.com"],
+              "methods": ["PATCH", "PUT", "POST", "DELETE"],
+              "paths": ["/notifications/**", "/repos/**"]
+            }
+          },
+          {
+            "id": "credentials:broker",
+            "scope": {
+              "credentialIds": ["github"],
+              "inject": [
+                {
+                  "credentialId": "github",
+                  "scope": {
+                    "hosts": ["api.github.com"],
+                    "methods": ["PATCH", "PUT", "POST", "DELETE"],
+                    "paths": ["/notifications/**", "/repos/**"]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "storage:plugin"
+    },
+    {
+      "id": "notification"
+    },
+    {
+      "id": "network:https",
+      "scope": {
+        "hosts": ["api.github.com"],
+        "methods": ["GET", "PATCH", "PUT", "POST", "DELETE"],
+        "paths": ["/notifications/**", "/repos/**", "/user"]
+      }
+    },
+    {
+      "id": "credentials:broker",
+      "scope": {
+        "credentialIds": ["github"],
+        "inject": [
+          {
+            "credentialId": "github",
+            "scope": {
+              "hosts": ["api.github.com"],
+              "methods": ["GET", "PATCH", "PUT", "POST", "DELETE"],
+              "paths": ["/notifications/**", "/repos/**", "/user"]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "triggers": [
+    {
+      "id": "poll-inbox",
+      "type": "timer",
+      "schedule": {
+        "intervalMs": 3600000
+      },
+      "handler": "triggers.onPollInbox",
+      "uses": [
+        {
+          "capability": "network:https",
+          "scope": {
+            "hosts": ["api.github.com"],
+            "methods": ["GET"],
+            "paths": ["/notifications/**", "/repos/**", "/user"]
+          },
+          "budget": {
+            "maxCalls": 80,
+            "period": "1h"
+          }
+        },
+        {
+          "capability": "credentials:broker",
+          "scope": {
+            "credentialIds": ["github"],
+            "inject": [
+              {
+                "credentialId": "github",
+                "scope": {
+                  "hosts": ["api.github.com"],
+                  "methods": ["GET", "PATCH", "PUT", "POST", "DELETE"],
+                  "paths": ["/notifications/**", "/repos/**", "/user"]
+                }
+              }
+            ]
+          },
+          "budget": {
+            "maxCalls": 80,
+            "period": "1h"
+          }
+        },
+        {
+          "capability": "notification",
+          "budget": {
+            "maxCalls": 4,
+            "period": "1h"
+          }
+        }
+      ],
+      "limits": {
+        "minIntervalMs": 1800000,
+        "maxConcurrency": 1
+      },
+      "agent": {
+        "maxRuns": 2,
+        "period": "1h",
+        "maxToolCallsPerRun": 12,
+        "maxTokensPerRun": 6000,
+        "timeoutMs": 60000
+      }
+    }
+  ]
+}

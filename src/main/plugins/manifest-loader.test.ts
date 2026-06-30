@@ -1,5 +1,6 @@
+import * as path from "node:path"
 import { describe, expect, it } from "vitest"
-import { ManifestValidationError, parsePluginManifest } from "./manifest-loader"
+import { loadPluginManifest, ManifestValidationError, parsePluginManifest } from "./manifest-loader"
 
 const credManifest = {
   manifestVersion: 2,
@@ -28,6 +29,28 @@ const credManifest = {
     },
   ],
 }
+
+describe("loadPluginManifest bundled plugins", () => {
+  it("loads the bundled GitHub Inbox manifest", async () => {
+    const manifest = await loadPluginManifest(
+      path.resolve("resources", "builtin-plugins", "github-inbox")
+    )
+
+    expect(manifest.id).toBe("com.synapse.github-inbox")
+    expect(manifest.contributes.credentials?.[0]).toMatchObject({
+      id: "github",
+      type: "static",
+    })
+    expect(manifest.contributes.tools?.map((tool) => tool.name)).toEqual([
+      "getInboxSnapshot",
+      "executeGitHubAction",
+    ])
+    expect(manifest.triggers?.[0]).toMatchObject({
+      id: "poll-inbox",
+      type: "timer",
+    })
+  })
+})
 
 describe("parsePluginManifest credentials", () => {
   it("rejects contributes.credentials without credentials:broker capability", () => {

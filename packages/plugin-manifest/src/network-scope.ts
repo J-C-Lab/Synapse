@@ -145,6 +145,28 @@ function pathMatches(pattern: string, path: string): boolean {
   return path === pattern
 }
 
+/** True when every request admitted by `subset` is also admitted by `container`. */
+export function declaredNetworkScopeContains(container: unknown, subset: unknown): boolean {
+  const c = canonicalize(container)
+  const s = canonicalize(subset)
+  if (!s.hosts.every((host) => c.hosts.includes(host))) return false
+  if (!s.methods.every((method) => c.methods.includes(method))) return false
+  return s.paths.every((subsetPath) =>
+    c.paths.some((containerPath) => pathPatternContains(containerPath, subsetPath))
+  )
+}
+
+function pathPatternContains(containerPattern: string, subsetPattern: string): boolean {
+  if (containerPattern === subsetPattern) return true
+  if (!containerPattern.endsWith("/**")) return false
+  const root = containerPattern.slice(0, -3)
+  if (subsetPattern.endsWith("/**")) {
+    const subsetRoot = subsetPattern.slice(0, -3)
+    return subsetRoot === root || subsetRoot.startsWith(`${root}/`)
+  }
+  return subsetPattern === root || subsetPattern.startsWith(`${root}/`)
+}
+
 function contains(containerScope: unknown, requestedScope: unknown): boolean {
   if (!isRecord(containerScope) || !isRecord(requestedScope)) return false
   const hosts = Array.isArray(containerScope.hosts) ? (containerScope.hosts as string[]) : []

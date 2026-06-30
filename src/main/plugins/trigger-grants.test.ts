@@ -12,6 +12,45 @@ const identity = {
   capabilityDeclarationHash: "abc",
 }
 
+const githubManifestBrokerScope = {
+  credentialIds: ["github"],
+  inject: [
+    {
+      credentialId: "github",
+      scope: {
+        hosts: ["api.github.com"],
+        methods: ["GET", "PATCH", "PUT", "POST", "DELETE"],
+        paths: ["/notifications/**", "/repos/**", "/user"],
+      },
+    },
+  ],
+} as const
+
+const githubPollInboxTriggerUses = [
+  {
+    capability: "network:https",
+    scope: {
+      hosts: ["api.github.com"],
+      methods: ["GET"],
+      paths: ["/notifications/**", "/repos/**", "/user"],
+    },
+    budget: { maxCalls: 80, period: "1h" as const },
+  },
+  {
+    capability: "credentials:broker",
+    scope: githubManifestBrokerScope,
+    budget: { maxCalls: 80, period: "1h" as const },
+  },
+] as const
+
+const githubPollInboxTrigger = {
+  id: "poll-inbox",
+  type: "timer" as const,
+  schedule: { intervalMs: 3_600_000 },
+  handler: "triggers.onPollInbox",
+  uses: [...githubPollInboxTriggerUses],
+}
+
 describe("grantTriggerUses", () => {
   it("grants fs:watch from fs.watch trigger scope", async () => {
     const dir = await fs.mkdtemp(path.join(tmpdir(), "synapse-trigger-grants-fs-"))
@@ -81,6 +120,85 @@ describe("grantTriggerUses", () => {
       },
     ])
     expect(await store.list(identity)).toHaveLength(0)
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  it("grants credentials:broker trigger uses with inject scopes on a cold store", async () => {
+    const dir = await fs.mkdtemp(path.join(tmpdir(), "synapse-trigger-grants-cold-broker-"))
+    const store = new GrantStore(grantStoreFilePath(dir))
+
+    await grantTriggerUses(store, identity, [githubPollInboxTrigger])
+
+    expect(
+      await store.isGranted(identity, "credentials:broker", {
+        credentialId: "github",
+        host: "api.github.com",
+        method: "GET",
+        path: "/notifications/threads/1",
+      })
+    ).toBe(true)
+    expect(
+      await store.isGranted(identity, "credentials:broker", {
+        credentialId: "github",
+        host: "api.github.com",
+        method: "POST",
+        path: "/repos/synapse/desktop/issues/1/comments",
+      })
+    ).toBe(true)
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  it("does not replace a broader credentials:broker grant with a narrower trigger use", async () => {
+    const dir = await fs.mkdtemp(path.join(tmpdir(), "synapse-trigger-grants-broker-"))
+    const store = new GrantStore(grantStoreFilePath(dir))
+    const manifestBrokerScope = githubManifestBrokerScope
+    await store.grant(identity, "credentials:broker", "user", manifestBrokerScope)
+
+    await grantTriggerUses(store, identity, [
+      {
+        ...githubPollInboxTrigger,
+        uses: [
+          {
+            capability: "credentials:broker",
+            scope: { credentialIds: ["github"] },
+            budget: { maxCalls: 80, period: "1h" },
+          },
+        ],
+      },
+    ])
+
+    const broker = (await store.list(identity)).find((r) => r.capabilityId === "credentials:broker")
+    expect(broker?.grantScope).toEqual(manifestBrokerScope)
+    expect(
+      await store.isGranted(identity, "credentials:broker", {
+        credentialId: "github",
+        host: "api.github.com",
+        method: "GET",
+        path: "/notifications/threads/1",
+      })
+    ).toBe(true)
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  it("does not replace a broader network:https grant with a narrower trigger use", async () => {
+    const dir = await fs.mkdtemp(path.join(tmpdir(), "synapse-trigger-grants-network-"))
+    const store = new GrantStore(grantStoreFilePath(dir))
+    const manifestNetworkScope = {
+      hosts: ["api.github.com"],
+      methods: ["GET", "PATCH", "PUT", "POST", "DELETE"],
+      paths: ["/notifications/**", "/repos/**", "/user"],
+    }
+    await store.grant(identity, "network:https", "user", manifestNetworkScope)
+
+    await grantTriggerUses(store, identity, [
+      {
+        ...githubPollInboxTrigger,
+        uses: [githubPollInboxTriggerUses[0]],
+      },
+    ])
+
+    const network = (await store.list(identity)).find((r) => r.capabilityId === "network:https")
+    expect(network?.grantScope).toEqual(manifestNetworkScope)
     await fs.rm(dir, { recursive: true, force: true })
   })
 

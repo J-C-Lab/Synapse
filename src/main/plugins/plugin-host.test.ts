@@ -1,5 +1,6 @@
 import type { ClipboardContent } from "@synapse/plugin-sdk"
 import type { ChatContentBlock, ChatProvider } from "../ai/providers/types"
+import type { FsWatchAdapter } from "./fs-watch-adapter"
 import type { TimerAdapter } from "./timer-adapter"
 import type { PluginCommandResult, PluginManifest, PluginRegistryEntry } from "./types"
 import { createHash } from "node:crypto"
@@ -37,6 +38,10 @@ const noopAdapters = {
     openPath: async () => {},
     captureScreen: async () => ({ path: "" }),
   },
+}
+
+const noopFsWatchAdapter: FsWatchAdapter = {
+  register: () => () => {},
 }
 
 function fakeProvider(onStream?: () => void): ChatProvider {
@@ -973,6 +978,48 @@ describe("pluginHost trigger registration", () => {
     fires.tick?.({ scheduledAt: 0, firedAt: 1, driftMs: 0 })
 
     await vi.waitFor(() => expect(providerStreamed).toHaveBeenCalledTimes(1))
-    expect(sandboxDispatch).not.toHaveBeenCalled()
+    expect(sandboxDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pluginId,
+        triggerId: "tick",
+        handler: "triggers.onTick",
+      })
+    )
+  })
+})
+
+describe("github inbox bundled plugin", () => {
+  it("registers GitHub Inbox tools with safe approval annotations", async () => {
+    const host = new PluginHost({
+      userDataDir: dir,
+      resourcesDir: path.resolve("resources"),
+      adapters: noopAdapters,
+      fsWatchAdapter: noopFsWatchAdapter,
+      capabilityGovernance: {
+        userDataDir: dir,
+        approve: async () => true,
+        prompt: async () => true,
+      },
+    })
+
+    await host.init()
+    const tools = host.listTools().filter((tool) => tool.pluginId === "com.synapse.github-inbox")
+
+    expect(tools.map((tool) => tool.manifestTool.name)).toEqual([
+      "getInboxSnapshot",
+      "executeGitHubAction",
+    ])
+    expect(
+      tools.find((tool) => tool.manifestTool.name === "getInboxSnapshot")?.manifestTool.annotations
+    ).toMatchObject({
+      readOnlyHint: true,
+    })
+    expect(
+      tools.find((tool) => tool.manifestTool.name === "executeGitHubAction")?.manifestTool
+        .annotations
+    ).toMatchObject({
+      destructiveHint: true,
+      requiresConfirmation: true,
+    })
   })
 })
