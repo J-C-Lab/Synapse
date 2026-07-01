@@ -62,6 +62,13 @@ describe("aiSettingsStore", () => {
     expect((await a.get()).budgetTokens).toBe(0)
   })
 
+  it("defaults contextCompression to disabled and round-trips an update", async () => {
+    const s = store()
+    expect((await s.get()).contextCompression?.enabled ?? false).toBe(false)
+    await s.setContextCompression({ enabled: true, thresholdTokens: 80_000 })
+    expect((await s.get()).contextCompression).toEqual({ enabled: true, thresholdTokens: 80_000 })
+  })
+
   it("ignores malformed persisted data", async () => {
     const file = path.join(dir, "settings.json")
     await fs.writeFile(file, JSON.stringify({ activeProvider: 5, models: [1, 2] }), "utf-8")

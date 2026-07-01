@@ -7,10 +7,9 @@ import { readJsonFile, writeJsonFile } from "../lan/atomic-json-store"
 
 export interface AiSettings {
   activeProvider: string
-  /** Selected model per provider id. Falls back to the catalog default. */
   models: Record<string, string>
-  /** Per-run cumulative token budget. 0 means unlimited. */
   budgetTokens: number
+  contextCompression?: { enabled: boolean; thresholdTokens: number }
 }
 
 export function aiSettingsFilePath(userDataDir: string): string {
@@ -44,10 +43,18 @@ export class AiSettingsStore {
     })
   }
 
-  /** Set the per-run token budget. Negative values clamp to 0 (unlimited). */
   async setBudget(tokens: number): Promise<void> {
     const settings = await this.get()
     await this.persist({ ...settings, budgetTokens: Math.max(0, Math.floor(tokens)) })
+  }
+
+  async setContextCompression(value: { enabled: boolean; thresholdTokens: number }): Promise<void> {
+    const settings = await this.get()
+    const next = {
+      enabled: value.enabled,
+      thresholdTokens: Math.max(0, Math.floor(value.thresholdTokens)),
+    }
+    await this.persist({ ...settings, contextCompression: next })
   }
 
   private async persist(settings: AiSettings): Promise<void> {
@@ -68,9 +75,25 @@ function normalize(value: unknown, defaultProvider: string): AiSettings {
     typeof v.budgetTokens === "number" && Number.isFinite(v.budgetTokens) && v.budgetTokens > 0
       ? Math.floor(v.budgetTokens)
       : 0
+  let contextCompression: AiSettings["contextCompression"]
+  if (
+    v.contextCompression &&
+    typeof v.contextCompression === "object" &&
+    !Array.isArray(v.contextCompression)
+  ) {
+    const cc = v.contextCompression as Record<string, unknown>
+    contextCompression = {
+      enabled: cc.enabled === true,
+      thresholdTokens:
+        typeof cc.thresholdTokens === "number" && Number.isFinite(cc.thresholdTokens)
+          ? Math.max(0, Math.floor(cc.thresholdTokens))
+          : 0,
+    }
+  }
   return {
     activeProvider: typeof v.activeProvider === "string" ? v.activeProvider : defaultProvider,
     models,
     budgetTokens,
+    ...(contextCompression !== undefined ? { contextCompression } : {}),
   }
 }

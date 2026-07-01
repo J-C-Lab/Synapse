@@ -1,6 +1,7 @@
 import type { AgentTriggerBudget, NormalizedCapability, TriggerUse } from "@synapse/plugin-manifest"
 import type { AgentRunResult } from "./agent-runtime"
 import type { ChatMessage, ChatProvider, ProviderStreamEvent } from "./providers/types"
+import type { RunTrace } from "./run-trace-store"
 import type { ToolHostPort } from "./tool-registry"
 import {
   declaredCredentialBrokerScopeContains,
@@ -29,6 +30,13 @@ export interface BackgroundAgentRunnerOptions {
   tools: ToolHostPort
   ledger?: AgentBudgetLedger
   model?: string
+  /** Forwarded to AgentRuntime so background runs are traced too. */
+  recordRun?: (trace: RunTrace) => void
+  /** Registers the per-run token budget for subagent inheritance. */
+  runBudgetRegistry?: {
+    set: (runId: string, budgetTokens: number | undefined) => void
+    clear: (runId: string) => void
+  }
 }
 
 export class BackgroundAgentRunner {
@@ -47,6 +55,9 @@ export class BackgroundAgentRunner {
       return { messages: [], stopReason: "budget_exceeded", usage: emptyUsage() }
     }
 
+    const runBudget = input.agent.maxTokensPerRun > 0 ? input.agent.maxTokensPerRun : undefined
+    this.options.runBudgetRegistry?.set(start.runId, runBudget)
+
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), input.agent.timeoutMs)
     const abortInput = () => controller.abort()
@@ -57,12 +68,20 @@ export class BackgroundAgentRunner {
       tokenBudgetExceeded = true
       controller.abort()
     })
+    const recordRun = this.options.recordRun
     const runtime = new AgentRuntime({
       provider,
       tools: new AiToolRegistry(this.limitedTools(input.allowedUses)),
       model: this.options.model,
       maxSteps: input.agent.maxToolCallsPerRun + 1,
       budgetTokens: input.agent.maxTokensPerRun,
+      recordRun: recordRun
+        ? (trace) =>
+            recordRun({
+              ...trace,
+              outcome: tokenBudgetExceeded ? "budget_exceeded" : trace.outcome,
+            })
+        : undefined,
     })
 
     try {
@@ -70,7 +89,13 @@ export class BackgroundAgentRunner {
         conversationId: input.invocationId,
         messages: [backgroundUserMessage(input)],
         signal: controller.signal,
-        caller: { kind: "background-agent", invocationId: input.invocationId },
+        runId: start.runId,
+        origin: "background-agent",
+        caller: {
+          kind: "background-agent",
+          invocationId: input.invocationId,
+          runId: start.runId,
+        },
         approve: () => this.ledger.tryDebitToolCall(start.runId, input.agent),
       })
       return tokenBudgetExceeded ? { ...result, stopReason: "budget_exceeded" } : result
@@ -78,6 +103,7 @@ export class BackgroundAgentRunner {
       clearTimeout(timeout)
       input.signal?.removeEventListener("abort", abortInput)
       this.ledger.finish(start.runId)
+      this.options.runBudgetRegistry?.clear(start.runId)
     }
   }
 

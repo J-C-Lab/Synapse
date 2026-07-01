@@ -172,6 +172,25 @@ describe("capabilityGate.ensure", () => {
       )
     ).rejects.toThrow(/scope not allowed/)
   })
+
+  it("copies runId onto the audited entry", async () => {
+    const { gate, audit } = makeGate({ declared: ["clipboard:read"], granted: ["clipboard:read"] })
+    await gate.ensure(req({ runId: "run-123" }))
+    expect(audit).toHaveLength(1)
+    expect(audit[0]).toMatchObject({ runId: "run-123" })
+  })
+
+  it("omits runId from the audited entry when the request has none", async () => {
+    const { gate, audit } = makeGate({ declared: ["clipboard:read"], granted: ["clipboard:read"] })
+    await gate.ensure(req())
+    expect(audit[0].runId).toBeUndefined()
+  })
+
+  it("attributes a capability decision to the subagent's child runId", async () => {
+    const { gate, audit } = makeGate({ declared: ["clipboard:read"], granted: ["clipboard:read"] })
+    await gate.ensure(req({ runId: "child-run", actor: "agent" }))
+    expect(audit[0]).toMatchObject({ runId: "child-run" })
+  })
 })
 
 describe("capabilityGate.assertDeclared", () => {

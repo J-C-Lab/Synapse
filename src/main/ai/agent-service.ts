@@ -9,12 +9,18 @@ import type {
 import type { AiCredentialStore } from "./credential-store"
 import type { McpClientManager, McpServerStatus } from "./mcp-client-manager"
 import type { McpServerConfig, McpServerConfigStore } from "./mcp-server-config-store"
+import type { PlanStep } from "./plan/plan-types"
+import type { RunPlanRegistry } from "./plan/run-plan-registry"
 import type { ProviderDescriptor } from "./providers/catalog"
 import type { ChatMessage, ChatProvider, ProviderToolSchema, TokenUsage } from "./providers/types"
+import type { RunTrace } from "./run-trace-store"
 import type { AiToolRegistry } from "./tool-registry"
+import { randomUUID } from "node:crypto"
 import { logger } from "../logging"
 import { AgentRuntime } from "./agent-runtime"
 import { decideApproval } from "./approval-gate"
+import { ContextCompressor } from "./context/context-compressor"
+import { summarizeViaProvider } from "./context/summarize-via-provider"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./providers/catalog"
 
@@ -39,6 +45,7 @@ export type AiChatEvent =
     }
   | { type: "done"; conversationId: string; stopReason: string; usage: TokenUsage }
   | { type: "error"; conversationId: string; message: string }
+  | { type: "plan"; conversationId: string; runId: string; steps: PlanStep[] }
 
 export interface AgentServiceOptions {
   credentials: AiCredentialStore
@@ -61,6 +68,14 @@ export interface AgentServiceOptions {
   }
   /** Whether run_shell is available (drives routing guidance). */
   getShellEnabled?: () => boolean
+  /** Sink for per-run summary traces. Omitted in tests that don't assert tracing. */
+  recordRun?: (trace: RunTrace) => void
+  /** The in-run plan store, so chat() can clear it per turn and expose getPlan. */
+  planRegistry?: RunPlanRegistry
+  /** Fired at the start of each interactive turn with the resolved per-run token budget. */
+  onTurnStart?: (ctx: { runId: string; budgetTokens: number | undefined }) => void
+  /** Fired when an interactive turn ends so per-run budget state can be cleared. */
+  onTurnEnd?: (ctx: { runId: string }) => void
 }
 
 export class AgentMissingKeyError extends Error {
@@ -94,10 +109,13 @@ export interface AiStatus {
   providers: AiProviderStatus[]
   /** Per-run token budget; 0 means unlimited. */
   budgetTokens: number
+  contextCompression: { enabled: boolean; thresholdTokens: number }
 }
 
 export class AgentService {
   private readonly aborts = new Map<string, AbortController>()
+  /** runId → conversationId for the currently active turn(s). */
+  private readonly activeRunConversations = new Map<string, string>()
   private readonly pendingApprovals = new Map<string, PendingApproval>()
   private readonly conversationAllow = new Map<string, Set<string>>()
   private readonly permanentAllow = new Set<string>()
@@ -169,6 +187,7 @@ export class AgentService {
       model,
       providers,
       budgetTokens: settings?.budgetTokens ?? 0,
+      contextCompression: settings?.contextCompression ?? { enabled: false, thresholdTokens: 0 },
     }
   }
 
@@ -196,6 +215,30 @@ export class AgentService {
   /** Set the per-run token budget (0 = unlimited). */
   async setBudget(tokens: number): Promise<void> {
     if (this.options.settings) await this.options.settings.setBudget(tokens)
+  }
+
+  async setContextCompression(value: { enabled: boolean; thresholdTokens: number }): Promise<void> {
+    if (this.options.settings) await this.options.settings.setContextCompression(value)
+  }
+
+  /** Called by chat() at turn start so plan events can resolve the conversation. */
+  registerRun(runId: string, conversationId: string): void {
+    this.activeRunConversations.set(runId, conversationId)
+  }
+
+  /** Wired to the plan tool source; resolves the conversation and pushes a plan event. */
+  emitPlanForRun(runId: string, steps: PlanStep[]): void {
+    const conversationId = this.activeRunConversations.get(runId)
+    if (!conversationId) return
+    try {
+      this.options.sendEvent({ type: "plan", conversationId, runId, steps })
+    } catch {
+      // A UI-push failure must never break the turn.
+    }
+  }
+
+  private getPlan(runId: string): PlanStep[] | undefined {
+    return this.options.planRegistry?.get(runId)
   }
 
   listTools(): ProviderToolSchema[] {
@@ -256,15 +299,35 @@ export class AgentService {
     const apiKey = await this.options.credentials.get(providerId)
     if (!apiKey) throw new AgentMissingKeyError()
 
-    const budgetTokens = this.options.settings
-      ? (await this.options.settings.get()).budgetTokens
-      : 0
+    const settings = this.options.settings ? await this.options.settings.get() : undefined
+    const budgetTokens = settings?.budgetTokens ?? 0
+    const resolvedBudget = budgetTokens > 0 ? budgetTokens : undefined
+
+    const runId = randomUUID()
+    this.registerRun(runId, conversationId)
+    this.options.onTurnStart?.({ runId, budgetTokens: resolvedBudget })
+
+    const cfg = settings?.contextCompression
+    const compressor =
+      cfg?.enabled && cfg.thresholdTokens > 0
+        ? new ContextCompressor({
+            thresholdTokens: cfg.thresholdTokens,
+            summarize: async (older) => {
+              const provider = this.createProviderFor(providerId, apiKey)
+              return summarizeViaProvider(provider, model, older)
+            },
+          })
+        : undefined
+
     const runtime = new AgentRuntime({
       provider: this.createProviderFor(providerId, apiKey),
       tools: this.options.tools,
       model,
-      budgetTokens: budgetTokens > 0 ? budgetTokens : undefined,
+      budgetTokens: resolvedBudget,
       shellEnabled: this.options.getShellEnabled?.() ?? false,
+      recordRun: this.options.recordRun,
+      getPlan: (id) => this.getPlan(id),
+      compress: compressor ? compressor.compress.bind(compressor) : undefined,
     })
 
     const existing = await this.options.conversations.get(conversationId)
@@ -277,6 +340,7 @@ export class AgentService {
     try {
       const result = await runtime.run({
         conversationId,
+        runId,
         messages,
         signal: controller.signal,
         onText: (delta) => this.options.sendEvent({ type: "text", conversationId, delta }),
@@ -301,6 +365,9 @@ export class AgentService {
     } finally {
       this.aborts.delete(conversationId)
       this.failPendingApprovals(conversationId)
+      this.activeRunConversations.delete(runId)
+      this.options.planRegistry?.clear(runId)
+      this.options.onTurnEnd?.({ runId })
     }
   }
 

@@ -324,6 +324,7 @@ export class CredentialBroker {
     sourceKind: PluginSourceKind
     isTriggerOrigin: boolean
     allowedUses?: readonly TriggerUse[]
+    runId?: string
   }): (
     request: InjectionRequest,
     pluginHeaders: Record<string, string>
@@ -387,6 +388,7 @@ export class CredentialBroker {
               path: request.path,
               credentialId: entry.credentialId,
             },
+            runId: args.runId,
           })
         }
         return injected
@@ -420,7 +422,7 @@ export class CredentialBroker {
     pluginId: string,
     partial: Pick<
       CapabilityAuditEntry,
-      "capabilityId" | "decision" | "actor" | "trigger" | "operation" | "requestedScope"
+      "capabilityId" | "decision" | "actor" | "trigger" | "operation" | "requestedScope" | "runId"
     >
   ): void {
     this.options.audit?.({
@@ -435,6 +437,7 @@ export class CredentialBroker {
       decision: partial.decision,
       grantedNow: false,
       why: "credential-broker",
+      ...(partial.runId !== undefined ? { runId: partial.runId } : {}),
     })
   }
 }

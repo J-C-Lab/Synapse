@@ -509,6 +509,13 @@ export async function setAiBudget(tokens: number): Promise<void> {
   await api().setAiBudget(tokens)
 }
 
+export async function setAiContextCompression(value: {
+  enabled: boolean
+  thresholdTokens: number
+}): Promise<void> {
+  await api().setAiContextCompression(value)
+}
+
 export async function listAiTools(): Promise<AiTool[]> {
   return api().listAiTools()
 }

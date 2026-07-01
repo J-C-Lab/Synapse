@@ -89,6 +89,29 @@ describe("credentialBroker", () => {
     expect(header).toEqual({ name: "authorization", value: "Bearer ghp_test" })
   })
 
+  it("tags the injection audit event with the runId", async () => {
+    const audited: import("./capability-gate").CapabilityAuditEntry[] = []
+    const broker = new CredentialBroker({
+      userDataDir: dir,
+      safeStorage: fakeSafeStorage,
+      secretPrompt: createFixedSecretPrompt("ghp_test"),
+      audit: (entry) => audited.push(entry),
+    })
+    await broker.connectStatic("com.example.x", manifest, "user", "gh")
+    const inject = broker.createInjectCredential({
+      pluginId: "com.example.x",
+      manifest,
+      sourceKind: "user",
+      isTriggerOrigin: false,
+      runId: "run-cred",
+    })
+    await inject({ host: "api.github.com", method: "GET", path: "/repos/foo" }, {})
+
+    const injectionEntry = audited.find((e) => e.trigger === "network:fetch")
+    expect(injectionEntry).toBeDefined()
+    expect(injectionEntry?.runId).toBe("run-cred")
+  })
+
   it("connects oauth credentials via injected flow ports", async () => {
     const broker = new CredentialBroker({
       userDataDir: dir,

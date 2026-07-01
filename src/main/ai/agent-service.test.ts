@@ -115,7 +115,12 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
-function service(options: { provider: ChatProvider; host: ToolHostPort; key?: string }): {
+function service(options: {
+  provider: ChatProvider
+  host: ToolHostPort
+  key?: string
+  recordRun?: (trace: import("./run-trace-store").RunTrace) => void
+}): {
   service: AgentService
   events: AiChatEvent[]
   saved: StoredConversation[]
@@ -128,6 +133,7 @@ function service(options: { provider: ChatProvider; host: ToolHostPort; key?: st
     conversations: convo.store,
     createProvider: () => options.provider,
     sendEvent: (event) => events.push(event),
+    recordRun: options.recordRun,
     now: () => 1000,
   })
   return { service: svc, events, saved: convo.saved }
@@ -380,5 +386,21 @@ describe("agentService", () => {
     // Two tool calls, but only one approval request (second was remembered).
     expect(host.invokeTool).toHaveBeenCalledTimes(2)
     expect(events.filter((event) => event.type === "approval_request")).toHaveLength(1)
+  })
+
+  it("forwards a run trace to the configured recorder", async () => {
+    const host = fakeHost({ readOnlyHint: true })
+    const recorded: import("./run-trace-store").RunTrace[] = []
+    const { service: svc } = service({
+      provider: fakeProvider([{ text: "hi there" }]),
+      host,
+      recordRun: (trace) => recorded.push(trace),
+    })
+
+    await svc.chat("c1", "hello")
+
+    expect(recorded).toHaveLength(1)
+    expect(recorded[0].conversationId).toBe("c1")
+    expect(recorded[0].origin).toBe("interactive")
   })
 })

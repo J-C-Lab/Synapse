@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import {
   deleteAiKey,
   getAiStatus,
@@ -28,6 +29,7 @@ import {
   listAiAllowedTools,
   revokeAiTool,
   setAiBudget,
+  setAiContextCompression,
   setAiKey,
   setAiModel,
   setAiProvider,
@@ -48,11 +50,16 @@ export function AiSettingsDialog({
   const [keyDraft, setKeyDraft] = useState("")
   // null = show the persisted budget; a string = the user is editing.
   const [budgetDraft, setBudgetDraft] = useState<string | null>(null)
+  const [compressionThresholdDraft, setCompressionThresholdDraft] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [allowed, setAllowed] = useState<string[]>([])
 
   const active = status?.providers.find((provider) => provider.id === status.provider)
   const budgetValue = budgetDraft ?? (status?.budgetTokens ? String(status.budgetTokens) : "")
+  const compression = status?.contextCompression ?? { enabled: false, thresholdTokens: 0 }
+  const compressionThresholdValue =
+    compressionThresholdDraft ??
+    (compression.thresholdTokens > 0 ? String(compression.thresholdTokens) : "")
 
   useEffect(() => {
     if (open && isElectron()) void listAiAllowedTools().then(setAllowed)
@@ -110,11 +117,25 @@ export function AiSettingsDialog({
     setBudgetDraft(null) // fall back to the freshly persisted value
   }
 
+  async function saveContextCompression(enabled: boolean) {
+    const parsed = Number.parseInt(compressionThresholdValue, 10)
+    const thresholdTokens = Number.isFinite(parsed) && parsed > 0 ? parsed : 100_000
+    await mutate(() => setAiContextCompression({ enabled, thresholdTokens }))
+    setCompressionThresholdDraft(null)
+  }
+
+  async function saveCompressionThreshold() {
+    await saveContextCompression(compression.enabled)
+  }
+
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) setBudgetDraft(null) // discard unsaved budget edits on close
+        if (!next) {
+          setBudgetDraft(null)
+          setCompressionThresholdDraft(null)
+        }
         onOpenChange(next)
       }}
     >
@@ -223,6 +244,39 @@ export function AiSettingsDialog({
             </Button>
           </div>
           <p className="text-[11px] text-muted-foreground">{t("providers.budgetHint")}</p>
+        </div>
+
+        <div className="space-y-2 border-t pt-3">
+          <div className="flex items-center justify-between gap-2">
+            <Label className="text-xs">{t("providers.contextCompression")}</Label>
+            <Switch
+              checked={compression.enabled}
+              disabled={busy}
+              onCheckedChange={(checked) => void saveContextCompression(checked)}
+            />
+          </div>
+          <div className="flex gap-2">
+            <Input
+              type="number"
+              min={0}
+              step={10000}
+              value={compressionThresholdValue}
+              disabled={busy || !compression.enabled}
+              onChange={(event) => setCompressionThresholdDraft(event.target.value)}
+              placeholder={t("providers.contextCompressionThresholdPlaceholder")}
+              onKeyDown={(event) => event.key === "Enter" && void saveCompressionThreshold()}
+            />
+            <Button
+              variant="secondary"
+              disabled={busy || !compression.enabled}
+              onClick={() => void saveCompressionThreshold()}
+            >
+              {t("providers.budgetSave")}
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            {t("providers.contextCompressionHint")}
+          </p>
         </div>
 
         <div className="space-y-1 border-t pt-3">

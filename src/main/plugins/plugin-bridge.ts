@@ -96,6 +96,7 @@ export interface InvocationContext {
   trigger: string
   signal?: AbortSignal
   invocationId?: string
+  runId?: string
 }
 
 export interface PluginBridgeOptions {
@@ -229,6 +230,7 @@ export class PluginBridge {
       trigger: `tool:${options.toolName}`,
       signal: options.signal,
       invocationId: options.caller.invocationId,
+      runId: options.caller.runId,
     }
 
     return {
@@ -284,7 +286,7 @@ export class PluginBridge {
     invocation: InvocationContext
   ): PluginCapabilities {
     const ensure = (
-      request: Omit<CapabilityRequest, "actor" | "trigger" | "signal" | "invocationId">
+      request: Omit<CapabilityRequest, "actor" | "trigger" | "signal" | "invocationId" | "runId">
     ) =>
       gate.ensure({
         ...request,
@@ -292,6 +294,7 @@ export class PluginBridge {
         trigger: invocation.trigger,
         signal: invocation.signal,
         invocationId: invocation.invocationId,
+        runId: invocation.runId,
       })
 
     // The fetcher runs its own gate.ensure inside fetch(), so network needs no
@@ -306,6 +309,7 @@ export class PluginBridge {
       sourceKind,
       isTriggerOrigin: this.budgetBreaker?.isTriggerOrigin(invocation.invocationId) ?? false,
       allowedUses: invRecord?.allowedUses,
+      runId: invocation.runId,
     })
     const fetcher = createNetworkFetcher({
       gate,
@@ -313,6 +317,7 @@ export class PluginBridge {
       trigger: invocation.trigger,
       pluginId,
       invocationId: invocation.invocationId,
+      runId: invocation.runId,
       injectCredential,
     })
     this.registerFetcher(pluginId, fetcher)
@@ -652,6 +657,7 @@ export class PluginBridge {
         trigger: invocation.trigger,
         operation: key === undefined ? operation : `${operation} ${key}`,
         signal: invocation.signal,
+        runId: invocation.runId,
       })
 
     return {

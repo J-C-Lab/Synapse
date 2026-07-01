@@ -62,6 +62,20 @@ describe("createCapabilityAudit", () => {
     expect(record.capabilityId).toBe("clipboard:watch")
   })
 
+  it("passes runId through to the emitted line unchanged", () => {
+    const sink = memorySink()
+    createCapabilityAudit(sink)(entry({ runId: "run-abc-123" }))
+    const record = JSON.parse(sink.lines[0])
+    expect(record.runId).toBe("run-abc-123")
+  })
+
+  it("emits no runId key when the entry has none", () => {
+    const sink = memorySink()
+    createCapabilityAudit(sink)(entry())
+    const record = JSON.parse(sink.lines[0])
+    expect("runId" in record).toBe(false)
+  })
+
   it("sanitizes urls, paths, reasons, and payload-shaped audit fields", () => {
     const sink = memorySink()
     createCapabilityAudit(sink)(

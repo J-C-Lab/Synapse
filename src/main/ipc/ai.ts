@@ -19,6 +19,7 @@ export interface AiIpcService {
   setActiveProvider: (providerId: string) => Promise<void>
   setModel: (providerId: string, model: string) => Promise<void>
   setBudget: (tokens: number) => Promise<void>
+  setContextCompression: (value: { enabled: boolean; thresholdTokens: number }) => Promise<void>
   listTools: () => ProviderToolSchema[]
   listConversations: () => Promise<ConversationSummary[]>
   getConversation: (id: string) => Promise<StoredConversation | undefined>
@@ -74,6 +75,10 @@ export function registerAiIpc(
   ipcMain.handle("ai:set-budget", (event, tokens: unknown) => {
     guard(event, "ai:set-budget")
     return service.setBudget(coerceBudget(tokens))
+  })
+  ipcMain.handle("ai:set-context-compression", (event, payload: unknown) => {
+    guard(event, "ai:set-context-compression")
+    return service.setContextCompression(coerceContextCompression(payload))
   })
   ipcMain.handle("ai:list-tools", (event) => {
     guard(event, "ai:list-tools")
@@ -153,6 +158,25 @@ export function coerceBudget(tokens: unknown): number {
     throw new Error("budget must be a non-negative number.")
   }
   return Math.floor(tokens)
+}
+
+export function coerceContextCompression(payload: unknown): {
+  enabled: boolean
+  thresholdTokens: number
+} {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("context compression payload must be an object.")
+  }
+  const v = payload as Record<string, unknown>
+  if (typeof v.enabled !== "boolean") throw new Error("enabled must be a boolean.")
+  if (
+    typeof v.thresholdTokens !== "number" ||
+    !Number.isFinite(v.thresholdTokens) ||
+    v.thresholdTokens < 0
+  ) {
+    throw new Error("thresholdTokens must be a non-negative number.")
+  }
+  return { enabled: v.enabled, thresholdTokens: Math.floor(v.thresholdTokens) }
 }
 
 export function coerceMcpServer(payload: unknown): McpServerConfig {

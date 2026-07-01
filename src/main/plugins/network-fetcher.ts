@@ -100,6 +100,8 @@ export interface NetworkFetcherConfig {
   pluginId: string
   /** Trigger-origin background calls carry this for budget-breaker routing. */
   invocationId?: string
+  /** The agent run this fetch belongs to; copied onto the network:https audit entry. */
+  runId?: string
   /** Optional host-side credential injector. Called with the per-hop request and
    *  the (lowercased-key) headers about to be sent; returns the header to attach
    *  or undefined. Throwing aborts the fetch (plugin-set-header conflict). Plan 2
@@ -408,6 +410,7 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
       requestedScope: requested,
       signal: controller.signal,
       invocationId: config.invocationId,
+      runId: config.runId,
     })
 
     return { parsed, addresses }
