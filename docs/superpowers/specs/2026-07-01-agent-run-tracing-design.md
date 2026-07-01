@@ -123,13 +123,31 @@ request/audit entry":
 3. **`background-agent-runner.ts`** — passes `runId: start.runId` through to
    `AgentRuntime.run()` instead of leaving it to generate its own, so the
    budget ledger's run and the trace's run are the same run.
-4. **`plugin-bridge.ts`** (`callerToActor` neighborhood, ~line 228-231) — where
-   `invocationId: options.caller.invocationId` is already copied onto the
-   `CapabilityRequest`, add the same line for `runId: options.caller.runId`.
+4. **`plugin-bridge.ts`** — the `InvocationContext` gains `runId`, sourced from
+   `options.caller.runId` in `createToolContext`. Two request-building paths
+   must carry it:
+   - the generic `ensure` wrapper in `createCapabilities` (~line 289) and the
+     `createStorageAPI` wrapper (~line 649), which cover `storage`, `clipboard`,
+     `system`, `fs`, etc.;
+   - **the network path, which bypasses that wrapper.** `network.fetch` runs its
+     own `gate.ensure` inside `createNetworkFetcher` (`network-fetcher.ts:403`),
+     fed by the config object built at `plugin-bridge.ts:310`. `runId` must be
+     added to `NetworkFetcherConfig` and threaded there too, or `network:https`
+     would be the single capability whose audit entries silently lack `runId`.
 5. **`capability-gate.ts`** — `CapabilityRequest` gains `runId?: string`
    (mirroring `invocationId?: string` at line 28); `ensure()`'s existing
    `this.options.audit({ ... })` call (line 207) copies it onto the
-   `CapabilityAuditEntry`.
+   `CapabilityAuditEntry` (only when present).
+
+**Known gap (deliberate, phase-1 scope):** the credential-broker's own injection
+audit event (`credential-broker.ts` `auditEvent`, emitted from
+`createInjectCredential`) constructs its `CapabilityAuditEntry` directly rather
+than through `gate.ensure`, so it will still lack `runId` after this phase.
+Threading it requires passing `runId` into `createInjectCredential` (built per
+invocation at `plugin-bridge.ts:303`, which has `invocation` in scope). Left as
+a follow-up so "credential injection during a run" is the one known
+run-uncorrelated capability event; called out here for honesty rather than
+silently claiming full coverage.
 
 No existing call site that doesn't have a `runId` (manual Settings actions,
 tests) needs to change — the field is optional at every layer.
@@ -144,6 +162,14 @@ tests) needs to change — the field is optional at every layer.
   (matching the sync-write, crash-safe philosophy of `file-sink.ts`) when
   `AgentRuntime.run()` returns — in a `try/catch`/`finally` so a disk error
   never fails the agent turn itself (log via the root `logger` and swallow).
+- **runId as filename — validated at the store boundary**: `runId` becomes a
+  filename, so `recordRun`/`getRunTrace` validate it against
+  `^[A-Za-z0-9._-]+$` (and reject `.`, `..`, or anything containing `..`)
+  before touching the filesystem. Real ids are UUIDs and always pass; a bogus
+  or hostile id (path separators, traversal) is refused so it can never escape
+  `logs/runs/`. This is a store-level invariant independent of who calls it —
+  the store does not trust `AgentRunOptions.runId` to be well-formed just
+  because today's callers pass UUIDs.
 - **Retention**: unlike `audit.log`, per-run files don't self-rotate by size.
   `recordRun()` also does a cheap bounded prune: after writing, if the
   directory has more than `MAX_RUN_FILES` (500) entries, delete the oldest
@@ -176,9 +202,23 @@ handler later, following the standard 4-touchpoint IPC pattern.
 
 ## 6. Error handling
 
-- `recordRun` failures (disk full, permission error): caught, logged at
-  `warn`, never thrown — must not break the agent loop or the user-visible
-  turn.
+- `recordRun` failures (disk full, permission error): caught inside the store,
+  logged at `warn`, never thrown — must not break the agent loop or the
+  user-visible turn.
+- **Injected-recorder failures**: the `recordRun` port passed into
+  `AgentRuntime` is arbitrary (a test double, or the background runner's
+  outcome-rewriting wrapper), so it could throw even though the concrete store
+  never does. `AgentRuntime.recordTrace()` therefore wraps its `record(trace)`
+  call in its own `try/catch` (warn + swallow) — the "trace write never breaks
+  the turn" guarantee holds regardless of what recorder is injected.
+- **Background token-budget outcome**: `BackgroundAgentRunner` maps a
+  token-budget abort to `stopReason: "budget_exceeded"` *after* `run()`
+  returns, but the runtime records the trace *inside* `run()` (seeing only an
+  abort). The runner wraps the injected `recordRun` to override the trace
+  `outcome` to `"budget_exceeded"` when its `tokenBudgetExceeded` flag is set,
+  so the persisted trace agrees with the reported stop reason. Timing is safe:
+  the flag is set synchronously by `onExceeded()` before the abort propagates,
+  so it is already correct when the runtime calls the recorder.
 - `audit.log` lines without `runId` (pre-migration entries): `getRunTrace`
   filters by exact `runId` match, so old lines simply never match any new
   trace — no special-casing needed.
@@ -189,12 +229,23 @@ handler later, following the standard 4-touchpoint IPC pattern.
 
 - `run-trace-store.test.ts`: round-trip `recordRun` → `getRunTrace`;
   `listRuns` filtering by `conversationId` and `limit`; prune behavior once
-  `MAX_RUN_FILES` is exceeded.
+  `MAX_RUN_FILES` is exceeded; a best-effort write to an unwritable dir does
+  not throw; a `runId` with path separators or `..` is refused (nothing written,
+  no escape from `logs/runs/`).
 - `agent-runtime.test.ts` (existing file, extend): a run accumulates a
   `toolCalls` array matching the `tool_call`/`tool_result` events already
   asserted in existing tests; two sequential `run()` calls on the same
   `conversationId` produce two distinct `runId`s; a supplied `options.runId`
-  (background-agent path) is used verbatim instead of generating a new one.
+  (background-agent path) is used verbatim instead of generating a new one; a
+  `recordRun` port that throws does not break the turn (it still resolves
+  `end_turn`).
+- `plugin-bridge-runid.test.ts` (new): `caller.runId` reaches the
+  `CapabilityRequest` for a storage-path tool call.
+- `network-fetcher-runid.test.ts` (new): a `network:https` `gate.ensure`
+  request carries the `runId` from `NetworkFetcherConfig`.
+- `background-agent-runner.test.ts` (existing file, extend): a background run's
+  trace `runId` matches the ledger run and `origin` is `"background-agent"`; a
+  token-budget abort records `outcome: "budget_exceeded"`, not `"aborted"`.
 - `capability-audit.test.ts` (existing file, extend): an entry with `runId`
   set round-trips through `sanitizeAuditEntry` unchanged (it's not
   free-text, so no scrubbing needed on it); an entry without `runId` still

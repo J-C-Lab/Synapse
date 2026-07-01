@@ -212,13 +212,14 @@ git commit -m "test(capability): lock runId pass-through in audit sink"
 
 ---
 
-## Task 4: Thread `runId` from `ToolCaller` through `plugin-bridge`
+## Task 4: Thread `runId` from `ToolCaller` through `plugin-bridge` and the network fetcher
 
 **Files:**
-- Modify: `src/main/plugins/plugin-bridge.ts:94-99` (`InvocationContext`), `:227-232` (`createToolContext`), `:286-295` (`createCapabilities` ensure wrapper)
-- Test: covered indirectly by Task 6's end-to-end runtime test; no isolated bridge test exists for this seam, so this task carries a targeted unit test.
+- Modify: `src/main/plugins/plugin-bridge.ts:94-99` (`InvocationContext`), `:227-232` (`createToolContext`), `:286-295` (`createCapabilities` ensure wrapper), `:310` (`createNetworkFetcher` call), `:648-655` (`createStorageAPI` ensure wrapper)
+- Modify: `src/main/plugins/network-fetcher.ts:96-102` (`NetworkFetcherConfig`), `:403-411` (network `gate.ensure`)
+- Create: `src/main/plugins/plugin-bridge-runid.test.ts`, `src/main/plugins/network-fetcher-runid.test.ts`
 
-The bridge builds a per-invocation `InvocationContext` from the `ToolCaller` and spreads it into every `gate.ensure()` request. We add `runId` alongside the existing `invocationId` at the two places the context is built from a caller, and into the `ensure` wrapper's `Omit<...>` allowlist.
+The bridge builds a per-invocation `InvocationContext` from the `ToolCaller` and spreads it into every `gate.ensure()` request. We add `runId` alongside the existing `invocationId` at the places the context is built from a caller, into the `ensure` wrapper's `Omit<...>` allowlist and the storage wrapper — **and into the network fetcher, which runs its own `gate.ensure` outside those wrappers.**
 
 - [ ] **Step 1: Write the failing test**
 
@@ -226,7 +227,7 @@ Create `src/main/plugins/plugin-bridge-runid.test.ts`:
 
 ```ts
 import type { CapabilityGatePort, CapabilityRequest } from "./capability-gate"
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import { PluginBridge } from "./plugin-bridge"
 
 function manifest() {
@@ -256,8 +257,10 @@ describe("pluginBridge runId threading", () => {
       createGate: () => gate,
     } as never)
 
+    // ToolContextOptions.signal is REQUIRED — supply a live one.
     const ctx = bridge.createToolContext("com.synapse.test", manifest(), {
       caller: { kind: "agent", conversationId: "c1", runId: "run-xyz" },
+      signal: new AbortController().signal,
       toolName: "act",
     })
     await ctx.storage.get("k")
@@ -335,22 +338,126 @@ In `createStorageAPI` (around line 648), the storage `ensure` builds its own req
       })
 ```
 
-- [ ] **Step 7: Run the test to verify it passes**
+- [ ] **Step 7: Thread `runId` into the network fetcher (network:https bypasses the `ensure` wrapper)**
+
+`network.fetch` does NOT go through the generic `ensure` wrapper — `createCapabilities` builds a `NetworkFetcher` that runs its own `gate.ensure` inside `fetch()`. Without this step, `network:https` capability decisions would be the one capability path missing `runId`, violating the spec's "every capability decision tied to the run".
+
+First, add a failing assertion. Create `src/main/plugins/network-fetcher-runid.test.ts`:
+
+```ts
+import type { CapabilityGatePort, CapabilityRequest } from "./capability-gate"
+import { describe, expect, it } from "vitest"
+import { createNetworkFetcher } from "./network-fetcher"
+
+describe("networkFetcher runId threading", () => {
+  it("includes runId in the network:https gate.ensure request", async () => {
+    const seen: CapabilityRequest[] = []
+    const gate: CapabilityGatePort = {
+      assertDeclared: () => {},
+      ensure: async (request) => {
+        seen.push(request)
+        // Deny after capturing so no real socket work happens.
+        throw new Error("stop-after-ensure")
+      },
+    }
+    const fetcher = createNetworkFetcher({
+      gate,
+      actor: "agent",
+      trigger: "tool:fetch",
+      pluginId: "com.synapse.test",
+      runId: "run-net",
+    })
+
+    await expect(
+      fetcher.fetch("https://api.example.com/x", { method: "GET" })
+    ).rejects.toThrow()
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0].capability).toBe("network:https")
+    expect(seen[0].runId).toBe("run-net")
+  })
+})
+```
+
+Run: `pnpm test -- network-fetcher-runid`
+Expected: FAIL — `NetworkFetcherConfig` has no `runId`, and the ensure request omits it.
+
+(If the real `fetch()` signature/return differs from `fetcher.fetch(url, init)`, adapt the call to match `createNetworkFetcher`'s actual surface — the assertion on `seen[0]` is the point, not the exact fetch call shape. Inspect the top of `network-fetcher.ts` for the returned object's method.)
+
+- [ ] **Step 8: Add `runId` to `NetworkFetcherConfig` and the network `ensure` request**
+
+In `src/main/plugins/network-fetcher.ts`, extend `NetworkFetcherConfig` (after `invocationId?` around line 102):
+
+```ts
+  /** Trigger-origin background calls carry this for budget-breaker routing. */
+  invocationId?: string
+  /** The agent run this fetch belongs to; copied onto the network:https audit entry. */
+  runId?: string
+```
+
+Then in the `gate.ensure({ ... })` call (around line 403), add the field:
+
+```ts
+    await config.gate.ensure({
+      capability: "network:https",
+      actor: config.actor,
+      trigger: config.trigger,
+      operation,
+      requestedScope: requested,
+      signal: controller.signal,
+      invocationId: config.invocationId,
+      runId: config.runId,
+    })
+```
+
+- [ ] **Step 9: Pass `runId` into `createNetworkFetcher` from the bridge**
+
+In `src/main/plugins/plugin-bridge.ts`, the `createNetworkFetcher({ ... })` call in `createCapabilities` (around line 310) currently passes `actor`/`trigger`/`pluginId`/`invocationId`/`injectCredential`. Add `runId`:
+
+```ts
+    const fetcher = createNetworkFetcher({
+      gate,
+      actor: invocation.actor,
+      trigger: invocation.trigger,
+      pluginId,
+      invocationId: invocation.invocationId,
+      runId: invocation.runId,
+      injectCredential,
+    })
+```
+
+- [ ] **Step 10: Run both new tests + the network suite**
+
+Run: `pnpm test -- network-fetcher-runid network-fetcher`
+Expected: PASS — the new assertion passes and existing network-fetcher tests are unaffected (`runId` is optional).
+
+- [ ] **Step 11: Run the test to verify the storage-path test passes**
 
 Run: `pnpm test -- plugin-bridge-runid`
 Expected: PASS.
 
-- [ ] **Step 8: Run the wider bridge/plugin suite for regressions**
+- [ ] **Step 12: Run the wider bridge/plugin suite for regressions**
 
 Run: `pnpm test -- plugin-bridge`
 Expected: PASS — existing bridge tests unaffected (the new field is optional everywhere).
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 13: Commit**
 
 ```bash
-git add src/main/plugins/plugin-bridge.ts src/main/plugins/plugin-bridge-runid.test.ts
-git commit -m "feat(plugins): carry caller.runId through plugin-bridge into capability requests"
+git add src/main/plugins/plugin-bridge.ts src/main/plugins/plugin-bridge-runid.test.ts \
+  src/main/plugins/network-fetcher.ts src/main/plugins/network-fetcher-runid.test.ts
+git commit -m "feat(plugins): carry caller.runId through plugin-bridge and network fetcher into capability requests"
 ```
+
+> **Known remaining gap (not fixed this phase, tracked in the spec):** the
+> credential-broker's own injection audit event (`credential-broker.ts`
+> `auditEvent`, emitted from `createInjectCredential`) constructs its
+> `CapabilityAuditEntry` directly and will still lack `runId`. Threading it
+> there requires passing `runId` into `createInjectCredential` (built per
+> invocation at `plugin-bridge.ts:303`, which has `invocation` in scope). It is
+> called out in the spec's §3 note as a deliberate follow-up rather than
+> silently expanded here — flag to the human before adding it if run-complete
+> credential-injection coverage is wanted in phase 1.
 
 ---
 
@@ -436,7 +543,28 @@ describe("runTraceStore", () => {
   it("never throws on a write to an unwritable dir (best-effort)", () => {
     expect(() => recordRun(path.join(dir, "nested", "deep"), trace())).not.toThrow()
   })
+
+  it("refuses a runId containing path separators (no escape from dir)", () => {
+    // A malicious/bogus runId must not write outside `dir`.
+    recordRun(dir, trace({ runId: "../escape" }))
+    // Nothing is written for the bad id, and it can't be read back.
+    expect(getRunTrace(dir, "../escape")).toBeUndefined()
+    // The parent dir did not gain an `escape.json`.
+    expect(existsSync(path.join(dir, "..", "escape.json"))).toBe(false)
+  })
+
+  it("refuses a runId with a slash or backslash", () => {
+    recordRun(dir, trace({ runId: "a/b" }))
+    recordRun(dir, trace({ runId: "a\\b" }))
+    expect(listRuns(dir)).toHaveLength(0)
+  })
 })
+```
+
+Add `existsSync` to the `node:fs` import at the top of the test file:
+
+```ts
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -484,7 +612,21 @@ export interface RunTrace {
 /** Cap on retained per-run files; oldest beyond this are pruned after each write. */
 export const MAX_RUN_FILES = 500
 
+// runId becomes a filename, so the store validates it defensively rather than
+// trusting callers. Real ids are UUIDs; anything with a path separator, `..`,
+// or other filename-hostile chars is refused so a bogus id can never escape the
+// runs dir. This is a store-level invariant, independent of who calls it.
+const SAFE_RUN_ID = /^[A-Za-z0-9._-]+$/
+
+function isSafeRunId(runId: string): boolean {
+  return runId !== "." && runId !== ".." && !runId.includes("..") && SAFE_RUN_ID.test(runId)
+}
+
 export function recordRun(dir: string, trace: RunTrace): void {
+  if (!isSafeRunId(trace.runId)) {
+    logger.child("run-trace").warn("refusing unsafe runId for trace file", { runId: trace.runId })
+    return
+  }
   try {
     mkdirSync(dir, { recursive: true })
     writeFileSync(path.join(dir, `${trace.runId}.json`), `${JSON.stringify(trace)}\n`)
@@ -495,6 +637,7 @@ export function recordRun(dir: string, trace: RunTrace): void {
 }
 
 export function getRunTrace(dir: string, runId: string): RunTrace | undefined {
+  if (!isSafeRunId(runId)) return undefined
   const file = path.join(dir, `${runId}.json`)
   if (!existsSync(file)) return undefined
   try {
@@ -543,7 +686,7 @@ function prune(dir: string): void {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm test -- run-trace-store`
-Expected: PASS — all six tests.
+Expected: PASS — all eight tests (round-trip, unknown id, list/filter, limit, prune, best-effort write, and the two runId-safety cases).
 
 - [ ] **Step 5: Commit**
 
@@ -659,6 +802,24 @@ it("records an aborted run with outcome 'aborted'", async () => {
 
   expect(recorded).toHaveLength(1)
   expect(recorded[0].outcome).toBe("aborted")
+})
+
+it("does not let a throwing recorder break the run (spec §6)", async () => {
+  const host = fakeHost()
+  const runtime = new AgentRuntime({
+    provider: fakeProvider([
+      { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: {} }] },
+      { text: "done" },
+    ]),
+    tools: new AiToolRegistry(host),
+    recordRun: () => {
+      throw new Error("recorder boom")
+    },
+  })
+
+  // The turn must still resolve normally despite the recorder throwing.
+  const result = await runtime.run({ conversationId: "c1", messages: [userMessage("hi")] })
+  expect(result.stopReason).toBe("end_turn")
 })
 ```
 
@@ -789,8 +950,24 @@ Rewrite `run()` so it resolves the run id up front, collects `toolCalls`, and al
     }
     if (args.origin === "interactive") trace.conversationId = args.options.conversationId
     else trace.invocationId = args.options.conversationId
-    record(trace)
+    // Spec §6: a trace-write failure must NEVER break the agent turn. The
+    // concrete store already swallows disk errors, but the injected port is
+    // arbitrary — guard it here so a throwing recorder can't escape run().
+    try {
+      record(trace)
+    } catch (err) {
+      logger.child("agent-runtime").warn("recordRun threw; run trace dropped", {
+        runId: args.runId,
+        err,
+      })
+    }
   }
+```
+
+This requires the root logger. Add to the imports at the top of `agent-runtime.ts` (alongside the `randomUUID` / `RunTrace` imports from Step 3):
+
+```ts
+import { logger } from "../logging"
 ```
 
 Note: `AgentRunResult["stopReason"]` is `"end_turn" | "max_steps" | "aborted" | "budget_exceeded"` and `RunTrace["outcome"]` adds `"error"` — the `finish` helper only ever passes the four stopReason values, and the catch block passes `"error"` directly, so the types line up.
@@ -934,18 +1111,31 @@ export interface BackgroundAgentRunnerOptions {
 
 (Prefer a top-of-file `import type { RunTrace } from "./run-trace-store"` and use `recordRun?: (trace: RunTrace) => void` rather than the inline import — match the file's existing import style.)
 
-- [ ] **Step 4: Pass `runId`, `origin`, `recordRun`, and caller `runId` through**
+- [ ] **Step 4: Pass `runId`, `origin`, a budget-aware `recordRun`, and caller `runId` through**
 
-In `run()`, construct the `AgentRuntime` with `recordRun`, and pass `runId` + `origin` into `runtime.run()`, and add `runId` to the caller:
+The runner converts a token-budget abort into `stopReason: "budget_exceeded"` **after** `runtime.run()` returns (existing line 76), but the runtime records the trace *inside* `run()` — at which point it only knows the run was aborted, so it would persist `outcome: "aborted"` (or `"error"`), disagreeing with the reported outcome.
+
+Fix: wrap the injected `recordRun` in a closure that overrides the outcome to `"budget_exceeded"` when the token-budget flag is set. Timing is safe: `onExceeded()` sets `tokenBudgetExceeded = true` synchronously (inside the wrapped provider's stream, before it aborts the controller), so by the time the runtime unwinds and calls `recordRun`, the flag already reflects the true cause.
+
+In `run()`, construct the `AgentRuntime` with the wrapped recorder, and pass `runId` + `origin` into `runtime.run()`, and add `runId` to the caller. Note `tokenBudgetExceeded` is declared earlier in `run()` (existing line 55), so it is in scope here:
 
 ```ts
+    const recordRun = this.options.recordRun
     const runtime = new AgentRuntime({
       provider,
       tools: new AiToolRegistry(this.limitedTools(input.allowedUses)),
       model: this.options.model,
       maxSteps: input.agent.maxToolCallsPerRun + 1,
       budgetTokens: input.agent.maxTokensPerRun,
-      recordRun: this.options.recordRun,
+      recordRun: recordRun
+        ? (trace) =>
+            recordRun({
+              ...trace,
+              // Reconcile the trace with the outcome the runner will report:
+              // a token-budget abort surfaces as budget_exceeded, not aborted.
+              outcome: tokenBudgetExceeded ? "budget_exceeded" : trace.outcome,
+            })
+        : undefined,
     })
 
     try {
@@ -964,12 +1154,40 @@ In `run()`, construct the `AgentRuntime` with `recordRun`, and pass `runId` + `o
       })
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [ ] **Step 5: Write the budget-outcome regression test**
+
+Add to `src/main/ai/background-agent-runner.test.ts`. This test drives the token budget over its limit so the run aborts, then asserts BOTH the returned `stopReason` and the recorded trace `outcome` are `"budget_exceeded"` (not `"aborted"`). Model it on the existing budget test in that file (reuse its provider/host/input helpers and `maxTokensPerRun` shape):
+
+```ts
+it("records outcome 'budget_exceeded' (not 'aborted') when the token budget is hit", async () => {
+  const recorded: import("./run-trace-store").RunTrace[] = []
+  // A provider turn that reports more tokens than the run's maxTokensPerRun,
+  // tripping the wrapped provider's onExceeded → abort path.
+  const runner = new BackgroundAgentRunner({
+    provider: scriptedProvider([
+      { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: {} }], usage: { outputTokens: 9999 } },
+      { text: "should not reach" },
+    ]),
+    tools: fakeToolHost(),
+    recordRun: (trace) => recorded.push(trace),
+  })
+
+  const result = await runner.run(baseInput(/* with a small maxTokensPerRun, e.g. 50 */))
+
+  expect(result.stopReason).toBe("budget_exceeded")
+  expect(recorded).toHaveLength(1)
+  expect(recorded[0].outcome).toBe("budget_exceeded")
+})
+```
+
+If the existing budget test in the file already sets up a small `maxTokensPerRun` via a helper, reuse it verbatim rather than inventing a new input shape.
+
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `pnpm test -- background-agent-runner`
-Expected: PASS.
+Expected: PASS — both the runId/origin test and the budget-outcome test.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/main/ai/background-agent-runner.ts src/main/ai/background-agent-runner.test.ts
