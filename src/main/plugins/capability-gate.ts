@@ -26,6 +26,8 @@ export interface CapabilityRequest {
   signal?: AbortSignal
   /** Set by the host for trigger-origin background calls; resolves the budget path. */
   invocationId?: string
+  /** The agent run this call belongs to; copied through to the audit entry. */
+  runId?: string
   /** Host-computed: whether this concrete write operation can be reversed. */
   reversible?: boolean
 }
@@ -64,6 +66,8 @@ export interface CapabilityAuditEntry {
   decision: "allow" | "deny"
   grantedNow: boolean
   why: string
+  /** The agent run this decision belongs to; absent for out-of-run decisions. */
+  runId?: string
 }
 
 export type BudgetDebitOutcome = "debited" | "not-in-uses" | "exhausted"
@@ -218,6 +222,7 @@ export class CapabilityGate implements CapabilityGatePort {
       decision,
       grantedNow,
       why,
+      ...(request.runId !== undefined ? { runId: request.runId } : {}),
     })
   }
 }

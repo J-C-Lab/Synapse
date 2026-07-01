@@ -1,5 +1,6 @@
 import type { ImperativePanelHandle } from "react-resizable-panels"
 import type { DisplayMessage, ToolCard } from "./chat-message-model"
+import type { PlanStep } from "@/components/PlanPanel"
 import type { AiChatEvent, AiConversationSummary, AiStatus, AiTokenUsage } from "@/lib/electron"
 import {
   ArrowUp,
@@ -20,6 +21,7 @@ import { ConversationSidebar } from "@/components/conversation-sidebar"
 import { Markdown } from "@/components/markdown"
 import { McpServersDialog } from "@/components/mcp-servers-dialog"
 import { MemoryDialog } from "@/components/memory-dialog"
+import { PlanPanel } from "@/components/PlanPanel"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -67,6 +69,7 @@ export function ChatPage() {
   const [showSidebar, setShowSidebar] = useState(true)
   const [conversations, setConversations] = useState<AiConversationSummary[]>([])
   const [conversationId, setConversationId] = useState<string>(() => crypto.randomUUID())
+  const [planSteps, setPlanSteps] = useState<PlanStep[]>([])
   const scrollRef = useRef<HTMLDivElement>(null)
   const sidebarPanelRef = useRef<ImperativePanelHandle>(null)
 
@@ -106,6 +109,9 @@ export function ChatPage() {
           input: event.input,
         })
       }
+      if (event.type === "plan") {
+        setPlanSteps(event.steps)
+      }
     },
     [conversationId, refreshConversations]
   )
@@ -120,6 +126,7 @@ export function ChatPage() {
     setConversationId(id)
     setUsage(null)
     setApproval(null)
+    setPlanSteps([])
     const stored = await getAiConversation(id)
     setMessages(stored ? hydrateMessages(stored.messages) : [])
   }
@@ -130,6 +137,7 @@ export function ChatPage() {
     setMessages([])
     setUsage(null)
     setApproval(null)
+    setPlanSteps([])
   }
 
   async function removeConversation(id: string) {
@@ -154,6 +162,7 @@ export function ChatPage() {
     const text = input.trim()
     if (!text || busy) return
     setInput("")
+    setPlanSteps([])
     setMessages((prev) => [
       ...prev,
       { id: crypto.randomUUID(), role: "user", text, tools: [] },
@@ -249,6 +258,7 @@ export function ChatPage() {
 
             <div ref={scrollRef} className="flex-1 overflow-y-auto pr-1">
               <div className="mx-auto w-full max-w-3xl space-y-6 px-1 py-2">
+                <PlanPanel steps={planSteps} className="mx-auto max-w-3xl" />
                 {messages.length === 0 ? (
                   <p className="py-12 text-center text-sm text-muted-foreground">
                     {t("chat.empty")}

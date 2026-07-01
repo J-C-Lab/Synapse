@@ -147,6 +147,8 @@ const electronAPI = {
   setAiModel: (providerId: string, model: string) =>
     ipcRenderer.invoke("ai:set-model", { providerId, model }),
   setAiBudget: (tokens: number) => ipcRenderer.invoke("ai:set-budget", tokens),
+  setAiContextCompression: (value: { enabled: boolean; thresholdTokens: number }) =>
+    ipcRenderer.invoke("ai:set-context-compression", value),
   listAiTools: () => ipcRenderer.invoke("ai:list-tools"),
   listAiConversations: () => ipcRenderer.invoke("ai:list-conversations"),
   getAiConversation: (id: string) => ipcRenderer.invoke("ai:get-conversation", id),

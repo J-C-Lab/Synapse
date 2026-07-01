@@ -76,6 +76,9 @@
     "budgetSave": "Save",
     "budgetUnlimited": "Unlimited",
     "budgetHint": "Stop a turn once it spends this many tokens. Leave empty or 0 for no limit.",
+    "contextCompression": "Context compression",
+    "contextCompressionThresholdPlaceholder": "100000",
+    "contextCompressionHint": "When enabled, older conversation turns are summarized before sending to the model once the estimated token count exceeds the threshold.",
     "allowedTools": "Always-allowed tools",
     "allowedEmpty": "No tools are permanently allowed.",
     "revoke": "Revoke"

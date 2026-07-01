@@ -76,6 +76,9 @@
     "budgetSave": "保存",
     "budgetUnlimited": "不限",
     "budgetHint": "一轮对话消耗达到该 token 数即停止。留空或填 0 表示不限。",
+    "contextCompression": "上下文压缩",
+    "contextCompressionThresholdPlaceholder": "100000",
+    "contextCompressionHint": "开启后，当估算 token 数超过阈值时，会在发送给模型前对较早的对话轮次进行摘要。",
     "allowedTools": "始终允许的工具",
     "allowedEmpty": "没有永久允许的工具。",
     "revoke": "撤销"

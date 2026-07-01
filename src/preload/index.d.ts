@@ -293,6 +293,7 @@ declare global {
     model: string
     providers: SynapseAiProviderStatus[]
     budgetTokens: number
+    contextCompression: { enabled: boolean; thresholdTokens: number }
   }
 
   interface SynapseAiTool {
@@ -345,6 +346,12 @@ declare global {
       }
     | { type: "done"; conversationId: string; stopReason: string; usage: SynapseAiTokenUsage }
     | { type: "error"; conversationId: string; message: string }
+    | {
+        type: "plan"
+        conversationId: string
+        runId: string
+        steps: Array<{ title: string; status: "pending" | "in_progress" | "completed" }>
+      }
 
   type SynapseAiRememberScope = "once" | "conversation" | "always"
 
@@ -600,6 +607,10 @@ declare global {
       setAiProvider: (providerId: string) => Promise<void>
       setAiModel: (providerId: string, model: string) => Promise<void>
       setAiBudget: (tokens: number) => Promise<void>
+      setAiContextCompression: (value: {
+        enabled: boolean
+        thresholdTokens: number
+      }) => Promise<void>
       listAiTools: () => Promise<SynapseAiTool[]>
       listAiConversations: () => Promise<SynapseAiConversationSummary[]>
       getAiConversation: (id: string) => Promise<SynapseAiConversation | undefined>

@@ -1,5 +1,6 @@
 import type { RegisteredToolDescriptor } from "../plugins/types"
 import type { ChatContentBlock, ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
+import type { RunTrace } from "./run-trace-store"
 import type { ToolHostPort } from "./tool-registry"
 import { describe, expect, it, vi } from "vitest"
 import { AgentRuntime, buildSystemPrompt } from "./agent-runtime"
@@ -74,6 +75,11 @@ describe("buildSystemPrompt", () => {
     const prompt = buildSystemPrompt("BASE", { shellEnabled: true })
     expect(prompt).toContain("run_shell")
   })
+
+  it("nudges the model to lay out a plan for multi-step tasks", () => {
+    const prompt = buildSystemPrompt("BASE", { shellEnabled: false })
+    expect(prompt).toContain("update_plan")
+  })
 })
 
 describe("agentRuntime", () => {
@@ -98,7 +104,9 @@ describe("agentRuntime", () => {
     expect(host.invokeTool).toHaveBeenCalledWith(
       "com.x.demo/greet",
       { name: "Ada" },
-      expect.objectContaining({ caller: { kind: "agent", conversationId: "c1" } })
+      expect.objectContaining({
+        caller: expect.objectContaining({ kind: "agent", conversationId: "c1" }),
+      })
     )
     expect(onText).toHaveBeenCalledWith("Hello Ada")
 
@@ -206,5 +214,200 @@ describe("agentRuntime", () => {
 
     expect(host.invokeTool).not.toHaveBeenCalled()
     expect(result.messages[2]?.content[0]).toMatchObject({ type: "tool_result", isError: true })
+  })
+
+  it("records a run trace with tool calls and puts runId on the caller", async () => {
+    const host = fakeHost()
+    const recorded: RunTrace[] = []
+    const runtime = new AgentRuntime({
+      provider: fakeProvider([
+        { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: { name: "Ada" } }] },
+        { text: "Hello Ada" },
+      ]),
+      tools: new AiToolRegistry(host),
+      recordRun: (trace) => recorded.push(trace),
+    })
+
+    const result = await runtime.run({ conversationId: "c1", messages: [userMessage("hi")] })
+
+    expect(result.stopReason).toBe("end_turn")
+    expect(recorded).toHaveLength(1)
+    expect(recorded[0]).toMatchObject({
+      conversationId: "c1",
+      origin: "interactive",
+      outcome: "end_turn",
+    })
+    expect(typeof recorded[0].runId).toBe("string")
+    expect(recorded[0].runId.length).toBeGreaterThan(0)
+    expect(recorded[0].toolCalls).toHaveLength(1)
+    expect(recorded[0].toolCalls[0]).toMatchObject({ name: "com.x.demo/greet", ok: true })
+
+    const callerArg = (host.invokeTool as ReturnType<typeof vi.fn>).mock.calls[0][2]
+    expect(callerArg.caller.runId).toBe(recorded[0].runId)
+  })
+
+  it("uses a supplied runId verbatim (background-agent path)", async () => {
+    const host = fakeHost()
+    const recorded: RunTrace[] = []
+    const runtime = new AgentRuntime({
+      provider: fakeProvider([{ text: "done" }]),
+      tools: new AiToolRegistry(host),
+      recordRun: (trace) => recorded.push(trace),
+    })
+
+    await runtime.run({
+      conversationId: "inv-1",
+      messages: [userMessage("hi")],
+      runId: "supplied-run",
+      origin: "background-agent",
+    })
+
+    expect(recorded[0].runId).toBe("supplied-run")
+    expect(recorded[0].origin).toBe("background-agent")
+  })
+
+  it("generates a distinct runId per run() call on the same conversation", async () => {
+    const host = fakeHost()
+    const recorded: RunTrace[] = []
+    const runtime = new AgentRuntime({
+      provider: fakeProvider([{ text: "a" }, { text: "b" }]),
+      tools: new AiToolRegistry(host),
+      recordRun: (trace) => recorded.push(trace),
+    })
+
+    await runtime.run({ conversationId: "c1", messages: [userMessage("one")] })
+    await runtime.run({ conversationId: "c1", messages: [userMessage("two")] })
+
+    expect(recorded).toHaveLength(2)
+    expect(recorded[0].runId).not.toBe(recorded[1].runId)
+  })
+
+  it("records an aborted run with outcome 'aborted'", async () => {
+    const host = fakeHost()
+    const recorded: RunTrace[] = []
+    const runtime = new AgentRuntime({
+      provider: fakeProvider([{ text: "x" }]),
+      tools: new AiToolRegistry(host),
+      recordRun: (trace) => recorded.push(trace),
+    })
+    const controller = new AbortController()
+    controller.abort()
+
+    await runtime.run({
+      conversationId: "c1",
+      messages: [userMessage("hi")],
+      signal: controller.signal,
+    })
+
+    expect(recorded).toHaveLength(1)
+    expect(recorded[0].outcome).toBe("aborted")
+  })
+
+  it("does not let a throwing recorder break the run (spec §6)", async () => {
+    const host = fakeHost()
+    const runtime = new AgentRuntime({
+      provider: fakeProvider([
+        { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: {} }] },
+        { text: "done" },
+      ]),
+      tools: new AiToolRegistry(host),
+      recordRun: () => {
+        throw new Error("recorder boom")
+      },
+    })
+
+    const result = await runtime.run({ conversationId: "c1", messages: [userMessage("hi")] })
+    expect(result.stopReason).toBe("end_turn")
+  })
+
+  it("records a subagent run with origin 'subagent' and parentRunId", async () => {
+    const host = fakeHost()
+    const recorded: RunTrace[] = []
+    const runtime = new AgentRuntime({
+      provider: fakeProvider([{ text: "child done" }]),
+      tools: new AiToolRegistry(host),
+      recordRun: (t) => recorded.push(t),
+    })
+
+    await runtime.run({
+      conversationId: "c1",
+      messages: [userMessage("subtask")],
+      runId: "child-1",
+      origin: "subagent",
+      parentRunId: "parent-1",
+      caller: { kind: "subagent", conversationId: "c1", runId: "child-1", parentRunId: "parent-1" },
+    })
+
+    expect(recorded[0]).toMatchObject({
+      runId: "child-1",
+      origin: "subagent",
+      parentRunId: "parent-1",
+    })
+  })
+
+  it("folds the run's final plan into the recorded trace", async () => {
+    const host = fakeHost()
+    const recorded: RunTrace[] = []
+    const plan = [{ title: "A", status: "completed" as const }]
+    const runtime = new AgentRuntime({
+      provider: fakeProvider([{ text: "done" }]),
+      tools: new AiToolRegistry(host),
+      recordRun: (t) => recorded.push(t),
+      getPlan: (runId) => (runId ? plan : undefined),
+    })
+
+    await runtime.run({ conversationId: "c1", messages: [userMessage("hi")] })
+    expect(recorded[0].plan).toEqual(plan)
+  })
+
+  it("sends compacted messages when a compressor is configured", async () => {
+    const host = fakeHost()
+    const seenLengths: number[] = []
+    const provider = {
+      id: "fake",
+      async *stream(req: { messages: unknown[] }) {
+        seenLengths.push(req.messages.length)
+        yield {
+          type: "message" as const,
+          message: { role: "assistant" as const, content: [{ type: "text" as const, text: "ok" }] },
+          usage: emptyUsage(),
+          stopReason: "end_turn" as const,
+        }
+      },
+    }
+    const runtime = new AgentRuntime({
+      provider,
+      tools: new AiToolRegistry(host),
+      compress: async (_system, messages) => ({
+        messages: messages.slice(-1),
+        summarizerTokens: 0,
+      }),
+    })
+
+    await runtime.run({
+      conversationId: "c1",
+      messages: [userMessage("a"), userMessage("b"), userMessage("c")],
+    })
+    expect(seenLengths[0]).toBe(1)
+  })
+
+  it("sends the full history when no compressor is configured", async () => {
+    const host = fakeHost()
+    const seenLengths: number[] = []
+    const provider = {
+      id: "fake",
+      async *stream(req: { messages: unknown[] }) {
+        seenLengths.push(req.messages.length)
+        yield {
+          type: "message" as const,
+          message: { role: "assistant" as const, content: [{ type: "text" as const, text: "ok" }] },
+          usage: emptyUsage(),
+          stopReason: "end_turn" as const,
+        }
+      },
+    }
+    const runtime = new AgentRuntime({ provider, tools: new AiToolRegistry(host) })
+    await runtime.run({ conversationId: "c1", messages: [userMessage("a"), userMessage("b")] })
+    expect(seenLengths[0]).toBe(2)
   })
 })

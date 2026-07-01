@@ -1,5 +1,7 @@
 import type { ClipboardContent } from "@synapse/plugin-sdk"
 import type { IpcMainInvokeEvent, WebContents } from "electron"
+import type { ChatProvider } from "./ai/providers/types"
+import type { RunTrace } from "./ai/run-trace-store"
 import type { SecretProtector } from "./lan/credential-store"
 import type { LanDevice, LanPairing, LanStatus, LanTransfer } from "./lan/types"
 import type { SearchWindowDeps } from "./search-window"
@@ -39,13 +41,19 @@ import { MemoryService } from "./ai/memory/memory-service"
 import { aiMemoryFilePath, MemoryStore } from "./ai/memory/memory-store"
 import { MEMORY_FQ_PREFIX, MemoryToolSource } from "./ai/memory/memory-tools"
 import { OpenAiEmbeddingProvider } from "./ai/memory/openai-embedding-provider"
+import { PLAN_FQ_PREFIX, PlanToolSource } from "./ai/plan/plan-tool-source"
+import { RunPlanRegistry } from "./ai/plan/run-plan-registry"
 import {
   PLUGIN_INTROSPECT_PREFIX,
   PluginIntrospectionToolSource,
 } from "./ai/plugin-introspection-tools"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/catalog"
+import { RunBudgetRegistry } from "./ai/run-budget-registry"
+import { recordRun as persistRunTrace } from "./ai/run-trace-store"
 import { createNodeShellExecutor } from "./ai/shell/shell-executor"
 import { SHELL_FQ_PREFIX, ShellToolSource } from "./ai/shell/shell-tool-source"
+import { SubagentRunner } from "./ai/subagent/subagent-runner"
+import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
 import {
   destroyFloatingBallWindow,
@@ -211,6 +219,15 @@ let plugins: PluginHost
 let capabilityService!: CapabilityIpcService
 let lan: LanService
 let agent: AgentService
+let runTraceRecorder: (trace: RunTrace) => void = () => {}
+let emitPlanForRun: (
+  runId: string,
+  steps: import("./ai/plan/plan-types").PlanStep[]
+) => void = () => {}
+let makeSubagentProvider: () => Promise<{ provider: ChatProvider; model: string }> = async () => {
+  throw new Error("subagent provider not wired")
+}
+const runBudgetRegistry = new RunBudgetRegistry()
 let accountService: MarketplaceAccountService
 let marketplaceTokens: MarketplaceTokenStore | undefined
 // External MCP servers feeding tools to the built-in agent (P5). Held at module
@@ -661,6 +678,8 @@ function initPluginHost(): PluginHost {
       approve: capabilityService.capabilityApprover,
     },
     backgroundAgentProvider: () => agent.createBackgroundAgentProvider(),
+    recordRun: (trace) => runTraceRecorder(trace),
+    runBudgetRegistry,
     reservedAccelerators: () => [launcher.getSettings().hotkey],
     safeStorage: {
       isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
@@ -722,41 +741,79 @@ function createAgentService(): AgentService {
     audit: (entry) => logger.child("ai").info("agent shell", { ...entry }),
   })
 
+  const runsDir = path.join(userDataDir, "logs", "runs")
+  const recordRun = (trace: RunTrace): void => persistRunTrace(runsDir, trace)
+  runTraceRecorder = recordRun
+
+  const planRegistry = new RunPlanRegistry()
+  const planSource = new PlanToolSource({
+    registry: planRegistry,
+    emitPlan: (runId, steps) => emitPlanForRun(runId, steps),
+  })
+
+  let agentTools!: AiToolRegistry
+  const subagentSource = new SpawnSubagentToolSource({
+    parentTools: () => agentTools,
+    budgetTokens: (runId) => runBudgetRegistry.get(runId),
+    runSubagent: async (inp) => {
+      const { provider, model } = await makeSubagentProvider()
+      return new SubagentRunner({ provider, model, recordRun }).run(inp)
+    },
+  })
+
   // The model sees one flat tool list: local plugin tools, external MCP tools
   // (`mcp:<id>/<tool>`), built-in memory tools (`memory:…`), and optionally
   // governed shell (`shell:…`). Invocations route by ownership.
-  const tools = new AiToolRegistry(
+  agentTools = new AiToolRegistry(
     new CompositeToolHost([
       introspectionSource,
       shellSource,
+      planSource,
+      subagentSource,
       asFallbackSource(
         plugins,
         (fqName) =>
           fqName.startsWith(MCP_FQ_PREFIX) ||
           fqName.startsWith(MEMORY_FQ_PREFIX) ||
           fqName.startsWith(PLUGIN_INTROSPECT_PREFIX) ||
-          fqName.startsWith(SHELL_FQ_PREFIX)
+          fqName.startsWith(SHELL_FQ_PREFIX) ||
+          fqName.startsWith(PLAN_FQ_PREFIX) ||
+          fqName.startsWith(SUBAGENT_FQ_PREFIX)
       ),
       manager,
       new MemoryToolSource(memory),
     ]),
     pluginNote
   )
-  return new AgentService({
+
+  const agentService = new AgentService({
     credentials,
-    tools,
+    tools: agentTools,
     getShellEnabled: () => launcher.getSettings().allowAgentShell,
     conversations: new ConversationStore(path.join(userDataDir, "ai", "conversations")),
     providers: defaultProviderCatalog(),
     settings: new AiSettingsStore(aiSettingsFilePath(userDataDir), DEFAULT_PROVIDER_ID),
     approvals: new ApprovalStore(aiApprovalsFilePath(userDataDir)),
     sendEvent: broadcastAiChatEvent,
+    recordRun,
+    planRegistry,
+    onTurnStart: ({ runId, budgetTokens }) => {
+      runBudgetRegistry.set(runId, budgetTokens)
+    },
+    onTurnEnd: ({ runId }) => {
+      runBudgetRegistry.clear(runId)
+    },
     mcp: {
       // Encrypt env/header secrets at rest with the OS keychain.
       configs: new McpServerConfigStore(aiMcpServersFilePath(userDataDir), osSecretProtector()),
       manager,
     },
   })
+
+  emitPlanForRun = (runId, steps) => agentService.emitPlanForRun(runId, steps)
+  makeSubagentProvider = () => agentService.createBackgroundAgentProvider()
+
+  return agentService
 }
 
 function floatingBallDeps() {

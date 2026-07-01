@@ -100,6 +100,13 @@ export interface PluginHostOptions {
   reservedAccelerators?: () => readonly string[]
   /** Supplies the currently selected chat provider/model for trigger-woken agents. */
   backgroundAgentProvider?: () => Promise<{ provider: ChatProvider; model?: string }>
+  /** Forwards per-run traces from background-agent runs to the host recorder. */
+  recordRun?: (trace: import("../ai/run-trace-store").RunTrace) => void
+  /** Per-run token budgets for subagents spawned during background-agent runs. */
+  runBudgetRegistry?: {
+    set: (runId: string, budgetTokens: number | undefined) => void
+    clear: (runId: string) => void
+  }
   safeStorage?: SafeStoragePort
   secretPrompt?: SecretPromptPort
   credentialBroker?: CredentialBroker
@@ -407,6 +414,8 @@ export class PluginHost {
       model,
       tools: this,
       ledger: this.agentBudgetLedger,
+      recordRun: this.options.recordRun,
+      runBudgetRegistry: this.options.runBudgetRegistry,
     })
     await runner.run({
       pluginId: request.pluginId,
