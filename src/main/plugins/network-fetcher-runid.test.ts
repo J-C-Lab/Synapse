@@ -1,4 +1,5 @@
 import type { CapabilityGatePort, CapabilityRequest } from "./capability-gate"
+import { Buffer } from "node:buffer"
 import { describe, expect, it } from "vitest"
 import { createNetworkFetcher } from "./network-fetcher"
 
@@ -18,6 +19,13 @@ describe("networkFetcher runId threading", () => {
       trigger: "tool:fetch",
       pluginId: "com.synapse.test",
       runId: "run-net",
+      resolve: async () => [{ address: "140.82.112.3", family: 4 }],
+      transport: async () => ({
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        body: Buffer.from("{}"),
+      }),
     })
 
     await expect(fetcher.fetch("https://api.example.com/x", { method: "GET" })).rejects.toThrow()
