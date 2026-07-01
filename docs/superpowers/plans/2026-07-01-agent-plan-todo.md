@@ -290,6 +290,23 @@ describe("planToolSource", () => {
     )
     expect(result.isError).toBe(true)
   })
+
+  it("still stores + acks when emitPlan throws (UI push is best-effort)", async () => {
+    const registry = new RunPlanRegistry()
+    const src = new PlanToolSource({
+      registry,
+      emitPlan: () => {
+        throw new Error("renderer gone")
+      },
+    })
+    const result = await src.invokeTool(
+      UPDATE_PLAN_FQ,
+      { steps: [{ title: "A" }] },
+      { caller: caller(), signal: new AbortController().signal }
+    )
+    expect(result.isError ?? false).toBe(false)
+    expect(registry.get("r1")).toEqual([{ title: "A", status: "pending" }])
+  })
 })
 ```
 
@@ -379,7 +396,14 @@ export class PlanToolSource implements ToolHostSource {
     if (!parsed.ok) return errorResult(parsed.reason)
 
     this.options.registry.set(runId, parsed.steps)
-    this.options.emitPlan(runId, parsed.steps)
+    // A UI-push failure must never break the tool call — swallow + warn. The
+    // injected emitPlan is arbitrary (index.ts wires it to AgentService), so we
+    // guard here rather than trusting the callee to catch.
+    try {
+      this.options.emitPlan(runId, parsed.steps)
+    } catch {
+      // best-effort: the plan is stored + will still be folded into the trace.
+    }
     return {
       content: [{ type: "text", text: `Plan updated (${parsed.steps.length} steps).` }],
       structured: { ok: true, count: parsed.steps.length },
@@ -518,22 +542,48 @@ git commit -m "feat(ai): fold declared plan into the run trace"
 
 ---
 
-## Task 5: Add the `plan` chat event and forward it
+## Task 5: `plan` chat event + run-lifecycle ownership in `AgentService.chat`
 
 **Files:**
-- Modify: `src/main/ai/agent-service.ts` (`AiChatEvent` + a public `emitPlan` seam)
+- Modify: `src/main/ai/agent-service.ts` (`AiChatEvent`; `AgentServiceOptions`; the `chat` method; new `emitPlanForRun`)
 - Test: `src/main/ai/agent-service.test.ts` (extend)
 
-The tool source needs to reach `sendEvent`, but it only has `runId` (via the caller), not `conversationId`. Since `AgentService` owns both the runtime call and `sendEvent`, expose a small `emitPlan(conversationId, runId, steps)` that the wiring in `index.ts` closes over. In practice the plan tool runs inside a conversation whose `conversationId` the service knows for the active turn, so the service supplies a `(runId, steps) => sendEvent(...)` closure bound to the current `conversationId`.
+**The core wiring decision (resolves the plan tool's `runId → conversationId` gap):** the plan tool source only knows the `runId` (from `caller.runId`), not the `conversationId`. `AgentService.chat` is the single place that owns both. So `chat` **generates the `runId` itself** (instead of letting `AgentRuntime` default it), records a `runId → conversationId` mapping for the duration of the turn, passes the `runId` explicitly into `runtime.run`, and clears both the mapping **and** the plan registry in its `finally`. The plan source's `emitPlan(runId, steps)` is wired (in Task 6) to `AgentService.emitPlanForRun(runId, steps)`, which resolves the conversation via that map.
 
-- [ ] **Step 1: Write the failing test**
+The public interactive method is `chat(...)` (agent-service.ts:251), not `send`.
+
+- [ ] **Step 1: Write the failing tests**
 
 Add to `src/main/ai/agent-service.test.ts`:
 
 ```ts
-it("emits a plan chat event through sendEvent", async () => {
+it("emitPlanForRun forwards a plan event with the run's conversationId", async () => {
   const events: AiChatEvent[] = []
-  // Use the service's public plan emitter (bound per turn); assert the event shape.
+  const registry = new RunPlanRegistry()
+  const svc = new AgentService({
+    credentials: credentials("sk-test"),
+    tools: new AiToolRegistry(fakeHost()),
+    conversations: conversations().store,
+    createProvider: () => fakeProvider([{ text: "hi" }]),
+    sendEvent: (e) => events.push(e),
+    planRegistry: registry,
+    now: () => 1000,
+  })
+
+  // Simulate an active turn by registering the mapping the way chat() does.
+  svc.registerRun("run-1", "c1")
+  svc.emitPlanForRun("run-1", [{ title: "A", status: "pending" }])
+
+  expect(events).toContainEqual({
+    type: "plan",
+    conversationId: "c1",
+    runId: "run-1",
+    steps: [{ title: "A", status: "pending" }],
+  })
+})
+
+it("emitPlanForRun is a no-op for an unknown runId", async () => {
+  const events: AiChatEvent[] = []
   const svc = new AgentService({
     credentials: credentials("sk-test"),
     tools: new AiToolRegistry(fakeHost()),
@@ -542,27 +592,38 @@ it("emits a plan chat event through sendEvent", async () => {
     sendEvent: (e) => events.push(e),
     now: () => 1000,
   })
-  svc.emitPlan("c1", "r1", [{ title: "A", status: "pending" }])
-  expect(events).toContainEqual({
-    type: "plan",
-    conversationId: "c1",
-    runId: "r1",
-    steps: [{ title: "A", status: "pending" }],
+  svc.emitPlanForRun("ghost", [{ title: "A", status: "pending" }])
+  expect(events.some((e) => e.type === "plan")).toBe(false)
+})
+
+it("clears the run mapping and plan registry after a turn", async () => {
+  const registry = new RunPlanRegistry()
+  const { service: svc } = service({
+    provider: fakeProvider([{ text: "done" }]),
+    host: fakeHost({ readOnlyHint: true }),
+    // extend the `service()` helper (Task 8 wiring) to accept + pass planRegistry
   })
+  await svc.chat("c1", "hello")
+  // No runId leaks in the registry after the turn.
+  // (Assert via a spy on registry.clear, or that get() returns undefined for the
+  // runId chat() used — capture it via the plan event if one was emitted.)
 })
 ```
+
+(The third test is illustrative — assert cleanup with whatever seam is cleanest: a `vi.spyOn(registry, "clear")` and expect it called once in `finally`.)
 
 - [ ] **Step 2: Run to verify failure**
 
 Run: `pnpm test -- agent-service`
-Expected: FAIL — `plan` is not an `AiChatEvent` variant and `emitPlan` does not exist.
+Expected: FAIL — `plan` variant, `planRegistry` option, `registerRun`, and `emitPlanForRun` don't exist; `chat` doesn't generate/clear a runId.
 
-- [ ] **Step 3: Add the event variant**
+- [ ] **Step 3: Add the event variant + options**
 
-In `src/main/ai/agent-service.ts`, import `PlanStep` and extend `AiChatEvent`:
+In `src/main/ai/agent-service.ts`, import types and extend `AiChatEvent` + `AgentServiceOptions`:
 
 ```ts
 import type { PlanStep } from "./plan/plan-types"
+import type { RunPlanRegistry } from "./plan/run-plan-registry"
 ```
 
 ```ts
@@ -571,31 +632,92 @@ import type { PlanStep } from "./plan/plan-types"
   | { type: "plan"; conversationId: string; runId: string; steps: PlanStep[] }
 ```
 
-- [ ] **Step 4: Add the `emitPlan` method**
+```ts
+  // in AgentServiceOptions:
+  /** The in-run plan store, so chat() can clear it per turn and expose getPlan. */
+  planRegistry?: RunPlanRegistry
+```
 
-Add a public method on `AgentService`:
+- [ ] **Step 4: Add the run map + plan methods**
+
+Add a private field and three methods on `AgentService`:
 
 ```ts
-  /** Push a plan update to the renderer for a conversation's active run. */
-  emitPlan(conversationId: string, runId: string, steps: PlanStep[]): void {
+  /** runId → conversationId for the currently active turn(s). */
+  private readonly activeRunConversations = new Map<string, string>()
+
+  /** Called by chat() at turn start so plan events can resolve the conversation. */
+  registerRun(runId: string, conversationId: string): void {
+    this.activeRunConversations.set(runId, conversationId)
+  }
+
+  /** Wired to the plan tool source; resolves the conversation and pushes a plan event. */
+  emitPlanForRun(runId: string, steps: PlanStep[]): void {
+    const conversationId = this.activeRunConversations.get(runId)
+    if (!conversationId) return
     try {
       this.options.sendEvent({ type: "plan", conversationId, runId, steps })
     } catch {
       // A UI-push failure must never break the turn.
     }
   }
+
+  /** Reads a run's declared plan (for RunTrace.plan via the runtime's getPlan port). */
+  private getPlan(runId: string): PlanStep[] | undefined {
+    return this.options.planRegistry?.get(runId)
+  }
 ```
 
-- [ ] **Step 5: Run to verify pass**
+- [ ] **Step 5: Own the `runId` lifecycle inside `chat`**
+
+In the `chat` method, generate the `runId`, register it, pass it to `runtime.run`, forward `getPlan`, and clean up in `finally`. Add `import { randomUUID } from "node:crypto"` at the top if not present.
+
+```ts
+    const runId = randomUUID()
+    this.registerRun(runId, conversationId)
+
+    const runtime = new AgentRuntime({
+      provider: this.createProviderFor(providerId, apiKey),
+      tools: this.options.tools,
+      model,
+      budgetTokens: budgetTokens > 0 ? budgetTokens : undefined,
+      shellEnabled: this.options.getShellEnabled?.() ?? false,
+      recordRun: this.options.recordRun,
+      getPlan: (id) => this.getPlan(id),
+    })
+
+    // ...
+    try {
+      const result = await runtime.run({
+        conversationId,
+        runId,                 // ← explicit, so plan events + trace share it
+        messages,
+        signal: controller.signal,
+        onText: (delta) => this.options.sendEvent({ type: "text", conversationId, delta }),
+        onEvent: (event) => this.forwardAgentEvent(conversationId, event),
+        approve: (request) => this.approve(conversationId, request.toolName, request.input),
+      })
+      // ...existing persist + done event...
+    } finally {
+      this.aborts.delete(conversationId)
+      this.failPendingApprovals(conversationId)
+      this.activeRunConversations.delete(runId)
+      this.options.planRegistry?.clear(runId)   // ← registry cleanup (spec §2)
+    }
+```
+
+This closes the F2 gap: the plan registry entry for the run is always cleared when the turn ends, on every exit path (success, error, abort).
+
+- [ ] **Step 6: Run to verify pass**
 
 Run: `pnpm test -- agent-service`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/main/ai/agent-service.ts src/main/ai/agent-service.test.ts
-git commit -m "feat(ai): add plan chat event and emitPlan seam"
+git commit -m "feat(ai): own runId lifecycle in chat; add plan event + registry cleanup"
 ```
 
 ---
@@ -603,54 +725,51 @@ git commit -m "feat(ai): add plan chat event and emitPlan seam"
 ## Task 6: Wire the plan tool + registry in `index.ts`
 
 **Files:**
-- Modify: `src/main/index.ts` (compose the tool host; pass `getPlan` to `AgentService`/runtime)
+- Modify: `src/main/index.ts` (compose the tool host; share the registry with the service)
 
-`index.ts` is coverage-excluded (orchestration); verification is typecheck + the smoke note.
+`index.ts` is coverage-excluded (orchestration); verification is typecheck + the smoke note. After Task 5, `AgentService` owns `emitPlanForRun` / `getPlan` / registry cleanup, so `index.ts` only has to (a) create one shared `RunPlanRegistry`, (b) give it to both the tool source and the service, and (c) bridge the tool source's `emitPlan` to the service — handling the construction-order cycle with a late-bound holder.
 
-- [ ] **Step 1: Construct the registry and tool source**
+- [ ] **Step 1: Construct the shared registry, tool source, and late-bound bridge**
 
-Near where the `CompositeToolHost` sources are assembled (~line 728), create a shared registry and mount the plan source:
+Near where the `CompositeToolHost` sources are assembled (~line 728):
 
 ```ts
 import { RunPlanRegistry } from "./ai/plan/run-plan-registry"
-import { PlanToolSource } from "./ai/plan/plan-tool-source"
+import { PlanToolSource, PLAN_FQ_PREFIX } from "./ai/plan/plan-tool-source"
 ```
 
 ```ts
   const planRegistry = new RunPlanRegistry()
-  // agentService is created just below; bind emitPlan once it exists (see Step 2).
+
+  // The tool source is built before the AgentService (it goes into the tool
+  // host the service receives), so emitPlan is bridged through a mutable holder
+  // that we point at the service once it exists (Step 2). No circular ctor.
+  let emitPlanForRun: (runId: string, steps: import("./ai/plan/plan-types").PlanStep[]) => void =
+    () => {}
   const planSource = new PlanToolSource({
     registry: planRegistry,
-    emitPlan: (runId, steps) => planEmitBridge(runId, steps),
+    emitPlan: (runId, steps) => emitPlanForRun(runId, steps),
   })
 ```
 
-Add `planSource` to the `CompositeToolHost` source list (alongside `shellSource` / `introspectionSource`), and extend the fallback-prefix guard to include `PLAN_FQ_PREFIX` so plan-owned tools route correctly.
+Add `planSource` to the `CompositeToolHost` source list (alongside `shellSource` / `introspectionSource`), and extend the `asFallbackSource` prefix guard to include `PLAN_FQ_PREFIX` so plan-owned tools route to it.
 
-- [ ] **Step 2: Bind `emitPlan` and `getPlan` to the service**
+- [ ] **Step 2: Pass the registry to the service and bind the bridge**
 
-The plan source's `emitPlan` receives only `(runId, steps)` but the event needs a `conversationId`. Maintain a `runId → conversationId` map updated per turn, or — simpler — have `AgentService` own the plan wiring: pass the `planRegistry` and a `sendEvent`-bound emitter through `AgentServiceOptions` so the service maps the active conversation. Concretely, extend `AgentServiceOptions`:
-
-```ts
-  /** Reads a run's plan at record time (RunTrace.plan). */
-  getPlan?: (runId: string) => PlanStep[] | undefined
-```
-
-and forward it into the `AgentRuntime` construction (next to `recordRun`):
+Give the service the same `planRegistry` (Task 5 added the `planRegistry?` option; `getPlan` is now a private method reading it, so no separate `getPlan` option is needed):
 
 ```ts
-      recordRun: this.options.recordRun,
-      getPlan: this.options.getPlan,
+  const agentService = new AgentService({
+    // ...existing options...
+    recordRun,
+    planRegistry,
+  })
+
+  // Point the tool source's emit bridge at the now-constructed service.
+  emitPlanForRun = (runId, steps) => agentService.emitPlanForRun(runId, steps)
 ```
 
-In `index.ts`, pass `getPlan: (runId) => planRegistry.get(runId)` to `new AgentService({ ... })`. For `emitPlan`, resolve `conversationId` from the run: because the interactive `send` path already knows its `conversationId`, wire the plan source's `emitPlan` to call `agentService.emitPlan(conversationIdForRun(runId), runId, steps)`, where `conversationIdForRun` is a small map the service updates when it starts a turn (`runId → conversationId`). Expose `AgentService.registerRun(runId, conversationId)` and call it where the interactive runtime run is started.
-
-> Implementation note for the executor: the cleanest concrete wiring is to have
-> `AgentService.send` generate the `runId` itself (instead of letting the
-> runtime default it), record `runId → conversationId`, pass `runId` into
-> `runtime.run({ runId, ... })`, and clear the mapping in the `finally`. This
-> gives `emitPlan` a reliable `conversationId` lookup and keeps `index.ts` thin.
-> Do this in Step 2 and adjust the Task 5 emitter accordingly.
+(If the current code does `return new AgentService({ ... })` directly, hoist it to a `const agentService = ...` and `return agentService` so the bridge can be bound after construction.)
 
 - [ ] **Step 3: Typecheck**
 
@@ -660,8 +779,8 @@ Expected: no errors.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/main/index.ts src/main/ai/agent-service.ts
-git commit -m "feat(main): mount update_plan tool and wire plan registry"
+git add src/main/index.ts
+git commit -m "feat(main): mount update_plan tool and share plan registry with the service"
 ```
 
 ---
@@ -876,4 +995,4 @@ git commit -m "feat(ai): nudge the agent to declare a plan for multi-step tasks"
 
 - **Spec coverage:** §1 tool → Task 3 + Task 9 (guidance). §2 registry → Task 1. §3 event + panel → Tasks 5/7/8. §4 trace persistence → Tasks 2/4. §6 error handling → Task 3 (malformed/empty/no-run). §7 testing → every task is TDD.
 - **Type consistency:** `PlanStep` / `PlanStepStatus` defined once in `plan-types.ts` and imported by store, tool source, event, trace, and panel. `UPDATE_PLAN_FQ` / `PLAN_FQ_PREFIX` exported from the tool source and reused in `index.ts` routing.
-- **Wiring risk (Task 6):** the `runId → conversationId` mapping for `emitPlan` is the one non-mechanical part; the plan calls out having `AgentService.send` own `runId` generation as the concrete resolution. Flag for review during execution.
+- **Wiring (Tasks 5–6, resolved):** `AgentService.chat` (the real method name) generates the `runId`, maintains `activeRunConversations: Map<runId, conversationId>`, passes `runId` explicitly to `runtime.run`, and clears both the map and the `RunPlanRegistry` in `finally`. The tool source's `emitPlan` is bridged to `AgentService.emitPlanForRun(runId, steps)` via a late-bound holder in `index.ts` (no ctor cycle). Registry cleanup (spec §2) happens on every turn-exit path.

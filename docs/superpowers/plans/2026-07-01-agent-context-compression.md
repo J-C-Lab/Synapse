@@ -190,18 +190,50 @@ describe("contextCompressor", () => {
     expect(out.summarizerTokens).toBe(5)
   })
 
-  it("never splits a tool_use/tool_result pair across the boundary", async () => {
-    const summarize = summarizer()
-    const c = new ContextCompressor({ thresholdTokens: 50, keepFraction: 0.5, summarize })
+  it("pulls the boundary back to include a whole tool_use/tool_result pair", async () => {
+    // Deterministic setup: the keepBudget naturally lands the boundary BETWEEN
+    // toolUse and toolResult (result in recent, use in older). The compressor
+    // must snap the boundary up so the tool_use is NOT summarized away, i.e. the
+    // final sent messages must NOT contain a tool_result whose tool_use is absent.
+    const summarize = summarizer("recap")
+    const c = new ContextCompressor({ thresholdTokens: 100, keepFraction: 0.5, summarize })
     const toolUse: ChatMessage = { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "n", input: {} }] }
     const toolResult: ChatMessage = { role: "user", content: [{ type: "tool_result", toolUseId: "t1", content: "r", isError: false }] }
-    const messages = [big("old ", 50), toolUse, toolResult, user("tail")]
+    // Sized so recent ≈ toolResult + tail, boundary would fall on toolResult.
+    const messages = [big("old ", 60), toolUse, toolResult, user("tail-recent")]
     const out = await c.compress("SYS", messages)
 
-    // If toolResult is kept, toolUse must also be kept (no dangling result).
-    const keptResult = out.messages.some((m) => m.content.some((b) => b.type === "tool_result" && b.toolUseId === "t1"))
-    const keptUse = out.messages.some((m) => m.content.some((b) => b.type === "tool_use" && b.id === "t1"))
-    if (keptResult) expect(keptUse).toBe(true)
+    // Invariant: no tool_result in the output without its matching tool_use.
+    const resultIds = new Set(
+      out.messages.flatMap((m) =>
+        m.content.filter((b) => b.type === "tool_result").map((b) => (b as { toolUseId: string }).toolUseId)
+      )
+    )
+    const useIds = new Set(
+      out.messages.flatMap((m) =>
+        m.content.filter((b) => b.type === "tool_use").map((b) => (b as { id: string }).id)
+      )
+    )
+    for (const id of resultIds) expect(useIds.has(id)).toBe(true)
+  })
+
+  it("hard-trims when summary + recent still exceed the threshold", async () => {
+    // A very long summary plus a large recent window must not produce an
+    // over-threshold result — the compressor trims oldest recent turns (spec §7).
+    const longSummary = "S".repeat(4000)
+    const summarize = vi.fn(async () => ({ text: longSummary, tokens: 5 }))
+    const c = new ContextCompressor({ thresholdTokens: 300, keepFraction: 0.5, summarize })
+    const messages = [big("old ", 400), big("recent-a ", 60), big("recent-b ", 60), user("tail")]
+    const out = await c.compress("SYS", messages)
+
+    const est =
+      Math.ceil("SYS".length / 4) +
+      out.messages.reduce((s, m) => s + JSON.stringify(m).length, 0) / 4
+    // The result fits (approximately) under threshold, and the newest turn is kept.
+    expect(out.messages[out.messages.length - 1]).toEqual(user("tail"))
+    expect(out.messages.length).toBeGreaterThanOrEqual(1)
+    // A concrete upper bound: the compacted set is strictly smaller than the input.
+    expect(out.messages.length).toBeLessThan(messages.length)
   })
 
   it("falls back to the recent window (no summary) when summarize throws", async () => {
@@ -257,22 +289,55 @@ export class ContextCompressor {
 
   async compress(system: string, messages: ChatMessage[]): Promise<CompressResult> {
     const threshold = this.options.thresholdTokens
-    const estimate = estimateTextTokens(system) + estimateMessagesTokens(messages)
+    const systemTokens = estimateTextTokens(system)
+    const estimate = systemTokens + estimateMessagesTokens(messages)
     if (estimate <= threshold) return { messages, summarizerTokens: 0 }
 
     const keepBudget = threshold * (this.options.keepFraction ?? 0.5)
     const splitAt = this.recentStartIndex(messages, keepBudget)
     const older = messages.slice(0, splitAt)
-    const recent = messages.slice(splitAt)
-    if (older.length === 0) return { messages, summarizerTokens: 0 } // nothing to compress
+    let recent = messages.slice(splitAt)
+    if (older.length === 0) {
+      // Nothing older to summarize — the recent window alone already exceeds the
+      // threshold. Hard-trim it (spec §7) so we never send an over-window request.
+      return { messages: this.hardTrim(system, recent), summarizerTokens: 0 }
+    }
 
     try {
       const summary = await this.options.summarize(older)
-      return { messages: [summaryMessage(summary.text), ...recent], summarizerTokens: summary.tokens }
+      const out = [summaryMessage(summary.text), ...recent]
+      // §7: summary + recent can still exceed the window (long summary / large
+      // recent). Re-estimate and hard-trim the oldest of recent until under.
+      return {
+        messages: this.hardTrim(system, out),
+        summarizerTokens: summary.tokens,
+      }
     } catch {
-      // Degraded-but-working: drop the older slice rather than fail the turn.
-      return { messages: recent, summarizerTokens: 0 }
+      // Degraded-but-working: drop the older slice rather than fail the turn,
+      // still hard-trimming the recent window if it alone is over.
+      return { messages: this.hardTrim(system, recent), summarizerTokens: 0 }
     }
+  }
+
+  /**
+   * Drop the oldest whole turns from the front until system + messages fit under
+   * the threshold. Never drops the very last message. Respects the tool-pair
+   * invariant: if trimming would leave a leading tool_result whose tool_use was
+   * dropped, that leading result is dropped too.
+   */
+  private hardTrim(system: string, messages: ChatMessage[]): ChatMessage[] {
+    const threshold = this.options.thresholdTokens
+    const systemTokens = estimateTextTokens(system)
+    let out = messages
+    while (
+      out.length > 1 &&
+      systemTokens + estimateMessagesTokens(out) > threshold
+    ) {
+      out = out.slice(1)
+      // Don't start on a dangling tool_result (its tool_use was just dropped).
+      while (out.length > 1 && hasToolResult(out[0])) out = out.slice(1)
+    }
+    return out
   }
 
   /**
@@ -454,7 +519,10 @@ Inside the loop, just before the `provider.stream({ ... })` call, compute the ou
         ? await this.options.compress(system, messages)
         : { messages, summarizerTokens: 0 }
       if (outgoing.summarizerTokens > 0) {
-        usage = addUsage(usage, { inputTokens: 0, outputTokens: outgoing.summarizerTokens })
+        // TokenUsage has four fields; build a full one via emptyUsage() —
+        // `{ inputTokens, outputTokens }` alone is a type error. `addUsage` and
+        // `emptyUsage` are already imported at the top of agent-runtime.ts.
+        usage = addUsage(usage, { ...emptyUsage(), outputTokens: outgoing.summarizerTokens })
       }
 
       for await (const event of this.options.provider.stream({

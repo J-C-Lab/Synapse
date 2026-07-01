@@ -686,9 +686,9 @@ git commit -m "test(capability): confirm subagent runs attribute audits to the c
 
 `index.ts` is coverage-excluded; verify via typecheck.
 
-- [ ] **Step 1: Construct the runner + tool source**
+- [ ] **Step 1: Construct the tool source with an invocation-time runner**
 
-Where the composite tool host sources are assembled, build a `SubagentRunner` (using the same provider selection the interactive agent uses — reuse the `backgroundAgentProvider`/provider-selection seam) and a `SpawnSubagentToolSource` whose `parentTools` returns the same tool host the parent agent sees, and whose `runSubagent` delegates to the runner with the shared `recordRun` recorder from phase 1:
+The provider/model/key are selected **per turn** from the active BYOK key inside `AgentService` — there is no valid "selected provider" at app-init time, so the runner must NOT be constructed once with a fixed provider. `AgentService` already exposes `createBackgroundAgentProvider(): Promise<{ provider, model }>` (agent-service.ts:146), which resolves the current provider + model + key. Build a **fresh `SubagentRunner` on each `runSubagent` call** from that factory:
 
 ```ts
 import { SubagentRunner } from "./ai/subagent/subagent-runner"
@@ -696,23 +696,29 @@ import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subag
 ```
 
 ```ts
-  const subagentRunner = new SubagentRunner({
-    provider: /* selected provider */,
-    recordRun, // the same runsDir recorder from phase 1
-  })
+  // agentService is constructed just below; use a late-bound holder so the tool
+  // source (which goes into the tool host the service receives) can call back
+  // into it without a ctor cycle — same pattern as the plan-todo emit bridge.
+  let makeSubagentProvider: () => Promise<{ provider: ChatProvider; model: string }> = async () => {
+    throw new Error("subagent provider not wired")
+  }
   const subagentSource = new SpawnSubagentToolSource({
-    runSubagent: (inp) => subagentRunner.run(inp),
-    parentTools: () => tools, // the parent AiToolRegistry / or its ToolHostPort per Task 3 note
+    parentTools: () => parentToolHost, // the parent ToolHostPort (see Task 3 filtering note)
+    runSubagent: async (inp) => {
+      // Provider is resolved at invocation time, per turn — never fixed at init.
+      const { provider, model } = await makeSubagentProvider()
+      return new SubagentRunner({ provider, model, recordRun }).run(inp)
+    },
   })
 ```
 
-Add `subagentSource` to the `CompositeToolHost` source list and include `SUBAGENT_FQ_PREFIX` in the fallback-prefix guard.
+Add `subagentSource` to the `CompositeToolHost` source list and include `SUBAGENT_FQ_PREFIX` in the fallback-prefix guard. After `agentService` is constructed, bind the holder:
 
-> Provider note: the interactive provider is built per-turn from the active
-> BYOK key inside `AgentService`. To give the subagent runner the same provider,
-> either reuse the `backgroundAgentProvider` accessor (already wired for
-> background runs in `plugin-host.ts`) or expose the provider factory from
-> `AgentService`. Prefer the former to avoid duplicating key handling.
+```ts
+  makeSubagentProvider = () => agentService.createBackgroundAgentProvider()
+```
+
+This guarantees each subagent run uses the current key/model exactly like a background-agent run, with no duplicated key handling and nothing captured at app init.
 
 - [ ] **Step 2: Typecheck**
 
@@ -741,5 +747,5 @@ git commit -m "feat(main): mount spawn_subagent tool with scoped nested runner"
 
 - **Spec coverage:** §1 tool (depth guard, subset, confirm) → Task 3. §2 nested run → Task 2. §3 trace tree (`parentRunId`, `listRuns` filter, `origin`) → Task 1. §4 scoping (tool subset + gate defense) → Tasks 3/4. §5 budget/cancel → Tasks 2/3 (budget clamp, linked signal). §6 error handling → Task 3 (depth/empty/unknown) + Task 2 (summary annotates non-normal outcomes). §7 testing → every task TDD.
 - **Non-goals honored:** no parallel subagents (runner awaits one run); depth capped at 1 (Task 3 guard); no capability elevation (subset intersection + unchanged gate); no separate persisted chat.
-- **Open seam flagged:** the `AiToolRegistry` filtering mechanism (Task 3 executor note) and the subagent provider source (Task 5 provider note) are the two places to confirm against real code during execution — both have a stated preferred resolution.
+- **Open seam flagged:** the `AiToolRegistry` filtering mechanism (Task 3 executor note) is the one place to confirm against real code during execution — prefer filtering the underlying `ToolHostPort` by sanitized name. The subagent provider is resolved per-invocation via `AgentService.createBackgroundAgentProvider()` (Task 5), never fixed at init.
 - **Type consistency:** `origin` union `"interactive" | "background-agent" | "subagent"` is identical across `ToolCaller`-adjacent options, `AgentRunOptions`, and `RunTrace`. `SubagentRunInput` / `SubagentRunResult` shared between runner and tool source.
