@@ -139,15 +139,19 @@ request/audit entry":
    `this.options.audit({ ... })` call (line 207) copies it onto the
    `CapabilityAuditEntry` (only when present).
 
-**Known gap (deliberate, phase-1 scope):** the credential-broker's own injection
-audit event (`credential-broker.ts` `auditEvent`, emitted from
-`createInjectCredential`) constructs its `CapabilityAuditEntry` directly rather
-than through `gate.ensure`, so it will still lack `runId` after this phase.
-Threading it requires passing `runId` into `createInjectCredential` (built per
-invocation at `plugin-bridge.ts:303`, which has `invocation` in scope). Left as
-a follow-up so "credential injection during a run" is the one known
-run-uncorrelated capability event; called out here for honesty rather than
-silently claiming full coverage.
+6. **`credential-broker.ts`** — the injection audit event (`auditEvent`,
+   emitted from the closure returned by `createInjectCredential`) constructs its
+   `CapabilityAuditEntry` directly rather than through `gate.ensure`, so it is
+   the last capability-audit path that would otherwise miss `runId`.
+   `createInjectCredential` gains a `runId?` arg (passed from `invocation.runId`
+   at `plugin-bridge.ts:303`), and `auditEvent` forwards it. The connect /
+   disconnect audit events are user-initiated, out-of-run actions and correctly
+   leave `runId` undefined.
+
+With (4)–(6), **every** capability-audit path carries `runId` during a run:
+gate-driven (`storage`/`clipboard`/`system`/`fs`), network (`network:https`),
+and credential injection (`credentials:broker`). There is no known
+run-uncorrelated capability event after this phase.
 
 No existing call site that doesn't have a `runId` (manual Settings actions,
 tests) needs to change — the field is optional at every layer.
@@ -243,6 +247,9 @@ handler later, following the standard 4-touchpoint IPC pattern.
   `CapabilityRequest` for a storage-path tool call.
 - `network-fetcher-runid.test.ts` (new): a `network:https` `gate.ensure`
   request carries the `runId` from `NetworkFetcherConfig`.
+- `credential-broker.test.ts` (existing file, extend): the injection audit
+  event (`trigger: "network:fetch"`) is tagged with the `runId` passed to
+  `createInjectCredential`; connect/disconnect events leave it undefined.
 - `background-agent-runner.test.ts` (existing file, extend): a background run's
   trace `runId` matches the ledger run and `origin` is `"background-agent"`; a
   token-budget abort records `outcome: "budget_exceeded"`, not `"aborted"`.

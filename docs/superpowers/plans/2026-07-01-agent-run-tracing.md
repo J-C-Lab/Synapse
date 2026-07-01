@@ -449,15 +449,135 @@ git add src/main/plugins/plugin-bridge.ts src/main/plugins/plugin-bridge-runid.t
 git commit -m "feat(plugins): carry caller.runId through plugin-bridge and network fetcher into capability requests"
 ```
 
-> **Known remaining gap (not fixed this phase, tracked in the spec):** the
-> credential-broker's own injection audit event (`credential-broker.ts`
-> `auditEvent`, emitted from `createInjectCredential`) constructs its
-> `CapabilityAuditEntry` directly and will still lack `runId`. Threading it
-> there requires passing `runId` into `createInjectCredential` (built per
-> invocation at `plugin-bridge.ts:303`, which has `invocation` in scope). It is
-> called out in the spec's §3 note as a deliberate follow-up rather than
-> silently expanded here — flag to the human before adding it if run-complete
-> credential-injection coverage is wanted in phase 1.
+- [ ] **Step 14: Thread `runId` into the credential-broker injection audit (the last direct-audit path)**
+
+The credential-broker's injection audit event (`credential-broker.ts` `auditEvent`, emitted from the closure returned by `createInjectCredential`, ~line 378) builds its `CapabilityAuditEntry` directly — it does NOT go through `gate.ensure`, so it is the one remaining capability-audit path that would lack `runId`. Thread it so "a credential was injected during this run" is also run-correlated.
+
+Write the failing test. Add to `src/main/plugins/credential-broker.test.ts` (reuse the file's existing `manifest`, `fakeSafeStorage`, `createFixedSecretPrompt`, and `dir` fixture):
+
+```ts
+it("tags the injection audit event with the runId", async () => {
+  const audited: import("./capability-gate").CapabilityAuditEntry[] = []
+  const broker = new CredentialBroker({
+    userDataDir: dir,
+    safeStorage: fakeSafeStorage,
+    secretPrompt: createFixedSecretPrompt("ghp_test"),
+    audit: (entry) => audited.push(entry),
+  })
+  await broker.connectStatic("com.example.x", manifest, "user", "gh")
+  const inject = broker.createInjectCredential({
+    pluginId: "com.example.x",
+    manifest,
+    sourceKind: "user",
+    isTriggerOrigin: false,
+    runId: "run-cred",
+  })
+  await inject({ host: "api.github.com", method: "GET", path: "/repos/foo" }, {})
+
+  const injectionEntry = audited.find((e) => e.trigger === "network:fetch")
+  expect(injectionEntry).toBeDefined()
+  expect(injectionEntry?.runId).toBe("run-cred")
+})
+```
+
+Run: `pnpm test -- credential-broker`
+Expected: FAIL — `createInjectCredential` args has no `runId`, and `auditEvent` doesn't forward one.
+
+- [ ] **Step 15: Add `runId` to `createInjectCredential` args and forward it through `auditEvent`**
+
+In `src/main/plugins/credential-broker.ts`:
+
+Add `runId` to the `createInjectCredential` args type (~line 321):
+
+```ts
+  createInjectCredential(args: {
+    pluginId: string
+    manifest: PluginManifest
+    sourceKind: PluginSourceKind
+    isTriggerOrigin: boolean
+    allowedUses?: readonly TriggerUse[]
+    runId?: string
+  }): (
+```
+
+Add `runId` to the injection `auditEvent` call (~line 378):
+
+```ts
+          this.auditEvent(identity, args.pluginId, {
+            capabilityId: "credentials:broker",
+            decision: "allow",
+            actor: args.isTriggerOrigin ? "background" : "user",
+            trigger: "network:fetch",
+            operation: `inject ${entry.credentialId} → ${request.host}${request.path}`,
+            requestedScope: {
+              host: request.host,
+              method: request.method,
+              path: request.path,
+              credentialId: entry.credentialId,
+            },
+            runId: args.runId,
+          })
+```
+
+Widen the `auditEvent` `partial` Pick to allow `runId` and forward it (~line 418):
+
+```ts
+  private auditEvent(
+    identity: GrantIdentity,
+    pluginId: string,
+    partial: Pick<
+      CapabilityAuditEntry,
+      "capabilityId" | "decision" | "actor" | "trigger" | "operation" | "requestedScope" | "runId"
+    >
+  ): void {
+    this.options.audit?.({
+      pluginId,
+      identityFingerprint: fingerprint(identity),
+      capabilityId: partial.capabilityId,
+      tier: "elevated",
+      actor: partial.actor,
+      trigger: partial.trigger,
+      operation: partial.operation,
+      requestedScope: partial.requestedScope,
+      decision: partial.decision,
+      grantedNow: false,
+      why: "credential-broker",
+      ...(partial.runId !== undefined ? { runId: partial.runId } : {}),
+    })
+  }
+```
+
+The connect/disconnect `auditEvent` callers (lines 228/268/311) are user-initiated, out-of-run actions — they omit `runId`, which stays `undefined`. Correct: those decisions genuinely have no run.
+
+- [ ] **Step 16: Pass `runId` into `createInjectCredential` from the bridge**
+
+In `src/main/plugins/plugin-bridge.ts`, the `createInjectCredential({ ... })` call in `createCapabilities` (~line 303) is built from the `invocation`. Add `runId`:
+
+```ts
+    const injectCredential = this.options.credentialBroker?.createInjectCredential({
+      pluginId,
+      manifest,
+      sourceKind,
+      isTriggerOrigin: this.budgetBreaker?.isTriggerOrigin(invocation.invocationId) ?? false,
+      allowedUses: invRecord?.allowedUses,
+      runId: invocation.runId,
+    })
+```
+
+- [ ] **Step 17: Run the credential-broker suite**
+
+Run: `pnpm test -- credential-broker`
+Expected: PASS — the new test plus all existing credential-broker tests (the injection test at line 75 omits `runId`, which stays optional).
+
+- [ ] **Step 18: Commit**
+
+```bash
+git add src/main/plugins/credential-broker.ts src/main/plugins/credential-broker.test.ts \
+  src/main/plugins/plugin-bridge.ts
+git commit -m "feat(plugins): tag credential-broker injection audit with runId"
+```
+
+With this, every capability-audit path — gate-driven (`storage`/`clipboard`/`system`/`fs`), network (`network:https`), and credential injection (`credentials:broker`) — carries `runId` during a run. No known run-uncorrelated capability event remains.
 
 ---
 
