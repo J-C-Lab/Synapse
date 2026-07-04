@@ -19,7 +19,8 @@ import { ToolCircuitBreaker } from "./tool-circuit-breaker"
 const log = logger.child("tool-circuit")
 
 export interface ResilientToolHostConfig {
-  breaker?: Partial<BreakerConfig>
+  /** Static config, or a getter read afresh for each newly-created breaker. */
+  breaker?: Partial<BreakerConfig> | (() => Partial<BreakerConfig>)
   /** Per-tool timeout in ms; `undefined` (the default) means no timeout. */
   timeoutMs?: (fqName: string) => number | undefined
   /**
@@ -116,11 +117,18 @@ export class ResilientToolHost implements ToolHostPort {
     return fqName
   }
 
+  /** Drop all breakers so they recreate with the current config (P3 retune). */
+  resetBreakers(): void {
+    this.breakers.clear()
+  }
+
   private breakerFor(key: string): ToolCircuitBreaker {
     this.evictIdle(key)
     let breaker = this.breakers.get(key)
     if (!breaker) {
-      breaker = new ToolCircuitBreaker(key, this.config.breaker)
+      const cfg =
+        typeof this.config.breaker === "function" ? this.config.breaker() : this.config.breaker
+      breaker = new ToolCircuitBreaker(key, cfg)
       this.breakers.set(key, breaker)
     }
     return breaker

@@ -287,6 +287,12 @@ declare global {
     models: string[]
   }
 
+  interface SynapseToolResilience {
+    failureThreshold: number
+    recoveryMs: number
+    timeoutMs: number
+  }
+
   interface SynapseAiStatus {
     provider: string
     hasKey: boolean
@@ -294,6 +300,7 @@ declare global {
     providers: SynapseAiProviderStatus[]
     budgetTokens: number
     contextCompression: { enabled: boolean; thresholdTokens: number }
+    toolResilience: SynapseToolResilience
   }
 
   interface SynapseAiTool {
@@ -627,6 +634,7 @@ declare global {
         enabled: boolean
         thresholdTokens: number
       }) => Promise<void>
+      setAiToolResilience: (value: SynapseToolResilience) => Promise<void>
       listAiTools: () => Promise<SynapseAiTool[]>
       getAiToolHealth: () => Promise<SynapseToolHealth[]>
       listAiConversations: () => Promise<SynapseAiConversationSummary[]>

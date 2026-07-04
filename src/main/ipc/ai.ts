@@ -1,5 +1,6 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { AiStatus, RememberScope } from "../ai/agent-service"
+import type { ToolResilienceSettings } from "../ai/ai-settings-store"
 import type { ConversationSummary, StoredConversation } from "../ai/conversation-store"
 import type { McpServerStatus } from "../ai/mcp-client-manager"
 import type { McpServerConfig } from "../ai/mcp-server-config-store"
@@ -21,6 +22,7 @@ export interface AiIpcService {
   setModel: (providerId: string, model: string) => Promise<void>
   setBudget: (tokens: number) => Promise<void>
   setContextCompression: (value: { enabled: boolean; thresholdTokens: number }) => Promise<void>
+  setToolResilience: (value: ToolResilienceSettings) => Promise<void>
   listTools: () => ProviderToolSchema[]
   toolHealth: () => ToolStatSnapshot[]
   listConversations: () => Promise<ConversationSummary[]>
@@ -81,6 +83,10 @@ export function registerAiIpc(
   ipcMain.handle("ai:set-context-compression", (event, payload: unknown) => {
     guard(event, "ai:set-context-compression")
     return service.setContextCompression(coerceContextCompression(payload))
+  })
+  ipcMain.handle("ai:set-tool-resilience", (event, payload: unknown) => {
+    guard(event, "ai:set-tool-resilience")
+    return service.setToolResilience(coerceToolResilience(payload))
   })
   ipcMain.handle("ai:list-tools", (event) => {
     guard(event, "ai:list-tools")
@@ -183,6 +189,25 @@ export function coerceContextCompression(payload: unknown): {
     throw new Error("thresholdTokens must be a non-negative number.")
   }
   return { enabled: v.enabled, thresholdTokens: Math.floor(v.thresholdTokens) }
+}
+
+export function coerceToolResilience(payload: unknown): ToolResilienceSettings {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("tool resilience payload must be an object.")
+  }
+  const v = payload as Record<string, unknown>
+  const num = (value: unknown, name: string): number => {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      throw new Error(`${name} must be a non-negative number.`)
+    }
+    return Math.floor(value)
+  }
+  // The store clamps failureThreshold to ≥ 1; here we only enforce shape.
+  return {
+    failureThreshold: num(v.failureThreshold, "failureThreshold"),
+    recoveryMs: num(v.recoveryMs, "recoveryMs"),
+    timeoutMs: num(v.timeoutMs, "timeoutMs"),
+  }
 }
 
 export function coerceMcpServer(payload: unknown): McpServerConfig {

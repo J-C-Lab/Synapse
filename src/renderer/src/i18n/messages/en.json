@@ -79,6 +79,11 @@
     "contextCompression": "Context compression",
     "contextCompressionThresholdPlaceholder": "100000",
     "contextCompressionHint": "When enabled, older conversation turns are summarized before sending to the model once the estimated token count exceeds the threshold.",
+    "toolResilience": "Tool resilience",
+    "toolResilienceFailures": "Failures to open",
+    "toolResilienceRecovery": "Recovery (s)",
+    "toolResilienceTimeout": "Timeout (s)",
+    "toolResilienceHint": "Circuit breaker for tool calls: a tool is short-circuited after this many consecutive failures, then retried after the recovery window. Timeout 0 disables it; shell and subagent tools are never timed out.",
     "allowedTools": "Always-allowed tools",
     "allowedEmpty": "No tools are permanently allowed.",
     "revoke": "Revoke"

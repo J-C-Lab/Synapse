@@ -146,6 +146,37 @@ describe("resilientToolHost", () => {
     )
   })
 
+  it("reads breaker config from a getter for newly created breakers", async () => {
+    const inner = innerHost(async () => {
+      throw new Error("x")
+    })
+    const host = new ResilientToolHost(inner, {
+      breaker: () => ({ failureThreshold: 2, recoveryMs: 60_000 }),
+    })
+    await expect(host.invokeTool("a/b", {}, opts)).rejects.toThrow()
+    await expect(host.invokeTool("a/b", {}, opts)).rejects.toThrow()
+    const result = await host.invokeTool("a/b", {}, opts) // open after 2
+    expect(inner.invokeTool).toHaveBeenCalledTimes(2)
+    expect(result.isError).toBe(true)
+  })
+
+  it("resetBreakers clears state so a new breaker picks up fresh config", async () => {
+    let cfg = { failureThreshold: 2, recoveryMs: 60_000 }
+    const inner = innerHost(async () => {
+      throw new Error("x")
+    })
+    const host = new ResilientToolHost(inner, { breaker: () => cfg })
+    await expect(host.invokeTool("a/b", {}, opts)).rejects.toThrow()
+    await expect(host.invokeTool("a/b", {}, opts)).rejects.toThrow()
+    expect((await host.invokeTool("a/b", {}, opts)).isError).toBe(true) // short-circuited
+    expect(inner.invokeTool).toHaveBeenCalledTimes(2)
+
+    host.resetBreakers()
+    cfg = { failureThreshold: 5, recoveryMs: 60_000 }
+    await expect(host.invokeTool("a/b", {}, opts)).rejects.toThrow() // reaches inner again
+    expect(inner.invokeTool).toHaveBeenCalledTimes(3)
+  })
+
   it("evicts idle closed breakers to keep the map bounded", async () => {
     let t = 0
     const inner = innerHost(async () => textResult("ok"))

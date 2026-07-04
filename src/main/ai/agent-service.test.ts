@@ -9,6 +9,7 @@ import type { ChatContentBlock, ChatProvider, TokenUsage } from "./providers/typ
 import type { ToolHostPort } from "./tool-registry"
 import { describe, expect, it, vi } from "vitest"
 import { AgentMissingKeyError, AgentService } from "./agent-service"
+import { DEFAULT_TOOL_RESILIENCE } from "./ai-settings-store"
 import { emptyUsage } from "./providers/types"
 import { AiToolRegistry } from "./tool-registry"
 
@@ -432,5 +433,35 @@ describe("agentService", () => {
       host: fakeHost(),
     })
     expect(svc.toolHealth()).toEqual([])
+  })
+
+  it("reports default tool resilience in status when unset", async () => {
+    const { service: svc } = service({
+      provider: fakeProvider([{ text: "hi" }]),
+      host: fakeHost(),
+    })
+    expect((await svc.getStatus()).toolResilience).toEqual(DEFAULT_TOOL_RESILIENCE)
+  })
+
+  it("persists tool resilience via settings and notifies the host", async () => {
+    const setToolResilience = vi.fn(async () => {})
+    const applied: unknown[] = []
+    const settings = {
+      get: async () => ({ activeProvider: "anthropic", models: {}, budgetTokens: 0 }),
+      setToolResilience,
+    } as unknown as AiSettingsStore
+    const svc = new AgentService({
+      credentials: credentials("sk-test"),
+      tools: new AiToolRegistry(fakeHost()),
+      conversations: conversations().store,
+      createProvider: () => fakeProvider([{ text: "hi" }]),
+      sendEvent: () => {},
+      settings,
+      onToolResilienceChange: (cfg) => applied.push(cfg),
+    })
+    const next = { failureThreshold: 3, recoveryMs: 1000, timeoutMs: 5000 }
+    await svc.setToolResilience(next)
+    expect(setToolResilience).toHaveBeenCalledWith(next)
+    expect(applied).toEqual([next])
   })
 })
