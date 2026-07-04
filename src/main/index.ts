@@ -48,6 +48,7 @@ import {
   PluginIntrospectionToolSource,
 } from "./ai/plugin-introspection-tools"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/catalog"
+import { ResilientToolHost } from "./ai/resilient-tool-host"
 import { RunBudgetRegistry } from "./ai/run-budget-registry"
 import { recordRun as persistRunTrace } from "./ai/run-trace-store"
 import { createNodeShellExecutor } from "./ai/shell/shell-executor"
@@ -765,24 +766,36 @@ function createAgentService(): AgentService {
   // (`mcp:<id>/<tool>`), built-in memory tools (`memory:…`), and optionally
   // governed shell (`shell:…`). Invocations route by ownership.
   agentTools = new AiToolRegistry(
-    new CompositeToolHost([
-      introspectionSource,
-      shellSource,
-      planSource,
-      subagentSource,
-      asFallbackSource(
-        plugins,
-        (fqName) =>
-          fqName.startsWith(MCP_FQ_PREFIX) ||
-          fqName.startsWith(MEMORY_FQ_PREFIX) ||
-          fqName.startsWith(PLUGIN_INTROSPECT_PREFIX) ||
-          fqName.startsWith(SHELL_FQ_PREFIX) ||
-          fqName.startsWith(PLAN_FQ_PREFIX) ||
-          fqName.startsWith(SUBAGENT_FQ_PREFIX)
-      ),
-      manager,
-      new MemoryToolSource(memory),
-    ]),
+    // Wrap the flat tool surface in a per-tool circuit breaker + timeout so one
+    // hung/dead source (crashed MCP server, wedged plugin) can't stall or keep
+    // punching the agent loop. Shell and subagent tools are legitimately
+    // long-running, so they opt out of the timeout; everything else gets 30s.
+    new ResilientToolHost(
+      new CompositeToolHost([
+        introspectionSource,
+        shellSource,
+        planSource,
+        subagentSource,
+        asFallbackSource(
+          plugins,
+          (fqName) =>
+            fqName.startsWith(MCP_FQ_PREFIX) ||
+            fqName.startsWith(MEMORY_FQ_PREFIX) ||
+            fqName.startsWith(PLUGIN_INTROSPECT_PREFIX) ||
+            fqName.startsWith(SHELL_FQ_PREFIX) ||
+            fqName.startsWith(PLAN_FQ_PREFIX) ||
+            fqName.startsWith(SUBAGENT_FQ_PREFIX)
+        ),
+        manager,
+        new MemoryToolSource(memory),
+      ]),
+      {
+        timeoutMs: (fqName) =>
+          fqName.startsWith(SHELL_FQ_PREFIX) || fqName.startsWith(SUBAGENT_FQ_PREFIX)
+            ? undefined
+            : 30_000,
+      }
+    ),
     pluginNote
   )
 
