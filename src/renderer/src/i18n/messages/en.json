@@ -130,6 +130,11 @@
       "connected": "Connected",
       "disconnected": "Disabled",
       "error": "Error"
+    },
+    "circuit": {
+      "open": "Circuit open",
+      "half_open": "Recovering",
+      "detail": "{{fails}} consecutive failures · avg {{avg}}ms"
     }
   },
   "home": {

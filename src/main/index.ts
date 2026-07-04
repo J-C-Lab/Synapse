@@ -765,43 +765,43 @@ function createAgentService(): AgentService {
   // The model sees one flat tool list: local plugin tools, external MCP tools
   // (`mcp:<id>/<tool>`), built-in memory tools (`memory:…`), and optionally
   // governed shell (`shell:…`). Invocations route by ownership.
-  agentTools = new AiToolRegistry(
-    // Wrap the flat tool surface in a per-tool circuit breaker + timeout so one
-    // hung/dead source (crashed MCP server, wedged plugin) can't stall or keep
-    // punching the agent loop. Shell and subagent tools are legitimately
-    // long-running, so they opt out of the timeout; everything else gets 30s.
-    new ResilientToolHost(
-      new CompositeToolHost([
-        introspectionSource,
-        shellSource,
-        planSource,
-        subagentSource,
-        asFallbackSource(
-          plugins,
-          (fqName) =>
-            fqName.startsWith(MCP_FQ_PREFIX) ||
-            fqName.startsWith(MEMORY_FQ_PREFIX) ||
-            fqName.startsWith(PLUGIN_INTROSPECT_PREFIX) ||
-            fqName.startsWith(SHELL_FQ_PREFIX) ||
-            fqName.startsWith(PLAN_FQ_PREFIX) ||
-            fqName.startsWith(SUBAGENT_FQ_PREFIX)
-        ),
-        manager,
-        new MemoryToolSource(memory),
-      ]),
-      {
-        timeoutMs: (fqName) =>
-          fqName.startsWith(SHELL_FQ_PREFIX) || fqName.startsWith(SUBAGENT_FQ_PREFIX)
-            ? undefined
-            : 30_000,
-      }
-    ),
-    pluginNote
+  // Wrap the flat tool surface in a per-tool circuit breaker + timeout so one
+  // hung/dead source (crashed MCP server, wedged plugin) can't stall or keep
+  // punching the agent loop. Shell and subagent tools are legitimately
+  // long-running, so they opt out of the timeout; everything else gets 30s.
+  // Held in a variable so its health snapshots can be surfaced to the renderer.
+  const resilientToolHost = new ResilientToolHost(
+    new CompositeToolHost([
+      introspectionSource,
+      shellSource,
+      planSource,
+      subagentSource,
+      asFallbackSource(
+        plugins,
+        (fqName) =>
+          fqName.startsWith(MCP_FQ_PREFIX) ||
+          fqName.startsWith(MEMORY_FQ_PREFIX) ||
+          fqName.startsWith(PLUGIN_INTROSPECT_PREFIX) ||
+          fqName.startsWith(SHELL_FQ_PREFIX) ||
+          fqName.startsWith(PLAN_FQ_PREFIX) ||
+          fqName.startsWith(SUBAGENT_FQ_PREFIX)
+      ),
+      manager,
+      new MemoryToolSource(memory),
+    ]),
+    {
+      timeoutMs: (fqName) =>
+        fqName.startsWith(SHELL_FQ_PREFIX) || fqName.startsWith(SUBAGENT_FQ_PREFIX)
+          ? undefined
+          : 30_000,
+    }
   )
+  agentTools = new AiToolRegistry(resilientToolHost, pluginNote)
 
   const agentService = new AgentService({
     credentials,
     tools: agentTools,
+    getToolHealth: () => resilientToolHost.snapshots(),
     getShellEnabled: () => launcher.getSettings().allowAgentShell,
     conversations: new ConversationStore(path.join(userDataDir, "ai", "conversations")),
     providers: defaultProviderCatalog(),

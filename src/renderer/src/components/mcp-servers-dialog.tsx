@@ -1,4 +1,4 @@
-import type { McpServerConfig, McpServerStatus } from "@/lib/electron"
+import type { McpServerConfig, McpServerStatus, ToolHealth } from "@/lib/electron"
 import { Loader2, Plus, Server, Trash2 } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
@@ -19,6 +19,7 @@ import { Textarea } from "@/components/ui/textarea"
 import {
   deleteAiMcpServer,
   getAiMcpServerStatus,
+  getAiToolHealth,
   isElectron,
   listAiMcpServers,
   saveAiMcpServer,
@@ -64,14 +65,20 @@ export function McpServersDialog({
   const { t } = useTranslation()
   const [servers, setServers] = useState<McpServerConfig[]>([])
   const [statuses, setStatuses] = useState<McpServerStatus[]>([])
+  const [health, setHealth] = useState<ToolHealth[]>([])
   const [draft, setDraft] = useState<DraftServer | null>(null)
   const [saving, setSaving] = useState(false)
 
   async function refresh() {
     if (!isElectron()) return
-    const [list, status] = await Promise.all([listAiMcpServers(), getAiMcpServerStatus()])
+    const [list, status, toolHealth] = await Promise.all([
+      listAiMcpServers(),
+      getAiMcpServerStatus(),
+      getAiToolHealth(),
+    ])
     setServers(list)
     setStatuses(status)
+    setHealth(toolHealth)
   }
 
   useEffect(() => {
@@ -115,6 +122,11 @@ export function McpServersDialog({
     return statuses.find((status) => status.id === id)
   }
 
+  // Bulkhead keys group a server's tools under `mcp:<serverId>`.
+  function healthOf(id: string): ToolHealth | undefined {
+    return health.find((entry) => entry.key === `mcp:${id}`)
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[80vh] gap-4 overflow-y-auto sm:max-w-lg">
@@ -135,6 +147,7 @@ export function McpServersDialog({
               key={server.id}
               server={server}
               status={statusOf(server.id)}
+              health={healthOf(server.id)}
               onEdit={() =>
                 setDraft({
                   id: server.id,
@@ -176,11 +189,13 @@ export function McpServersDialog({
 function ServerRow({
   server,
   status,
+  health,
   onEdit,
   onDelete,
 }: {
   server: McpServerConfig
   status?: McpServerStatus
+  health?: ToolHealth
   onEdit: () => void
   onDelete: () => void
 }) {
@@ -189,7 +204,7 @@ function ServerRow({
   return (
     <div className="flex items-center gap-2 rounded-md border px-3 py-2">
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="truncate text-sm font-medium">{server.name || server.id}</span>
           <Badge variant="outline" className={cn("text-[10px]", stateClass(state))}>
             {t(`mcp.state.${state}`)}
@@ -199,6 +214,7 @@ function ServerRow({
               {t("mcp.toolCount", { count: status?.toolCount ?? 0 })}
             </span>
           )}
+          <CircuitBadge health={health} />
         </div>
         <p className="truncate font-mono text-[11px] text-muted-foreground">
           {server.transport === "http"
@@ -342,6 +358,31 @@ function Field({
       {children}
       {hint && <p className="text-[11px] text-muted-foreground">{hint}</p>}
     </div>
+  )
+}
+
+// Only surfaced when the breaker is degraded (open / recovering). A healthy
+// closed circuit is the norm and would just add noise next to the conn badge.
+function CircuitBadge({ health }: { health?: ToolHealth }) {
+  const { t } = useTranslation()
+  if (!health || health.state === "closed") return null
+  const detail = t("mcp.circuit.detail", {
+    fails: health.consecutiveFailures,
+    avg: health.avgLatencyMs,
+  })
+  return (
+    <Badge
+      variant="outline"
+      title={detail}
+      className={cn(
+        "text-[10px]",
+        health.state === "open"
+          ? "border-red-500/40 text-red-600 dark:text-red-400"
+          : "border-amber-500/40 text-amber-600 dark:text-amber-400"
+      )}
+    >
+      {t(`mcp.circuit.${health.state}`)}
+    </Badge>
   )
 }
 

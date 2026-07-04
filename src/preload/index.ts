@@ -150,6 +150,7 @@ const electronAPI = {
   setAiContextCompression: (value: { enabled: boolean; thresholdTokens: number }) =>
     ipcRenderer.invoke("ai:set-context-compression", value),
   listAiTools: () => ipcRenderer.invoke("ai:list-tools"),
+  getAiToolHealth: () => ipcRenderer.invoke("ai:tool-health"),
   listAiConversations: () => ipcRenderer.invoke("ai:list-conversations"),
   getAiConversation: (id: string) => ipcRenderer.invoke("ai:get-conversation", id),
   deleteAiConversation: (id: string) => ipcRenderer.invoke("ai:delete-conversation", id),

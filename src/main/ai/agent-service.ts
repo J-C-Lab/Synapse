@@ -14,6 +14,7 @@ import type { RunPlanRegistry } from "./plan/run-plan-registry"
 import type { ProviderDescriptor } from "./providers/catalog"
 import type { ChatMessage, ChatProvider, ProviderToolSchema, TokenUsage } from "./providers/types"
 import type { RunTrace } from "./run-trace-store"
+import type { ToolStatSnapshot } from "./tool-circuit-breaker"
 import type { AiToolRegistry } from "./tool-registry"
 import { randomUUID } from "node:crypto"
 import { logger } from "../logging"
@@ -76,6 +77,8 @@ export interface AgentServiceOptions {
   onTurnStart?: (ctx: { runId: string; budgetTokens: number | undefined }) => void
   /** Fired when an interactive turn ends so per-run budget state can be cleared. */
   onTurnEnd?: (ctx: { runId: string }) => void
+  /** Per-tool circuit-breaker health snapshots, surfaced to the renderer. */
+  getToolHealth?: () => ToolStatSnapshot[]
 }
 
 export class AgentMissingKeyError extends Error {
@@ -243,6 +246,11 @@ export class AgentService {
 
   listTools(): ProviderToolSchema[] {
     return this.options.tools.list()
+  }
+
+  /** Per-tool circuit-breaker health (state, success rate, latency). */
+  toolHealth(): ToolStatSnapshot[] {
+    return this.options.getToolHealth?.() ?? []
   }
 
   /** Connect every configured external MCP server. Call once at startup. */

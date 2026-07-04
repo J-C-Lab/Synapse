@@ -4,6 +4,7 @@ import type { ConversationSummary, StoredConversation } from "../ai/conversation
 import type { McpServerStatus } from "../ai/mcp-client-manager"
 import type { McpServerConfig } from "../ai/mcp-server-config-store"
 import type { ProviderToolSchema, TokenUsage } from "../ai/providers/types"
+import type { ToolStatSnapshot } from "../ai/tool-circuit-breaker"
 import { logger } from "../logging"
 import { withCapabilityPromptTarget } from "./capability-prompt-router"
 
@@ -21,6 +22,7 @@ export interface AiIpcService {
   setBudget: (tokens: number) => Promise<void>
   setContextCompression: (value: { enabled: boolean; thresholdTokens: number }) => Promise<void>
   listTools: () => ProviderToolSchema[]
+  toolHealth: () => ToolStatSnapshot[]
   listConversations: () => Promise<ConversationSummary[]>
   getConversation: (id: string) => Promise<StoredConversation | undefined>
   deleteConversation: (id: string) => Promise<void>
@@ -83,6 +85,10 @@ export function registerAiIpc(
   ipcMain.handle("ai:list-tools", (event) => {
     guard(event, "ai:list-tools")
     return service.listTools()
+  })
+  ipcMain.handle("ai:tool-health", (event) => {
+    guard(event, "ai:tool-health")
+    return service.toolHealth()
   })
   ipcMain.handle("ai:list-conversations", (event) => {
     guard(event, "ai:list-conversations")

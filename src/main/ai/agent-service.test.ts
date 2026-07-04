@@ -120,6 +120,7 @@ function service(options: {
   host: ToolHostPort
   key?: string
   recordRun?: (trace: import("./run-trace-store").RunTrace) => void
+  getToolHealth?: () => import("./tool-circuit-breaker").ToolStatSnapshot[]
 }): {
   service: AgentService
   events: AiChatEvent[]
@@ -134,6 +135,7 @@ function service(options: {
     createProvider: () => options.provider,
     sendEvent: (event) => events.push(event),
     recordRun: options.recordRun,
+    getToolHealth: options.getToolHealth,
     now: () => 1000,
   })
   return { service: svc, events, saved: convo.saved }
@@ -402,5 +404,33 @@ describe("agentService", () => {
     expect(recorded).toHaveLength(1)
     expect(recorded[0].conversationId).toBe("c1")
     expect(recorded[0].origin).toBe("interactive")
+  })
+
+  it("exposes tool health from the injected provider", () => {
+    const snapshot = {
+      key: "mcp:srv",
+      state: "open" as const,
+      total: 4,
+      ok: 1,
+      infraFailures: 3,
+      toolErrors: 0,
+      consecutiveFailures: 3,
+      avgLatencyMs: 12,
+      lastTouchedAt: 1000,
+    }
+    const { service: svc } = service({
+      provider: fakeProvider([{ text: "hi" }]),
+      host: fakeHost(),
+      getToolHealth: () => [snapshot],
+    })
+    expect(svc.toolHealth()).toEqual([snapshot])
+  })
+
+  it("returns an empty tool-health list when no provider is wired", () => {
+    const { service: svc } = service({
+      provider: fakeProvider([{ text: "hi" }]),
+      host: fakeHost(),
+    })
+    expect(svc.toolHealth()).toEqual([])
   })
 })

@@ -130,6 +130,11 @@
       "connected": "已连接",
       "disconnected": "已禁用",
       "error": "错误"
+    },
+    "circuit": {
+      "open": "已熔断",
+      "half_open": "恢复中",
+      "detail": "连续失败 {{fails}} 次 · 平均 {{avg}}ms"
     }
   },
   "home": {
