@@ -1,12 +1,19 @@
 import type { ChunkOptions } from "./chunk-text"
 import type { MemoryEntry, MemoryStore } from "./memory-store"
 import type { Embedder } from "./openai-embedding-provider"
+import { bm25Scores, normalizeScores } from "./bm25"
 import { chunkText } from "./chunk-text"
 
 // Long-term memory: save facts and recall them across conversations. Recall is
-// semantic — the query and entries are embedded and ranked by cosine similarity
-// — with a lexical (term-overlap) fallback when no embedder/key is available so
-// the feature still works without an OpenAI key.
+// hybrid — a semantic score (query + entries embedded, ranked by cosine) fused
+// with a BM25 keyword score, each normalized to [0,1] and weighted. Embeddings
+// generalize but miss exact tokens (error codes, paths, flags); BM25 nails those
+// but not paraphrase — fusing gets both. With no embedder/key the vector signal
+// is simply absent and recall runs on BM25 alone, so it works without a key.
+
+// Fusion weights: embeddings lead, keyword corrects for exact-token misses.
+const VECTOR_WEIGHT = 0.6
+const KEYWORD_WEIGHT = 0.4
 
 export interface MemorySearchHit {
   entry: MemoryEntry
@@ -99,16 +106,29 @@ export class MemoryService {
     if (!trimmed || entries.length === 0) return []
 
     const queryVector = (await this.safeEmbed([trimmed]))?.[0]
-    const embeddable = entries.filter((entry) => entry.embedding && entry.embedding.length > 0)
-    const hits =
-      queryVector && embeddable.length > 0
-        ? embeddable.map((entry) => ({
-            entry,
-            score: cosineSimilarity(queryVector, entry.embedding as number[]),
-          }))
-        : lexicalHits(trimmed, entries)
+    const vector = new Map<string, number>()
+    if (queryVector) {
+      for (const entry of entries) {
+        if (entry.embedding && entry.embedding.length > 0) {
+          vector.set(entry.id, cosineSimilarity(queryVector, entry.embedding))
+        }
+      }
+    }
+    // Search both the fact and its tags (a chunk's `source:` lives in tags).
+    const keyword = bm25Scores(
+      trimmed,
+      entries.map((entry) => ({ id: entry.id, text: `${entry.text} ${entry.tags.join(" ")}` }))
+    )
+    const normVector = normalizeScores(vector)
+    const normKeyword = normalizeScores(keyword)
 
-    return hits
+    return entries
+      .map((entry) => ({
+        entry,
+        score:
+          VECTOR_WEIGHT * (normVector.get(entry.id) ?? 0) +
+          KEYWORD_WEIGHT * (normKeyword.get(entry.id) ?? 0),
+      }))
       .filter((hit) => hit.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, Math.max(1, limit))
@@ -158,15 +178,6 @@ export class MemoryService {
 function sourceOf(tags: string[]): string | undefined {
   const tag = tags.find((value) => value.startsWith(SOURCE_TAG_PREFIX))
   return tag ? tag.slice(SOURCE_TAG_PREFIX.length) : undefined
-}
-
-function lexicalHits(query: string, entries: MemoryEntry[]): MemorySearchHit[] {
-  const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
-  return entries.map((entry) => {
-    const haystack = `${entry.text} ${entry.tags.join(" ")}`.toLowerCase()
-    const score = terms.reduce((sum, term) => (haystack.includes(term) ? sum + 1 : sum), 0)
-    return { entry, score }
-  })
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
