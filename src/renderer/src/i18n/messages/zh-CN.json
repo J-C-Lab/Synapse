@@ -80,6 +80,30 @@
     "allowedEmpty": "没有永久允许的工具。",
     "revoke": "撤销"
   },
+  "execution": {
+    "manage": "工作区",
+    "title": "已授权工作区",
+    "subtitle": "仅在你明确授权的文件夹内，助手才能读取、搜索、打补丁和运行命令。未添加工作区前，相关工具不会对助手可见。",
+    "add": "添加工作区",
+    "authorized": "已授权文件夹",
+    "empty": "尚未授权任何工作区。本地文件与 shell 工具不会对助手开放。",
+    "id": "工作区 ID",
+    "idPlaceholder": "repo",
+    "idHint": "助手在工具调用中使用的短标识（字母、数字、- 和 _）。",
+    "folder": "文件夹",
+    "folderPlaceholder": "选择文件夹…",
+    "browse": "浏览",
+    "authorize": "授权文件夹",
+    "revoke": "撤销 {{id}}",
+    "added": "已授权工作区 {{id}}。",
+    "removed": "已撤销工作区 {{id}}。",
+    "addFailed": "无法授权该工作区。",
+    "revokeFailed": "无法撤销该工作区。",
+    "working": "处理中…",
+    "bannerNone": "授权工作区后，即可使用本地文件与命令工具。",
+    "bannerCount_one": "已授权 {{count}} 个工作区。",
+    "bannerCount_other": "已授权 {{count}} 个工作区。"
+  },
   "memory": {
     "manage": "记忆",
     "title": "长期记忆",
@@ -92,7 +116,10 @@
     "noFacts": "尚未保存独立事实。",
     "delete": "删除",
     "imported": "已导入 {{source}}({{chunks}} 块)。",
-    "importFailed": "无法导入该文档。"
+    "importFailed": "无法导入该文档。",
+    "scopeGlobal": "全局",
+    "scopeWorkspace": "工作区 {{id}}",
+    "scopeConversation": "当前对话"
   },
   "mcp": {
     "title": "MCP 服务器",

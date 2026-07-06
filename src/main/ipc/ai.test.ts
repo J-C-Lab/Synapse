@@ -23,6 +23,14 @@ describe("coerceChat", () => {
     })
   })
 
+  it("accepts an optional workspaceId", () => {
+    expect(coerceChat({ conversationId: "c1", text: "hello", workspaceId: "repo" })).toEqual({
+      conversationId: "c1",
+      text: "hello",
+      workspaceId: "repo",
+    })
+  })
+
   it("rejects missing fields", () => {
     expect(() => coerceChat({ conversationId: "c1" })).toThrow(/text must be a string/)
     expect(() => coerceChat(null)).toThrow(/must be an object/)

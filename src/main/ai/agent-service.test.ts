@@ -1,5 +1,5 @@
 import type { RegisteredToolDescriptor } from "../plugins/types"
-import type { AiChatEvent } from "./agent-service"
+import type { AgentServiceOptions, AiChatEvent } from "./agent-service"
 import type { AiSettingsStore } from "./ai-settings-store"
 import type { ApprovalStore } from "./approval-store"
 import type { ConversationStore, StoredConversation } from "./conversation-store"
@@ -7,8 +7,13 @@ import type { AiCredentialStore } from "./credential-store"
 import type { ProviderDescriptor } from "./providers/catalog"
 import type { ChatContentBlock, ChatProvider, TokenUsage } from "./providers/types"
 import type { ToolHostPort } from "./tool-registry"
+import { promises as fs } from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { describe, expect, it, vi } from "vitest"
 import { AgentMissingKeyError, AgentService } from "./agent-service"
+import { ExecutionApprovalResolver } from "./execution/execution-approval"
+import { ExecutionLogStore } from "./execution/execution-log-store"
 import { emptyUsage } from "./providers/types"
 import { AiToolRegistry } from "./tool-registry"
 
@@ -65,6 +70,37 @@ function settingsStub(initial: Partial<{ budgetTokens: number }> = {}) {
   } as unknown as AiSettingsStore & { state: { budgetTokens: number } }
 }
 
+function executionDescriptor(
+  name: string,
+  annotations?: RegisteredToolDescriptor["manifestTool"]["annotations"]
+): RegisteredToolDescriptor {
+  return {
+    fqName: `execution:core/${name}`,
+    pluginId: "execution:core",
+    manifestTool: {
+      name,
+      description: name,
+      inputSchema: { type: "object", properties: {} },
+      annotations,
+    },
+  }
+}
+
+function executionHost(): ToolHostPort {
+  return {
+    listTools: () => [
+      executionDescriptor("run_command", { destructiveHint: true }),
+      executionDescriptor("apply_patch", { destructiveHint: true }),
+    ],
+    invokeTool: vi.fn(async () => ({ content: [{ type: "text" as const, text: "ran" }] })),
+  }
+}
+
+async function makeExecutionLog(): Promise<ExecutionLogStore> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-agent-exec-"))
+  return new ExecutionLogStore(path.join(dir, "execution-log.json"))
+}
+
 function descriptor(annotations?: RegisteredToolDescriptor["manifestTool"]["annotations"]) {
   return {
     fqName: "com.x.demo/act",
@@ -115,7 +151,12 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
-function service(options: { provider: ChatProvider; host: ToolHostPort; key?: string }): {
+function service(options: {
+  provider: ChatProvider
+  host: ToolHostPort
+  key?: string
+  approvalResolver?: AgentServiceOptions["approvalResolver"]
+}): {
   service: AgentService
   events: AiChatEvent[]
   saved: StoredConversation[]
@@ -128,6 +169,7 @@ function service(options: { provider: ChatProvider; host: ToolHostPort; key?: st
     conversations: convo.store,
     createProvider: () => options.provider,
     sendEvent: (event) => events.push(event),
+    approvalResolver: options.approvalResolver,
     now: () => 1000,
   })
   return { service: svc, events, saved: convo.saved }
@@ -176,7 +218,7 @@ describe("agentService", () => {
     if (request?.type !== "approval_request") throw new Error("expected approval request")
     expect(request.toolName).toBe("com.x.demo/act")
 
-    svc.resolveApproval(request.approvalId, true)
+    await svc.resolveApproval(request.approvalId, true)
     await done
 
     expect(host.invokeTool).toHaveBeenCalledOnce()
@@ -196,7 +238,7 @@ describe("agentService", () => {
     await flush()
     const request = events.find((event) => event.type === "approval_request")
     if (request?.type !== "approval_request") throw new Error("expected approval request")
-    svc.resolveApproval(request.approvalId, false)
+    await svc.resolveApproval(request.approvalId, false)
     await done
 
     expect(host.invokeTool).not.toHaveBeenCalled()
@@ -359,6 +401,154 @@ describe("agentService", () => {
     expect(added).toEqual([])
   })
 
+  it("auto-allows git status for run_command via execution approval resolver", async () => {
+    const log = await makeExecutionLog()
+    const resolver = new ExecutionApprovalResolver({ log, now: () => 1 })
+    const host = executionHost()
+    const { service: svc, events } = service({
+      host,
+      approvalResolver: (context) => resolver.decide(context),
+      provider: fakeProvider([
+        {
+          toolUses: [
+            {
+              id: "t1",
+              name: "execution_core_run_command",
+              input: { workspaceId: "repo", command: "git status" },
+            },
+          ],
+        },
+        { text: "done" },
+      ]),
+    })
+
+    await svc.chat("c1", "status")
+
+    expect(events.some((event) => event.type === "approval_request")).toBe(false)
+    expect(host.invokeTool).toHaveBeenCalledOnce()
+  })
+
+  it("hard-denies forbidden run_command without approval_request and writes audit", async () => {
+    const log = await makeExecutionLog()
+    const resolver = new ExecutionApprovalResolver({ log, now: () => 1 })
+    const host = executionHost()
+    const { service: svc, events } = service({
+      host,
+      approvalResolver: (context) => resolver.decide(context),
+      provider: fakeProvider([
+        {
+          toolUses: [
+            {
+              id: "t1",
+              name: "execution_core_run_command",
+              input: { workspaceId: "repo", command: "rm -rf /" },
+            },
+          ],
+        },
+        { text: "done" },
+      ]),
+    })
+
+    await svc.chat("c1", "danger")
+
+    expect(events.some((event) => event.type === "approval_request")).toBe(false)
+    expect(host.invokeTool).not.toHaveBeenCalled()
+    await expect(log.list()).resolves.toEqual([expect.objectContaining({ decision: "deny" })])
+  })
+
+  it("asks for unclassified run_command and audits user denial", async () => {
+    const log = await makeExecutionLog()
+    const resolver = new ExecutionApprovalResolver({ log, now: () => 1 })
+    const host = executionHost()
+    const { service: svc, events } = service({
+      host,
+      approvalResolver: (context) => resolver.decide(context),
+      provider: fakeProvider([
+        {
+          toolUses: [
+            {
+              id: "t1",
+              name: "execution_core_run_command",
+              input: { workspaceId: "repo", command: "pnpm test" },
+            },
+          ],
+        },
+        { text: "done" },
+      ]),
+    })
+
+    const done = svc.chat("c1", "test")
+    await flush()
+    const request = events.find((event) => event.type === "approval_request")
+    expect(request).toBeDefined()
+    if (request?.type !== "approval_request") throw new Error("expected approval request")
+    await svc.resolveApproval(request.approvalId, false)
+    await done
+
+    await expect(log.list()).resolves.toEqual([
+      expect.objectContaining({
+        decision: "deny",
+        errorPreview: "user denied approval",
+        inputPreview: expect.stringContaining("pnpm test"),
+      }),
+    ])
+  })
+
+  it("audits user denial for apply_patch", async () => {
+    const log = await makeExecutionLog()
+    const resolver = new ExecutionApprovalResolver({ log, now: () => 1 })
+    const host = executionHost()
+    const { service: svc, events } = service({
+      host,
+      approvalResolver: (context) => resolver.decide(context),
+      provider: fakeProvider([
+        {
+          toolUses: [
+            {
+              id: "t1",
+              name: "execution_core_apply_patch",
+              input: { workspaceId: "repo", patch: "*** Begin Patch\n*** End Patch" },
+            },
+          ],
+        },
+        { text: "done" },
+      ]),
+    })
+
+    const done = svc.chat("c1", "patch")
+    await flush()
+    const request = events.find((event) => event.type === "approval_request")
+    if (request?.type !== "approval_request") throw new Error("expected approval request")
+    await svc.resolveApproval(request.approvalId, false)
+    await done
+
+    await expect(log.list()).resolves.toEqual([
+      expect.objectContaining({
+        toolName: "execution:core/apply_patch",
+        decision: "deny",
+        errorPreview: "user denied approval",
+      }),
+    ])
+  })
+
+  it("hard-denies tool calls without emitting an approval request", async () => {
+    const host = fakeHost()
+    const { service: svc, events } = service({
+      host,
+      approvalResolver: async () => "deny",
+      provider: fakeProvider([
+        { toolUses: [{ id: "t1", name: "com_x_demo_act", input: { command: "rm -rf /" } }] },
+        { text: "done" },
+      ]),
+    })
+
+    await svc.chat("c1", "run unsafe command")
+
+    expect(events.some((event) => event.type === "approval_request")).toBe(false)
+    expect(host.invokeTool).not.toHaveBeenCalled()
+    expect(events.find((event) => event.type === "tool_result")).toMatchObject({ isError: true })
+  })
+
   it("remembers an always-allow decision for the rest of the run", async () => {
     const host = fakeHost()
     const { service: svc, events } = service({
@@ -374,7 +564,7 @@ describe("agentService", () => {
     await flush()
     const first = events.find((event) => event.type === "approval_request")
     if (first?.type !== "approval_request") throw new Error("expected approval request")
-    svc.resolveApproval(first.approvalId, true, "always")
+    await svc.resolveApproval(first.approvalId, true, "always")
     await done
 
     // Two tool calls, but only one approval request (second was remembered).

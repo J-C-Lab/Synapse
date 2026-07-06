@@ -1,5 +1,7 @@
 import type { ClipboardContent } from "@synapse/plugin-sdk"
 import type { IpcMainInvokeEvent, WebContents } from "electron"
+import type { ExecutionWorkspaceProvider } from "./ai/execution/execution-tool-host"
+import type { AiIpcService } from "./ipc/ai"
 import type { SecretProtector } from "./lan/credential-store"
 import type { LanDevice, LanPairing, LanStatus, LanTransfer } from "./lan/types"
 import type { SearchWindowDeps } from "./search-window"
@@ -28,8 +30,16 @@ import { AgentService } from "./ai/agent-service"
 import { aiSettingsFilePath, AiSettingsStore } from "./ai/ai-settings-store"
 import { aiApprovalsFilePath, ApprovalStore } from "./ai/approval-store"
 import { asFallbackSource, CompositeToolHost } from "./ai/composite-tool-host"
+import { ContextAssembler } from "./ai/context/context-assembler"
 import { ConversationStore } from "./ai/conversation-store"
 import { aiCredentialFilePath, AiCredentialStore } from "./ai/credential-store"
+import { ExecutionApprovalResolver } from "./ai/execution/execution-approval"
+import { executionLogFilePath, ExecutionLogStore } from "./ai/execution/execution-log-store"
+import { EXECUTION_FQ_PREFIX, ExecutionToolHostSource } from "./ai/execution/execution-tool-host"
+import {
+  ExecutionWorkspaceRegistry,
+  executionWorkspacesFilePath,
+} from "./ai/execution/workspace-registry"
 import { createMcpClient } from "./ai/mcp-client-factory"
 import { MCP_FQ_PREFIX, McpClientManager } from "./ai/mcp-client-manager"
 import { aiMcpServersFilePath, McpServerConfigStore } from "./ai/mcp-server-config-store"
@@ -233,6 +243,9 @@ function bindCapabilityPromptLifecycle(win: BrowserWindow): void {
   attachCapabilityPromptLifecycle(webContents, () => capabilityService?.dispose())
 }
 
+/** Explicit user-authorized workspace roots for local execution tools. Never falls back to cwd. */
+let executionWorkspaceRegistry!: ExecutionWorkspaceRegistry
+
 function registerIpc(): void {
   ipcMain.handle("launcher:search", (_event, query: unknown) => {
     return launcher.search(typeof query === "string" ? query : "")
@@ -328,7 +341,17 @@ function registerIpc(): void {
   registerTriggersIpc(ipcMain, new TriggerIpcService(() => plugins), {
     isTrustedSender: isTrustedIpcSender,
   })
-  registerAiIpc(ipcMain, agent, { isTrustedSender: isTrustedIpcSender })
+  const aiIpc: AiIpcService = Object.assign(agent, {
+    listExecutionWorkspaces: () => executionWorkspaceRegistry.list(),
+    addExecutionWorkspace: (workspaceId: string, rootPath: string) =>
+      executionWorkspaceRegistry.add(workspaceId, rootPath),
+    removeExecutionWorkspace: (workspaceId: string) =>
+      executionWorkspaceRegistry.remove(workspaceId),
+  })
+  registerAiIpc(ipcMain, aiIpc, {
+    isTrustedSender: isTrustedIpcSender,
+    pickExecutionWorkspaceFolder,
+  })
   if (memoryService)
     registerMemoryIpc(ipcMain, memoryService, { isTrustedSender: isTrustedIpcSender })
   updateService = setupAutoUpdates()
@@ -354,8 +377,6 @@ function registerIpc(): void {
   })
 }
 
-// Open a native picker filtered to `.syn` packages. Returns the chosen
-// absolute path, or null when the user cancels.
 async function pickSynapsePackageFile(): Promise<string | null> {
   const options: Electron.OpenDialogOptions = {
     title: "Import Synapse Plugin",
@@ -371,8 +392,19 @@ async function pickSynapsePackageFile(): Promise<string | null> {
   return result.filePaths[0] ?? null
 }
 
-// First `.syn` path found in a process argv list (OS "open with" passes the
-// file as a launch argument on Windows/Linux). Ignores Electron's own flags.
+async function pickExecutionWorkspaceFolder(): Promise<string | null> {
+  const options: Electron.OpenDialogOptions = {
+    properties: ["openDirectory"],
+  }
+  const parent = BrowserWindow.getFocusedWindow() ?? mainWindow
+  const result =
+    parent && !parent.isDestroyed()
+      ? await dialog.showOpenDialog(parent, options)
+      : await dialog.showOpenDialog(options)
+  if (result.canceled) return null
+  return result.filePaths[0] ?? null
+}
+
 function findSynapseArg(argv: string[]): string | null {
   return argv.find((arg) => !arg.startsWith("-") && arg.toLowerCase().endsWith(".syn")) ?? null
 }
@@ -664,6 +696,10 @@ function pluginResourcesDir(): string {
   return path.join(app.getAppPath(), "resources")
 }
 
+const executionWorkspaceProvider: ExecutionWorkspaceProvider = {
+  listWorkspaces: () => executionWorkspaceRegistry.list(),
+}
+
 function createAgentService(): AgentService {
   const userDataDir = app.getPath("userData")
   const credentials = new AiCredentialStore({
@@ -681,17 +717,32 @@ function createAgentService(): AgentService {
   )
   memoryService = memory
 
-  // The model sees one flat tool list: local plugin tools, external MCP tools
-  // (`mcp:<id>/<tool>`), and built-in memory tools (`memory:…`). Invocations
-  // route by ownership.
+  const contextAssembler = new ContextAssembler({
+    memory,
+    listWorkspaces: () => executionWorkspaceRegistry.list(),
+  })
+
+  const executionLog = new ExecutionLogStore(executionLogFilePath(userDataDir))
+  const executionApproval = new ExecutionApprovalResolver({ log: executionLog })
+  const execution = new ExecutionToolHostSource({
+    workspaces: executionWorkspaceProvider,
+    log: executionLog,
+  })
+
+  // The model sees one flat tool list: external MCP tools, built-in memory tools,
+  // local execution tools, then local plugin tools. Invocations route by ownership.
   const tools = new AiToolRegistry(
     new CompositeToolHost([
-      asFallbackSource(
-        plugins,
-        (fqName) => fqName.startsWith(MCP_FQ_PREFIX) || fqName.startsWith(MEMORY_FQ_PREFIX)
-      ),
       manager,
       new MemoryToolSource(memory),
+      execution,
+      asFallbackSource(
+        plugins,
+        (fqName) =>
+          fqName.startsWith(MCP_FQ_PREFIX) ||
+          fqName.startsWith(MEMORY_FQ_PREFIX) ||
+          fqName.startsWith(EXECUTION_FQ_PREFIX)
+      ),
     ])
   )
   return new AgentService({
@@ -701,6 +752,8 @@ function createAgentService(): AgentService {
     providers: defaultProviderCatalog(),
     settings: new AiSettingsStore(aiSettingsFilePath(userDataDir), DEFAULT_PROVIDER_ID),
     approvals: new ApprovalStore(aiApprovalsFilePath(userDataDir)),
+    approvalResolver: (context) => executionApproval.decide(context),
+    contextAssembler,
     sendEvent: broadcastAiChatEvent,
     mcp: {
       // Encrypt env/header secrets at rest with the OS keychain.
@@ -904,6 +957,10 @@ if (isMcpStdioMode) {
             safeStorage.decryptString(Buffer.from(encryptedText, "base64")),
         },
       })
+      executionWorkspaceRegistry = new ExecutionWorkspaceRegistry(
+        executionWorkspacesFilePath(app.getPath("userData"))
+      )
+      await executionWorkspaceRegistry.load()
       agent = createAgentService()
       accountService = createMarketplaceAccountService()
       registerIpc()

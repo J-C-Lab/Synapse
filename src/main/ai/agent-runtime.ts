@@ -1,6 +1,8 @@
 import type { ToolCaller } from "@synapse/plugin-sdk"
 import type { ChatContentBlock, ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
 import type { AiToolRegistry } from "./tool-registry"
+import { truncateToolResultText } from "./context/tool-result-budget"
+import { labelUntrustedContent } from "./guardrails/untrusted-content"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
 import { addUsage, emptyUsage, totalTokens } from "./providers/types"
 import { renderToolResultText } from "./tool-registry"
@@ -10,7 +12,7 @@ import { renderToolResultText } from "./tool-registry"
 // answers or we hit maxSteps. Provider-agnostic, headless, cancellable. The
 // approval hook is the seam P3's ApprovalGate plugs into — P2 auto-approves.
 
-const DEFAULT_SYSTEM_PROMPT =
+export const DEFAULT_SYSTEM_PROMPT =
   "You are Synapse's built-in assistant. Help the user using the available tools. " +
   "Call a tool when it can answer precisely; otherwise answer directly and concisely."
 
@@ -34,6 +36,10 @@ export interface ApprovalRequest {
   input: unknown
 }
 
+export type ToolApprovalOutcome =
+  | { allowed: false }
+  | { allowed: true; executionAuditDecision?: "allow" | "approved" }
+
 export type AgentEvent =
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; isError: boolean }
@@ -48,8 +54,10 @@ export interface AgentRunOptions {
   onText?: (delta: string) => void
   /** Tool lifecycle events, for live UI. */
   onEvent?: (event: AgentEvent) => void
-  /** Gate each tool call; return false to deny. Defaults to approve-all (P2). */
-  approve?: (request: ApprovalRequest) => boolean | Promise<boolean>
+  /** Gate each tool call; return false / { allowed: false } to deny. Defaults to approve-all (P2). */
+  approve?: (
+    request: ApprovalRequest
+  ) => boolean | ToolApprovalOutcome | Promise<boolean | ToolApprovalOutcome>
   /** Override the caller identity attached to tool invocations. */
   caller?: ToolCaller
 }
@@ -121,10 +129,11 @@ export class AgentRuntime {
     call: { id: string; name: string; input: unknown },
     options: AgentRunOptions
   ): Promise<ChatContentBlock> {
-    const approved = options.approve
+    const approval = options.approve
       ? await options.approve({ toolName: call.name, input: call.input })
-      : true
-    if (!approved) {
+      : ({ allowed: true, executionAuditDecision: "allow" } satisfies ToolApprovalOutcome)
+    const outcome = normalizeApproval(approval)
+    if (!outcome.allowed) {
       options.onEvent?.({ type: "tool_result", id: call.id, isError: true })
       return toolResult(call.id, "Tool call denied.", true)
     }
@@ -133,10 +142,11 @@ export class AgentRuntime {
       const result = await this.options.tools.invoke(call.name, call.input, {
         caller: options.caller ?? { kind: "agent", conversationId: options.conversationId },
         signal: options.signal,
+        executionAuditDecision: outcome.executionAuditDecision,
       })
       const isError = result.isError ?? false
       options.onEvent?.({ type: "tool_result", id: call.id, isError })
-      return toolResult(call.id, renderToolResultText(result) || "(no output)", isError)
+      return toolResult(call.id, formatToolResultForModel(call.name, result), isError)
     } catch (err) {
       options.onEvent?.({ type: "tool_result", id: call.id, isError: true })
       return toolResult(call.id, err instanceof Error ? err.message : String(err), true)
@@ -152,4 +162,26 @@ function isToolUse(
 
 function toolResult(toolUseId: string, content: string, isError: boolean): ChatContentBlock {
   return { type: "tool_result", toolUseId, content, isError }
+}
+
+function normalizeApproval(value: boolean | ToolApprovalOutcome): {
+  allowed: boolean
+  executionAuditDecision?: "allow" | "approved"
+} {
+  if (typeof value === "boolean") {
+    return value ? { allowed: true, executionAuditDecision: "allow" } : { allowed: false }
+  }
+  return {
+    allowed: value.allowed,
+    executionAuditDecision: value.allowed ? (value.executionAuditDecision ?? "allow") : undefined,
+  }
+}
+
+function formatToolResultForModel(
+  toolName: string,
+  result: Parameters<typeof renderToolResultText>[0]
+): string {
+  const raw = renderToolResultText(result) || "(no output)"
+  const truncated = truncateToolResultText(raw)
+  return labelUntrustedContent(toolName, truncated)
 }

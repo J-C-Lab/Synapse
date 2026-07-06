@@ -293,6 +293,11 @@ declare global {
     budgetTokens: number
   }
 
+  interface SynapseExecutionWorkspace {
+    id: string
+    root: string
+  }
+
   interface SynapseAiTool {
     name: string
     description: string
@@ -351,6 +356,12 @@ declare global {
     text: string
     tags: string[]
     createdAt: number
+    scope: {
+      visibility: "conversation" | "workspace" | "global"
+      workspaceId?: string
+      conversationId?: string
+      userId?: string
+    }
   }
 
   interface SynapseMemorySource {
@@ -589,12 +600,20 @@ declare global {
       setAiModel: (providerId: string, model: string) => Promise<void>
       setAiBudget: (tokens: number) => Promise<void>
       listAiTools: () => Promise<SynapseAiTool[]>
+      listExecutionWorkspaces: () => Promise<SynapseExecutionWorkspace[]>
+      addExecutionWorkspace: (
+        workspaceId: string,
+        rootPath: string
+      ) => Promise<SynapseExecutionWorkspace>
+      removeExecutionWorkspace: (workspaceId: string) => Promise<boolean>
+      pickExecutionWorkspaceFolder: () => Promise<string | null>
       listAiConversations: () => Promise<SynapseAiConversationSummary[]>
       getAiConversation: (id: string) => Promise<SynapseAiConversation | undefined>
       deleteAiConversation: (id: string) => Promise<void>
       sendAiChat: (
         conversationId: string,
-        text: string
+        text: string,
+        options?: { workspaceId?: string }
       ) => Promise<{ stopReason: string; usage: SynapseAiTokenUsage }>
       cancelAiChat: (conversationId: string) => Promise<void>
       approveAiTool: (

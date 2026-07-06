@@ -499,6 +499,30 @@ export async function listAiTools(): Promise<AiTool[]> {
   return api().listAiTools()
 }
 
+export interface ExecutionWorkspace {
+  id: string
+  root: string
+}
+
+export async function listExecutionWorkspaces(): Promise<ExecutionWorkspace[]> {
+  return api().listExecutionWorkspaces()
+}
+
+export async function addExecutionWorkspace(
+  workspaceId: string,
+  rootPath: string
+): Promise<ExecutionWorkspace> {
+  return api().addExecutionWorkspace(workspaceId, rootPath)
+}
+
+export async function removeExecutionWorkspace(workspaceId: string): Promise<boolean> {
+  return api().removeExecutionWorkspace(workspaceId)
+}
+
+export async function pickExecutionWorkspaceFolder(): Promise<string | null> {
+  return api().pickExecutionWorkspaceFolder()
+}
+
 export async function listAiConversations(): Promise<AiConversationSummary[]> {
   return api().listAiConversations()
 }
@@ -513,9 +537,10 @@ export async function deleteAiConversation(id: string): Promise<void> {
 
 export async function sendAiChat(
   conversationId: string,
-  text: string
+  text: string,
+  options?: { workspaceId?: string }
 ): Promise<{ stopReason: string; usage: AiTokenUsage }> {
-  return api().sendAiChat(conversationId, text)
+  return api().sendAiChat(conversationId, text, options)
 }
 
 export async function cancelAiChat(conversationId: string): Promise<void> {

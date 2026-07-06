@@ -80,6 +80,30 @@
     "allowedEmpty": "No tools are permanently allowed.",
     "revoke": "Revoke"
   },
+  "execution": {
+    "manage": "Workspaces",
+    "title": "Authorized workspaces",
+    "subtitle": "Let the assistant read, search, patch, and run commands only inside folders you explicitly authorize. Nothing is enabled until you add a workspace here.",
+    "add": "Add workspace",
+    "authorized": "Authorized folders",
+    "empty": "No workspaces authorized yet. Local file and shell tools stay hidden from the assistant.",
+    "id": "Workspace ID",
+    "idPlaceholder": "repo",
+    "idHint": "Short identifier the assistant uses in tool calls (letters, numbers, - and _).",
+    "folder": "Folder",
+    "folderPlaceholder": "Choose a folder…",
+    "browse": "Browse",
+    "authorize": "Authorize folder",
+    "revoke": "Revoke {{id}}",
+    "added": "Authorized workspace {{id}}.",
+    "removed": "Revoked workspace {{id}}.",
+    "addFailed": "Could not authorize the workspace.",
+    "revokeFailed": "Could not revoke the workspace.",
+    "working": "Working…",
+    "bannerNone": "Authorize a workspace to unlock local file and command tools.",
+    "bannerCount_one": "{{count}} workspace authorized.",
+    "bannerCount_other": "{{count}} workspaces authorized."
+  },
   "memory": {
     "manage": "Memory",
     "title": "Long-term memory",
@@ -92,7 +116,10 @@
     "noFacts": "No standalone facts saved yet.",
     "delete": "Delete",
     "imported": "Imported {{source}} ({{chunks}} chunks).",
-    "importFailed": "Could not import the document."
+    "importFailed": "Could not import the document.",
+    "scopeGlobal": "Global",
+    "scopeWorkspace": "Workspace {{id}}",
+    "scopeConversation": "Conversation"
   },
   "mcp": {
     "title": "MCP servers",

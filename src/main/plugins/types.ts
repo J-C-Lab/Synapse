@@ -143,6 +143,8 @@ export interface PluginSandboxModule {
 export interface ToolInvocationOptions {
   /** Where the call came from (built-in agent / external MCP / user). */
   caller: ToolCaller
+  /** How the execution tool passed approval (auto vs user-confirmed ask). */
+  executionAuditDecision?: "allow" | "approved"
   /** Caller-supplied cancellation. The sandbox links it with its own timeout. */
   signal?: AbortSignal
   /** Progress sink forwarded to the tool's `ctx.progress`. */

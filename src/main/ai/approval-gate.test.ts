@@ -21,4 +21,9 @@ describe("decideApproval", () => {
   it("asks for read-only tools when alwaysAsk is set", () => {
     expect(decideApproval({ readOnlyHint: true }, { alwaysAsk: true })).toBe("ask")
   })
+
+  it("keeps read-only allow and destructive ask defaults", () => {
+    expect(decideApproval({ readOnlyHint: true })).toBe("allow")
+    expect(decideApproval({ destructiveHint: true })).toBe("ask")
+  })
 })

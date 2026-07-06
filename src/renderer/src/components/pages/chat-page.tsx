@@ -1,10 +1,17 @@
 import type { ImperativePanelHandle } from "react-resizable-panels"
 import type { DisplayMessage, ToolCard } from "./chat-message-model"
-import type { AiChatEvent, AiConversationSummary, AiStatus, AiTokenUsage } from "@/lib/electron"
+import type {
+  AiChatEvent,
+  AiConversationSummary,
+  AiStatus,
+  AiTokenUsage,
+  ExecutionWorkspace,
+} from "@/lib/electron"
 import {
   ArrowUp,
   Bot,
   Brain,
+  FolderOpen,
   Loader2,
   PanelLeft,
   Plus,
@@ -17,9 +24,11 @@ import { useTranslation } from "react-i18next"
 import { AiSettingsDialog } from "@/components/ai-settings-dialog"
 import { AssistantOnboarding } from "@/components/assistant-onboarding"
 import { ConversationSidebar } from "@/components/conversation-sidebar"
+import { ExecutionWorkspaceDialog } from "@/components/execution-workspace-dialog"
 import { Markdown } from "@/components/markdown"
 import { McpServersDialog } from "@/components/mcp-servers-dialog"
 import { MemoryDialog } from "@/components/memory-dialog"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -38,6 +47,7 @@ import {
   getAiStatus,
   isElectron,
   listAiConversations,
+  listExecutionWorkspaces,
   onAiChatEvent,
   sendAiChat,
   setAiKey,
@@ -63,7 +73,9 @@ export function ChatPage() {
   const [approval, setApproval] = useState<PendingApproval | null>(null)
   const [showMcp, setShowMcp] = useState(false)
   const [showMemory, setShowMemory] = useState(false)
+  const [showWorkspace, setShowWorkspace] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [workspaces, setWorkspaces] = useState<ExecutionWorkspace[]>([])
   const [showSidebar, setShowSidebar] = useState(true)
   const [conversations, setConversations] = useState<AiConversationSummary[]>([])
   const [conversationId, setConversationId] = useState<string>(() => crypto.randomUUID())
@@ -81,11 +93,16 @@ export function ChatPage() {
     if (isElectron()) void listAiConversations().then(setConversations)
   }, [])
 
+  const refreshWorkspaces = useCallback(() => {
+    if (isElectron()) void listExecutionWorkspaces().then(setWorkspaces)
+  }, [])
+
   useEffect(() => {
     if (!isElectron()) return
     void getAiStatus().then(setStatus)
     refreshConversations()
-  }, [refreshConversations])
+    refreshWorkspaces()
+  }, [refreshConversations, refreshWorkspaces])
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
@@ -161,7 +178,11 @@ export function ChatPage() {
     ])
     setBusy(true)
     try {
-      await sendAiChat(conversationId, text)
+      await sendAiChat(
+        conversationId,
+        text,
+        workspaces.length === 1 ? { workspaceId: workspaces[0]?.id } : undefined
+      )
     } finally {
       setBusy(false)
     }
@@ -180,10 +201,17 @@ export function ChatPage() {
         <Header
           onManageMcp={() => setShowMcp(true)}
           onManageMemory={() => setShowMemory(true)}
+          onManageWorkspaces={() => setShowWorkspace(true)}
+          workspaceCount={workspaces.length}
           onOpenSettings={() => setShowSettings(true)}
         />
         <McpServersDialog open={showMcp} onOpenChange={setShowMcp} />
         <MemoryDialog open={showMemory} onOpenChange={setShowMemory} />
+        <ExecutionWorkspaceDialog
+          open={showWorkspace}
+          onOpenChange={setShowWorkspace}
+          onWorkspacesChange={setWorkspaces}
+        />
         <AiSettingsDialog
           open={showSettings}
           onOpenChange={setShowSettings}
@@ -236,10 +264,17 @@ export function ChatPage() {
               onToggleSidebar={() => setShowSidebar((value) => !value)}
               onManageMcp={() => setShowMcp(true)}
               onManageMemory={() => setShowMemory(true)}
+              onManageWorkspaces={() => setShowWorkspace(true)}
+              workspaceCount={workspaces.length}
               onOpenSettings={() => setShowSettings(true)}
             />
             <McpServersDialog open={showMcp} onOpenChange={setShowMcp} />
             <MemoryDialog open={showMemory} onOpenChange={setShowMemory} />
+            <ExecutionWorkspaceDialog
+              open={showWorkspace}
+              onOpenChange={setShowWorkspace}
+              onWorkspacesChange={setWorkspaces}
+            />
             <AiSettingsDialog
               open={showSettings}
               onOpenChange={setShowSettings}
@@ -249,6 +284,10 @@ export function ChatPage() {
 
             <div ref={scrollRef} className="flex-1 overflow-y-auto pr-1">
               <div className="mx-auto w-full max-w-3xl space-y-6 px-1 py-2">
+                <WorkspaceBanner
+                  count={workspaces.length}
+                  onManage={() => setShowWorkspace(true)}
+                />
                 {messages.length === 0 ? (
                   <p className="py-12 text-center text-sm text-muted-foreground">
                     {t("chat.empty")}
@@ -397,17 +436,44 @@ function ChatComposer({
   )
 }
 
+function WorkspaceBanner({ count, onManage }: { count: number; onManage: () => void }) {
+  const { t } = useTranslation()
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      onClick={onManage}
+      className={cn(
+        "h-auto w-full justify-between gap-3 px-3 py-2 text-left text-sm font-normal",
+        count === 0
+          ? "border-warning/40 bg-warning/10 text-warning-foreground hover:bg-warning/15"
+          : "border-border/70 bg-muted/30 text-muted-foreground hover:bg-muted/50"
+      )}
+    >
+      <span className="flex items-center gap-2">
+        <FolderOpen className="size-4 shrink-0" aria-hidden />
+        {count === 0 ? t("execution.bannerNone") : t("execution.bannerCount", { count })}
+      </span>
+      {count > 0 && <Badge variant="secondary">{count}</Badge>}
+    </Button>
+  )
+}
+
 function Header({
   model,
   onToggleSidebar,
   onManageMcp,
   onManageMemory,
+  onManageWorkspaces,
+  workspaceCount = 0,
   onOpenSettings,
 }: {
   model?: string
   onToggleSidebar?: () => void
   onManageMcp: () => void
   onManageMemory: () => void
+  onManageWorkspaces: () => void
+  workspaceCount?: number
   onOpenSettings: () => void
 }) {
   const { t } = useTranslation()
@@ -435,6 +501,15 @@ function Header({
         <Button variant="ghost" size="sm" onClick={onManageMemory}>
           <Brain className="size-4" />
           {t("memory.manage")}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onManageWorkspaces}>
+          <FolderOpen className="size-4" />
+          {t("execution.manage")}
+          {workspaceCount > 0 && (
+            <Badge variant="secondary" className="ml-1">
+              {workspaceCount}
+            </Badge>
+          )}
         </Button>
         <Button variant="ghost" size="sm" onClick={onOpenSettings}>
           <Settings className="size-4" />

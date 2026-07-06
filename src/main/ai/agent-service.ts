@@ -1,6 +1,8 @@
-import type { AgentEvent } from "./agent-runtime"
+import type { AgentEvent, ToolApprovalOutcome } from "./agent-runtime"
 import type { AiSettingsStore } from "./ai-settings-store"
+import type { ApprovalDecision } from "./approval-gate"
 import type { ApprovalStore } from "./approval-store"
+import type { ContextAssembler } from "./context/context-assembler"
 import type {
   ConversationStore,
   ConversationSummary,
@@ -40,11 +42,20 @@ export type AiChatEvent =
   | { type: "done"; conversationId: string; stopReason: string; usage: TokenUsage }
   | { type: "error"; conversationId: string; message: string }
 
+export interface ToolApprovalContext {
+  conversationId: string
+  safeName: string
+  fqName: string
+  input: unknown
+}
+
 export interface AgentServiceOptions {
   credentials: AiCredentialStore
   tools: AiToolRegistry
   conversations: ConversationStore
   sendEvent: (event: AiChatEvent) => void
+  /** Policy hook that can hard-deny or auto-allow before the annotation gate. */
+  approvalResolver?: (context: ToolApprovalContext) => Promise<ApprovalDecision | undefined>
   /** BYOK provider catalog. Defaults to {@link defaultProviderCatalog}. */
   providers?: ProviderDescriptor[]
   /** Active provider + per-provider model. Omitted → in-memory defaults. */
@@ -53,6 +64,8 @@ export interface AgentServiceOptions {
   createProvider?: (providerId: string, apiKey: string) => ChatProvider
   /** Persists "always allow" tool decisions across restarts. Optional in tests. */
   approvals?: ApprovalStore
+  /** Assembles system prompt, memory recall, and history compaction before each run. */
+  contextAssembler?: ContextAssembler
   now?: () => number
   /** External MCP servers (P5). Omitted in tests that don't exercise MCP. */
   mcp?: {
@@ -69,9 +82,10 @@ export class AgentMissingKeyError extends Error {
 }
 
 interface PendingApproval {
-  resolve: (allow: boolean) => void
+  resolve: (outcome: ToolApprovalOutcome) => void
   fqName: string
   conversationId: string
+  input: unknown
 }
 
 export interface AiProviderStatus {
@@ -248,7 +262,8 @@ export class AgentService {
   /** Run one chat turn, streaming events. Resolves when the turn completes. */
   async chat(
     conversationId: string,
-    text: string
+    text: string,
+    chatOptions?: { workspaceId?: string }
   ): Promise<{ stopReason: string; usage: TokenUsage }> {
     const { providerId, model } = await this.selection()
     const apiKey = await this.options.credentials.get(providerId)
@@ -268,14 +283,29 @@ export class AgentService {
     const messages: ChatMessage[] = existing?.messages ? [...existing.messages] : []
     messages.push({ role: "user", content: [{ type: "text", text }] })
 
+    const assembled = this.options.contextAssembler
+      ? await this.options.contextAssembler.assemble({
+          messages,
+          userQuery: text,
+          workspaceId: chatOptions?.workspaceId,
+          conversationId,
+        })
+      : undefined
+
     const controller = new AbortController()
     this.aborts.set(conversationId, controller)
 
     try {
       const result = await runtime.run({
         conversationId,
-        messages,
+        messages: assembled?.messages ?? messages,
+        system: assembled?.system,
         signal: controller.signal,
+        caller: {
+          kind: "agent",
+          conversationId,
+          workspaceId: chatOptions?.workspaceId,
+        },
         onText: (delta) => this.options.sendEvent({ type: "text", conversationId, delta }),
         onEvent: (event) => this.forwardAgentEvent(conversationId, event),
         approve: (request) => this.approve(conversationId, request.toolName, request.input),
@@ -308,10 +338,22 @@ export class AgentService {
   }
 
   /** Resolve a pending tool approval requested via an `approval_request` event. */
-  resolveApproval(approvalId: string, allow: boolean, remember: RememberScope = "once"): void {
+  async resolveApproval(
+    approvalId: string,
+    allow: boolean,
+    remember: RememberScope = "once"
+  ): Promise<void> {
     const pending = this.pendingApprovals.get(approvalId)
     if (!pending) return
     this.pendingApprovals.delete(approvalId)
+    if (!allow && pending.fqName.startsWith("execution:")) {
+      await this.options.approvalResolver?.({
+        conversationId: pending.conversationId,
+        safeName: pending.fqName,
+        fqName: pending.fqName,
+        input: { userDenied: true, originalInput: pending.input },
+      })
+    }
     if (allow && remember === "always") {
       this.permanentAllow.add(pending.fqName)
       void this.options.approvals
@@ -321,7 +363,9 @@ export class AgentService {
     if (allow && remember === "conversation") {
       this.allowSet(pending.conversationId).add(pending.fqName)
     }
-    pending.resolve(allow)
+    pending.resolve(
+      allow ? { allowed: true, executionAuditDecision: "approved" } : { allowed: false }
+    )
   }
 
   /** Tools the user has permanently allowed (persisted "always" decisions). */
@@ -341,17 +385,36 @@ export class AgentService {
     conversationId: string,
     safeName: string,
     input: unknown
-  ): Promise<boolean> {
+  ): Promise<ToolApprovalOutcome> {
     await this.ensurePermanentAllowLoaded()
     const descriptor = this.options.tools.describe(safeName)
     const fqName = descriptor?.fqName ?? safeName
 
-    if (this.permanentAllow.has(fqName) || this.allowSet(conversationId).has(fqName)) return true
-    if (decideApproval(descriptor?.manifestTool.annotations) === "allow") return true
+    if (this.permanentAllow.has(fqName) || this.allowSet(conversationId).has(fqName)) {
+      return { allowed: true, executionAuditDecision: "allow" }
+    }
+
+    const policyDecision = await this.options.approvalResolver?.({
+      conversationId,
+      safeName,
+      fqName,
+      input,
+    })
+    if (policyDecision === "deny") return { allowed: false }
+    if (policyDecision === "allow") return { allowed: true, executionAuditDecision: "allow" }
+
+    if (decideApproval(descriptor?.manifestTool.annotations) === "allow") {
+      return { allowed: true, executionAuditDecision: "allow" }
+    }
 
     const approvalId = `apr_${++this.approvalCounter}`
-    return new Promise<boolean>((resolve) => {
-      this.pendingApprovals.set(approvalId, { resolve, fqName, conversationId })
+    return new Promise<ToolApprovalOutcome>((resolve) => {
+      this.pendingApprovals.set(approvalId, {
+        resolve,
+        fqName,
+        conversationId,
+        input,
+      })
       this.options.sendEvent({
         type: "approval_request",
         conversationId,
@@ -409,7 +472,7 @@ export class AgentService {
     for (const [id, pending] of this.pendingApprovals) {
       if (pending.conversationId === conversationId) {
         this.pendingApprovals.delete(id)
-        pending.resolve(false)
+        pending.resolve({ allowed: false })
       }
     }
   }

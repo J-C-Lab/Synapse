@@ -143,11 +143,17 @@ const electronAPI = {
     ipcRenderer.invoke("ai:set-model", { providerId, model }),
   setAiBudget: (tokens: number) => ipcRenderer.invoke("ai:set-budget", tokens),
   listAiTools: () => ipcRenderer.invoke("ai:list-tools"),
+  listExecutionWorkspaces: () => ipcRenderer.invoke("ai:execution:list-workspaces"),
+  addExecutionWorkspace: (workspaceId: string, rootPath: string) =>
+    ipcRenderer.invoke("ai:execution:add-workspace", { workspaceId, rootPath }),
+  removeExecutionWorkspace: (workspaceId: string) =>
+    ipcRenderer.invoke("ai:execution:remove-workspace", workspaceId),
+  pickExecutionWorkspaceFolder: () => ipcRenderer.invoke("ai:execution:pick-folder"),
   listAiConversations: () => ipcRenderer.invoke("ai:list-conversations"),
   getAiConversation: (id: string) => ipcRenderer.invoke("ai:get-conversation", id),
   deleteAiConversation: (id: string) => ipcRenderer.invoke("ai:delete-conversation", id),
-  sendAiChat: (conversationId: string, text: string) =>
-    ipcRenderer.invoke("ai:chat", { conversationId, text }),
+  sendAiChat: (conversationId: string, text: string, options?: { workspaceId?: string }) =>
+    ipcRenderer.invoke("ai:chat", { conversationId, text, ...options }),
   cancelAiChat: (conversationId: string) => ipcRenderer.invoke("ai:cancel", conversationId),
   approveAiTool: (approvalId: string, allow: boolean, remember?: string) =>
     ipcRenderer.invoke("ai:approve", { approvalId, allow, remember }),

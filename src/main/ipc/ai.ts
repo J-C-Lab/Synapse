@@ -1,6 +1,7 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { AiStatus, RememberScope } from "../ai/agent-service"
 import type { ConversationSummary, StoredConversation } from "../ai/conversation-store"
+import type { WorkspaceRoot } from "../ai/execution/types"
 import type { McpServerStatus } from "../ai/mcp-client-manager"
 import type { McpServerConfig } from "../ai/mcp-server-config-store"
 import type { ProviderToolSchema, TokenUsage } from "../ai/providers/types"
@@ -23,19 +24,28 @@ export interface AiIpcService {
   listConversations: () => Promise<ConversationSummary[]>
   getConversation: (id: string) => Promise<StoredConversation | undefined>
   deleteConversation: (id: string) => Promise<void>
-  chat: (conversationId: string, text: string) => Promise<{ stopReason: string; usage: TokenUsage }>
+  chat: (
+    conversationId: string,
+    text: string,
+    options?: { workspaceId?: string }
+  ) => Promise<{ stopReason: string; usage: TokenUsage }>
   cancel: (conversationId: string) => void
-  resolveApproval: (approvalId: string, allow: boolean, remember?: RememberScope) => void
+  resolveApproval: (approvalId: string, allow: boolean, remember?: RememberScope) => Promise<void>
   listAllowedTools: () => Promise<string[]>
   revokeTool: (fqName: string) => Promise<void>
   listMcpServers: () => Promise<McpServerConfig[]>
   mcpServerStatus: () => McpServerStatus[]
   saveMcpServer: (config: McpServerConfig) => Promise<McpServerStatus[]>
   deleteMcpServer: (id: string) => Promise<void>
+  listExecutionWorkspaces: () => WorkspaceRoot[]
+  addExecutionWorkspace: (workspaceId: string, rootPath: string) => Promise<WorkspaceRoot>
+  removeExecutionWorkspace: (workspaceId: string) => Promise<boolean>
 }
 
 export interface RegisterAiIpcOptions {
   isTrustedSender: (event: IpcMainInvokeEvent) => boolean
+  /** Native folder picker for authorizing an execution workspace root. */
+  pickExecutionWorkspaceFolder?: () => Promise<string | null>
 }
 
 export function registerAiIpc(
@@ -93,8 +103,10 @@ export function registerAiIpc(
   })
   ipcMain.handle("ai:chat", (event, payload: unknown) => {
     guard(event, "ai:chat")
-    const { conversationId, text } = coerceChat(payload)
-    return withCapabilityPromptTarget(event.sender, () => service.chat(conversationId, text))
+    const { conversationId, text, workspaceId } = coerceChat(payload)
+    return withCapabilityPromptTarget(event.sender, () =>
+      service.chat(conversationId, text, workspaceId ? { workspaceId } : undefined)
+    )
   })
   ipcMain.handle("ai:cancel", (event, id: unknown) => {
     guard(event, "ai:cancel")
@@ -128,6 +140,26 @@ export function registerAiIpc(
   ipcMain.handle("ai:mcp:delete", (event, id: unknown) => {
     guard(event, "ai:mcp:delete")
     return service.deleteMcpServer(requireString(id, "id"))
+  })
+  ipcMain.handle("ai:execution:list-workspaces", (event) => {
+    guard(event, "ai:execution:list-workspaces")
+    return service.listExecutionWorkspaces()
+  })
+  ipcMain.handle("ai:execution:add-workspace", (event, payload: unknown) => {
+    guard(event, "ai:execution:add-workspace")
+    const { workspaceId, rootPath } = coerceExecutionWorkspace(payload)
+    return service.addExecutionWorkspace(workspaceId, rootPath)
+  })
+  ipcMain.handle("ai:execution:remove-workspace", (event, workspaceId: unknown) => {
+    guard(event, "ai:execution:remove-workspace")
+    return service.removeExecutionWorkspace(requireString(workspaceId, "workspaceId"))
+  })
+  ipcMain.handle("ai:execution:pick-folder", (event) => {
+    guard(event, "ai:execution:pick-folder")
+    if (!options.pickExecutionWorkspaceFolder) {
+      throw new Error("Execution workspace folder picker is not configured.")
+    }
+    return options.pickExecutionWorkspaceFolder()
   })
 }
 
@@ -187,12 +219,19 @@ function stringRecord(value: unknown): Record<string, string> | undefined {
   return Object.keys(out).length > 0 ? out : undefined
 }
 
-export function coerceChat(payload: unknown): { conversationId: string; text: string } {
+export function coerceChat(payload: unknown): {
+  conversationId: string
+  text: string
+  workspaceId?: string
+} {
   if (!payload || typeof payload !== "object") throw new Error("chat payload must be an object.")
   const v = payload as Record<string, unknown>
+  const workspaceId =
+    typeof v.workspaceId === "string" && v.workspaceId.trim() ? v.workspaceId.trim() : undefined
   return {
     conversationId: requireString(v.conversationId, "conversationId"),
     text: requireString(v.text, "text"),
+    workspaceId,
   }
 }
 
@@ -217,6 +256,20 @@ export function coerceApprove(payload: unknown): {
     approvalId: requireString(v.approvalId, "approvalId"),
     allow: v.allow,
     remember: (remember as RememberScope | undefined) ?? "once",
+  }
+}
+
+export function coerceExecutionWorkspace(payload: unknown): {
+  workspaceId: string
+  rootPath: string
+} {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("execution workspace payload must be an object.")
+  }
+  const value = payload as Record<string, unknown>
+  return {
+    workspaceId: requireString(value.workspaceId, "workspaceId"),
+    rootPath: requireString(value.rootPath, "rootPath"),
   }
 }
 
