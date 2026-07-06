@@ -187,7 +187,12 @@ export function MemoryDialog({
                       key={entry.id}
                       className="flex items-start gap-2 rounded-md border px-2 py-1 text-xs"
                     >
-                      <span className="min-w-0 flex-1">{entry.text}</span>
+                      <div className="min-w-0 flex-1">
+                        <p>{entry.text}</p>
+                        <p className="mt-0.5 text-[10px] text-muted-foreground">
+                          {formatMemoryScope(entry.scope)}
+                        </p>
+                      </div>
                       <Button
                         variant="ghost"
                         size="icon"
@@ -235,4 +240,11 @@ export function MemoryDialog({
       </AlertDialog>
     </>
   )
+}
+
+function formatMemoryScope(scope: MemoryEntry["scope"]): string {
+  if (scope.visibility === "workspace") return `workspace:${scope.workspaceId ?? "unknown"}`
+  if (scope.visibility === "conversation")
+    return `conversation:${scope.conversationId ?? "unknown"}`
+  return "global"
 }

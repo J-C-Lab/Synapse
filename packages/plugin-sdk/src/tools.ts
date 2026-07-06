@@ -20,6 +20,8 @@ export interface ToolCaller {
   runId?: string
   /** The parent run that spawned this subagent run. Set only for kind "subagent". */
   parentRunId?: string
+  /** Future per-conversation workspace binding; absent today means global memory scope. */
+  workspaceId?: string
 }
 
 /**

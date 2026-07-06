@@ -71,6 +71,28 @@ describe("memoryService", () => {
     expect(hits[0]!.score).toBeGreaterThan(hits[1]!.score)
   })
 
+  it("filters by scope before hybrid ranking", async () => {
+    const vectors = {
+      "workspace repo TS2741": [0, 1, 0],
+      "global TS2741": [1, 0, 0],
+      TS2741: [0.55, 0.45, 0],
+    }
+    const svc = service(fakeEmbedder(vectors))
+    await svc.save({ text: "global TS2741" })
+    await svc.save({
+      text: "workspace repo TS2741",
+      scope: { visibility: "workspace", workspaceId: "repo" },
+    })
+    await svc.save({
+      text: "workspace other TS2741",
+      scope: { visibility: "workspace", workspaceId: "other" },
+    })
+
+    const hits = await svc.search("TS2741", 5, { workspaceId: "repo", includeGlobal: false })
+
+    expect(hits.map((hit) => hit.entry.text)).toEqual(["workspace repo TS2741"])
+  })
+
   it("falls back to lexical search when embeddings are unavailable", async () => {
     const svc = service({ embed: async () => null })
     await svc.save({ text: "the deploy script lives in scripts/deploy.sh" })
@@ -101,6 +123,23 @@ describe("memoryService", () => {
     expect(await svc.list()).toHaveLength(1)
   })
 
+  it("lists only memories matching a query scope when provided", async () => {
+    const svc = service({ embed: async () => null })
+    await svc.save({ text: "global" })
+    await svc.save({
+      text: "repo",
+      scope: { visibility: "workspace", workspaceId: "repo" },
+    })
+    await svc.save({
+      text: "other",
+      scope: { visibility: "workspace", workspaceId: "other" },
+    })
+
+    const list = await svc.list(50, { workspaceId: "repo", includeGlobal: true })
+
+    expect(list.map((entry) => entry.text).sort()).toEqual(["global", "repo"])
+  })
+
   it("rejects empty text", async () => {
     const svc = service({ embed: async () => null })
     await expect(svc.save({ text: "   " })).rejects.toThrow(/empty/)
@@ -117,6 +156,7 @@ describe("memoryService", () => {
     const list = await svc.list()
     expect(list).toHaveLength(4)
     expect(list.every((entry) => entry.tags.includes("source:guide.md"))).toBe(true)
+    expect(list.every((entry) => entry.scope.visibility === "global")).toBe(true)
     expect(list.every((entry) => entry.embedding?.length)).toBe(true)
   })
 
