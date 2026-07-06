@@ -1,3 +1,4 @@
+import type { ReactNode } from "react"
 import type { ImperativePanelHandle } from "react-resizable-panels"
 import type { DisplayMessage, ToolCard } from "./chat-message-model"
 import type { PlanStep } from "@/components/PlanPanel"
@@ -33,8 +34,10 @@ import {
 } from "@/components/ui/dialog"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import { Textarea } from "@/components/ui/textarea"
+import { WorkspaceSwitcher } from "@/components/workspace-switcher"
 import {
   approveAiTool,
+  createAiConversation,
   deleteAiConversation,
   getAiConversation,
   getAiStatus,
@@ -69,6 +72,8 @@ export function ChatPage() {
   const [showSidebar, setShowSidebar] = useState(true)
   const [conversations, setConversations] = useState<AiConversationSummary[]>([])
   const [conversationId, setConversationId] = useState<string>(() => crypto.randomUUID())
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState("default")
+  const [conversationLocked, setConversationLocked] = useState(false)
   const [planSteps, setPlanSteps] = useState<PlanStep[]>([])
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
   const [liveText, setLiveText] = useState("")
@@ -77,6 +82,11 @@ export function ChatPage() {
   const liveTextRef = useRef("")
   const liveTextRafRef = useRef<number | null>(null)
   const sidebarPanelRef = useRef<ImperativePanelHandle>(null)
+  const conversationIdRef = useRef(conversationId)
+
+  useEffect(() => {
+    conversationIdRef.current = conversationId
+  }, [conversationId])
 
   useEffect(() => {
     const panel = sidebarPanelRef.current
@@ -133,7 +143,7 @@ export function ChatPage() {
 
   const handleEvent = useCallback(
     (event: AiChatEvent) => {
-      if (event.conversationId !== conversationId) return
+      if (event.conversationId !== conversationIdRef.current) return
 
       if (event.type === "text") {
         liveTextRef.current += event.delta
@@ -162,7 +172,7 @@ export function ChatPage() {
         setPlanSteps(event.steps)
       }
     },
-    [conversationId, flushLiveText, refreshConversations, scheduleLiveTextRender]
+    [flushLiveText, refreshConversations, scheduleLiveTextRender]
   )
 
   useEffect(() => {
@@ -181,11 +191,14 @@ export function ChatPage() {
     setLiveText("")
     const stored = await getAiConversation(id)
     setMessages(stored ? hydrateMessages(stored.messages) : [])
+    setActiveWorkspaceId(stored?.workspaceId ?? "default")
+    setConversationLocked(true)
   }
 
   function newConversation() {
     if (busy) return
     setConversationId(crypto.randomUUID())
+    setConversationLocked(false)
     setMessages([])
     setUsage(null)
     setApproval(null)
@@ -229,7 +242,15 @@ export function ChatPage() {
     ])
     setBusy(true)
     try {
-      await sendAiChat(conversationId, text)
+      let id = conversationId
+      if (!conversationLocked) {
+        const created = await createAiConversation(activeWorkspaceId)
+        id = created.id
+        conversationIdRef.current = id
+        setConversationId(id)
+        setConversationLocked(true)
+      }
+      await sendAiChat(id, text)
     } finally {
       setBusy(false)
       setStreamingMessageId(null)
@@ -307,6 +328,13 @@ export function ChatPage() {
               onManageMcp={() => setShowMcp(true)}
               onManageMemory={() => setShowMemory(true)}
               onOpenSettings={() => setShowSettings(true)}
+              workspaceSwitcher={
+                <WorkspaceSwitcher
+                  value={activeWorkspaceId}
+                  onChange={setActiveWorkspaceId}
+                  disabled={conversationLocked}
+                />
+              }
             />
             <McpServersDialog open={showMcp} onOpenChange={setShowMcp} />
             <MemoryDialog open={showMemory} onOpenChange={setShowMemory} />
@@ -482,12 +510,14 @@ function Header({
   onManageMcp,
   onManageMemory,
   onOpenSettings,
+  workspaceSwitcher,
 }: {
   model?: string
   onToggleSidebar?: () => void
   onManageMcp: () => void
   onManageMemory: () => void
   onOpenSettings: () => void
+  workspaceSwitcher?: ReactNode
 }) {
   const { t } = useTranslation()
   return (
@@ -505,6 +535,7 @@ function Header({
       )}
       <Bot className="size-5 text-primary" />
       <h2 className="text-lg font-semibold">{t("chat.title")}</h2>
+      {workspaceSwitcher}
       <div className="ml-auto flex items-center gap-2">
         {model && <span className="text-xs text-muted-foreground">{model}</span>}
         <Button variant="ghost" size="sm" onClick={onManageMcp}>

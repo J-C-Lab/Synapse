@@ -10,6 +10,7 @@ import { readJsonFile, writeJsonFile } from "../lan/atomic-json-store"
 export interface StoredConversation {
   id: string
   title?: string
+  workspaceId: string
   messages: ChatMessage[]
   createdAt: number
   updatedAt: number
@@ -18,6 +19,7 @@ export interface StoredConversation {
 export interface ConversationSummary {
   id: string
   title?: string
+  workspaceId: string
   updatedAt: number
 }
 
@@ -65,6 +67,7 @@ export class ConversationStore {
         summaries.push({
           id: conversation.id,
           title: conversation.title,
+          workspaceId: conversation.workspaceId,
           updatedAt: conversation.updatedAt,
         })
       }
@@ -91,6 +94,8 @@ function normalizeConversation(value: unknown): StoredConversation | null {
   return {
     id: v.id,
     title: typeof v.title === "string" ? v.title : undefined,
+    workspaceId:
+      typeof v.workspaceId === "string" && v.workspaceId.trim() ? v.workspaceId : "default",
     messages: v.messages as ChatMessage[],
     createdAt: typeof v.createdAt === "number" ? v.createdAt : 0,
     updatedAt: typeof v.updatedAt === "number" ? v.updatedAt : 0,

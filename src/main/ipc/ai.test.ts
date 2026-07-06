@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { coerceApprove, coerceBudget, coerceChat, coerceMcpServer } from "./ai"
+import {
+  coerceApprove,
+  coerceBudget,
+  coerceChat,
+  coerceCreateConversation,
+  coerceCreateWorkspace,
+  coerceMcpServer,
+} from "./ai"
 
 describe("coerceBudget", () => {
   it("accepts a non-negative integer and floors it", () => {
@@ -98,5 +105,20 @@ describe("coerceMcpServer", () => {
     expect(() => coerceMcpServer(null)).toThrow(/must be an object/)
     // command/url are optional here; the config store enforces them per transport.
     expect(coerceMcpServer({ id: "fs" })).toEqual({ id: "fs" })
+  })
+})
+
+describe("coerceCreateWorkspace", () => {
+  it("accepts a trimmed name and rejects blank/missing", () => {
+    expect(coerceCreateWorkspace({ name: "Work" })).toEqual({ name: "Work" })
+    expect(() => coerceCreateWorkspace({ name: "  " })).toThrow(/name/)
+    expect(() => coerceCreateWorkspace({})).toThrow()
+  })
+})
+
+describe("coerceCreateConversation", () => {
+  it("requires a workspaceId string", () => {
+    expect(coerceCreateConversation({ workspaceId: "work" })).toEqual({ workspaceId: "work" })
+    expect(() => coerceCreateConversation({})).toThrow(/workspaceId/)
   })
 })

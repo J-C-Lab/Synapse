@@ -125,9 +125,11 @@ function credentials(key: string | undefined): AiCredentialStore {
 function conversations(): { store: ConversationStore; saved: StoredConversation[] } {
   const saved: StoredConversation[] = []
   const store = {
-    get: async () => undefined,
+    get: async (id: string) => saved.find((c) => c.id === id),
     save: async (conversation: StoredConversation) => {
-      saved.push(conversation)
+      const idx = saved.findIndex((c) => c.id === conversation.id)
+      if (idx >= 0) saved[idx] = conversation
+      else saved.push(conversation)
       return conversation
     },
     list: async () => [],
@@ -145,6 +147,7 @@ function service(options: {
   host: ToolHostPort
   key?: string
   recordRun?: (trace: import("./run-trace-store").RunTrace) => void
+  workspaces?: { exists: (id: string) => Promise<boolean> }
   getToolHealth?: () => import("./tool-circuit-breaker").ToolStatSnapshot[]
 }): {
   service: AgentService
@@ -157,6 +160,7 @@ function service(options: {
     credentials: credentials("key" in options ? options.key : "sk-test"),
     tools: new AiToolRegistry(options.host),
     conversations: convo.store,
+    workspaces: options.workspaces,
     createProvider: () => options.provider,
     sendEvent: (event) => events.push(event),
     recordRun: options.recordRun,
@@ -526,5 +530,58 @@ describe("agentService", () => {
     await svc.setToolResilience(next)
     expect(setToolResilience).toHaveBeenCalledWith(next)
     expect(applied).toEqual([next])
+  })
+
+  it("sources the conversation's workspaceId into the run trace", async () => {
+    const traces: import("./run-trace-store").RunTrace[] = []
+    const { service: svc, saved } = service({
+      host: fakeHost({ readOnlyHint: true }),
+      provider: fakeProvider([{ text: "done" }]),
+      recordRun: (t) => traces.push(t),
+      workspaces: { exists: async (id) => id === "default" || id === "work" },
+    })
+    saved.push({
+      id: "c-work",
+      workspaceId: "work",
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1,
+    })
+
+    await svc.chat("c-work", "hello")
+
+    expect(traces.at(-1)?.workspaceId).toBe("work")
+  })
+
+  it("defaults a legacy conversation to workspaceId default in the trace", async () => {
+    const traces: import("./run-trace-store").RunTrace[] = []
+    const { service: svc, saved } = service({
+      host: fakeHost({ readOnlyHint: true }),
+      provider: fakeProvider([{ text: "done" }]),
+      recordRun: (t) => traces.push(t),
+    })
+    saved.push({
+      id: "c-legacy",
+      workspaceId: "default",
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1,
+    })
+
+    await svc.chat("c-legacy", "hi")
+
+    expect(traces.at(-1)?.workspaceId).toBe("default")
+  })
+
+  it("createConversation binds the chosen workspace and rejects unknown ones", async () => {
+    const { service: svc } = service({
+      host: fakeHost(),
+      provider: fakeProvider([{ text: "x" }]),
+      workspaces: { exists: async (id) => id === "default" || id === "work" },
+    })
+    const created = await svc.createConversation("work")
+    expect(created.workspaceId).toBe("work")
+    expect((await svc.getConversation(created.id))?.workspaceId).toBe("work")
+    await expect(svc.createConversation("ghost")).rejects.toThrow(/Unknown workspace/)
   })
 })

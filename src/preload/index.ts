@@ -160,6 +160,10 @@ const electronAPI = {
   listAiConversations: () => ipcRenderer.invoke("ai:list-conversations"),
   getAiConversation: (id: string) => ipcRenderer.invoke("ai:get-conversation", id),
   deleteAiConversation: (id: string) => ipcRenderer.invoke("ai:delete-conversation", id),
+  listAiWorkspaces: () => ipcRenderer.invoke("ai:list-workspaces"),
+  createAiWorkspace: (name: string) => ipcRenderer.invoke("ai:create-workspace", { name }),
+  createAiConversation: (workspaceId: string) =>
+    ipcRenderer.invoke("ai:create-conversation", { workspaceId }),
   sendAiChat: (conversationId: string, text: string) =>
     ipcRenderer.invoke("ai:chat", { conversationId, text }),
   cancelAiChat: (conversationId: string) => ipcRenderer.invoke("ai:cancel", conversationId),
