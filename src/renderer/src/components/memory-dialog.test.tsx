@@ -45,11 +45,24 @@ describe("memoryDialog", () => {
 
   it("shows standalone facts (non-document memories) separately", async () => {
     listMemories.mockResolvedValue([
-      { id: "1", text: "the api base is example.com", tags: [], createdAt: 1 },
-      { id: "2", text: "a document chunk", tags: ["source:guide.md"], createdAt: 2 },
+      {
+        id: "1",
+        text: "the api base is example.com",
+        tags: [],
+        createdAt: 1,
+        scope: { visibility: "global" },
+      },
+      {
+        id: "2",
+        text: "a document chunk",
+        tags: ["source:guide.md"],
+        createdAt: 2,
+        scope: { visibility: "workspace", workspaceId: "repo" },
+      },
     ])
     render(<MemoryDialog open onOpenChange={() => {}} />)
     expect(await screen.findByText("the api base is example.com")).toBeInTheDocument()
+    expect(screen.getByText("memory.scopeGlobal")).toBeInTheDocument()
     // The chunk belongs to a document, so it is not shown in the facts list.
     expect(screen.queryByText("a document chunk")).not.toBeInTheDocument()
   })

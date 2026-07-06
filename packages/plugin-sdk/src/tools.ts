@@ -9,11 +9,16 @@ import type { PluginContext } from "./context"
  * - `user` — the user invoked it directly (e.g. a "run tool" affordance).
  */
 export interface ToolCaller {
-  kind: "agent" | "background-agent" | "mcp" | "user"
+  kind: "agent" | "background-agent" | "mcp" | "user" | "agent-tool"
   /** The conversation this call belongs to, when driven by the built-in agent. */
   conversationId?: string
   /** The background invocation this call belongs to, when trigger-driven. */
   invocationId?: string
+  workspaceId?: string
+  userId?: string
+  parentConversationId?: string
+  agentId?: string
+  agentCallStack?: string[]
 }
 
 /**

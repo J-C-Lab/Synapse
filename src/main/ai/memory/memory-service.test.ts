@@ -140,6 +140,25 @@ describe("memoryService", () => {
     expect(await svc.deleteSource("a.md")).toBe(4)
     expect(await svc.listSources()).toEqual([{ source: "b.md", count: 1 }])
   })
+
+  it("scopes search to the active workspace", async () => {
+    const svc = service({ embed: async () => null })
+    await svc.save({
+      text: "repo-a deploy script",
+      scope: { visibility: "workspace", workspaceId: "repo-a" },
+    })
+    await svc.save({
+      text: "repo-b deploy script",
+      scope: { visibility: "workspace", workspaceId: "repo-b" },
+    })
+
+    const hits = await svc.search("deploy script", 5, {
+      workspaceId: "repo-a",
+      includeGlobal: false,
+    })
+    expect(hits).toHaveLength(1)
+    expect(hits[0]?.entry.scope.workspaceId).toBe("repo-a")
+  })
 })
 
 describe("cosineSimilarity", () => {

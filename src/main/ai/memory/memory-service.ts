@@ -1,12 +1,17 @@
 import type { ChunkOptions } from "./chunk-text"
-import type { MemoryEntry, MemoryStore } from "./memory-store"
+import type { MemoryQueryScope } from "./memory-scope"
+import type { MemoryEntry, MemoryScope, MemoryStore } from "./memory-store"
 import type { Embedder } from "./openai-embedding-provider"
 import { chunkText } from "./chunk-text"
+import { entryMatchesQuery } from "./memory-scope"
 
 // Long-term memory: save facts and recall them across conversations. Recall is
 // semantic — the query and entries are embedded and ranked by cosine similarity
 // — with a lexical (term-overlap) fallback when no embedder/key is available so
 // the feature still works without an OpenAI key.
+
+/** Tag applied to memories written by background agents; excluded from auto-recall. */
+export const BACKGROUND_AGENT_MEMORY_TAG = "written-by:background-agent"
 
 export interface MemorySearchHit {
   entry: MemoryEntry
@@ -16,6 +21,7 @@ export interface MemorySearchHit {
 export interface SaveMemoryInput {
   text: string
   tags?: string[]
+  scope?: MemoryScope
 }
 
 export interface IngestDocumentInput {
@@ -23,6 +29,7 @@ export interface IngestDocumentInput {
   source: string
   text: string
   tags?: string[]
+  scope?: MemoryScope
 }
 
 export interface IngestDocumentResult {
@@ -56,6 +63,7 @@ export class MemoryService {
       text,
       tags: (input.tags ?? []).map((tag) => tag.trim()).filter(Boolean),
       createdAt: this.now(),
+      scope: input.scope ?? { visibility: "global" },
       embedding,
     }
     await this.store.add(entry)
@@ -86,6 +94,7 @@ export class MemoryService {
       text,
       tags,
       createdAt: this.now(),
+      scope: input.scope ?? { visibility: "global" },
       embedding: embeddings?.[index],
     }))
 
@@ -93,9 +102,13 @@ export class MemoryService {
     return { source, chunks: chunks.length }
   }
 
-  async search(query: string, limit = 5): Promise<MemorySearchHit[]> {
+  async search(
+    query: string,
+    limit = 5,
+    scope: MemoryQueryScope = { includeGlobal: true }
+  ): Promise<MemorySearchHit[]> {
     const trimmed = query.trim()
-    const entries = await this.store.all()
+    const entries = (await this.store.all()).filter((entry) => entryMatchesQuery(entry, scope))
     if (!trimmed || entries.length === 0) return []
 
     const queryVector = (await this.safeEmbed([trimmed]))?.[0]
@@ -114,8 +127,10 @@ export class MemoryService {
       .slice(0, Math.max(1, limit))
   }
 
-  async list(limit = 50): Promise<MemoryEntry[]> {
-    const entries = await this.store.all()
+  async list(limit = 50, scope?: MemoryQueryScope): Promise<MemoryEntry[]> {
+    const entries = scope
+      ? (await this.store.all()).filter((entry) => entryMatchesQuery(entry, scope))
+      : await this.store.all()
     return entries.sort((a, b) => b.createdAt - a.createdAt).slice(0, Math.max(1, limit))
   }
 

@@ -1,5 +1,6 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { IngestDocumentResult, MemoryService, MemorySource } from "../ai/memory/memory-service"
+import type { MemoryScope } from "../ai/memory/memory-store"
 import { logger } from "../logging"
 
 // IPC surface for managing long-term memory from the renderer: import a document
@@ -13,6 +14,7 @@ export interface MemoryEntryView {
   text: string
   tags: string[]
   createdAt: number
+  scope: MemoryScope
 }
 
 export interface RegisterMemoryIpcOptions {
@@ -38,6 +40,7 @@ export function registerMemoryIpc(
       text: entry.text,
       tags: entry.tags,
       createdAt: entry.createdAt,
+      scope: entry.scope,
     }))
   })
 

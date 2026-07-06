@@ -23,6 +23,19 @@ import {
 
 const SOURCE_TAG_PREFIX = "source:"
 
+function formatScope(
+  scope: MemoryEntry["scope"],
+  t: (key: string, options?: Record<string, unknown>) => string
+): string {
+  if (scope.visibility === "workspace" && scope.workspaceId) {
+    return t("memory.scopeWorkspace", { id: scope.workspaceId })
+  }
+  if (scope.visibility === "conversation") {
+    return t("memory.scopeConversation")
+  }
+  return t("memory.scopeGlobal")
+}
+
 // Direct, user-driven management of long-term memory (the agent reaches the same
 // store through its memory tools). Import a document — read in the renderer via
 // the File API, chunked + embedded in the main process — and review or delete
@@ -155,7 +168,12 @@ export function MemoryDialog({
                     key={entry.id}
                     className="flex items-start gap-2 rounded-md border px-2 py-1 text-xs"
                   >
-                    <span className="min-w-0 flex-1">{entry.text}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[10px] text-muted-foreground">
+                        {formatScope(entry.scope, t)}
+                      </p>
+                      <p>{entry.text}</p>
+                    </div>
                     <Button
                       variant="ghost"
                       size="icon"
