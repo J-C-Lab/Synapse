@@ -1,6 +1,7 @@
 import type { ClipboardContent } from "@synapse/plugin-sdk"
 import type { IpcMainInvokeEvent, WebContents } from "electron"
 import type { ToolResilienceSettings } from "./ai/ai-settings-store"
+import type { WorkspaceRoot } from "./ai/execution/types"
 import type { ChatProvider } from "./ai/providers/types"
 import type { RunTrace } from "./ai/run-trace-store"
 import type { SecretProtector } from "./lan/credential-store"
@@ -39,6 +40,9 @@ import { aiApprovalsFilePath, ApprovalStore } from "./ai/approval-store"
 import { asFallbackSource, CompositeToolHost } from "./ai/composite-tool-host"
 import { ConversationStore } from "./ai/conversation-store"
 import { aiCredentialFilePath, AiCredentialStore } from "./ai/credential-store"
+import { ExecutionApprovalResolver } from "./ai/execution/execution-approval"
+import { executionLogFilePath, ExecutionLogStore } from "./ai/execution/execution-log-store"
+import { EXECUTION_FQ_PREFIX, ExecutionToolHostSource } from "./ai/execution/execution-tool-host"
 import { createMcpClient } from "./ai/mcp-client-factory"
 import { MCP_FQ_PREFIX, McpClientManager } from "./ai/mcp-client-manager"
 import { aiMcpServersFilePath, McpServerConfigStore } from "./ai/mcp-server-config-store"
@@ -56,8 +60,6 @@ import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/cata
 import { ResilientToolHost } from "./ai/resilient-tool-host"
 import { RunBudgetRegistry } from "./ai/run-budget-registry"
 import { recordRun as persistRunTrace } from "./ai/run-trace-store"
-import { createNodeShellExecutor } from "./ai/shell/shell-executor"
-import { SHELL_FQ_PREFIX, ShellToolSource } from "./ai/shell/shell-tool-source"
 import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
@@ -752,13 +754,20 @@ function createAgentService(): AgentService {
     return roots.length > 0 ? roots : [os.homedir()]
   }
 
-  const shellSource = new ShellToolSource({
-    executor: createNodeShellExecutor({ timeoutMs: 30_000, maxOutputBytes: 100_000 }),
-    allowedRoots: effectiveShellRoots,
-    defaultCwd: () => effectiveShellRoots()[0]!,
-    enabled: () => launcher.getSettings().allowAgentShell,
-    audit: (entry) => logger.child("ai").info("agent shell", { ...entry }),
+  // Local execution is authorized via the same settings as the legacy shell:
+  // `allowAgentShell` is the master switch and `agentShellRoots` are the
+  // sandbox roots, each surfaced to the agent as a named execution workspace.
+  function executionWorkspaces(): WorkspaceRoot[] {
+    if (!launcher.getSettings().allowAgentShell) return []
+    return deriveExecutionWorkspaces(effectiveShellRoots())
+  }
+
+  const executionLog = new ExecutionLogStore(executionLogFilePath(userDataDir))
+  const executionSource = new ExecutionToolHostSource({
+    workspaces: { listWorkspaces: executionWorkspaces },
+    log: executionLog,
   })
+  const executionApprovalResolver = new ExecutionApprovalResolver({ log: executionLog })
 
   const runsDir = path.join(userDataDir, "logs", "runs")
   const recordRun = (trace: RunTrace): void => persistRunTrace(runsDir, trace)
@@ -782,7 +791,7 @@ function createAgentService(): AgentService {
 
   // The model sees one flat tool list: local plugin tools, external MCP tools
   // (`mcp:<id>/<tool>`), built-in memory tools (`memory:…`), and optionally
-  // governed shell (`shell:…`). Invocations route by ownership.
+  // sandboxed local execution (`execution:…`). Invocations route by ownership.
   const aiSettings = new AiSettingsStore(aiSettingsFilePath(userDataDir), DEFAULT_PROVIDER_ID)
   // Live circuit-breaker tuning (P3). Held in a mutable holder the host reads
   // afresh per new breaker; setToolResilience updates it and resets breakers so
@@ -791,14 +800,14 @@ function createAgentService(): AgentService {
 
   // Wrap the flat tool surface in a per-tool circuit breaker + timeout so one
   // hung/dead source (crashed MCP server, wedged plugin) can't stall or keep
-  // punching the agent loop. Shell and subagent tools are legitimately
+  // punching the agent loop. Execution and subagent tools are legitimately
   // long-running, so they opt out of the timeout; everything else uses the
   // configured timeout. Held in a variable so its health snapshots can be
   // surfaced to the renderer.
   const resilientToolHost = new ResilientToolHost(
     new CompositeToolHost([
       introspectionSource,
-      shellSource,
+      executionSource,
       planSource,
       subagentSource,
       asFallbackSource(
@@ -807,7 +816,7 @@ function createAgentService(): AgentService {
           fqName.startsWith(MCP_FQ_PREFIX) ||
           fqName.startsWith(MEMORY_FQ_PREFIX) ||
           fqName.startsWith(PLUGIN_INTROSPECT_PREFIX) ||
-          fqName.startsWith(SHELL_FQ_PREFIX) ||
+          fqName.startsWith(EXECUTION_FQ_PREFIX) ||
           fqName.startsWith(PLAN_FQ_PREFIX) ||
           fqName.startsWith(SUBAGENT_FQ_PREFIX)
       ),
@@ -820,7 +829,7 @@ function createAgentService(): AgentService {
         recoveryMs: toolResilience.recoveryMs,
       }),
       timeoutMs: (fqName) =>
-        fqName.startsWith(SHELL_FQ_PREFIX) || fqName.startsWith(SUBAGENT_FQ_PREFIX)
+        fqName.startsWith(EXECUTION_FQ_PREFIX) || fqName.startsWith(SUBAGENT_FQ_PREFIX)
           ? undefined
           : toolResilience.timeoutMs,
     }
@@ -843,7 +852,13 @@ function createAgentService(): AgentService {
       toolResilience = cfg
       resilientToolHost.resetBreakers()
     },
-    getShellEnabled: () => launcher.getSettings().allowAgentShell,
+    getExecutionWorkspaces: executionWorkspaces,
+    approvalResolver: (ctx) =>
+      executionApprovalResolver.decide({
+        conversationId: ctx.conversationId,
+        fqName: ctx.fqName,
+        input: ctx.input,
+      }),
     conversations: new ConversationStore(path.join(userDataDir, "ai", "conversations")),
     providers: defaultProviderCatalog(),
     settings: aiSettings,
@@ -868,6 +883,20 @@ function createAgentService(): AgentService {
   makeSubagentProvider = () => agentService.createBackgroundAgentProvider()
 
   return agentService
+}
+
+/**
+ * Turn authorized sandbox roots into named execution workspaces. The id is the
+ * folder name, suffixed on collision so every workspace is addressable.
+ */
+function deriveExecutionWorkspaces(roots: readonly string[]): WorkspaceRoot[] {
+  const seen = new Map<string, number>()
+  return roots.map((root) => {
+    const base = path.basename(root) || root
+    const count = seen.get(base) ?? 0
+    seen.set(base, count + 1)
+    return { id: count === 0 ? base : `${base}-${count + 1}`, root }
+  })
 }
 
 function floatingBallDeps() {

@@ -64,20 +64,23 @@ function userMessage(text: string): ChatMessage {
 }
 
 describe("buildSystemPrompt", () => {
-  it("always appends the plugin-vs-shell routing guidance", () => {
-    const prompt = buildSystemPrompt("BASE", { shellEnabled: false })
+  it("always appends the plugin-first routing guidance", () => {
+    const prompt = buildSystemPrompt("BASE", { executionWorkspaces: [] })
     expect(prompt).toContain("BASE")
     expect(prompt).toContain("prefer that plugin")
-    expect(prompt).not.toContain("run_shell")
+    expect(prompt).not.toContain("run_command")
   })
 
-  it("mentions run_shell only when shell is enabled", () => {
-    const prompt = buildSystemPrompt("BASE", { shellEnabled: true })
-    expect(prompt).toContain("run_shell")
+  it("enumerates execution workspaces only when some are authorized", () => {
+    const prompt = buildSystemPrompt("BASE", {
+      executionWorkspaces: [{ id: "repo", root: "/home/me/repo" }],
+    })
+    expect(prompt).toContain("run_command")
+    expect(prompt).toContain("repo → /home/me/repo")
   })
 
   it("nudges the model to lay out a plan for multi-step tasks", () => {
-    const prompt = buildSystemPrompt("BASE", { shellEnabled: false })
+    const prompt = buildSystemPrompt("BASE", { executionWorkspaces: [] })
     expect(prompt).toContain("update_plan")
   })
 })
@@ -209,7 +212,7 @@ describe("agentRuntime", () => {
     const result = await runtime.run({
       conversationId: "c1",
       messages: [userMessage("greet")],
-      approve: () => false,
+      approve: () => ({ allowed: false }),
     })
 
     expect(host.invokeTool).not.toHaveBeenCalled()

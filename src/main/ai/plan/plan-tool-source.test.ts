@@ -28,7 +28,7 @@ describe("planToolSource", () => {
   it("owns only plan-prefixed tools", () => {
     const { src } = source()
     expect(src.ownsTool(UPDATE_PLAN_FQ)).toBe(true)
-    expect(src.ownsTool("shell:core/run_shell")).toBe(false)
+    expect(src.ownsTool("execution:core/run_command")).toBe(false)
     expect(PLAN_FQ_PREFIX).toBe("plan:")
   })
 

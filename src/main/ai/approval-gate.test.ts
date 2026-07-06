@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { decideApproval } from "./approval-gate"
-import { ShellToolSource } from "./shell/shell-tool-source"
+import { ExecutionLogStore } from "./execution/execution-log-store"
+import { ExecutionToolHostSource } from "./execution/execution-tool-host"
 
 describe("decideApproval", () => {
   it("auto-allows read-only tools", () => {
@@ -23,22 +24,13 @@ describe("decideApproval", () => {
     expect(decideApproval({ readOnlyHint: true }, { alwaysAsk: true })).toBe("ask")
   })
 
-  it("asks for run_shell via requiresConfirmation annotations", () => {
-    const source = new ShellToolSource({
-      executor: {
-        run: async () => ({
-          stdout: "",
-          stderr: "",
-          exitCode: 0,
-          truncated: false,
-          timedOut: false,
-          durationMs: 0,
-        }),
-      },
-      allowedRoots: () => ["/work"],
-      defaultCwd: () => "/work",
+  it("asks for run_command via its destructive annotation", () => {
+    const source = new ExecutionToolHostSource({
+      workspaces: { listWorkspaces: () => [{ id: "work", root: "/work" }] },
+      log: new ExecutionLogStore("/tmp/does-not-matter.json"),
     })
-    const [tool] = source.listTools()
-    expect(decideApproval(tool.manifestTool.annotations)).toBe("ask")
+    const runCommand = source.listTools().find((tool) => tool.manifestTool.name === "run_command")
+    expect(runCommand).toBeDefined()
+    expect(decideApproval(runCommand!.manifestTool.annotations)).toBe("ask")
   })
 })
