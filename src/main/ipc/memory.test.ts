@@ -18,9 +18,11 @@ describe("coerceIngest", () => {
 
 describe("coerceIngestPath", () => {
   it("accepts an absolute file path", () => {
-    expect(coerceIngestPath({ source: "notes.md", filePath: "C:\\docs\\notes.md" })).toEqual({
+    // A POSIX-style leading slash is absolute on both Windows and POSIX, so this
+    // stays green in CI (Linux) as well as on Windows dev machines.
+    expect(coerceIngestPath({ source: "notes.md", filePath: "/docs/notes.md" })).toEqual({
       source: "notes.md",
-      filePath: "C:\\docs\\notes.md",
+      filePath: "/docs/notes.md",
     })
   })
 
