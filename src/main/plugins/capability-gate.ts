@@ -1,4 +1,5 @@
 import type { NormalizedCapability } from "@synapse/plugin-manifest"
+import type { ToolPrincipal } from "@synapse/plugin-sdk"
 import type { GrantIdentity, GrantStore } from "./grant-store"
 import { createHash } from "node:crypto"
 import { getCapability } from "@synapse/plugin-manifest"
@@ -28,6 +29,10 @@ export interface CapabilityRequest {
   invocationId?: string
   /** The agent run this call belongs to; copied through to the audit entry. */
   runId?: string
+  /** Who initiated the call — the finer identity behind the coarse `actor`. */
+  principal?: ToolPrincipal
+  /** The workspace this call is bound to; copied through to the audit entry. */
+  workspaceId?: string
   /** Host-computed: whether this concrete write operation can be reversed. */
   reversible?: boolean
 }
@@ -68,6 +73,8 @@ export interface CapabilityAuditEntry {
   why: string
   /** The agent run this decision belongs to; absent for out-of-run decisions. */
   runId?: string
+  principal?: ToolPrincipal
+  workspaceId?: string
 }
 
 export type BudgetDebitOutcome = "debited" | "not-in-uses" | "exhausted"
@@ -223,6 +230,8 @@ export class CapabilityGate implements CapabilityGatePort {
       grantedNow,
       why,
       ...(request.runId !== undefined ? { runId: request.runId } : {}),
+      ...(request.principal !== undefined ? { principal: request.principal } : {}),
+      ...(request.workspaceId !== undefined ? { workspaceId: request.workspaceId } : {}),
     })
   }
 }

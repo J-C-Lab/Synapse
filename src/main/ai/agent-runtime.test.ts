@@ -505,4 +505,24 @@ describe("agentRuntime", () => {
       "[Synapse truncated tool output: 48 chars omitted]"
     )
   })
+
+  it("stamps an internal-agent principal and workspaceId onto the trace", async () => {
+    const traces: RunTrace[] = []
+    const runtime = new AgentRuntime({
+      provider: fakeProvider([{ text: "hi" }]),
+      tools: new AiToolRegistry(fakeHost()),
+      recordRun: (trace) => traces.push(trace),
+    })
+
+    await runtime.run({
+      conversationId: "c1",
+      messages: [userMessage("hi")],
+      workspaceId: "ws-int",
+    })
+
+    expect(traces).toHaveLength(1)
+    expect(traces[0].origin).toBe("interactive")
+    expect(traces[0].principal).toEqual({ kind: "internal-agent" })
+    expect(traces[0].workspaceId).toBe("ws-int")
+  })
 })

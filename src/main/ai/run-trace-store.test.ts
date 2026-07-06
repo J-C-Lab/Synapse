@@ -1,3 +1,4 @@
+import type { RunTrace } from "./run-trace-store"
 import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
@@ -89,6 +90,23 @@ describe("runTraceStore", () => {
     })
     recordRun(dir, withPlan)
     expect(getRunTrace(dir, "rp")?.plan).toEqual(withPlan.plan)
+  })
+
+  it("round-trips a trace with principal, workspaceId, and mcp origin", () => {
+    const parityDir = mkdtempSync(path.join(tmpdir(), "run-trace-parity-"))
+    const trace: RunTrace = {
+      runId: "run-ext-1",
+      origin: "mcp",
+      principal: { kind: "external-mcp", clientId: "claude-desktop" },
+      workspaceId: "ws-external",
+      startedAt: 1,
+      endedAt: 2,
+      outcome: "end_turn",
+      toolCalls: [],
+    }
+    recordRun(parityDir, trace)
+    expect(getRunTrace(parityDir, "run-ext-1")).toEqual(trace)
+    rmSync(parityDir, { recursive: true, force: true })
   })
 
   it("filters listRuns by parentRunId", () => {

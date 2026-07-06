@@ -112,6 +112,8 @@ export interface AgentRunOptions {
   runId?: string
   origin?: "interactive" | "background-agent" | "subagent"
   parentRunId?: string
+  /** The workspace this run is bound to; stamped onto the trace and tool caller. */
+  workspaceId?: string
 }
 
 export interface AgentRunResult {
@@ -221,6 +223,10 @@ export class AgentRuntime {
       endedAt: Date.now(),
       outcome: args.outcome,
       toolCalls: args.toolCalls,
+      principal:
+        args.origin === "subagent" && args.options.parentRunId !== undefined
+          ? { kind: "subagent", parentRunId: args.options.parentRunId }
+          : { kind: "internal-agent" },
     }
     if (args.origin === "interactive" || args.origin === "subagent") {
       trace.conversationId = args.options.conversationId
@@ -229,6 +235,7 @@ export class AgentRuntime {
 
     const plan = this.options.getPlan?.(args.runId)
     if (plan && plan.length > 0) trace.plan = plan
+    if (args.options.workspaceId !== undefined) trace.workspaceId = args.options.workspaceId
 
     try {
       record(trace)
@@ -268,7 +275,13 @@ export class AgentRuntime {
 
     try {
       const result = await this.options.tools.invoke(call.name, call.input, {
-        caller: options.caller ?? { kind: "agent", conversationId: options.conversationId, runId },
+        caller: options.caller ?? {
+          kind: "agent",
+          conversationId: options.conversationId,
+          runId,
+          principal: { kind: "internal-agent" },
+          workspaceId: options.workspaceId,
+        },
         executionAuditDecision: outcome.executionAuditDecision,
         signal: options.signal,
       })
