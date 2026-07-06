@@ -46,7 +46,6 @@ export class SubagentRunner {
       budgetTokens: input.budgetTokens,
       recordRun: this.options.recordRun,
       defaultSystem: SUBAGENT_SYSTEM_PROMPT,
-      shellEnabled: false,
     })
 
     const result = await runtime.run({

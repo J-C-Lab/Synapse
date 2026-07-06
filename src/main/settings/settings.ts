@@ -34,9 +34,9 @@ export interface UserSettings {
   lanEnabled: boolean
   /** Which plugin package sources the desktop client should expose. */
   trustedSourcePolicy: TrustedSourcePolicy
-  /** Whether the assistant may run local shell commands (high-risk; off by default). */
+  /** Whether the assistant may use local execution tools (high-risk; off by default). */
   allowAgentShell: boolean
-  /** Absolute directories the assistant's shell may run in. Empty = host falls back to home. */
+  /** Absolute workspace directories the assistant may use. Empty = host falls back to home. */
   agentShellRoots: string[]
 }
 

@@ -83,7 +83,7 @@
     "toolResilienceFailures": "Failures to open",
     "toolResilienceRecovery": "Recovery (s)",
     "toolResilienceTimeout": "Timeout (s)",
-    "toolResilienceHint": "Circuit breaker for tool calls: a tool is short-circuited after this many consecutive failures, then retried after the recovery window. Timeout 0 disables it; shell and subagent tools are never timed out.",
+    "toolResilienceHint": "Circuit breaker for tool calls: a tool is short-circuited after this many consecutive failures, then retried after the recovery window. Timeout 0 disables it; local execution and subagent tools are never timed out.",
     "allowedTools": "Always-allowed tools",
     "allowedEmpty": "No tools are permanently allowed.",
     "revoke": "Revoke"
@@ -160,10 +160,10 @@
     "title": "Settings",
     "subtitle": "Tune appearance and feature behavior.",
     "agentShell": {
-      "title": "Allow the assistant to run local commands",
-      "description": "High-risk. The assistant can run shell commands on your machine. Every command needs your confirmation and runs only inside the allowed folders. Commands cannot be network- or path-sandboxed once they run.",
-      "rootsLabel": "Allowed folders",
-      "rootsEmpty": "Defaults to your home folder when none are set."
+      "title": "Allow local execution",
+      "description": "High-risk. The assistant can read files, apply patches, and run local commands inside authorized workspaces. Writes and commands require your confirmation, stay confined to allowed workspaces, and system-level or catastrophic commands are refused.",
+      "rootsLabel": "Allowed workspaces",
+      "rootsEmpty": "Defaults to your home workspace when none are set."
     }
   },
   "trustedSources": {

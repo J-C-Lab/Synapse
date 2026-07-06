@@ -1,4 +1,5 @@
 import type { ToolCaller } from "@synapse/plugin-sdk"
+import type { WorkspaceRoot } from "./execution/types"
 import type { PlanStep } from "./plan/plan-types"
 import type { ChatContentBlock, ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
 import type { RunTrace, RunTraceToolCall } from "./run-trace-store"
@@ -22,20 +23,32 @@ const ROUTING_GUIDANCE_BASE =
   "When a task matches an installed plugin's specialty — cloud services with brokered " +
   "credentials, governed/approved writeback, revocable or audited actions, or a specific " +
   "declared scenario — prefer that plugin, and call describe_plugin first to confirm its " +
-  "capability boundary. Plugins exist for what shell and scripts cannot safely do."
+  "capability boundary. Plugins exist for what local commands and scripts cannot safely do."
 
 const ROUTING_GUIDANCE_PLAN =
   " For a task that needs several steps or multiple approvals, call update_plan first to lay out the steps, then keep it current as you work."
 
-const ROUTING_GUIDANCE_SHELL =
-  " Use run_shell only for general, local, scriptable tasks where no suitable plugin exists; " +
-  "it always requires user confirmation."
+const ROUTING_GUIDANCE_EXECUTION_INTRO =
+  " For general, local, scriptable work where no suitable plugin exists, use the authorized-" +
+  "workspace execution tools (list_files, read_file, search_files, apply_patch, run_command). " +
+  "Every call takes a workspaceId and is confined to that workspace. Reads run freely; writes " +
+  "and commands ask for confirmation; destructive or system-level commands are refused outright. " +
+  "Authorized workspaces:"
 
-export function buildSystemPrompt(base: string, opts: { shellEnabled: boolean }): string {
+function executionGuidance(workspaces: readonly WorkspaceRoot[]): string {
+  const list = workspaces.map((ws) => `\n  - ${ws.id} → ${ws.root}`).join("")
+  return ROUTING_GUIDANCE_EXECUTION_INTRO + list
+}
+
+export function buildSystemPrompt(
+  base: string,
+  opts: { executionWorkspaces?: readonly WorkspaceRoot[] }
+): string {
+  const workspaces = opts.executionWorkspaces ?? []
   const guidance =
     ROUTING_GUIDANCE_BASE +
     ROUTING_GUIDANCE_PLAN +
-    (opts.shellEnabled ? ROUTING_GUIDANCE_SHELL : "")
+    (workspaces.length > 0 ? executionGuidance(workspaces) : "")
   return `${base}\n\n${guidance}`
 }
 
@@ -47,7 +60,8 @@ export interface AgentRuntimeOptions {
   maxTokens?: number
   budgetTokens?: number
   defaultSystem?: string
-  shellEnabled?: boolean
+  /** Authorized execution workspaces, enumerated into the system prompt. */
+  executionWorkspaces?: () => readonly WorkspaceRoot[]
   recordRun?: (trace: RunTrace) => void
   getPlan?: (runId: string) => PlanStep[] | undefined
   compress?: (
@@ -61,6 +75,17 @@ export interface ApprovalRequest {
   input: unknown
 }
 
+/**
+ * Result of the approval hook. `allowed` gates the call; `executionAuditDecision`
+ * tells execution-namespaced tools whether the call was auto-allowed by policy
+ * (`allow`) or explicitly confirmed by the user on an ask (`approved`), so the
+ * audit log can record provenance.
+ */
+export interface ToolApprovalOutcome {
+  allowed: boolean
+  executionAuditDecision?: "allow" | "approved"
+}
+
 export type AgentEvent =
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; isError: boolean }
@@ -72,7 +97,7 @@ export interface AgentRunOptions {
   signal?: AbortSignal
   onText?: (delta: string) => void
   onEvent?: (event: AgentEvent) => void
-  approve?: (request: ApprovalRequest) => boolean | Promise<boolean>
+  approve?: (request: ApprovalRequest) => ToolApprovalOutcome | Promise<ToolApprovalOutcome>
   caller?: ToolCaller
   runId?: string
   origin?: "interactive" | "background-agent" | "subagent"
@@ -99,7 +124,9 @@ export class AgentRuntime {
     const maxTokens = this.options.maxTokens ?? 4096
     const budgetTokens = this.options.budgetTokens
     const base = options.system ?? this.options.defaultSystem ?? DEFAULT_SYSTEM_PROMPT
-    const system = buildSystemPrompt(base, { shellEnabled: this.options.shellEnabled ?? false })
+    const system = buildSystemPrompt(base, {
+      executionWorkspaces: this.options.executionWorkspaces?.() ?? [],
+    })
     let usage = emptyUsage()
 
     const finish = (stopReason: AgentRunResult["stopReason"]): AgentRunResult => {
@@ -214,10 +241,10 @@ export class AgentRuntime {
       })
     }
 
-    const approved = options.approve
+    const outcome: ToolApprovalOutcome = options.approve
       ? await options.approve({ toolName: call.name, input: call.input })
-      : true
-    if (!approved) {
+      : { allowed: true }
+    if (!outcome.allowed) {
       options.onEvent?.({ type: "tool_result", id: call.id, isError: true })
       record(false, "denied")
       return toolResult(call.id, "Tool call denied.", true)
@@ -226,6 +253,7 @@ export class AgentRuntime {
     try {
       const result = await this.options.tools.invoke(call.name, call.input, {
         caller: options.caller ?? { kind: "agent", conversationId: options.conversationId, runId },
+        executionAuditDecision: outcome.executionAuditDecision,
         signal: options.signal,
       })
       const isError = result.isError ?? false

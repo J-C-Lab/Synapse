@@ -88,7 +88,7 @@ describe("normalizeSettings", () => {
     expect(normalizeSettings({ floatingBallFeatures: ["floatingBall"] })).toEqual(defaultSettings)
   })
 
-  it("defaults agent shell to disabled with no roots", () => {
+  it("defaults local execution to disabled with no roots", () => {
     const s = normalizeSettings({})
     expect(s.allowAgentShell).toBe(false)
     expect(s.agentShellRoots).toEqual([])

@@ -1,5 +1,6 @@
-import type { AgentEvent } from "./agent-runtime"
+import type { AgentEvent, ToolApprovalOutcome } from "./agent-runtime"
 import type { AiSettingsStore, ToolResilienceSettings } from "./ai-settings-store"
+import type { ApprovalDecision } from "./approval-gate"
 import type { ApprovalStore } from "./approval-store"
 import type {
   ConversationStore,
@@ -7,6 +8,7 @@ import type {
   StoredConversation,
 } from "./conversation-store"
 import type { AiCredentialStore } from "./credential-store"
+import type { WorkspaceRoot } from "./execution/types"
 import type { McpClientManager, McpServerStatus } from "./mcp-client-manager"
 import type { McpServerConfig, McpServerConfigStore } from "./mcp-server-config-store"
 import type { PlanStep } from "./plan/plan-types"
@@ -49,11 +51,20 @@ export type AiChatEvent =
   | { type: "error"; conversationId: string; message: string }
   | { type: "plan"; conversationId: string; runId: string; steps: PlanStep[] }
 
+export interface ToolApprovalContext {
+  conversationId: string
+  safeName: string
+  fqName: string
+  input: unknown
+}
+
 export interface AgentServiceOptions {
   credentials: AiCredentialStore
   tools: AiToolRegistry
   conversations: ConversationStore
   sendEvent: (event: AiChatEvent) => void
+  /** Policy hook that can hard-deny or auto-allow before the annotation gate. */
+  approvalResolver?: (context: ToolApprovalContext) => Promise<ApprovalDecision | undefined>
   /** BYOK provider catalog. Defaults to {@link defaultProviderCatalog}. */
   providers?: ProviderDescriptor[]
   /** Active provider + per-provider model. Omitted → in-memory defaults. */
@@ -68,8 +79,8 @@ export interface AgentServiceOptions {
     configs: McpServerConfigStore
     manager: McpClientManager
   }
-  /** Whether run_shell is available (drives routing guidance). */
-  getShellEnabled?: () => boolean
+  /** Authorized execution workspaces (drives routing guidance + tool availability). */
+  getExecutionWorkspaces?: () => readonly WorkspaceRoot[]
   /** Sink for per-run summary traces. Omitted in tests that don't assert tracing. */
   recordRun?: (trace: RunTrace) => void
   /** The in-run plan store, so chat() can clear it per turn and expose getPlan. */
@@ -92,9 +103,10 @@ export class AgentMissingKeyError extends Error {
 }
 
 interface PendingApproval {
-  resolve: (allow: boolean) => void
+  resolve: (outcome: ToolApprovalOutcome) => void
   fqName: string
   conversationId: string
+  input: unknown
 }
 
 export interface AiProviderStatus {
@@ -342,7 +354,7 @@ export class AgentService {
       tools: this.options.tools,
       model,
       budgetTokens: resolvedBudget,
-      shellEnabled: this.options.getShellEnabled?.() ?? false,
+      executionWorkspaces: this.options.getExecutionWorkspaces,
       recordRun: this.options.recordRun,
       getPlan: (id) => this.getPlan(id),
       compress: compressor ? compressor.compress.bind(compressor) : undefined,
@@ -406,10 +418,23 @@ export class AgentService {
   }
 
   /** Resolve a pending tool approval requested via an `approval_request` event. */
-  resolveApproval(approvalId: string, allow: boolean, remember: RememberScope = "once"): void {
+  async resolveApproval(
+    approvalId: string,
+    allow: boolean,
+    remember: RememberScope = "once"
+  ): Promise<void> {
     const pending = this.pendingApprovals.get(approvalId)
     if (!pending) return
     this.pendingApprovals.delete(approvalId)
+    // A user-denied execution tool still gets an audit entry, via the resolver.
+    if (!allow && pending.fqName.startsWith("execution:")) {
+      await this.options.approvalResolver?.({
+        conversationId: pending.conversationId,
+        safeName: pending.fqName,
+        fqName: pending.fqName,
+        input: { userDenied: true, originalInput: pending.input },
+      })
+    }
     if (allow && remember === "always") {
       this.permanentAllow.add(pending.fqName)
       void this.options.approvals
@@ -419,7 +444,9 @@ export class AgentService {
     if (allow && remember === "conversation") {
       this.allowSet(pending.conversationId).add(pending.fqName)
     }
-    pending.resolve(allow)
+    pending.resolve(
+      allow ? { allowed: true, executionAuditDecision: "approved" } : { allowed: false }
+    )
   }
 
   /** Tools the user has permanently allowed (persisted "always" decisions). */
@@ -439,17 +466,33 @@ export class AgentService {
     conversationId: string,
     safeName: string,
     input: unknown
-  ): Promise<boolean> {
+  ): Promise<ToolApprovalOutcome> {
     await this.ensurePermanentAllowLoaded()
     const descriptor = this.options.tools.describe(safeName)
     const fqName = descriptor?.fqName ?? safeName
 
-    if (this.permanentAllow.has(fqName) || this.allowSet(conversationId).has(fqName)) return true
-    if (decideApproval(descriptor?.manifestTool.annotations) === "allow") return true
+    if (this.permanentAllow.has(fqName) || this.allowSet(conversationId).has(fqName)) {
+      return { allowed: true, executionAuditDecision: "allow" }
+    }
+
+    // Deterministic policy runs before the annotation gate: it can hard-deny a
+    // command (never prompting) or auto-allow a recognized safe one.
+    const policyDecision = await this.options.approvalResolver?.({
+      conversationId,
+      safeName,
+      fqName,
+      input,
+    })
+    if (policyDecision === "deny") return { allowed: false }
+    if (policyDecision === "allow") return { allowed: true, executionAuditDecision: "allow" }
+
+    if (decideApproval(descriptor?.manifestTool.annotations) === "allow") {
+      return { allowed: true, executionAuditDecision: "allow" }
+    }
 
     const approvalId = `apr_${++this.approvalCounter}`
-    return new Promise<boolean>((resolve) => {
-      this.pendingApprovals.set(approvalId, { resolve, fqName, conversationId })
+    return new Promise<ToolApprovalOutcome>((resolve) => {
+      this.pendingApprovals.set(approvalId, { resolve, fqName, conversationId, input })
       this.options.sendEvent({
         type: "approval_request",
         conversationId,
@@ -507,7 +550,7 @@ export class AgentService {
     for (const [id, pending] of this.pendingApprovals) {
       if (pending.conversationId === conversationId) {
         this.pendingApprovals.delete(id)
-        pending.resolve(false)
+        pending.resolve({ allowed: false })
       }
     }
   }

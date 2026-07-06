@@ -96,7 +96,7 @@ export class BackgroundAgentRunner {
           invocationId: input.invocationId,
           runId: start.runId,
         },
-        approve: () => this.ledger.tryDebitToolCall(start.runId, input.agent),
+        approve: () => ({ allowed: this.ledger.tryDebitToolCall(start.runId, input.agent) }),
       })
       return tokenBudgetExceeded ? { ...result, stopReason: "budget_exceeded" } : result
     } finally {

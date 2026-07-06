@@ -4,7 +4,7 @@ import type { ToolAnnotations } from "@synapse/plugin-manifest"
 // Pure and unit-testable; the AgentService layers remembered "allow" decisions
 // on top before consulting this.
 
-export type ApprovalDecision = "allow" | "ask"
+export type ApprovalDecision = "allow" | "ask" | "deny"
 
 export interface ApprovalSettings {
   /** When true, even read-only tools require confirmation. */
