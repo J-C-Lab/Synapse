@@ -10,7 +10,16 @@ import { cn } from "@/lib/utils"
 // which the main process routes to the OS browser via window-security's
 // setWindowOpenHandler. Prose styling comes from @tailwindcss/typography.
 
-export function Markdown({ children, className }: { children: string; className?: string }) {
+export function Markdown({
+  children,
+  className,
+  streaming,
+}: {
+  children: string
+  className?: string
+  /** Assistant reply still streaming — defer expensive code highlighting. */
+  streaming?: boolean
+}) {
   return (
     <div
       className={cn(
@@ -33,7 +42,8 @@ export function Markdown({ children, className }: { children: string; className?
           code: ({ node: _node, className, children, ...props }) => {
             const text = String(children ?? "").replace(/\n$/, "")
             const isBlock = extractLanguage(className) !== "" || text.includes("\n")
-            if (isBlock) return <CodeBlock className={className} code={text} />
+            if (isBlock)
+              return <CodeBlock className={className} code={text} deferHighlight={streaming} />
             return (
               <code className={className} {...props}>
                 {children}

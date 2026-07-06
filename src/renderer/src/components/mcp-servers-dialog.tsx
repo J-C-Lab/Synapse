@@ -2,6 +2,16 @@ import type { McpServerConfig, McpServerStatus, ToolHealth } from "@/lib/electro
 import { Loader2, Plus, Server, Trash2 } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -68,6 +78,7 @@ export function McpServersDialog({
   const [health, setHealth] = useState<ToolHealth[]>([])
   const [draft, setDraft] = useState<DraftServer | null>(null)
   const [saving, setSaving] = useState(false)
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
 
   async function refresh() {
     if (!isElectron()) return
@@ -128,61 +139,93 @@ export function McpServersDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[80vh] gap-4 overflow-y-auto sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Server className="size-4" />
-            {t("mcp.title")}
-          </DialogTitle>
-          <DialogDescription>{t("mcp.subtitle")}</DialogDescription>
-        </DialogHeader>
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="max-h-[80vh] gap-4 overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Server className="size-4" />
+              {t("mcp.title")}
+            </DialogTitle>
+            <DialogDescription>{t("mcp.subtitle")}</DialogDescription>
+          </DialogHeader>
 
-        <div className="space-y-2">
-          {servers.length === 0 && !draft && (
-            <p className="py-4 text-center text-sm text-muted-foreground">{t("mcp.empty")}</p>
-          )}
-          {servers.map((server) => (
-            <ServerRow
-              key={server.id}
-              server={server}
-              status={statusOf(server.id)}
-              health={healthOf(server.id)}
-              onEdit={() =>
-                setDraft({
-                  id: server.id,
-                  name: server.name ?? "",
-                  transport: server.transport === "http" ? "http" : "stdio",
-                  command: server.command ?? "",
-                  argsText: (server.args ?? []).join("\n"),
-                  envText: envToText(server.env),
-                  url: server.url ?? "",
-                  headersText: envToText(server.headers),
-                  enabled: server.enabled !== false,
-                })
-              }
-              onDelete={() => void remove(server.id)}
+          <div className="space-y-2">
+            {servers.length === 0 && !draft && (
+              <p className="py-4 text-center text-sm text-muted-foreground">{t("mcp.empty")}</p>
+            )}
+            {servers.map((server) => (
+              <ServerRow
+                key={server.id}
+                server={server}
+                status={statusOf(server.id)}
+                health={healthOf(server.id)}
+                onEdit={() =>
+                  setDraft({
+                    id: server.id,
+                    name: server.name ?? "",
+                    transport: server.transport === "http" ? "http" : "stdio",
+                    command: server.command ?? "",
+                    argsText: (server.args ?? []).join("\n"),
+                    envText: envToText(server.env),
+                    url: server.url ?? "",
+                    headersText: envToText(server.headers),
+                    enabled: server.enabled !== false,
+                  })
+                }
+                onDelete={() => setPendingDeleteId(server.id)}
+              />
+            ))}
+          </div>
+
+          {draft ? (
+            <ServerForm
+              draft={draft}
+              saving={saving}
+              isNew={!servers.some((server) => server.id === draft.id)}
+              onChange={setDraft}
+              onCancel={() => setDraft(null)}
+              onSave={() => void save()}
             />
-          ))}
-        </div>
+          ) : (
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => setDraft({ ...emptyDraft })}
+            >
+              <Plus className="size-4" />
+              {t("mcp.add")}
+            </Button>
+          )}
+        </DialogContent>
+      </Dialog>
 
-        {draft ? (
-          <ServerForm
-            draft={draft}
-            saving={saving}
-            isNew={!servers.some((server) => server.id === draft.id)}
-            onChange={setDraft}
-            onCancel={() => setDraft(null)}
-            onSave={() => void save()}
-          />
-        ) : (
-          <Button variant="outline" className="w-full" onClick={() => setDraft({ ...emptyDraft })}>
-            <Plus className="size-4" />
-            {t("mcp.add")}
-          </Button>
-        )}
-      </DialogContent>
-    </Dialog>
+      <AlertDialog
+        open={pendingDeleteId !== null}
+        onOpenChange={(nextOpen) => !nextOpen && setPendingDeleteId(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("mcp.deleteConfirmTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("mcp.deleteConfirmBody", { id: pendingDeleteId ?? "" })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("mcp.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const id = pendingDeleteId
+                setPendingDeleteId(null)
+                if (id) void remove(id)
+              }}
+            >
+              {t("mcp.delete")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   )
 }
 

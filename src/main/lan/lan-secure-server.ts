@@ -53,6 +53,7 @@ export class LanSecureServer extends EventEmitter {
   private readonly pairingPeerFingerprints = new Map<string, string>()
   private readonly pairingPeerDevices = new Map<string, DiscoveredLanDevice>()
   private server: Server | null = null
+  private transfersEmitTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(private readonly options: LanSecureServerOptions) {
     super()
@@ -203,7 +204,7 @@ export class LanSecureServer extends EventEmitter {
       device.name,
       sourcePath
     )
-    this.emitTransfersChanged()
+    this.emitTransfersChanged(true)
     return this.upload(device, transfer.id)
   }
 
@@ -217,13 +218,13 @@ export class LanSecureServer extends EventEmitter {
 
   async acceptTransfer(id: string, destinationPath: string): Promise<LanTransfer> {
     const transfer = await this.options.incomingTransfers.accept(id, destinationPath)
-    this.emitTransfersChanged()
+    this.emitTransfersChanged(true)
     return transfer
   }
 
   async rejectTransfer(id: string): Promise<LanTransfer> {
     const transfer = await this.options.incomingTransfers.reject(id)
-    this.emitTransfersChanged()
+    this.emitTransfersChanged(true)
     return transfer
   }
 
@@ -238,7 +239,7 @@ export class LanSecureServer extends EventEmitter {
       assertRemovableTransferHistory(outgoing)
       await this.options.outgoingTransfers.remove(id)
     }
-    this.emitTransfersChanged()
+    this.emitTransfersChanged(true)
     return this.listTransfers()
   }
 
@@ -263,7 +264,7 @@ export class LanSecureServer extends EventEmitter {
         { expectedFingerprint: trusted.certificateFingerprint }
       )
       await this.options.outgoingTransfers.update(id, { state: "transferring", error: undefined })
-      this.emitTransfersChanged()
+      this.emitTransfersChanged(true)
       let completedChunks = metadata.totalChunks - status.body.missingChunks.length
       let transferredBytes = Math.min(metadata.size, completedChunks * metadata.chunkSize)
       for (const index of status.body.missingChunks) {
@@ -293,14 +294,14 @@ export class LanSecureServer extends EventEmitter {
         completedChunks: metadata.totalChunks,
         transferredBytes: metadata.size,
       })
-      this.emitTransfersChanged()
+      this.emitTransfersChanged(true)
       return transfer
     } catch (err) {
       const transfer = await this.options.outgoingTransfers.update(id, {
         state: "paused",
         error: errorMessage(err),
       })
-      this.emitTransfersChanged()
+      this.emitTransfersChanged(true)
       return transfer
     }
   }
@@ -389,7 +390,7 @@ export class LanSecureServer extends EventEmitter {
       const transfer = await readJson<IncomingTransferRequest>(req)
       if (transfer.deviceId !== trusted.deviceId) throw new Error("Sender identity mismatch.")
       const status = await this.options.incomingTransfers.create(transfer)
-      this.emitTransfersChanged()
+      this.emitTransfersChanged(true)
       sendJson(res, 200, status)
       return
     }
@@ -414,7 +415,7 @@ export class LanSecureServer extends EventEmitter {
       this.assertTransferOwner(completeMatch[1], trusted.deviceId)
       await readJson(req)
       const transfer = await this.options.incomingTransfers.complete(completeMatch[1])
-      this.emitTransfersChanged()
+      this.emitTransfersChanged(true)
       sendJson(res, 200, transfer)
       return
     }
@@ -593,8 +594,20 @@ export class LanSecureServer extends EventEmitter {
     this.emit("pairings-changed", this.listPairings())
   }
 
-  private emitTransfersChanged(): void {
-    this.emit("transfers-changed", this.listTransfers())
+  private emitTransfersChanged(immediate = false): void {
+    if (immediate) {
+      if (this.transfersEmitTimer) {
+        clearTimeout(this.transfersEmitTimer)
+        this.transfersEmitTimer = null
+      }
+      this.emit("transfers-changed", this.listTransfers())
+      return
+    }
+    if (this.transfersEmitTimer) return
+    this.transfersEmitTimer = setTimeout(() => {
+      this.transfersEmitTimer = null
+      this.emit("transfers-changed", this.listTransfers())
+    }, 100)
   }
 
   private emitTrustedDevicesChanged(): void {

@@ -6,9 +6,11 @@ import * as electron from "@/lib/electron"
 
 vi.mock("@/lib/electron", () => ({
   isElectron: () => true,
+  droppedFilePath: vi.fn(() => "/tmp/guide.md"),
   listMemorySources: vi.fn(),
   listMemories: vi.fn(),
   ingestMemoryDocument: vi.fn().mockResolvedValue({ source: "x", chunks: 3 }),
+  ingestMemoryDocumentFromPath: vi.fn().mockResolvedValue({ source: "x", chunks: 3 }),
   deleteMemory: vi.fn().mockResolvedValue(true),
   deleteMemorySource: vi.fn().mockResolvedValue(2),
 }))
@@ -39,6 +41,8 @@ describe("memoryDialog", () => {
 
     const del = screen.getByRole("button", { name: /memory.delete/ })
     await userEvent.click(del)
+    const confirm = await screen.findByRole("button", { name: /memory.deleteConfirm/ })
+    await userEvent.click(confirm)
     expect(electron.deleteMemorySource).toHaveBeenCalledWith("guide.md")
     await waitFor(() => expect(listMemorySources).toHaveBeenCalledTimes(2))
   })

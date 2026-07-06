@@ -44,7 +44,11 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/h
 import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { useCapabilityProfile, useCatalogCapabilityProfile } from "@/hooks/use-capability-profile"
+import {
+  invalidateCapabilityProfileCache,
+  useCapabilityProfile,
+  useCatalogCapabilityProfile,
+} from "@/hooks/use-capability-profile"
 import {
   ElectronIpcError,
   getMarketplaceAccount,
@@ -95,9 +99,8 @@ export function MarketplacePage() {
       setLoading(true)
       setError(null)
       try {
-        const [result, plugins] = await Promise.all([searchMarketplace(search), listPlugins()])
+        const result = await searchMarketplace(search)
         setEntries(result.items)
-        setInstalled(installedPluginMap(plugins))
       } catch (err) {
         setError(errorMessage(err))
       } finally {
@@ -106,6 +109,14 @@ export function MarketplacePage() {
     },
     [electronReady]
   )
+
+  // Installed plugins are maintained by the registry subscription — not re-fetched on every search.
+  useEffect(() => {
+    if (!electronReady) return
+    void listPlugins()
+      .then((plugins) => setInstalled(installedPluginMap(plugins)))
+      .catch(() => undefined)
+  }, [electronReady])
 
   // Debounced search as the query changes.
   useEffect(() => {
@@ -116,7 +127,10 @@ export function MarketplacePage() {
 
   useEffect(() => {
     if (!electronReady) return
-    return onPluginRegistryChanged((plugins) => setInstalled(installedPluginMap(plugins)))
+    return onPluginRegistryChanged((plugins) => {
+      invalidateCapabilityProfileCache()
+      setInstalled(installedPluginMap(plugins))
+    })
   }, [electronReady])
 
   useEffect(() => {
@@ -368,6 +382,7 @@ export function MarketplacePage() {
         canInstall={trustedSourcePolicy !== "local-syn"}
         onOpenChange={(open) => !open && setSelectedId(null)}
         onInstalled={(plugin) => {
+          invalidateCapabilityProfileCache(plugin.pluginId)
           setInstalled((current) => new Map(current).set(plugin.pluginId, plugin))
           setSelectedId(null)
         }}

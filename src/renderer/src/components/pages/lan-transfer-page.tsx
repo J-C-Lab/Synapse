@@ -15,7 +15,7 @@ import {
   Wifi,
   X,
 } from "lucide-react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -291,6 +291,7 @@ export function LanTransferPage() {
         ) : (
           <div className="flex flex-col gap-3">
             {transfers.map((transfer) => (
+              // eslint-disable-next-line ts/no-use-before-define
               <TransferCard
                 key={transfer.id}
                 transfer={transfer}
@@ -669,82 +670,84 @@ function OutgoingPairingDialog({
   )
 }
 
-function TransferCard({
-  transfer,
-  disabled,
-  onAccept,
-  onReject,
-  onRemove,
-  onResume,
-}: {
-  transfer: LanTransfer
-  disabled: boolean
-  onAccept: () => void
-  onReject: () => void
-  onRemove: () => void
-  onResume: () => void
-}) {
-  const { t } = useTranslation()
-  const progress = transfer.size === 0 ? 100 : (transfer.transferredBytes / transfer.size) * 100
-  return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <Card>
-          <CardHeader>
-            <CardTitle>{transfer.fileName}</CardTitle>
-            <CardDescription>
-              {t(`lan.transfers.${transfer.direction}`, { name: transfer.deviceName })}
-            </CardDescription>
-            <CardAction>
-              <Badge variant="outline">{t(`lan.transfers.state.${transfer.state}`)}</Badge>
-            </CardAction>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            <Progress value={progress} />
-            <p className="text-xs text-muted-foreground">
-              {t("lan.transfers.progress", {
-                current: formatBytes(transfer.transferredBytes),
-                total: formatBytes(transfer.size),
-              })}
-            </p>
-            {transfer.error && <p className="text-xs text-destructive">{transfer.error}</p>}
-            <div className="flex gap-2">
-              {transfer.direction === "outgoing" && transfer.state === "paused" && (
-                <Button size="sm" disabled={disabled} onClick={onResume}>
-                  <RotateCcw className="size-4" aria-hidden />
-                  {t("lan.actions.resume")}
-                </Button>
-              )}
-              {transfer.direction === "incoming" && transfer.state === "awaiting-confirmation" && (
-                <>
-                  <Button size="sm" disabled={disabled} onClick={onAccept}>
-                    <Check className="size-4" aria-hidden />
-                    {t("lan.actions.accept")}
+const TransferCard = memo(
+  ({
+    transfer,
+    disabled,
+    onAccept,
+    onReject,
+    onRemove,
+    onResume,
+  }: {
+    transfer: LanTransfer
+    disabled: boolean
+    onAccept: () => void
+    onReject: () => void
+    onRemove: () => void
+    onResume: () => void
+  }) => {
+    const { t } = useTranslation()
+    const progress = transfer.size === 0 ? 100 : (transfer.transferredBytes / transfer.size) * 100
+    return (
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <Card>
+            <CardHeader>
+              <CardTitle>{transfer.fileName}</CardTitle>
+              <CardDescription>
+                {t(`lan.transfers.${transfer.direction}`, { name: transfer.deviceName })}
+              </CardDescription>
+              <CardAction>
+                <Badge variant="outline">{t(`lan.transfers.state.${transfer.state}`)}</Badge>
+              </CardAction>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              <Progress value={progress} />
+              <p className="text-xs text-muted-foreground">
+                {t("lan.transfers.progress", {
+                  current: formatBytes(transfer.transferredBytes),
+                  total: formatBytes(transfer.size),
+                })}
+              </p>
+              {transfer.error && <p className="text-xs text-destructive">{transfer.error}</p>}
+              <div className="flex gap-2">
+                {transfer.direction === "outgoing" && transfer.state === "paused" && (
+                  <Button size="sm" disabled={disabled} onClick={onResume}>
+                    <RotateCcw className="size-4" aria-hidden />
+                    {t("lan.actions.resume")}
                   </Button>
-                  <Button size="sm" variant="outline" disabled={disabled} onClick={onReject}>
-                    <X className="size-4" aria-hidden />
-                    {t("lan.actions.reject")}
-                  </Button>
-                </>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem
-          variant="destructive"
-          disabled={disabled || !isFinishedTransfer(transfer)}
-          onSelect={onRemove}
-        >
-          <Trash2 className="size-4" aria-hidden />
-          {t("lan.actions.deleteHistory")}
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
-  )
-}
-
+                )}
+                {transfer.direction === "incoming" &&
+                  transfer.state === "awaiting-confirmation" && (
+                    <>
+                      <Button size="sm" disabled={disabled} onClick={onAccept}>
+                        <Check className="size-4" aria-hidden />
+                        {t("lan.actions.accept")}
+                      </Button>
+                      <Button size="sm" variant="outline" disabled={disabled} onClick={onReject}>
+                        <X className="size-4" aria-hidden />
+                        {t("lan.actions.reject")}
+                      </Button>
+                    </>
+                  )}
+              </div>
+            </CardContent>
+          </Card>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem
+            variant="destructive"
+            disabled={disabled || !isFinishedTransfer(transfer)}
+            onSelect={onRemove}
+          >
+            <Trash2 className="size-4" aria-hidden />
+            {t("lan.actions.deleteHistory")}
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+    )
+  }
+)
 function isFinishedTransfer(transfer: LanTransfer): boolean {
   return (
     transfer.state === "completed" ||

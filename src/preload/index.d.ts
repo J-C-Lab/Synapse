@@ -605,6 +605,14 @@ declare global {
       onMarketplaceLoginPrompt: (
         handler: (prompt: { verificationUri: string; userCode: string; expiresAt: string }) => void
       ) => () => void
+      onCredentialConnectPrompt: (
+        handler: (prompt: {
+          pluginId: string
+          credentialId: string
+          provider: "github"
+          authorizationUrl: string
+        }) => void
+      ) => () => void
       onLauncherFocus: (handler: () => void) => () => void
       onFloatingBallMenuState: (handler: (expanded: boolean) => void) => () => void
       onFloatingBallFeatures: (
@@ -661,6 +669,10 @@ declare global {
       ingestMemoryDocument: (input: {
         source: string
         text: string
+      }) => Promise<SynapseMemoryIngestResult>
+      ingestMemoryDocumentFromPath: (input: {
+        source: string
+        filePath: string
       }) => Promise<SynapseMemoryIngestResult>
       deleteMemory: (id: string) => Promise<boolean>
       deleteMemorySource: (source: string) => Promise<number>

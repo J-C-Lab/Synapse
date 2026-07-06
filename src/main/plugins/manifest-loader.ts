@@ -7,6 +7,7 @@ import {
   parseManifest,
   validateCredentialDeclarations,
 } from "@synapse/plugin-manifest"
+import { applyBuiltinManifestPatches } from "./builtin-manifest-patches"
 import { PLUGIN_HOST_VERSION } from "./types"
 
 // The manifest schema and engine-compatibility logic live in the shared
@@ -39,7 +40,7 @@ export function parsePluginManifest(
   raw: unknown,
   options: ParseManifestOptions = {}
 ): PluginManifest {
-  const manifest = parseManifest(raw)
+  const manifest = parseManifest(applyBuiltinManifestPatches(raw))
 
   const hostVersion = options.hostVersion ?? PLUGIN_HOST_VERSION
   if (!isEngineCompatible(manifest.engines.synapse, hostVersion)) {

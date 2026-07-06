@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   listPluginCredentials: vi.fn().mockResolvedValue([]),
   connectPluginCredential: vi.fn(),
   disconnectPluginCredential: vi.fn(),
+  onCredentialConnectPrompt: vi.fn(() => () => undefined),
   listPlugins: vi.fn(),
   onPluginRegistryChanged: vi.fn(() => () => undefined),
   reloadPlugin: vi.fn(),

@@ -39,7 +39,8 @@ describe("loadPluginManifest bundled plugins", () => {
     expect(manifest.id).toBe("com.synapse.github-inbox")
     expect(manifest.contributes.credentials?.[0]).toMatchObject({
       id: "github",
-      type: "static",
+      type: "oauth2-pkce",
+      scopes: ["notifications", "read:user", "repo"],
     })
     expect(manifest.contributes.tools?.map((tool) => tool.name)).toEqual([
       "getInboxSnapshot",

@@ -137,6 +137,11 @@ const electronAPI = {
     ipcRenderer.on("market:login-prompt", listener)
     return () => ipcRenderer.removeListener("market:login-prompt", listener)
   },
+  onCredentialConnectPrompt: (handler: (prompt: unknown) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
+    ipcRenderer.on("credentials:connect-prompt", listener)
+    return () => ipcRenderer.removeListener("credentials:connect-prompt", listener)
+  },
 
   // ---- AI assistant ----
   getAiStatus: () => ipcRenderer.invoke("ai:status"),
@@ -170,6 +175,8 @@ const electronAPI = {
   listMemorySources: () => ipcRenderer.invoke("ai:memory:sources"),
   ingestMemoryDocument: (input: { source: string; text: string }) =>
     ipcRenderer.invoke("ai:memory:ingest", input),
+  ingestMemoryDocumentFromPath: (input: { source: string; filePath: string }) =>
+    ipcRenderer.invoke("ai:memory:ingest-path", input),
   deleteMemory: (id: string) => ipcRenderer.invoke("ai:memory:delete", id),
   deleteMemorySource: (source: string) => ipcRenderer.invoke("ai:memory:delete-source", source),
   onAiChatEvent: (handler: (event: unknown) => void): (() => void) => {

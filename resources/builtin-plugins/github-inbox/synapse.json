@@ -26,8 +26,12 @@
     "credentials": [
       {
         "id": "github",
-        "type": "static",
-        "label": "GitHub token",
+        "type": "oauth2-pkce",
+        "label": { "en": "GitHub", "zh-CN": "GitHub" },
+        "clientId": "synapse-github-inbox",
+        "authorizationEndpoint": "https://github.com/login/oauth/authorize",
+        "tokenEndpoint": "https://github.com/login/oauth/access_token",
+        "scopes": ["notifications", "read:user", "repo"],
         "inject": {
           "scheme": "bearer"
         }

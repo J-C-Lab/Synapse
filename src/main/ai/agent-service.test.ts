@@ -50,6 +50,30 @@ function fakeProvider(turns: ScriptedTurn[]): ChatProvider {
   }
 }
 
+function streamingProvider(turns: Array<ScriptedTurn & { deltas?: string[] }>): ChatProvider {
+  let index = 0
+  return {
+    id: "streaming-fake",
+    async *stream() {
+      const turn = turns[index++] ?? { text: "done" }
+      const content: ChatContentBlock[] = []
+      for (const delta of turn.deltas ?? []) {
+        yield { type: "text" as const, text: delta }
+      }
+      if (turn.text) content.push({ type: "text", text: turn.text })
+      for (const call of turn.toolUses ?? []) {
+        content.push({ type: "tool_use", id: call.id, name: call.name, input: call.input })
+      }
+      yield {
+        type: "message",
+        message: { role: "assistant", content },
+        usage: { ...emptyUsage(), ...turn.usage },
+        stopReason: turn.toolUses?.length ? "tool_use" : "end_turn",
+      }
+    },
+  }
+}
+
 /** Minimal AiSettingsStore stub with a mutable in-memory state. */
 function settingsStub(initial: Partial<{ budgetTokens: number }> = {}) {
   const state = { activeProvider: "anthropic", models: {}, budgetTokens: 0, ...initial }
@@ -405,6 +429,45 @@ describe("agentService", () => {
     expect(recorded).toHaveLength(1)
     expect(recorded[0].conversationId).toBe("c1")
     expect(recorded[0].origin).toBe("interactive")
+  })
+
+  it("coalesces provider text deltas before sending done", async () => {
+    const { service: svc, events } = service({
+      host: fakeHost({ readOnlyHint: true }),
+      provider: streamingProvider([{ deltas: ["hel", "lo"], text: "hello" }]),
+    })
+
+    await svc.chat("c1", "say hi")
+
+    expect(events).toMatchObject([
+      { type: "text", delta: "hello" },
+      { type: "done", stopReason: "end_turn" },
+    ])
+  })
+
+  it("flushes batched text before tool events", async () => {
+    const { service: svc, events } = service({
+      host: fakeHost({ readOnlyHint: true }),
+      provider: streamingProvider([
+        {
+          deltas: ["I will ", "check."],
+          toolUses: [{ id: "t1", name: "com_x_demo_act", input: {} }],
+        },
+        { deltas: ["Done."], text: "Done." },
+      ]),
+    })
+
+    await svc.chat("c1", "go")
+
+    expect(events.map((event) => event.type)).toEqual([
+      "text",
+      "tool_call",
+      "tool_result",
+      "text",
+      "done",
+    ])
+    expect(events[0]).toMatchObject({ type: "text", delta: "I will check." })
+    expect(events[3]).toMatchObject({ type: "text", delta: "Done." })
   })
 
   it("exposes tool health from the injected provider", () => {
