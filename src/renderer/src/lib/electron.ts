@@ -491,6 +491,8 @@ export type AiTokenUsage = SynapseAiTokenUsage
 export type AiRememberScope = SynapseAiRememberScope
 export type McpServerConfig = SynapseMcpServerConfig
 export type McpServerStatus = SynapseMcpServerStatus
+export type ToolHealth = SynapseToolHealth
+export type ToolResilience = SynapseToolResilience
 export type UpdateState = SynapseUpdateState
 export type UpdateStatus = SynapseUpdateStatus
 export type MemoryEntry = SynapseMemoryEntry
@@ -528,8 +530,16 @@ export async function setAiContextCompression(value: {
   await api().setAiContextCompression(value)
 }
 
+export async function setAiToolResilience(value: ToolResilience): Promise<void> {
+  await api().setAiToolResilience(value)
+}
+
 export async function listAiTools(): Promise<AiTool[]> {
   return api().listAiTools()
+}
+
+export async function getAiToolHealth(): Promise<ToolHealth[]> {
+  return api().getAiToolHealth()
 }
 
 export async function listAiConversations(): Promise<AiConversationSummary[]> {

@@ -5,11 +5,28 @@ import { readJsonFile, writeJsonFile } from "../lan/atomic-json-store"
 // secrets (keys live in the encrypted AiCredentialStore). Persisted so the
 // user's BYOK choice survives restarts.
 
+/** Per-tool circuit-breaker tuning. Absent → the built-in defaults apply. */
+export interface ToolResilienceSettings {
+  /** Consecutive infra failures that trip a tool's circuit open. */
+  failureThreshold: number
+  /** How long the circuit stays open before admitting a probe (ms). */
+  recoveryMs: number
+  /** Timeout for non-long-running tools (ms); 0 disables the timeout. */
+  timeoutMs: number
+}
+
+export const DEFAULT_TOOL_RESILIENCE: ToolResilienceSettings = {
+  failureThreshold: 5,
+  recoveryMs: 60_000,
+  timeoutMs: 30_000,
+}
+
 export interface AiSettings {
   activeProvider: string
   models: Record<string, string>
   budgetTokens: number
   contextCompression?: { enabled: boolean; thresholdTokens: number }
+  toolResilience?: ToolResilienceSettings
 }
 
 export function aiSettingsFilePath(userDataDir: string): string {
@@ -57,6 +74,11 @@ export class AiSettingsStore {
     await this.persist({ ...settings, contextCompression: next })
   }
 
+  async setToolResilience(value: ToolResilienceSettings): Promise<void> {
+    const settings = await this.get()
+    await this.persist({ ...settings, toolResilience: clampResilience(value) })
+  }
+
   private async persist(settings: AiSettings): Promise<void> {
     this.settings = settings
     await writeJsonFile(this.filePath, settings)
@@ -90,10 +112,37 @@ function normalize(value: unknown, defaultProvider: string): AiSettings {
           : 0,
     }
   }
+  let toolResilience: AiSettings["toolResilience"]
+  if (
+    v.toolResilience &&
+    typeof v.toolResilience === "object" &&
+    !Array.isArray(v.toolResilience)
+  ) {
+    const r = v.toolResilience as Record<string, unknown>
+    toolResilience = clampResilience({
+      failureThreshold: asNumber(r.failureThreshold, DEFAULT_TOOL_RESILIENCE.failureThreshold),
+      recoveryMs: asNumber(r.recoveryMs, DEFAULT_TOOL_RESILIENCE.recoveryMs),
+      timeoutMs: asNumber(r.timeoutMs, DEFAULT_TOOL_RESILIENCE.timeoutMs),
+    })
+  }
   return {
     activeProvider: typeof v.activeProvider === "string" ? v.activeProvider : defaultProvider,
     models,
     budgetTokens,
     ...(contextCompression !== undefined ? { contextCompression } : {}),
+    ...(toolResilience !== undefined ? { toolResilience } : {}),
+  }
+}
+
+function asNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback
+}
+
+/** failureThreshold ≥ 1; recovery/timeout ≥ 0 (0 timeout = disabled). */
+function clampResilience(value: ToolResilienceSettings): ToolResilienceSettings {
+  return {
+    failureThreshold: Math.max(1, Math.floor(value.failureThreshold)),
+    recoveryMs: Math.max(0, Math.floor(value.recoveryMs)),
+    timeoutMs: Math.max(0, Math.floor(value.timeoutMs)),
   }
 }

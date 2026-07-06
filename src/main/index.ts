@@ -1,5 +1,6 @@
 import type { ClipboardContent } from "@synapse/plugin-sdk"
 import type { IpcMainInvokeEvent, WebContents } from "electron"
+import type { ToolResilienceSettings } from "./ai/ai-settings-store"
 import type { ChatProvider } from "./ai/providers/types"
 import type { RunTrace } from "./ai/run-trace-store"
 import type { SecretProtector } from "./lan/credential-store"
@@ -29,7 +30,11 @@ import {
 } from "electron"
 import electronUpdater from "electron-updater"
 import { AgentService } from "./ai/agent-service"
-import { aiSettingsFilePath, AiSettingsStore } from "./ai/ai-settings-store"
+import {
+  aiSettingsFilePath,
+  AiSettingsStore,
+  DEFAULT_TOOL_RESILIENCE,
+} from "./ai/ai-settings-store"
 import { aiApprovalsFilePath, ApprovalStore } from "./ai/approval-store"
 import { asFallbackSource, CompositeToolHost } from "./ai/composite-tool-host"
 import { ConversationStore } from "./ai/conversation-store"
@@ -48,6 +53,7 @@ import {
   PluginIntrospectionToolSource,
 } from "./ai/plugin-introspection-tools"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/catalog"
+import { ResilientToolHost } from "./ai/resilient-tool-host"
 import { RunBudgetRegistry } from "./ai/run-budget-registry"
 import { recordRun as persistRunTrace } from "./ai/run-trace-store"
 import { createNodeShellExecutor } from "./ai/shell/shell-executor"
@@ -777,7 +783,19 @@ function createAgentService(): AgentService {
   // The model sees one flat tool list: local plugin tools, external MCP tools
   // (`mcp:<id>/<tool>`), built-in memory tools (`memory:…`), and optionally
   // governed shell (`shell:…`). Invocations route by ownership.
-  agentTools = new AiToolRegistry(
+  const aiSettings = new AiSettingsStore(aiSettingsFilePath(userDataDir), DEFAULT_PROVIDER_ID)
+  // Live circuit-breaker tuning (P3). Held in a mutable holder the host reads
+  // afresh per new breaker; setToolResilience updates it and resets breakers so
+  // the change takes effect immediately. Seeded from persisted settings below.
+  let toolResilience: ToolResilienceSettings = { ...DEFAULT_TOOL_RESILIENCE }
+
+  // Wrap the flat tool surface in a per-tool circuit breaker + timeout so one
+  // hung/dead source (crashed MCP server, wedged plugin) can't stall or keep
+  // punching the agent loop. Shell and subagent tools are legitimately
+  // long-running, so they opt out of the timeout; everything else uses the
+  // configured timeout. Held in a variable so its health snapshots can be
+  // surfaced to the renderer.
+  const resilientToolHost = new ResilientToolHost(
     new CompositeToolHost([
       introspectionSource,
       shellSource,
@@ -796,16 +814,39 @@ function createAgentService(): AgentService {
       manager,
       new MemoryToolSource(memory),
     ]),
-    pluginNote
+    {
+      breaker: () => ({
+        failureThreshold: toolResilience.failureThreshold,
+        recoveryMs: toolResilience.recoveryMs,
+      }),
+      timeoutMs: (fqName) =>
+        fqName.startsWith(SHELL_FQ_PREFIX) || fqName.startsWith(SUBAGENT_FQ_PREFIX)
+          ? undefined
+          : toolResilience.timeoutMs,
+    }
   )
+  agentTools = new AiToolRegistry(resilientToolHost, pluginNote)
+  // Seed live tuning from persisted settings; reset breakers so any created
+  // before the async load reflect the persisted config.
+  void aiSettings.get().then((loaded) => {
+    if (loaded.toolResilience) {
+      toolResilience = loaded.toolResilience
+      resilientToolHost.resetBreakers()
+    }
+  })
 
   const agentService = new AgentService({
     credentials,
     tools: agentTools,
+    getToolHealth: () => resilientToolHost.snapshots(),
+    onToolResilienceChange: (cfg) => {
+      toolResilience = cfg
+      resilientToolHost.resetBreakers()
+    },
     getShellEnabled: () => launcher.getSettings().allowAgentShell,
     conversations: new ConversationStore(path.join(userDataDir, "ai", "conversations")),
     providers: defaultProviderCatalog(),
-    settings: new AiSettingsStore(aiSettingsFilePath(userDataDir), DEFAULT_PROVIDER_ID),
+    settings: aiSettings,
     approvals: new ApprovalStore(aiApprovalsFilePath(userDataDir)),
     sendEvent: broadcastAiChatEvent,
     recordRun,

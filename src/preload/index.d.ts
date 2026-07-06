@@ -287,6 +287,12 @@ declare global {
     models: string[]
   }
 
+  interface SynapseToolResilience {
+    failureThreshold: number
+    recoveryMs: number
+    timeoutMs: number
+  }
+
   interface SynapseAiStatus {
     provider: string
     hasKey: boolean
@@ -294,6 +300,7 @@ declare global {
     providers: SynapseAiProviderStatus[]
     budgetTokens: number
     contextCompression: { enabled: boolean; thresholdTokens: number }
+    toolResilience: SynapseToolResilience
   }
 
   interface SynapseAiTool {
@@ -411,6 +418,22 @@ declare global {
     state: SynapseMcpConnectionState
     toolCount: number
     error?: string
+  }
+
+  type SynapseToolCircuitState = "closed" | "open" | "half_open"
+
+  interface SynapseToolHealth {
+    key: string
+    state: SynapseToolCircuitState
+    total: number
+    ok: number
+    infraFailures: number
+    toolErrors: number
+    consecutiveFailures: number
+    avgLatencyMs: number
+    openedAt?: number
+    lastErrorAt?: number
+    lastTouchedAt: number
   }
 
   interface Window {
@@ -619,7 +642,9 @@ declare global {
         enabled: boolean
         thresholdTokens: number
       }) => Promise<void>
+      setAiToolResilience: (value: SynapseToolResilience) => Promise<void>
       listAiTools: () => Promise<SynapseAiTool[]>
+      getAiToolHealth: () => Promise<SynapseToolHealth[]>
       listAiConversations: () => Promise<SynapseAiConversationSummary[]>
       getAiConversation: (id: string) => Promise<SynapseAiConversation | undefined>
       deleteAiConversation: (id: string) => Promise<void>
