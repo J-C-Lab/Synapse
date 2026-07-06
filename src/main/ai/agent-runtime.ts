@@ -23,7 +23,7 @@ const ROUTING_GUIDANCE_BASE =
   "When a task matches an installed plugin's specialty — cloud services with brokered " +
   "credentials, governed/approved writeback, revocable or audited actions, or a specific " +
   "declared scenario — prefer that plugin, and call describe_plugin first to confirm its " +
-  "capability boundary. Plugins exist for what shell and scripts cannot safely do."
+  "capability boundary. Plugins exist for what local commands and scripts cannot safely do."
 
 const ROUTING_GUIDANCE_PLAN =
   " For a task that needs several steps or multiple approvals, call update_plan first to lay out the steps, then keep it current as you work."

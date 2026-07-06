@@ -43,7 +43,7 @@ const SENSITIVE_PREFIXES = [
 ]
 
 /**
- * Build a minimized environment for workspace shell commands.
+ * Build a minimized environment for workspace command execution.
  * Strips common secret-bearing variables while preserving PATH and locale.
  */
 export function sandboxCommandEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {

@@ -83,7 +83,7 @@
     "toolResilienceFailures": "熔断阈值",
     "toolResilienceRecovery": "冷却(秒)",
     "toolResilienceTimeout": "超时(秒)",
-    "toolResilienceHint": "工具调用熔断器：连续失败达到该次数后短路该工具，冷却时间后再重试。超时填 0 表示不限制；shell 与子 agent 工具永不超时。",
+    "toolResilienceHint": "工具调用熔断器：连续失败达到该次数后短路该工具，冷却时间后再重试。超时填 0 表示不限制；本地执行与子 agent 工具永不超时。",
     "allowedTools": "始终允许的工具",
     "allowedEmpty": "没有永久允许的工具。",
     "revoke": "撤销"
@@ -160,10 +160,10 @@
     "title": "设置",
     "subtitle": "调整外观和功能行为。",
     "agentShell": {
-      "title": "允许助手运行本地命令",
-      "description": "高危。助手可在你的电脑上执行 shell 命令。每条命令都需你确认，且仅在允许的目录内运行。命令一旦执行无法做细粒度限网/限路径。",
-      "rootsLabel": "允许的目录",
-      "rootsEmpty": "未设置时默认为你的主目录。"
+      "title": "允许助手使用本地执行",
+      "description": "高危。助手可在授权 workspace 内读取文件、应用补丁并运行本地命令。写入与命令均需你确认，并限制在允许的 workspace 内；系统级或灾难性命令会被拒绝。",
+      "rootsLabel": "允许的 workspace",
+      "rootsEmpty": "未设置时默认为你的主目录 workspace。"
     }
   },
   "trustedSources": {

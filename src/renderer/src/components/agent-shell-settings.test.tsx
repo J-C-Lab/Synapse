@@ -34,7 +34,7 @@ function installElectronApi(settings: SynapseUserSettings): NonNullable<Window["
   return api
 }
 
-describe("agent shell settings", () => {
+describe("agent local execution settings", () => {
   beforeEach(() => {
     installElectronApi(baseSettings)
   })
@@ -44,7 +44,7 @@ describe("agent shell settings", () => {
     delete window.electronAPI
   })
 
-  it("loads with shell disabled by default", async () => {
+  it("loads with local execution disabled by default", async () => {
     render(<AgentShellSettings />)
     expect(await screen.findByRole("switch")).not.toBeChecked()
   })

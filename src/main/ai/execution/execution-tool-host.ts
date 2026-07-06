@@ -98,7 +98,7 @@ const TOOL_DESCRIPTORS: RegisteredToolDescriptor[] = [
     manifestTool: {
       name: "run_command",
       title: "Run command",
-      description: "Run a shell command inside an authorized workspace.",
+      description: "Run a local command inside an authorized workspace.",
       inputSchema: objectSchema(
         {
           workspaceId: { type: "string" },
