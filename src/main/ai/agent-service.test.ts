@@ -9,6 +9,7 @@ import type { ChatContentBlock, ChatProvider, TokenUsage } from "./providers/typ
 import type { ToolHostPort } from "./tool-registry"
 import { describe, expect, it, vi } from "vitest"
 import { AgentMissingKeyError, AgentService } from "./agent-service"
+import { DEFAULT_TOOL_RESILIENCE } from "./ai-settings-store"
 import { emptyUsage } from "./providers/types"
 import { AiToolRegistry } from "./tool-registry"
 
@@ -120,6 +121,7 @@ function service(options: {
   host: ToolHostPort
   key?: string
   recordRun?: (trace: import("./run-trace-store").RunTrace) => void
+  getToolHealth?: () => import("./tool-circuit-breaker").ToolStatSnapshot[]
 }): {
   service: AgentService
   events: AiChatEvent[]
@@ -134,6 +136,7 @@ function service(options: {
     createProvider: () => options.provider,
     sendEvent: (event) => events.push(event),
     recordRun: options.recordRun,
+    getToolHealth: options.getToolHealth,
     now: () => 1000,
   })
   return { service: svc, events, saved: convo.saved }
@@ -402,5 +405,63 @@ describe("agentService", () => {
     expect(recorded).toHaveLength(1)
     expect(recorded[0].conversationId).toBe("c1")
     expect(recorded[0].origin).toBe("interactive")
+  })
+
+  it("exposes tool health from the injected provider", () => {
+    const snapshot = {
+      key: "mcp:srv",
+      state: "open" as const,
+      total: 4,
+      ok: 1,
+      infraFailures: 3,
+      toolErrors: 0,
+      consecutiveFailures: 3,
+      avgLatencyMs: 12,
+      lastTouchedAt: 1000,
+    }
+    const { service: svc } = service({
+      provider: fakeProvider([{ text: "hi" }]),
+      host: fakeHost(),
+      getToolHealth: () => [snapshot],
+    })
+    expect(svc.toolHealth()).toEqual([snapshot])
+  })
+
+  it("returns an empty tool-health list when no provider is wired", () => {
+    const { service: svc } = service({
+      provider: fakeProvider([{ text: "hi" }]),
+      host: fakeHost(),
+    })
+    expect(svc.toolHealth()).toEqual([])
+  })
+
+  it("reports default tool resilience in status when unset", async () => {
+    const { service: svc } = service({
+      provider: fakeProvider([{ text: "hi" }]),
+      host: fakeHost(),
+    })
+    expect((await svc.getStatus()).toolResilience).toEqual(DEFAULT_TOOL_RESILIENCE)
+  })
+
+  it("persists tool resilience via settings and notifies the host", async () => {
+    const setToolResilience = vi.fn(async () => {})
+    const applied: unknown[] = []
+    const settings = {
+      get: async () => ({ activeProvider: "anthropic", models: {}, budgetTokens: 0 }),
+      setToolResilience,
+    } as unknown as AiSettingsStore
+    const svc = new AgentService({
+      credentials: credentials("sk-test"),
+      tools: new AiToolRegistry(fakeHost()),
+      conversations: conversations().store,
+      createProvider: () => fakeProvider([{ text: "hi" }]),
+      sendEvent: () => {},
+      settings,
+      onToolResilienceChange: (cfg) => applied.push(cfg),
+    })
+    const next = { failureThreshold: 3, recoveryMs: 1000, timeoutMs: 5000 }
+    await svc.setToolResilience(next)
+    expect(setToolResilience).toHaveBeenCalledWith(next)
+    expect(applied).toEqual([next])
   })
 })

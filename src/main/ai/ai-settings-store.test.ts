@@ -69,6 +69,23 @@ describe("aiSettingsStore", () => {
     expect((await s.get()).contextCompression).toEqual({ enabled: true, thresholdTokens: 80_000 })
   })
 
+  it("leaves tool resilience unset by default", async () => {
+    expect((await store().get()).toolResilience).toBeUndefined()
+  })
+
+  it("round-trips tool resilience settings and clamps invalid values", async () => {
+    const file = path.join(dir, "settings.json")
+    const a = new AiSettingsStore(file, "anthropic")
+    await a.setToolResilience({ failureThreshold: 0, recoveryMs: -5, timeoutMs: -1 })
+
+    const b = new AiSettingsStore(file, "anthropic")
+    expect((await b.get()).toolResilience).toEqual({
+      failureThreshold: 1,
+      recoveryMs: 0,
+      timeoutMs: 0,
+    })
+  })
+
   it("ignores malformed persisted data", async () => {
     const file = path.join(dir, "settings.json")
     await fs.writeFile(file, JSON.stringify({ activeProvider: 5, models: [1, 2] }), "utf-8")

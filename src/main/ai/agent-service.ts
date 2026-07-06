@@ -1,5 +1,5 @@
 import type { AgentEvent } from "./agent-runtime"
-import type { AiSettingsStore } from "./ai-settings-store"
+import type { AiSettingsStore, ToolResilienceSettings } from "./ai-settings-store"
 import type { ApprovalStore } from "./approval-store"
 import type {
   ConversationStore,
@@ -14,10 +14,12 @@ import type { RunPlanRegistry } from "./plan/run-plan-registry"
 import type { ProviderDescriptor } from "./providers/catalog"
 import type { ChatMessage, ChatProvider, ProviderToolSchema, TokenUsage } from "./providers/types"
 import type { RunTrace } from "./run-trace-store"
+import type { ToolStatSnapshot } from "./tool-circuit-breaker"
 import type { AiToolRegistry } from "./tool-registry"
 import { randomUUID } from "node:crypto"
 import { logger } from "../logging"
 import { AgentRuntime } from "./agent-runtime"
+import { DEFAULT_TOOL_RESILIENCE } from "./ai-settings-store"
 import { decideApproval } from "./approval-gate"
 import { ContextCompressor } from "./context/context-compressor"
 import { summarizeViaProvider } from "./context/summarize-via-provider"
@@ -76,6 +78,10 @@ export interface AgentServiceOptions {
   onTurnStart?: (ctx: { runId: string; budgetTokens: number | undefined }) => void
   /** Fired when an interactive turn ends so per-run budget state can be cleared. */
   onTurnEnd?: (ctx: { runId: string }) => void
+  /** Per-tool circuit-breaker health snapshots, surfaced to the renderer. */
+  getToolHealth?: () => ToolStatSnapshot[]
+  /** Applied when tool-resilience settings change so the live host can retune. */
+  onToolResilienceChange?: (settings: ToolResilienceSettings) => void
 }
 
 export class AgentMissingKeyError extends Error {
@@ -110,6 +116,7 @@ export interface AiStatus {
   /** Per-run token budget; 0 means unlimited. */
   budgetTokens: number
   contextCompression: { enabled: boolean; thresholdTokens: number }
+  toolResilience: ToolResilienceSettings
 }
 
 export class AgentService {
@@ -188,6 +195,7 @@ export class AgentService {
       providers,
       budgetTokens: settings?.budgetTokens ?? 0,
       contextCompression: settings?.contextCompression ?? { enabled: false, thresholdTokens: 0 },
+      toolResilience: settings?.toolResilience ?? DEFAULT_TOOL_RESILIENCE,
     }
   }
 
@@ -221,6 +229,11 @@ export class AgentService {
     if (this.options.settings) await this.options.settings.setContextCompression(value)
   }
 
+  async setToolResilience(value: ToolResilienceSettings): Promise<void> {
+    if (this.options.settings) await this.options.settings.setToolResilience(value)
+    this.options.onToolResilienceChange?.(value)
+  }
+
   /** Called by chat() at turn start so plan events can resolve the conversation. */
   registerRun(runId: string, conversationId: string): void {
     this.activeRunConversations.set(runId, conversationId)
@@ -243,6 +256,11 @@ export class AgentService {
 
   listTools(): ProviderToolSchema[] {
     return this.options.tools.list()
+  }
+
+  /** Per-tool circuit-breaker health (state, success rate, latency). */
+  toolHealth(): ToolStatSnapshot[] {
+    return this.options.getToolHealth?.() ?? []
   }
 
   /** Connect every configured external MCP server. Call once at startup. */

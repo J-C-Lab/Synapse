@@ -79,6 +79,11 @@
     "contextCompression": "上下文压缩",
     "contextCompressionThresholdPlaceholder": "100000",
     "contextCompressionHint": "开启后，当估算 token 数超过阈值时，会在发送给模型前对较早的对话轮次进行摘要。",
+    "toolResilience": "工具韧性",
+    "toolResilienceFailures": "熔断阈值",
+    "toolResilienceRecovery": "冷却(秒)",
+    "toolResilienceTimeout": "超时(秒)",
+    "toolResilienceHint": "工具调用熔断器：连续失败达到该次数后短路该工具，冷却时间后再重试。超时填 0 表示不限制；shell 与子 agent 工具永不超时。",
     "allowedTools": "始终允许的工具",
     "allowedEmpty": "没有永久允许的工具。",
     "revoke": "撤销"
@@ -130,6 +135,11 @@
       "connected": "已连接",
       "disconnected": "已禁用",
       "error": "错误"
+    },
+    "circuit": {
+      "open": "已熔断",
+      "half_open": "恢复中",
+      "detail": "连续失败 {{fails}} 次 · 平均 {{avg}}ms"
     }
   },
   "home": {
