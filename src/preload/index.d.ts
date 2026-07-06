@@ -367,6 +367,11 @@ declare global {
     text: string
     tags: string[]
     createdAt: number
+    scope: {
+      visibility: "conversation" | "workspace" | "global"
+      workspaceId?: string
+      conversationId?: string
+    }
   }
 
   interface SynapseMemorySource {

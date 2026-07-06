@@ -15,6 +15,11 @@ export interface MemoryEntryView {
   text: string
   tags: string[]
   createdAt: number
+  scope: {
+    visibility: "conversation" | "workspace" | "global"
+    workspaceId?: string
+    conversationId?: string
+  }
 }
 
 export interface RegisterMemoryIpcOptions {
@@ -40,6 +45,7 @@ export function registerMemoryIpc(
       text: entry.text,
       tags: entry.tags,
       createdAt: entry.createdAt,
+      scope: entry.scope,
     }))
   })
 

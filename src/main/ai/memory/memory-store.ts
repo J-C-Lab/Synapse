@@ -1,5 +1,6 @@
 import * as path from "node:path"
 import { readJsonFile, writeJsonFile } from "../../lan/atomic-json-store"
+import { normalizeMemoryScope } from "./memory-scope"
 
 // Persists the agent's long-term memory as plain JSON (decision §11.1 — no
 // native deps). Each entry keeps its text, tags, and (when an embedder is
@@ -11,8 +12,15 @@ export interface MemoryEntry {
   text: string
   tags: string[]
   createdAt: number
+  scope: MemoryScope
   /** Embedding vector for semantic search; absent when no embedder ran. */
   embedding?: number[]
+}
+
+export interface MemoryScope {
+  workspaceId?: string
+  conversationId?: string
+  visibility: "conversation" | "workspace" | "global"
 }
 
 export function aiMemoryFilePath(userDataDir: string): string {
@@ -87,6 +95,7 @@ function normalize(value: unknown): MemoryEntry[] {
         ? record.tags.filter((tag): tag is string => typeof tag === "string")
         : [],
       createdAt: typeof record.createdAt === "number" ? record.createdAt : 0,
+      scope: normalizeMemoryScope(record.scope),
       embedding:
         Array.isArray(record.embedding) &&
         record.embedding.every((value) => typeof value === "number")

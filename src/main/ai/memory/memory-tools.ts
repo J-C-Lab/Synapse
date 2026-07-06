@@ -1,8 +1,9 @@
 import type { JsonSchema } from "@synapse/plugin-manifest"
 import type { ToolResult } from "@synapse/plugin-sdk"
-import type { RegisteredToolDescriptor } from "../../plugins/types"
+import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../../plugins/types"
 import type { ToolHostSource } from "../composite-tool-host"
 import type { MemoryService } from "./memory-service"
+import { queryScopeForCaller, scopeForCaller } from "./memory-scope"
 
 // Built-in memory tools exposed to the agent as a ToolHostSource, alongside
 // plugin and external-MCP tools (they share one registry, naming, and approval
@@ -110,19 +111,23 @@ export class MemoryToolSource implements ToolHostSource {
     return TOOLS
   }
 
-  async invokeTool(fqName: string, input: unknown): Promise<ToolResult> {
+  async invokeTool(
+    fqName: string,
+    input: unknown,
+    options?: ToolInvocationOptions
+  ): Promise<ToolResult> {
     const toolName = fqName.slice(`${MEMORY_PLUGIN_ID}/`.length)
     const args = (input && typeof input === "object" ? input : {}) as Record<string, unknown>
     try {
       switch (toolName) {
         case "memory_save":
-          return await this.save(args)
+          return await this.save(args, options)
         case "memory_ingest":
-          return await this.ingest(args)
+          return await this.ingest(args, options)
         case "memory_search":
-          return await this.search(args)
+          return await this.search(args, options)
         case "memory_list":
-          return await this.list(args)
+          return await this.list(args, options)
         case "memory_delete":
           return await this.remove(args)
         default:
@@ -133,16 +138,26 @@ export class MemoryToolSource implements ToolHostSource {
     }
   }
 
-  private async save(args: Record<string, unknown>): Promise<ToolResult> {
+  private async save(
+    args: Record<string, unknown>,
+    options?: ToolInvocationOptions
+  ): Promise<ToolResult> {
     if (typeof args.text !== "string" || !args.text.trim()) return errorResult("text is required.")
     const tags = Array.isArray(args.tags)
       ? args.tags.filter((tag): tag is string => typeof tag === "string")
       : undefined
-    const entry = await this.memory.save({ text: args.text, tags })
-    return json({ saved: { id: entry.id, text: entry.text, tags: entry.tags } })
+    const entry = await this.memory.save({
+      text: args.text,
+      tags,
+      scope: scopeForCaller(options?.caller),
+    })
+    return json({ saved: { id: entry.id, text: entry.text, tags: entry.tags, scope: entry.scope } })
   }
 
-  private async ingest(args: Record<string, unknown>): Promise<ToolResult> {
+  private async ingest(
+    args: Record<string, unknown>,
+    options?: ToolInvocationOptions
+  ): Promise<ToolResult> {
     if (typeof args.source !== "string" || !args.source.trim()) {
       return errorResult("source is required.")
     }
@@ -150,29 +165,53 @@ export class MemoryToolSource implements ToolHostSource {
     const tags = Array.isArray(args.tags)
       ? args.tags.filter((tag): tag is string => typeof tag === "string")
       : undefined
-    const result = await this.memory.ingestDocument({ source: args.source, text: args.text, tags })
+    const result = await this.memory.ingestDocument({
+      source: args.source,
+      text: args.text,
+      tags,
+      scope: scopeForCaller(options?.caller),
+    })
     return json({ ingested: result })
   }
 
-  private async search(args: Record<string, unknown>): Promise<ToolResult> {
+  private async search(
+    args: Record<string, unknown>,
+    options?: ToolInvocationOptions
+  ): Promise<ToolResult> {
     if (typeof args.query !== "string" || !args.query.trim()) {
       return errorResult("query is required.")
     }
-    const hits = await this.memory.search(args.query, numberOr(args.limit, 5))
+    const hits = await this.memory.search(
+      args.query,
+      numberOr(args.limit, 5),
+      queryScopeForCaller(options?.caller)
+    )
     return json({
       results: hits.map((hit) => ({
         id: hit.entry.id,
         text: hit.entry.text,
         tags: hit.entry.tags,
+        scope: hit.entry.scope,
         score: Number(hit.score.toFixed(4)),
       })),
     })
   }
 
-  private async list(args: Record<string, unknown>): Promise<ToolResult> {
-    const entries = await this.memory.list(numberOr(args.limit, 50))
+  private async list(
+    args: Record<string, unknown>,
+    options?: ToolInvocationOptions
+  ): Promise<ToolResult> {
+    const entries = await this.memory.list(
+      numberOr(args.limit, 50),
+      queryScopeForCaller(options?.caller)
+    )
     return json({
-      memories: entries.map((entry) => ({ id: entry.id, text: entry.text, tags: entry.tags })),
+      memories: entries.map((entry) => ({
+        id: entry.id,
+        text: entry.text,
+        tags: entry.tags,
+        scope: entry.scope,
+      })),
     })
   }
 

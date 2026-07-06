@@ -64,6 +64,26 @@ describe("memoryToolSource", () => {
     const block = result.content[0]
     expect(block?.type).toBe("json")
     expect(JSON.stringify(result.structured)).toContain("example.com")
+    expect(JSON.stringify(result.structured)).toContain('"visibility":"global"')
+  })
+
+  it("threads caller scope into list and search when a future workspace binding exists", async () => {
+    const src = source()
+    await src.invokeTool(
+      "memory:core/memory_save",
+      { text: "repo-only fact" },
+      { caller: { kind: "agent", workspaceId: "repo" } }
+    )
+    await src.invokeTool("memory:core/memory_save", { text: "global fact" })
+
+    const scoped = await src.invokeTool(
+      "memory:core/memory_search",
+      { query: "fact" },
+      { caller: { kind: "agent", workspaceId: "repo" } }
+    )
+
+    expect(JSON.stringify(scoped.structured)).toContain("repo-only fact")
+    expect(JSON.stringify(scoped.structured)).toContain("global fact")
   })
 
   it("reports input errors as isError results", async () => {

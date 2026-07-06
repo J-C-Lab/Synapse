@@ -18,7 +18,14 @@ describe("memoryStore", () => {
   it("adds, reads back across instances, and removes", async () => {
     const file = path.join(dir, "memory.json")
     const a = new MemoryStore(file)
-    await a.add({ id: "1", text: "hello", tags: ["x"], createdAt: 1, embedding: [0.1, 0.2] })
+    await a.add({
+      id: "1",
+      text: "hello",
+      tags: ["x"],
+      createdAt: 1,
+      scope: { visibility: "global" },
+      embedding: [0.1, 0.2],
+    })
 
     const reloaded = await new MemoryStore(file).all()
     expect(reloaded).toHaveLength(1)
@@ -26,6 +33,7 @@ describe("memoryStore", () => {
       id: "1",
       text: "hello",
       tags: ["x"],
+      scope: { visibility: "global" },
       embedding: [0.1, 0.2],
     })
 
@@ -36,8 +44,8 @@ describe("memoryStore", () => {
     const file = path.join(dir, "memory.json")
     const store = new MemoryStore(file)
     await store.addMany([
-      { id: "1", text: "a", tags: [], createdAt: 1 },
-      { id: "2", text: "b", tags: [], createdAt: 2 },
+      { id: "1", text: "a", tags: [], createdAt: 1, scope: { visibility: "global" } },
+      { id: "2", text: "b", tags: [], createdAt: 2, scope: { visibility: "global" } },
     ])
     const reloaded = await new MemoryStore(file).all()
     expect(reloaded.map((entry) => entry.id)).toEqual(["1", "2"])
@@ -47,9 +55,9 @@ describe("memoryStore", () => {
     const file = path.join(dir, "memory.json")
     const store = new MemoryStore(file)
     await store.addMany([
-      { id: "1", text: "a", tags: [], createdAt: 1 },
-      { id: "2", text: "b", tags: [], createdAt: 2 },
-      { id: "3", text: "c", tags: [], createdAt: 3 },
+      { id: "1", text: "a", tags: [], createdAt: 1, scope: { visibility: "global" } },
+      { id: "2", text: "b", tags: [], createdAt: 2, scope: { visibility: "global" } },
+      { id: "3", text: "c", tags: [], createdAt: 3, scope: { visibility: "global" } },
     ])
 
     expect(await store.removeMany(["1", "3", "missing"])).toBe(2)
@@ -65,6 +73,34 @@ describe("memoryStore", () => {
     )
     const entries = await new MemoryStore(file).all()
     expect(entries).toHaveLength(1)
-    expect(entries[0]).toMatchObject({ id: "ok", text: "fine", tags: [] })
+    expect(entries[0]).toMatchObject({
+      id: "ok",
+      text: "fine",
+      tags: [],
+      scope: { visibility: "global" },
+    })
+  })
+
+  it("preserves valid scope and migrates legacy entries to global", async () => {
+    const file = path.join(dir, "memory.json")
+    await fs.writeFile(
+      file,
+      JSON.stringify([
+        { id: "legacy", text: "old", tags: [], createdAt: 1 },
+        {
+          id: "scoped",
+          text: "new",
+          tags: [],
+          createdAt: 2,
+          scope: { visibility: "workspace", workspaceId: "repo" },
+        },
+      ]),
+      "utf-8"
+    )
+
+    expect(await new MemoryStore(file).all()).toMatchObject([
+      { id: "legacy", scope: { visibility: "global" } },
+      { id: "scoped", scope: { visibility: "workspace", workspaceId: "repo" } },
+    ])
   })
 })
