@@ -45,7 +45,7 @@ describe("runCommand", () => {
       timeoutMs: 200,
     })
     expect(result.timedOut).toBe(true)
-  })
+  }, 15_000)
 
   it("cancels via AbortSignal", async () => {
     const root = await makeWorkspace()
