@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { invalidateCapabilityProfileCache } from "@/hooks/use-capability-profile"
 import { ElectronIpcError, listPluginCapabilities, revokePluginCapability } from "@/lib/electron"
 import { cn } from "@/lib/utils"
 
@@ -42,6 +43,7 @@ export function PluginCapabilityList({
     setRevoking(capability)
     try {
       await revokePluginCapability(pluginId, capability)
+      invalidateCapabilityProfileCache(pluginId)
       toast.success(t("plugins.capabilities.revoked"))
       await load()
     } catch (err) {

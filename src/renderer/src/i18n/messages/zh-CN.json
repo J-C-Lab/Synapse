@@ -94,6 +94,12 @@
     "facts": "已保存事实",
     "noFacts": "尚未保存独立事实。",
     "delete": "删除",
+    "deleteSourceTitle": "移除文档？",
+    "deleteSourceBody": "将删除「{{source}}」的全部内容块，此操作无法撤销。",
+    "deleteFactTitle": "删除事实？",
+    "deleteFactBody": "将永久删除「{{text}}」。",
+    "deleteCancel": "取消",
+    "deleteConfirm": "删除",
     "imported": "已导入 {{source}}({{chunks}} 块)。",
     "importFailed": "无法导入该文档。"
   },
@@ -105,6 +111,8 @@
     "add": "添加服务器",
     "edit": "编辑",
     "delete": "删除",
+    "deleteConfirmTitle": "移除 MCP 服务器？",
+    "deleteConfirmBody": "将移除「{{id}}」，助手将无法再使用其工具。",
     "save": "保存并连接",
     "cancel": "取消",
     "id": "ID",
@@ -283,6 +291,19 @@
         "connected": "已连接",
         "disconnected": "未连接",
         "needs-reconnect": "需要重新连接"
+      },
+      "connectDialog": {
+        "title": "连接 GitHub 账号",
+        "description": "Synapse 将在浏览器中打开 GitHub 授权页面。完成授权后，这里会自动继续。",
+        "githubInboxDescription": "连接 GitHub 后，GitHub Inbox 可读取通知并在你确认后执行写回操作。",
+        "preparing": "正在准备 GitHub 授权请求…",
+        "browserReady": "请在浏览器中完成授权",
+        "waiting": "授权完成后，Synapse 会自动保存加密凭据并连接插件。",
+        "secureHint": "访问令牌由主进程加密保存，插件沙箱无法读取原始密钥。",
+        "githubScopes": "此插件请求 notifications、read:user 与 repo 权限，用于读取通知并在你有权限的仓库中执行已确认的写回操作。",
+        "stepBrowser": "浏览器授权",
+        "stepConnect": "自动连接",
+        "close": "关闭"
       }
     },
     "capabilities": {

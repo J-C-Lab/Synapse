@@ -1,5 +1,7 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { IngestDocumentResult, MemoryService, MemorySource } from "../ai/memory/memory-service"
+import { readFile } from "node:fs/promises"
+import path from "node:path"
 import { logger } from "../logging"
 
 // IPC surface for managing long-term memory from the renderer: import a document
@@ -51,6 +53,16 @@ export function registerMemoryIpc(
     return memory.ingestDocument(coerceIngest(payload))
   })
 
+  ipcMain.handle(
+    "ai:memory:ingest-path",
+    async (event, payload: unknown): Promise<IngestDocumentResult> => {
+      guard(event, "ai:memory:ingest-path")
+      const { source, filePath } = coerceIngestPath(payload)
+      const text = await readFile(filePath, "utf8")
+      return memory.ingestDocument({ source, text })
+    }
+  )
+
   ipcMain.handle("ai:memory:delete", (event, id: unknown): Promise<boolean> => {
     guard(event, "ai:memory:delete")
     return memory.delete(requireString(id, "id"))
@@ -66,6 +78,15 @@ export function coerceIngest(payload: unknown): { source: string; text: string }
   if (!payload || typeof payload !== "object") throw new Error("ingest payload must be an object.")
   const v = payload as Record<string, unknown>
   return { source: requireString(v.source, "source"), text: requireString(v.text, "text") }
+}
+
+export function coerceIngestPath(payload: unknown): { source: string; filePath: string } {
+  if (!payload || typeof payload !== "object")
+    throw new Error("ingest-path payload must be an object.")
+  const v = payload as Record<string, unknown>
+  const filePath = requireString(v.filePath, "filePath")
+  if (!path.isAbsolute(filePath)) throw new Error("filePath must be an absolute path.")
+  return { source: requireString(v.source, "source"), filePath }
 }
 
 function requireString(value: unknown, label: string): string {

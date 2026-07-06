@@ -1,6 +1,7 @@
 import type { BrowserWindow } from "electron"
 import { randomUUID } from "node:crypto"
 import * as path from "node:path"
+import { getMainOutputDir } from "../main-output-dir"
 
 export interface SecretPromptRequest {
   title: string
@@ -11,11 +12,11 @@ export interface SecretPromptRequest {
 export type SecretPromptPort = (request: SecretPromptRequest) => Promise<string | null>
 
 function secretPromptHtmlPath(): string {
-  return path.join(__dirname, "credential-secret-prompt.html")
+  return path.join(getMainOutputDir(), "credential-secret-prompt.html")
 }
 
 function secretPromptPreloadPath(): string {
-  return path.join(__dirname, "../preload/credential-secret-prompt.js")
+  return path.join(path.dirname(getMainOutputDir()), "preload", "credential-secret-prompt.js")
 }
 
 /** Electron implementation: isolated modal window; secret never touches the app renderer. */
@@ -73,7 +74,10 @@ export function createElectronSecretPrompt(
       })
       ipcMain.on(submitChannel, onSubmit)
       win.on("closed", () => finish(null))
-      void win.loadFile(secretPromptHtmlPath()).then(() => win.show())
+      void win
+        .loadFile(secretPromptHtmlPath())
+        .then(() => win.show())
+        .catch(() => finish(null))
     })
   }
 }

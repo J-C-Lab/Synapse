@@ -54,6 +54,12 @@ export interface MarketplaceLoginPrompt {
   userCode: string
   expiresAt: string
 }
+export interface CredentialConnectPrompt {
+  pluginId: string
+  credentialId: string
+  provider: "github"
+  authorizationUrl: string
+}
 export type PluginCommandResult = SynapsePluginCommandResult
 export type PluginInvokePhase = SynapsePluginInvokePhase
 export type PluginView = SynapsePluginView
@@ -428,6 +434,12 @@ export function onMarketplaceLoginPrompt(
   return api().onMarketplaceLoginPrompt(handler)
 }
 
+export function onCredentialConnectPrompt(
+  handler: (prompt: CredentialConnectPrompt) => void
+): () => void {
+  return api().onCredentialConnectPrompt(handler)
+}
+
 export function onLauncherFocus(handler: () => void): () => void {
   return api().onLauncherFocus(handler)
 }
@@ -592,6 +604,13 @@ export async function ingestMemoryDocument(input: {
   text: string
 }): Promise<MemoryIngestResult> {
   return api().ingestMemoryDocument(input)
+}
+
+export async function ingestMemoryDocumentFromPath(input: {
+  source: string
+  filePath: string
+}): Promise<MemoryIngestResult> {
+  return api().ingestMemoryDocumentFromPath(input)
 }
 
 export async function deleteMemory(id: string): Promise<boolean> {

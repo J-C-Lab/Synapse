@@ -15,6 +15,7 @@ import { createHash, randomUUID } from "node:crypto"
 import * as path from "node:path"
 import { credentialBrokerAdapter } from "@synapse/plugin-manifest"
 import { CredentialNotConnectedError } from "@synapse/plugin-sdk"
+import { ensureGitHubInboxOAuthReady } from "./builtin-manifest-patches"
 import { buildGrantIdentity } from "./capability-governance"
 import { decideInjection } from "./credential-injector"
 import { oauthHttpsPost } from "./credential-oauth-egress"
@@ -40,8 +41,16 @@ export interface CredentialBrokerOptions {
   secretPrompt: SecretPromptPort
   audit?: (entry: CapabilityAuditEntry) => void
   openBrowser?: (url: string) => Promise<void>
+  onOAuthConnectPrompt?: (prompt: OAuthConnectPrompt) => void
   now?: () => number
   grants?: Pick<GrantStore, "isGranted">
+}
+
+export interface OAuthConnectPrompt {
+  pluginId: string
+  credentialId: string
+  provider: "github"
+  authorizationUrl: string
 }
 
 export function credentialVaultFilePath(userDataDir: string): string {
@@ -75,6 +84,11 @@ function triggerAllowsCredential(
 
 function credDeclKey(pluginId: string, credentialId: string): string {
   return `${pluginId}:${credentialId}`
+}
+
+async function defaultOAuthOpenBrowser(url: string): Promise<void> {
+  const { shell } = await import("electron")
+  await shell.openExternal(url)
 }
 
 /** Host-side credential broker: vault, connect flows, injection, and pending-connect flags. */
@@ -251,10 +265,21 @@ export class CredentialBroker {
     if (existing) return existing
 
     const run = (async () => {
+      ensureGitHubInboxOAuthReady(manifest)
+      const openBrowser = async (authorizationUrl: string) => {
+        this.options.onOAuthConnectPrompt?.({
+          pluginId,
+          credentialId,
+          provider: "github",
+          authorizationUrl,
+        })
+        const open = this.options.openBrowser ?? defaultOAuthOpenBrowser
+        await open(authorizationUrl)
+      }
       const tokens = await runOAuthPkceFlow(
         cred,
         { pluginId, credentialId, flowId: randomUUID() },
-        { openBrowser: this.options.openBrowser }
+        { openBrowser }
       )
       await this.vault.put(identity, credentialId, "oauth2-pkce", {
         accessToken: tokens.accessToken,

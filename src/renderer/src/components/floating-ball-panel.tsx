@@ -1,6 +1,6 @@
 import type { PointerEvent } from "react"
 import { Search } from "lucide-react"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import logoUrl from "@/assets/logo.png"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -32,7 +32,22 @@ export function FloatingBallPanel() {
     lastY: number
     moved: boolean
   } | null>(null)
+  const pendingMoveRef = useRef({ x: 0, y: 0 })
+  const moveRafRef = useRef<number | null>(null)
   const suppressNextClickRef = useRef(false)
+
+  const flushPendingMove = useCallback(() => {
+    moveRafRef.current = null
+    const delta = pendingMoveRef.current
+    if (delta.x === 0 && delta.y === 0) return
+    pendingMoveRef.current = { x: 0, y: 0 }
+    void moveFloatingBallBy(delta)
+  }, [])
+
+  const scheduleMoveFlush = useCallback(() => {
+    if (moveRafRef.current !== null) return
+    moveRafRef.current = requestAnimationFrame(flushPendingMove)
+  }, [flushPendingMove])
 
   useEffect(() => {
     const html = document.documentElement
@@ -95,13 +110,16 @@ export function FloatingBallPanel() {
       Math.abs(event.screenY - drag.startY) >= DRAG_THRESHOLD
     drag.lastX = event.screenX
     drag.lastY = event.screenY
-    void moveFloatingBallBy(delta)
+    pendingMoveRef.current.x += delta.x
+    pendingMoveRef.current.y += delta.y
+    scheduleMoveFlush()
   }
 
   function onPointerUp(event: PointerEvent<HTMLButtonElement>) {
     const drag = dragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
     event.currentTarget.releasePointerCapture(event.pointerId)
+    flushPendingMove()
     suppressNextClickRef.current = drag.moved
     dragRef.current = null
   }

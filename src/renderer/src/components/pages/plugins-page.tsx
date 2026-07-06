@@ -1,7 +1,7 @@
 import type { ReactNode } from "react"
 import type { PluginRegistryEntry } from "@/lib/electron"
 import { AlertCircle, Download, PackageSearch, RefreshCw, Trash2 } from "lucide-react"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { ActiveBackgroundPanel } from "@/components/plugins/active-background-panel"
@@ -42,7 +42,10 @@ import {
 } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
-import { useCapabilityProfile } from "@/hooks/use-capability-profile"
+import {
+  invalidateCapabilityProfileCache,
+  useCapabilityProfile,
+} from "@/hooks/use-capability-profile"
 import {
   droppedFilePath,
   ElectronIpcError,
@@ -157,7 +160,10 @@ export function PluginsPage() {
     void getSettings()
       .then((settings) => setTrustedSourcePolicy(settings.trustedSourcePolicy))
       .catch(() => undefined)
-    return onPluginRegistryChanged((nextPlugins) => setPlugins(nextPlugins))
+    return onPluginRegistryChanged((nextPlugins) => {
+      invalidateCapabilityProfileCache()
+      setPlugins(nextPlugins)
+    })
   }, [electronReady, load])
 
   const localImportAllowed = trustedSourcePolicy !== "official-marketplace"
@@ -421,6 +427,7 @@ export function PluginsPage() {
         ) : (
           <div className="flex flex-col gap-2">
             {visiblePlugins.map((plugin) => (
+              // eslint-disable-next-line ts/no-use-before-define
               <PluginRow
                 key={pluginKey(plugin)}
                 locale={i18n.language}
@@ -572,67 +579,71 @@ function pluginDescription(plugin: PluginRegistryEntry, locale: string): string 
 // Compact list row: identity + status + the enable toggle. Clicking the row body
 // (everything except the toggle) opens the detail dialog, so a long plugin list
 // stays scannable instead of stacking every plugin's full detail panel.
-function PluginRow({
-  locale,
-  onOpenDetails,
-  onToggle,
-  pending,
-  plugin,
-}: {
-  locale: string
-  onOpenDetails: () => void
-  onToggle: (plugin: PluginRegistryEntry, enabled: boolean) => Promise<void>
-  pending: string | null
-  plugin: PluginRegistryEntry
-}) {
-  const { t } = useTranslation()
-  const manifest = plugin.manifest
-  const title = pluginTitle(plugin, locale)
-  const description = pluginDescription(plugin, locale)
-  const togglePending = pending === `toggle:${plugin.pluginId}`
-  const canToggle = plugin.status === "active" || plugin.status === "disabled"
+const PluginRow = memo(
+  ({
+    locale,
+    onOpenDetails,
+    onToggle,
+    pending,
+    plugin,
+  }: {
+    locale: string
+    onOpenDetails: () => void
+    onToggle: (plugin: PluginRegistryEntry, enabled: boolean) => Promise<void>
+    pending: string | null
+    plugin: PluginRegistryEntry
+  }) => {
+    const { t } = useTranslation()
+    const manifest = plugin.manifest
+    const title = pluginTitle(plugin, locale)
+    const description = pluginDescription(plugin, locale)
+    const togglePending = pending === `toggle:${plugin.pluginId}`
+    const canToggle = plugin.status === "active" || plugin.status === "disabled"
 
-  return (
-    <Card className={cn("p-0", plugin.status === "invalid" && "border-destructive/50")}>
-      <div className="flex items-center gap-3 p-4">
-        <button
-          type="button"
-          className="flex min-w-0 flex-1 flex-col gap-1 text-left"
-          aria-label={t("plugins.actions.details", { name: title, defaultValue: title })}
-          onClick={onOpenDetails}
-        >
-          <span className="flex flex-wrap items-center gap-2">
-            <span className="truncate text-sm font-medium">{title}</span>
-            <StatusBadge status={plugin.status} />
-            <Badge variant="outline">{plugin.pluginId}</Badge>
-          </span>
-          <span className="truncate text-xs text-muted-foreground">{description}</span>
-          <span className="flex flex-wrap gap-x-3 text-xs text-muted-foreground">
-            <span>
-              {t("plugins.meta.version")}: {manifest?.version ?? "—"}
+    return (
+      <Card className={cn("p-0", plugin.status === "invalid" && "border-destructive/50")}>
+        <div className="flex items-center gap-3 p-4">
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 flex-col gap-1 text-left"
+            aria-label={t("plugins.actions.details", { name: title, defaultValue: title })}
+            onClick={onOpenDetails}
+          >
+            <span className="flex flex-wrap items-center gap-2">
+              <span className="truncate text-sm font-medium">{title}</span>
+              <StatusBadge status={plugin.status} />
+              <Badge variant="outline">{plugin.pluginId}</Badge>
             </span>
-            <span>
-              {t("plugins.meta.commands")}: {manifest?.contributes.commands.length ?? 0}
+            <span className="truncate text-xs text-muted-foreground">{description}</span>
+            <span className="flex flex-wrap gap-x-3 text-xs text-muted-foreground">
+              <span>
+                {t("plugins.meta.version")}: {manifest?.version ?? "—"}
+              </span>
+              <span>
+                {t("plugins.meta.commands")}: {manifest?.contributes.commands.length ?? 0}
+              </span>
+              <span>{t(`plugins.source.${plugin.source.kind}`)}</span>
             </span>
-            <span>{t(`plugins.source.${plugin.source.kind}`)}</span>
-          </span>
-        </button>
-        <div className="flex shrink-0 items-center gap-2">
-          <Label htmlFor={`plugin-enabled-${plugin.pluginId}`} className="text-xs">
-            {t(plugin.status === "disabled" ? "plugins.actions.enable" : "plugins.actions.disable")}
-          </Label>
-          <Switch
-            id={`plugin-enabled-${plugin.pluginId}`}
-            size="sm"
-            checked={plugin.status === "active"}
-            disabled={!canToggle || togglePending}
-            onCheckedChange={(checked) => void onToggle(plugin, checked)}
-          />
+          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <Label htmlFor={`plugin-enabled-${plugin.pluginId}`} className="text-xs">
+              {t(
+                plugin.status === "disabled" ? "plugins.actions.enable" : "plugins.actions.disable"
+              )}
+            </Label>
+            <Switch
+              id={`plugin-enabled-${plugin.pluginId}`}
+              size="sm"
+              checked={plugin.status === "active"}
+              disabled={!canToggle || togglePending}
+              onCheckedChange={(checked) => void onToggle(plugin, checked)}
+            />
+          </div>
         </div>
-      </div>
-    </Card>
-  )
-}
+      </Card>
+    )
+  }
+)
 
 // Full detail body rendered inside the detail dialog: meta, permissions,
 // declared/active triggers, errors, preferences, and the heavier reload/uninstall

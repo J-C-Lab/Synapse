@@ -13,7 +13,7 @@ import {
   Settings,
   Wrench,
 } from "lucide-react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { AiSettingsDialog } from "@/components/ai-settings-dialog"
 import { AssistantOnboarding } from "@/components/assistant-onboarding"
@@ -70,7 +70,12 @@ export function ChatPage() {
   const [conversations, setConversations] = useState<AiConversationSummary[]>([])
   const [conversationId, setConversationId] = useState<string>(() => crypto.randomUUID())
   const [planSteps, setPlanSteps] = useState<PlanStep[]>([])
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
+  const [liveText, setLiveText] = useState("")
   const scrollRef = useRef<HTMLDivElement>(null)
+  const stickToBottomRef = useRef(true)
+  const liveTextRef = useRef("")
+  const liveTextRafRef = useRef<number | null>(null)
   const sidebarPanelRef = useRef<ImperativePanelHandle>(null)
 
   useEffect(() => {
@@ -91,14 +96,58 @@ export function ChatPage() {
   }, [refreshConversations])
 
   useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onScroll = () => {
+      stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    }
+    el.addEventListener("scroll", onScroll, { passive: true })
+    return () => el.removeEventListener("scroll", onScroll)
+  }, [])
+
+  const scheduleLiveTextRender = useCallback(() => {
+    if (liveTextRafRef.current !== null) return
+    liveTextRafRef.current = requestAnimationFrame(() => {
+      liveTextRafRef.current = null
+      setLiveText(liveTextRef.current)
+    })
+  }, [])
+
+  const flushLiveText = useCallback((prev: DisplayMessage[]): DisplayMessage[] => {
+    if (!liveTextRef.current) return prev
+    const next = prev.slice()
+    const lastIndex = next.length - 1
+    const last = next[lastIndex]
+    if (last?.role === "assistant") {
+      next[lastIndex] = { ...last, text: last.text + liveTextRef.current }
+    }
+    liveTextRef.current = ""
+    setLiveText("")
+    return next
+  }, [])
+
+  useEffect(() => {
+    if (!stickToBottomRef.current) return
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
-  }, [messages])
+  }, [messages, liveText])
 
   const handleEvent = useCallback(
     (event: AiChatEvent) => {
       if (event.conversationId !== conversationId) return
-      setMessages((prev) => applyEvent(prev, event))
+
+      if (event.type === "text") {
+        liveTextRef.current += event.delta
+        scheduleLiveTextRender()
+        return
+      }
+
+      setMessages((prev) => {
+        const flushed = flushLiveText(prev)
+        return event.type === "done" ? flushed : applyEvent(flushed, event)
+      })
+
       if (event.type === "done") {
+        setStreamingMessageId(null)
         setUsage(event.usage)
         refreshConversations()
       }
@@ -113,7 +162,7 @@ export function ChatPage() {
         setPlanSteps(event.steps)
       }
     },
-    [conversationId, refreshConversations]
+    [conversationId, flushLiveText, refreshConversations, scheduleLiveTextRender]
   )
 
   useEffect(() => {
@@ -127,6 +176,9 @@ export function ChatPage() {
     setUsage(null)
     setApproval(null)
     setPlanSteps([])
+    setStreamingMessageId(null)
+    liveTextRef.current = ""
+    setLiveText("")
     const stored = await getAiConversation(id)
     setMessages(stored ? hydrateMessages(stored.messages) : [])
   }
@@ -138,6 +190,9 @@ export function ChatPage() {
     setUsage(null)
     setApproval(null)
     setPlanSteps([])
+    setStreamingMessageId(null)
+    liveTextRef.current = ""
+    setLiveText("")
   }
 
   async function removeConversation(id: string) {
@@ -163,16 +218,22 @@ export function ChatPage() {
     if (!text || busy) return
     setInput("")
     setPlanSteps([])
+    const assistantId = crypto.randomUUID()
+    setStreamingMessageId(assistantId)
+    liveTextRef.current = ""
+    setLiveText("")
     setMessages((prev) => [
       ...prev,
       { id: crypto.randomUUID(), role: "user", text, tools: [] },
-      { id: crypto.randomUUID(), role: "assistant", text: "", tools: [] },
+      { id: assistantId, role: "assistant", text: "", tools: [] },
     ])
     setBusy(true)
     try {
       await sendAiChat(conversationId, text)
     } finally {
       setBusy(false)
+      setStreamingMessageId(null)
+      setMessages((prev) => flushLiveText(prev))
     }
   }
 
@@ -264,7 +325,15 @@ export function ChatPage() {
                     {t("chat.empty")}
                   </p>
                 ) : (
-                  messages.map((message) => <MessageBubble key={message.id} message={message} />)
+                  messages.map((message) => (
+                    // eslint-disable-next-line ts/no-use-before-define
+                    <MessageBubble
+                      key={message.id}
+                      message={message}
+                      liveSuffix={message.id === streamingMessageId ? liveText : undefined}
+                      isStreaming={message.id === streamingMessageId}
+                    />
+                  ))
                 )}
               </div>
             </div>
@@ -455,28 +524,39 @@ function Header({
   )
 }
 
-function MessageBubble({ message }: { message: DisplayMessage }) {
-  const isUser = message.role === "user"
+const MessageBubble = memo(
+  ({
+    message,
+    liveSuffix,
+    isStreaming,
+  }: {
+    message: DisplayMessage
+    liveSuffix?: string
+    isStreaming?: boolean
+  }) => {
+    const isUser = message.role === "user"
+    const displayText = liveSuffix ? message.text + liveSuffix : message.text
 
-  if (isUser) {
-    return (
-      <div className="flex justify-end">
-        <div className="max-w-[min(85%,42rem)] rounded-[22px] bg-muted px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
-          <p className="whitespace-pre-wrap wrap-break-word">{message.text}</p>
+    if (isUser) {
+      return (
+        <div className="flex justify-end">
+          <div className="max-w-[min(85%,42rem)] rounded-[22px] bg-muted px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
+            <p className="whitespace-pre-wrap wrap-break-word">{displayText}</p>
+          </div>
         </div>
+      )
+    }
+
+    return (
+      <div className="w-full space-y-3 text-[15px] leading-relaxed text-foreground">
+        {displayText && <Markdown streaming={isStreaming}>{displayText}</Markdown>}
+        {message.tools.map((tool) => (
+          <ToolCardView key={tool.id} tool={tool} />
+        ))}
       </div>
     )
   }
-
-  return (
-    <div className="w-full space-y-3 text-[15px] leading-relaxed text-foreground">
-      {message.text && <Markdown>{message.text}</Markdown>}
-      {message.tools.map((tool) => (
-        <ToolCardView key={tool.id} tool={tool} />
-      ))}
-    </div>
-  )
-}
+)
 
 function ToolCardView({ tool }: { tool: ToolCard }) {
   return (
@@ -506,9 +586,6 @@ function applyEvent(messages: DisplayMessage[], event: AiChatEvent): DisplayMess
   if (!last || last.role !== "assistant") return next
 
   switch (event.type) {
-    case "text":
-      next[lastIndex] = { ...last, text: last.text + event.delta }
-      break
     case "tool_call":
       next[lastIndex] = {
         ...last,

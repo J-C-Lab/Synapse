@@ -8,17 +8,10 @@ import {
   Store,
   Wifi,
 } from "lucide-react"
-import { useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import logoUrl from "@/assets/logo.png"
-import { AppLauncherPage } from "@/components/pages/app-launcher-page"
-import { ChatPage } from "@/components/pages/chat-page"
-import { FloatingBallPage } from "@/components/pages/floating-ball-page"
 import { HomePage } from "@/components/pages/home-page"
-import { LanTransferPage } from "@/components/pages/lan-transfer-page"
-import { MarketplacePage } from "@/components/pages/marketplace-page"
-import { PluginsPage } from "@/components/pages/plugins-page"
-import { SettingsPage } from "@/components/pages/settings-page"
 import {
   Sidebar,
   SidebarContent,
@@ -34,8 +27,31 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar"
+import { Spinner } from "@/components/ui/spinner"
 import { UpdateBanner } from "@/components/update-banner"
 import { cn } from "@/lib/utils"
+
+const ChatPage = lazy(() =>
+  import("@/components/pages/chat-page").then((m) => ({ default: m.ChatPage }))
+)
+const SettingsPage = lazy(() =>
+  import("@/components/pages/settings-page").then((m) => ({ default: m.SettingsPage }))
+)
+const AppLauncherPage = lazy(() =>
+  import("@/components/pages/app-launcher-page").then((m) => ({ default: m.AppLauncherPage }))
+)
+const FloatingBallPage = lazy(() =>
+  import("@/components/pages/floating-ball-page").then((m) => ({ default: m.FloatingBallPage }))
+)
+const PluginsPage = lazy(() =>
+  import("@/components/pages/plugins-page").then((m) => ({ default: m.PluginsPage }))
+)
+const MarketplacePage = lazy(() =>
+  import("@/components/pages/marketplace-page").then((m) => ({ default: m.MarketplacePage }))
+)
+const LanTransferPage = lazy(() =>
+  import("@/components/pages/lan-transfer-page").then((m) => ({ default: m.LanTransferPage }))
+)
 
 export type NavId =
   | "home"
@@ -47,9 +63,46 @@ export type NavId =
   | "marketplace"
   | "lan-transfer"
 
+const NAV_IDS = new Set<NavId>([
+  "home",
+  "assistant",
+  "settings",
+  "app-launcher",
+  "floating-ball",
+  "plugins",
+  "marketplace",
+  "lan-transfer",
+])
+
+function readNavFromLocation(): NavId {
+  const raw = window.location.hash.replace(/^#\/?/, "")
+  return NAV_IDS.has(raw as NavId) ? (raw as NavId) : "home"
+}
+
+function useNav(): [NavId, (id: NavId) => void] {
+  const [nav, setNavState] = useState<NavId>(readNavFromLocation)
+
+  const setNav = useCallback((id: NavId) => {
+    setNavState(id)
+    const nextHash = id === "home" ? "" : `#/${id}`
+    if (window.location.hash !== nextHash) {
+      const base = `${window.location.pathname}${window.location.search}`
+      window.history.replaceState(null, "", id === "home" ? base : `${base}#/${id}`)
+    }
+  }, [])
+
+  useEffect(() => {
+    const onHashChange = () => setNavState(readNavFromLocation())
+    window.addEventListener("hashchange", onHashChange)
+    return () => window.removeEventListener("hashchange", onHashChange)
+  }, [])
+
+  return [nav, setNav]
+}
+
 export function AppShell() {
   const { t } = useTranslation()
-  const [nav, setNav] = useState<NavId>("home")
+  const [nav, setNav] = useNav()
 
   return (
     <SidebarProvider>
@@ -191,14 +244,22 @@ export function AppShell() {
                   : "max-w-3xl"
             )}
           >
-            {nav === "home" && <HomePage onNavigate={setNav} />}
-            {nav === "assistant" && <ChatPage />}
-            {nav === "settings" && <SettingsPage />}
-            {nav === "app-launcher" && <AppLauncherPage onNavigate={setNav} />}
-            {nav === "floating-ball" && <FloatingBallPage onNavigate={setNav} />}
-            {nav === "plugins" && <PluginsPage />}
-            {nav === "marketplace" && <MarketplacePage />}
-            {nav === "lan-transfer" && <LanTransferPage />}
+            <Suspense
+              fallback={
+                <div className="flex items-center justify-center py-24">
+                  <Spinner className="size-6 text-muted-foreground" />
+                </div>
+              }
+            >
+              {nav === "home" && <HomePage onNavigate={setNav} />}
+              {nav === "assistant" && <ChatPage />}
+              {nav === "settings" && <SettingsPage />}
+              {nav === "app-launcher" && <AppLauncherPage onNavigate={setNav} />}
+              {nav === "floating-ball" && <FloatingBallPage onNavigate={setNav} />}
+              {nav === "plugins" && <PluginsPage />}
+              {nav === "marketplace" && <MarketplacePage />}
+              {nav === "lan-transfer" && <LanTransferPage />}
+            </Suspense>
           </div>
         </main>
       </SidebarInset>

@@ -94,6 +94,12 @@
     "facts": "Saved facts",
     "noFacts": "No standalone facts saved yet.",
     "delete": "Delete",
+    "deleteSourceTitle": "Remove document?",
+    "deleteSourceBody": "This removes all chunks from \"{{source}}\". This cannot be undone.",
+    "deleteFactTitle": "Delete fact?",
+    "deleteFactBody": "\"{{text}}\" will be permanently removed.",
+    "deleteCancel": "Cancel",
+    "deleteConfirm": "Delete",
     "imported": "Imported {{source}} ({{chunks}} chunks).",
     "importFailed": "Could not import the document."
   },
@@ -105,6 +111,8 @@
     "add": "Add server",
     "edit": "Edit",
     "delete": "Remove",
+    "deleteConfirmTitle": "Remove MCP server?",
+    "deleteConfirmBody": "Remove \"{{id}}\"? The assistant will no longer use its tools.",
     "save": "Save & connect",
     "cancel": "Cancel",
     "id": "ID",
@@ -283,6 +291,19 @@
         "connected": "Connected",
         "disconnected": "Disconnected",
         "needs-reconnect": "Needs reconnect"
+      },
+      "connectDialog": {
+        "title": "Connect GitHub account",
+        "description": "Synapse will open GitHub authorization in your browser. After you approve, this dialog continues automatically.",
+        "githubInboxDescription": "Connect GitHub so GitHub Inbox can read notifications and run confirmed writeback actions.",
+        "preparing": "Preparing GitHub authorization…",
+        "browserReady": "Complete authorization in your browser",
+        "waiting": "After authorization, Synapse encrypts and stores the credential, then connects the plugin.",
+        "secureHint": "Access tokens are encrypted in the main process; the plugin sandbox never sees the raw secret.",
+        "githubScopes": "This plugin requests notifications, read:user, and repo to read notifications and perform confirmed writebacks in repositories you can access.",
+        "stepBrowser": "Browser authorization",
+        "stepConnect": "Auto-connect",
+        "close": "Close"
       }
     },
     "capabilities": {

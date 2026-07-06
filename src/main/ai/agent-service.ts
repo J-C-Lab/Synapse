@@ -337,16 +337,24 @@ export class AgentService {
     const controller = new AbortController()
     this.aborts.set(conversationId, controller)
 
+    const textBatcher = createTextDeltaBatcher((delta) =>
+      this.options.sendEvent({ type: "text", conversationId, delta })
+    )
+
     try {
       const result = await runtime.run({
         conversationId,
         runId,
         messages,
         signal: controller.signal,
-        onText: (delta) => this.options.sendEvent({ type: "text", conversationId, delta }),
-        onEvent: (event) => this.forwardAgentEvent(conversationId, event),
+        onText: (delta) => textBatcher.push(delta),
+        onEvent: (event) => {
+          textBatcher.flush()
+          this.forwardAgentEvent(conversationId, event)
+        },
         approve: (request) => this.approve(conversationId, request.toolName, request.input),
       })
+      textBatcher.flush()
       await this.persist(conversationId, existing, result.messages)
       this.options.sendEvent({
         type: "done",
@@ -356,6 +364,7 @@ export class AgentService {
       })
       return { stopReason: result.stopReason, usage: result.usage }
     } catch (err) {
+      textBatcher.flush()
       this.options.sendEvent({
         type: "error",
         conversationId,
@@ -363,6 +372,7 @@ export class AgentService {
       })
       throw err
     } finally {
+      textBatcher.dispose()
       this.aborts.delete(conversationId)
       this.failPendingApprovals(conversationId)
       this.activeRunConversations.delete(runId)
@@ -491,4 +501,32 @@ function deriveTitle(messages: ChatMessage[]): string {
   const raw = text && text.type === "text" ? text.text.trim() : ""
   if (!raw) return "New conversation"
   return raw.length > 60 ? `${raw.slice(0, 60)}…` : raw
+}
+
+/** Coalesce high-frequency provider text deltas before IPC to the renderer. */
+function createTextDeltaBatcher(
+  send: (delta: string) => void,
+  intervalMs = 32
+): { push: (delta: string) => void; flush: () => void; dispose: () => void } {
+  let buffer = ""
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  const flush = (): void => {
+    if (timer) {
+      clearTimeout(timer)
+      timer = null
+    }
+    if (!buffer) return
+    const delta = buffer
+    buffer = ""
+    send(delta)
+  }
+
+  const push = (delta: string): void => {
+    buffer += delta
+    if (timer) return
+    timer = setTimeout(flush, intervalMs)
+  }
+
+  return { push, flush, dispose: flush }
 }

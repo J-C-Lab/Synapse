@@ -89,7 +89,7 @@ import { MarketplaceAccountService } from "./marketplace/account-service"
 import { marketplaceTokenFilePath, MarketplaceTokenStore } from "./marketplace/token-store"
 import { defaultNotificationIcon, showStartupNotification } from "./notifications"
 import { createCapabilityAudit } from "./plugins/capability-audit"
-import { createElectronSecretPrompt } from "./plugins/credential-broker"
+import { createElectronSecretPrompt, CredentialBroker } from "./plugins/credential-broker"
 import { GrantStore, grantStoreFilePath } from "./plugins/grant-store"
 import { createMarketplaceApi } from "./plugins/marketplace-api"
 import { PluginHost } from "./plugins/plugin-host"
@@ -643,6 +643,10 @@ function searchWindowDeps(): SearchWindowDeps {
   return { rendererDevUrl, appOrigin: APP_ORIGIN }
 }
 
+function broadcastCredentialConnectPrompt(prompt: unknown): void {
+  broadcast("credentials:connect-prompt", prompt)
+}
+
 function initPluginHost(): PluginHost {
   const userDataDir = app.getPath("userData")
   const grants = new GrantStore(grantStoreFilePath(userDataDir))
@@ -681,15 +685,24 @@ function initPluginHost(): PluginHost {
     recordRun: (trace) => runTraceRecorder(trace),
     runBudgetRegistry,
     reservedAccelerators: () => [launcher.getSettings().hotkey],
-    safeStorage: {
-      isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
-      encryptString: (plainText) => safeStorage.encryptString(plainText),
-      decryptString: (encrypted) => safeStorage.decryptString(encrypted),
-    },
-    secretPrompt: createElectronSecretPrompt(
-      () => BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0],
-      BrowserWindow
-    ),
+    credentialBroker: new CredentialBroker({
+      userDataDir,
+      safeStorage: {
+        isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+        encryptString: (plainText) => safeStorage.encryptString(plainText),
+        decryptString: (encrypted) => safeStorage.decryptString(encrypted),
+      },
+      secretPrompt: createElectronSecretPrompt(
+        () => BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0],
+        BrowserWindow
+      ),
+      audit,
+      grants,
+      onOAuthConnectPrompt: (prompt) => broadcastCredentialConnectPrompt(prompt),
+      openBrowser: async (url) => {
+        await shell.openExternal(url)
+      },
+    }),
   })
 }
 
