@@ -54,6 +54,23 @@ describe("memoryService", () => {
     expect(hits[0]!.score).toBeGreaterThan(hits[1]!.score)
   })
 
+  it("fuses keyword and vector signals so an exact-term match beats a stronger embedding", async () => {
+    // Pure cosine would rank "error handling" first (0.83 vs 0.55); but the
+    // query token appears verbatim in "TS2741 fix", so hybrid fusion surfaces it.
+    const vectors = {
+      "error handling": [1, 0, 0],
+      "TS2741 fix": [0, 1, 0],
+      TS2741: [0.6, 0.4, 0],
+    }
+    const svc = service(fakeEmbedder(vectors))
+    await svc.save({ text: "error handling" })
+    await svc.save({ text: "TS2741 fix" })
+
+    const hits = await svc.search("TS2741")
+    expect(hits[0]?.entry.text).toBe("TS2741 fix")
+    expect(hits[0]!.score).toBeGreaterThan(hits[1]!.score)
+  })
+
   it("falls back to lexical search when embeddings are unavailable", async () => {
     const svc = service({ embed: async () => null })
     await svc.save({ text: "the deploy script lives in scripts/deploy.sh" })
