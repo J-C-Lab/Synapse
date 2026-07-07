@@ -1,0 +1,28 @@
+{
+  "id": "denied-recovers",
+  "title": "A denied tool call is surfaced to the model, which then answers",
+  "tier": "T0",
+  "tags": ["trajectory", "approval"],
+  "tools": [
+    {
+      "fqName": "com.probe/write",
+      "pluginId": "com.probe",
+      "manifestTool": {
+        "name": "write",
+        "description": "write",
+        "inputSchema": { "type": "object", "properties": {} },
+        "annotations": { "readOnlyHint": false }
+      }
+    }
+  ],
+  "approvals": { "com_probe_write": "deny" },
+  "script": [
+    { "toolUses": [{ "id": "t1", "name": "com_probe_write", "input": {} }] },
+    { "text": "I could not complete that action." }
+  ],
+  "expect": {
+    "toolCalls": [{ "name": "com.probe/write", "ok": false }],
+    "stopReason": "end_turn",
+    "finalTextMatches": "could not"
+  }
+}
