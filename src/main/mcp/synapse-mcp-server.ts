@@ -1,21 +1,36 @@
 import type {
   CallToolResult,
+  ListResourcesResult,
   ListToolsResult,
+  ReadResourceResult,
   ToolAnnotations,
 } from "@modelcontextprotocol/sdk/types.js"
 import type { JsonSchema } from "@synapse/plugin-manifest"
 import type { ToolResult } from "@synapse/plugin-sdk"
+import type { MemoryQueryScope } from "../ai/memory/memory-scope"
+import type { MemoryEntry } from "../ai/memory/memory-store"
 import type { RunTrace } from "../ai/run-trace-store"
 import type { ToolHostPort } from "../ai/tool-registry"
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../plugins/types"
 import { randomUUID } from "node:crypto"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
+import {
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js"
 import { decideApproval } from "../ai/approval-gate"
 import { sanitizeToolName, uniqueName } from "../ai/tool-registry"
 
 export type McpToolExposurePolicy = "readOnlyOnly" | "all"
+
+/** Minimal read surface `SynapseMcpToolService` needs to serve memory as MCP resources. */
+export interface MemoryResourcePort {
+  list: (limit: number, scope: MemoryQueryScope) => Promise<MemoryEntry[]>
+  get: (id: string, scope: MemoryQueryScope) => Promise<MemoryEntry | undefined>
+}
 
 export interface SynapseMcpToolServiceOptions {
   exposurePolicy?: McpToolExposurePolicy
@@ -25,6 +40,12 @@ export interface SynapseMcpToolServiceOptions {
   workspaceId?: string
   /** Identifies the external MCP client (from `initialize`), for the principal. */
   clientId?: string
+  /** Backs `resources/list` + `resources/read` over long-term memory. Omit to disable resources entirely. */
+  memory?: MemoryResourcePort
+  /** Whether global-visibility memories are listed/readable for this external caller. Default false (§4a). */
+  memoryIncludeGlobal?: boolean
+  /** Hard cap on `resources/list` (no cursor pagination in this phase, §4b). Default 200. */
+  memoryListLimit?: number
 }
 
 export interface SynapseMcpServerOptions extends SynapseMcpToolServiceOptions {
@@ -99,16 +120,62 @@ export class SynapseMcpToolService {
           progress: options.progress,
         })
       )
-      this.recordRun(entry, runId, principal, startedAt, !result.isError)
+      this.recordTrace(entry.descriptor.fqName, runId, principal, startedAt, !result.isError)
       return result
     } catch (err) {
-      this.recordRun(entry, runId, principal, startedAt, false)
+      this.recordTrace(entry.descriptor.fqName, runId, principal, startedAt, false)
       return errorResult(err instanceof Error ? err.message : String(err))
     }
   }
 
-  private recordRun(
-    entry: McpToolEntry,
+  async listResources(): Promise<ListResourcesResult> {
+    if (!this.options.memory) return { resources: [] }
+    const scope = this.resourceScope()
+    const entries = await this.options.memory.list(this.options.memoryListLimit ?? 200, scope)
+
+    const runId = randomUUID()
+    const startedAt = Date.now()
+    const principal = { kind: "external-mcp" as const, clientId: this.options.clientId }
+    this.recordTrace("resources/list", runId, principal, startedAt, true)
+
+    return {
+      resources: entries.map((entry) => ({
+        uri: toResourceUri(entry.id),
+        name: summarize(entry.text),
+        mimeType: "text/plain",
+        ...(entry.tags.length > 0 ? { description: entry.tags.join(", ") } : {}),
+      })),
+    }
+  }
+
+  async readResource(uri: string): Promise<ReadResourceResult> {
+    const runId = randomUUID()
+    const startedAt = Date.now()
+    const principal = { kind: "external-mcp" as const, clientId: this.options.clientId }
+    const id = parseResourceId(uri)
+    const entry =
+      id && this.options.memory
+        ? await this.options.memory.get(id, this.resourceScope())
+        : undefined
+
+    if (!entry) {
+      this.recordTrace(`resources/read:${uri}`, runId, principal, startedAt, false)
+      throw new Error(`Unknown Synapse resource: ${uri}`)
+    }
+
+    this.recordTrace(`resources/read:${uri}`, runId, principal, startedAt, true)
+    return { contents: [{ uri, mimeType: "text/plain", text: entry.text }] }
+  }
+
+  private resourceScope(): MemoryQueryScope {
+    return {
+      workspaceId: this.options.workspaceId,
+      includeGlobal: this.options.memoryIncludeGlobal ?? false,
+    }
+  }
+
+  private recordTrace(
+    name: string,
     runId: string,
     principal: { kind: "external-mcp"; clientId?: string },
     startedAt: number,
@@ -124,7 +191,7 @@ export class SynapseMcpToolService {
       startedAt,
       endedAt,
       outcome: ok ? "end_turn" : "error",
-      toolCalls: [{ name: entry.descriptor.fqName, startedAt, ms: endedAt - startedAt, ok }],
+      toolCalls: [{ name, startedAt, ms: endedAt - startedAt, ok }],
     })
   }
 
@@ -154,9 +221,9 @@ export function createSynapseMcpServer(
   const server = new Server(
     { name: options.name ?? "synapse", version: options.version ?? "0.3.0" },
     {
-      capabilities: { tools: { listChanged: true } },
+      capabilities: { tools: { listChanged: true }, resources: { listChanged: true } },
       instructions:
-        "Synapse exposes enabled plugin tools. By default, only read-only tools are listed over stdio MCP.",
+        "Synapse exposes enabled plugin tools and, when configured, long-term memory as read-only resources. By default, only read-only tools are listed over stdio MCP.",
     }
   )
 
@@ -166,6 +233,10 @@ export function createSynapseMcpServer(
       signal: extra.signal,
     })
   })
+  server.setRequestHandler(ListResourcesRequestSchema, () => service.listResources())
+  server.setRequestHandler(ReadResourceRequestSchema, (request) =>
+    service.readResource(request.params.uri)
+  )
 
   return server
 }
@@ -236,4 +307,21 @@ function mcpObjectSchema(schema: JsonSchema): McpObjectSchema {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value))
+}
+
+const MEMORY_RESOURCE_PREFIX = "synapse://memory/"
+
+function toResourceUri(id: string): string {
+  return `${MEMORY_RESOURCE_PREFIX}${encodeURIComponent(id)}`
+}
+
+function parseResourceId(uri: string): string | undefined {
+  if (!uri.startsWith(MEMORY_RESOURCE_PREFIX)) return undefined
+  const id = uri.slice(MEMORY_RESOURCE_PREFIX.length)
+  return id ? decodeURIComponent(id) : undefined
+}
+
+function summarize(text: string, maxChars = 60): string {
+  const trimmed = text.trim()
+  return trimmed.length > maxChars ? `${trimmed.slice(0, maxChars - 1)}…` : trimmed
 }

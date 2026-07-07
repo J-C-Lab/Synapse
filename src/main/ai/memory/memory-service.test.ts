@@ -199,6 +199,44 @@ describe("memoryService", () => {
   })
 })
 
+describe("get", () => {
+  it("returns the entry by id when it matches the given scope", async () => {
+    const svc = service(fakeEmbedder({}))
+    const saved = await svc.save({
+      text: "scoped fact",
+      scope: { visibility: "workspace", workspaceId: "ws-1" },
+    })
+
+    const found = await svc.get(saved.id, { workspaceId: "ws-1", includeGlobal: false })
+    expect(found).toEqual(saved)
+  })
+
+  it("returns undefined when the entry exists but is out of scope", async () => {
+    const svc = service(fakeEmbedder({}))
+    const saved = await svc.save({
+      text: "scoped fact",
+      scope: { visibility: "workspace", workspaceId: "ws-1" },
+    })
+
+    const found = await svc.get(saved.id, { workspaceId: "ws-2", includeGlobal: false })
+    expect(found).toBeUndefined()
+  })
+
+  it("returns undefined for an unknown id", async () => {
+    const svc = service(fakeEmbedder({}))
+    expect(await svc.get("nope")).toBeUndefined()
+  })
+
+  it("returns the entry regardless of scope when no scope is given", async () => {
+    const svc = service(fakeEmbedder({}))
+    const saved = await svc.save({
+      text: "global-ish fact",
+      scope: { visibility: "workspace", workspaceId: "ws-1" },
+    })
+    expect(await svc.get(saved.id)).toEqual(saved)
+  })
+})
+
 describe("cosineSimilarity", () => {
   it("is 1 for identical and 0 for orthogonal vectors", () => {
     expect(cosineSimilarity([1, 2, 3], [1, 2, 3])).toBeCloseTo(1)
