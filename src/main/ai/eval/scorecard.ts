@@ -49,7 +49,7 @@ ${cases}
 export function writeScorecard(dir: string, card: Scorecard): void {
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, `${card.suite}.json`), `${JSON.stringify(card, null, 2)}\n`)
-  writeFileSync(join(dir, `${card.suite}.junit.xml`), toJUnit(card))
+  writeFileSync(join(dir, `${card.suite}.junit.xml`), `${toJUnit(card)}\n`)
 }
 
 function escapeXml(value: string): string {
