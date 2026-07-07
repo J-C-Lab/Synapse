@@ -9,11 +9,20 @@ name: CI/CD Pipeline
 # Workflow Structure:
 # ├── quality.yml        - Code quality & security checks (ESLint, TypeScript, audit)
 # ├── test.yml           - Test suite with coverage & electron-vite build
-# ├── build-electron.yml - Electron desktop app builds (Windows, macOS)
+# ├── build-electron.yml - Electron desktop app builds (Windows, macOS) — NOT run
+# │                        per-PR right now (see below), still used by release.yml
 # └── release.yml        - GitHub release creation (triggered by version tags)
 #
 # This workflow works OUT-OF-THE-BOX without requiring any secrets.
 # See CI_CD.md for detailed setup instructions for optional features.
+# ============================================================================
+#
+# Build Electron is deliberately NOT wired into this per-PR pipeline: pre-release,
+# the multi-platform packaging build adds several minutes to every PR for no
+# signal anyone acts on. It still runs on every version-tag release (release.yml)
+# and can be run on demand via workflow_dispatch on build-electron.yml. Re-add a
+# `build-electron` job here (`needs: [quality, test]`) once the project is
+# shipping builds people actually download from CI.
 # ============================================================================
 
 on:
@@ -42,9 +51,3 @@ jobs:
       pull-requests: write
       checks: write
     uses: ./.github/workflows/test.yml
-
-  # Step 3: Build Electron Desktop Apps (after quality & test pass)
-  build-electron:
-    name: Build Electron
-    needs: [quality, test]
-    uses: ./.github/workflows/build-electron.yml
