@@ -4,7 +4,8 @@ import type { RagFixture } from "./scorers/rag"
 import type { TrajectoryFixture } from "./scorers/trajectory"
 import * as path from "node:path"
 import { describe, expect, it } from "vitest"
-import { checkAgainstBaseline, loadBaseline } from "./baselines"
+import { applyBaseline } from "./apply-baseline"
+import { loadBaseline } from "./baselines"
 import { loadFixtures } from "./fixture-types"
 import { buildScorecard, writeScorecard } from "./scorecard"
 import { scoreInjectionT0 } from "./scorers/injection"
@@ -27,13 +28,7 @@ describe("eval ratchet (T0)", () => {
 
     const baseline = loadBaseline(path.join(ROOT, "evals/baselines/rag.json"))
     for (const fx of loadFixtures<RagFixture>(path.join(ROOT, "evals/rag"))) {
-      const result = await scoreRag(fx)
-      const bl = checkAgainstBaseline(result.metrics ?? {}, baseline)
-      results.push(
-        bl.ok
-          ? result
-          : { ...result, passed: false, detail: `baseline: ${bl.regressions.join(",")}` }
-      )
+      results.push(applyBaseline(await scoreRag(fx), baseline))
     }
 
     const card = buildScorecard("t0", results)
