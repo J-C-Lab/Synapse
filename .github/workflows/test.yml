@@ -131,6 +131,7 @@ jobs:
         with:
           files: |
             coverage/junit.xml
+            coverage/eval/t0.junit.xml
           check_name: Test Results
           comment_title: Test Results
         continue-on-error: true

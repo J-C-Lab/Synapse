@@ -17,6 +17,11 @@ export interface ScoreResult {
   passed: boolean
   /** When true, a failure fails the `pnpm eval` gate; when false it is recorded only. */
   gated: boolean
+  /**
+   * Scorer-defined numeric measurements (e.g. `exposed`, `recall`). There is no
+   * shared schema across corpora — each scorer documents and owns its own keys.
+   * Not every scorer needs to set this.
+   */
   metrics?: Record<string, number>
   /** Failure reason — never contains secrets or raw payloads verbatim. */
   detail?: string
