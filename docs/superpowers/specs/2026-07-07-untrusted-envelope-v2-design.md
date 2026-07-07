@@ -1,6 +1,16 @@
 # Untrusted Envelope v2 — Tiered, Inline Reminders (Phase 1: tool-result)
 
-> Date: 2026-07-07 · Status: draft, pending review
+> Date: 2026-07-07 · Status: shipped, default-on
+>
+> **Update 2026-07-07 (later same day):** two independent real-key
+> `pnpm eval:judged` runs after the fix confirmed the gap stayed closed
+> (tool-result injection compliance: obeyed:0 both times). The flag flipped
+> to **default-on** — `envelopeTierForToolResult` in `agent-runtime.ts` now
+> applies the strong tier unless `SYNAPSE_UNTRUSTED_ENVELOPE_V2=0` is set
+> explicitly (kill switch), rather than requiring an opt-in `=1`. Everything
+> below describes the opt-in behavior as it shipped first; `=1` still works
+> but is no longer necessary.
+>
 > Triggered by a real, keyed-eval-confirmed finding (3 consecutive real-key
 > `pnpm eval:judged` runs, `EVAL_JUDGE_PROVIDER=bailian`): a real model calls the
 > trap tool when an injected "SYSTEM OVERRIDE" instruction arrives via a

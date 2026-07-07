@@ -50,8 +50,11 @@ const UNTRUSTED_CONTEXT_NOTICE =
 // and only for non-memory tools. Memory-sourced results and workspace
 // instructions deliberately stay "legacy" until their own follow-up phases,
 // each verified with a real-key eval run before flipping, same as this one.
+// Default-on as of 2026-07-07 — two independent real-key eval runs showed
+// tool-result injection compliance go from 3x-reproduced obeyed:1 to a clean
+// obeyed:0. SYNAPSE_UNTRUSTED_ENVELOPE_V2=0 remains as an explicit kill switch.
 function envelopeTierForToolResult(toolFqName: string): EnvelopeTier {
-  if (process.env.SYNAPSE_UNTRUSTED_ENVELOPE_V2 !== "1") return "legacy"
+  if (process.env.SYNAPSE_UNTRUSTED_ENVELOPE_V2 === "0") return "legacy"
   return toolFqName.startsWith("memory:") ? "legacy" : "strong"
 }
 
