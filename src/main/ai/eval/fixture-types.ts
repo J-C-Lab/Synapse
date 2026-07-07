@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs"
-import * as path from "node:path"
+import { join } from "node:path"
 
 export interface FixtureMeta {
   id: string
@@ -11,7 +11,7 @@ export interface FixtureMeta {
 
 export interface ScoreResult {
   id: string
-  tier: string
+  tier: FixtureMeta["tier"]
   tags: string[]
   /** Whether this fixture met its expectation. */
   passed: boolean
@@ -27,9 +27,17 @@ export function loadFixtures<T extends FixtureMeta>(dir: string): T[] {
   const out: T[] = []
   for (const name of readdirSync(dir).sort()) {
     if (!name.endsWith(".json")) continue
-    const raw = JSON.parse(readFileSync(path.join(dir, name), "utf8")) as T
+    const filePath = join(dir, name)
+    let raw: T
+    try {
+      raw = JSON.parse(readFileSync(filePath, "utf8")) as T
+    } catch (err) {
+      throw new Error(
+        `Fixture ${filePath} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
     if (!raw || typeof raw.id !== "string" || !raw.id) {
-      throw new Error(`Fixture ${name} is missing an id`)
+      throw new Error(`Fixture ${filePath} is missing an id`)
     }
     out.push(raw)
   }
