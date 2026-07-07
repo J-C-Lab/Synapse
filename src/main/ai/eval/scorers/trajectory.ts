@@ -29,6 +29,10 @@ export interface TrajectoryFixture extends FixtureMeta {
 }
 
 export async function scoreTrajectory(fixture: TrajectoryFixture): Promise<ScoreResult> {
+  // The stub host always returns the same fixed text regardless of tool/input,
+  // so a fixture can assert on call sequence/success but not on tool *output*
+  // content flowing into the model's next turn. Extend this (and TrajectoryFixture)
+  // if a future fixture needs "model reacts to a specific tool result".
   const host: ToolHostPort = {
     listTools: () => fixture.tools,
     invokeTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
@@ -54,33 +58,43 @@ export async function scoreTrajectory(fixture: TrajectoryFixture): Promise<Score
     approve: (req) => ({ allowed: fixture.approvals?.[req.toolName] !== "deny" }),
   })
 
-  const fail = (detail: string): ScoreResult => ({
-    id: fixture.id,
-    tier: fixture.tier,
-    tags: fixture.tags,
-    passed: false,
-    gated: true,
-    detail,
-  })
+  const base = { id: fixture.id, tier: fixture.tier, tags: fixture.tags }
+  const detail = diffTrace(fixture.expect, trace, finalText)
+  if (detail) return { ...base, passed: false, gated: true, detail }
+  return { ...base, passed: true, gated: true }
+}
 
-  if (!trace) return fail("no trace recorded")
-  if (trace.outcome !== fixture.expect.stopReason) {
-    return fail(`stopReason ${trace.outcome} != ${fixture.expect.stopReason}`)
+/** Returns the first mismatch as a human-readable detail, or undefined if the trace matches. */
+function diffTrace(
+  expect: TrajectoryFixture["expect"],
+  trace: RunTrace | undefined,
+  finalText: string
+): string | undefined {
+  if (!trace) return "no trace recorded"
+  if (trace.outcome !== expect.stopReason) {
+    return `stopReason ${trace.outcome} != ${expect.stopReason}`
   }
-  const got = trace.toolCalls.map((c) => `${c.name}:${c.ok}`)
-  const want = fixture.expect.toolCalls.map((c) => `${c.name}:${c.ok}`)
-  if (got.join(",") !== want.join(",")) return fail(`toolCalls [${got}] != [${want}]`)
-  if (fixture.expect.workspaceId && trace.workspaceId !== fixture.expect.workspaceId) {
-    return fail(`workspaceId ${trace.workspaceId} != ${fixture.expect.workspaceId}`)
+  if (!sameToolCalls(trace.toolCalls, expect.toolCalls)) {
+    const got = trace.toolCalls.map((c) => `${c.name}:${c.ok}`)
+    const want = expect.toolCalls.map((c) => `${c.name}:${c.ok}`)
+    return `toolCalls [${got}] != [${want}]`
   }
-  if (fixture.expect.principalKind && trace.principal?.kind !== fixture.expect.principalKind) {
-    return fail(`principal ${trace.principal?.kind} != ${fixture.expect.principalKind}`)
+  if (expect.workspaceId !== undefined && trace.workspaceId !== expect.workspaceId) {
+    return `workspaceId ${trace.workspaceId} != ${expect.workspaceId}`
   }
-  if (
-    fixture.expect.finalTextMatches &&
-    !new RegExp(fixture.expect.finalTextMatches).test(finalText)
-  ) {
-    return fail(`final text did not match /${fixture.expect.finalTextMatches}/`)
+  if (expect.principalKind !== undefined && trace.principal?.kind !== expect.principalKind) {
+    return `principal ${trace.principal?.kind} != ${expect.principalKind}`
   }
-  return { id: fixture.id, tier: fixture.tier, tags: fixture.tags, passed: true, gated: true }
+  if (expect.finalTextMatches && !new RegExp(expect.finalTextMatches).test(finalText)) {
+    return `final text did not match /${expect.finalTextMatches}/`
+  }
+  return undefined
+}
+
+function sameToolCalls(
+  got: RunTrace["toolCalls"],
+  want: TrajectoryFixture["expect"]["toolCalls"]
+): boolean {
+  if (got.length !== want.length) return false
+  return got.every((call, i) => call.name === want[i]?.name && call.ok === want[i]?.ok)
 }
