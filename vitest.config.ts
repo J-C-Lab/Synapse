@@ -28,7 +28,7 @@ export default defineConfig({
   test: {
     // The e2e/ suite is Playwright (its own runner) — keep it out of Vitest,
     // which would otherwise pick up *.spec.ts and choke on @playwright/test.
-    exclude: [...configDefaults.exclude, "e2e/**"],
+    exclude: [...configDefaults.exclude, "e2e/**", "**/*.eval.ts"],
     environment: "jsdom",
     globals: false,
     setupFiles: ["./vitest.setup.ts"],

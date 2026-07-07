@@ -58,6 +58,9 @@ jobs:
       - name: Run tests with coverage
         run: pnpm test:coverage
 
+      - name: Run eval ratchet (keyless T0)
+        run: pnpm eval
+
       - name: Generate coverage summary
         if: always()
         run: |
