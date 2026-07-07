@@ -1,15 +1,18 @@
+import type { ProviderRequest } from "../providers/types"
 import { describe, expect, it } from "vitest"
 import { scriptedProvider } from "./scripted-provider"
 
+const REQUEST: ProviderRequest = {
+  model: "m",
+  system: "",
+  messages: [],
+  tools: [],
+  maxTokens: 10,
+}
+
 async function drain(provider: ReturnType<typeof scriptedProvider>) {
   const out: unknown[] = []
-  for await (const ev of provider.stream({
-    model: "m",
-    system: "",
-    messages: [],
-    tools: [],
-    maxTokens: 10,
-  } as never)) {
+  for await (const ev of provider.stream(REQUEST)) {
     out.push(ev)
   }
   return out
