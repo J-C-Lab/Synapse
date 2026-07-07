@@ -2,8 +2,10 @@ import type { PointerEvent } from "react"
 import { Search } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
+import logoDarkUrl from "@/assets/logo-dark.png"
 import logoUrl from "@/assets/logo.png"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { useTheme } from "@/hooks/use-theme"
 import {
   getSettings,
   moveFloatingBallBy,
@@ -22,6 +24,7 @@ const DRAG_THRESHOLD = 4
 
 export function FloatingBallPanel() {
   const { t } = useTranslation()
+  const { resolvedScheme } = useTheme()
   const [expanded, setExpanded] = useState(false)
   const [features, setFeatures] = useState<SynapseFloatingBallFeature[]>(["appLauncher"])
   const dragRef = useRef<{
@@ -179,7 +182,13 @@ export function FloatingBallPanel() {
         title={t("floatingBall.title")}
         className="absolute left-1/2 top-1/2 grid size-14 -translate-x-1/2 -translate-y-1/2 cursor-move place-items-center rounded-full border border-border bg-white dark:bg-popover shadow-xl transition hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <img src={logoUrl} alt="" draggable={false} className="size-8" aria-hidden />
+        <img
+          src={resolvedScheme === "dark" ? logoDarkUrl : logoUrl}
+          alt=""
+          draggable={false}
+          className="size-8"
+          aria-hidden
+        />
         <span className="sr-only">{t("floatingBall.title")}</span>
       </button>
     </div>
