@@ -1,4 +1,3 @@
-import type { ReactNode } from "react"
 import type { ImperativePanelHandle } from "react-resizable-panels"
 import type { DisplayMessage, ToolCard } from "./chat-message-model"
 import type { PlanStep } from "@/components/PlanPanel"
@@ -6,10 +5,17 @@ import type { AiChatEvent, AiConversationSummary, AiStatus, AiTokenUsage } from 
 import {
   ArrowUp,
   Bot,
+  Boxes,
   Brain,
+  ChevronDown,
   Loader2,
+  Mic,
   PanelLeft,
+  Paperclip,
+  Play,
+  Plug,
   Plus,
+  Scroll,
   Server,
   Settings,
   Wrench,
@@ -32,6 +38,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuShortcut,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import { Textarea } from "@/components/ui/textarea"
 import { WorkspaceSwitcher } from "@/components/workspace-switcher"
@@ -48,7 +65,7 @@ import {
   setAiKey,
 } from "@/lib/electron"
 import { cn } from "@/lib/utils"
-import { hydrateMessages } from "./chat-message-model"
+import { applyEvent, flushTextIntoBlocks, hydrateMessages } from "./chat-message-model"
 
 interface PendingApproval {
   approvalId: string
@@ -129,7 +146,7 @@ export function ChatPage() {
     const lastIndex = next.length - 1
     const last = next[lastIndex]
     if (last?.role === "assistant") {
-      next[lastIndex] = { ...last, text: last.text + liveTextRef.current }
+      next[lastIndex] = { ...last, blocks: flushTextIntoBlocks(last.blocks, liveTextRef.current) }
     }
     liveTextRef.current = ""
     setLiveText("")
@@ -192,6 +209,7 @@ export function ChatPage() {
     const stored = await getAiConversation(id)
     setMessages(stored ? hydrateMessages(stored.messages) : [])
     setActiveWorkspaceId(stored?.workspaceId ?? "default")
+    setPlanSteps(stored?.plan ?? [])
     setConversationLocked(true)
   }
 
@@ -237,8 +255,8 @@ export function ChatPage() {
     setLiveText("")
     setMessages((prev) => [
       ...prev,
-      { id: crypto.randomUUID(), role: "user", text, tools: [] },
-      { id: assistantId, role: "assistant", text: "", tools: [] },
+      { id: crypto.randomUUID(), role: "user", blocks: [{ kind: "text", text }] },
+      { id: assistantId, role: "assistant", blocks: [] },
     ])
     setBusy(true)
     try {
@@ -320,21 +338,18 @@ export function ChatPage() {
 
         <ResizableHandle withHandle />
 
-        <ResizablePanel minSize={45} className="min-w-0">
+        <ResizablePanel minSize={45} className="relative min-w-0">
+          {planSteps.length > 0 && (
+            <div className="absolute top-14 right-3 z-10">
+              <PlanPanel steps={planSteps} />
+            </div>
+          )}
           <div className="flex h-full min-h-0 flex-col gap-3 pl-1">
             <Header
-              model={status?.model}
               onToggleSidebar={() => setShowSidebar((value) => !value)}
               onManageMcp={() => setShowMcp(true)}
               onManageMemory={() => setShowMemory(true)}
               onOpenSettings={() => setShowSettings(true)}
-              workspaceSwitcher={
-                <WorkspaceSwitcher
-                  value={activeWorkspaceId}
-                  onChange={setActiveWorkspaceId}
-                  disabled={conversationLocked}
-                />
-              }
             />
             <McpServersDialog open={showMcp} onOpenChange={setShowMcp} />
             <MemoryDialog open={showMemory} onOpenChange={setShowMemory} />
@@ -345,56 +360,72 @@ export function ChatPage() {
               onStatusChange={setStatus}
             />
 
-            <div ref={scrollRef} className="flex-1 overflow-y-auto pr-1">
-              <div className="mx-auto w-full max-w-3xl space-y-6 px-1 py-2">
-                <PlanPanel steps={planSteps} className="mx-auto max-w-3xl" />
-                {messages.length === 0 ? (
-                  <p className="py-12 text-center text-sm text-muted-foreground">
-                    {t("chat.empty")}
-                  </p>
-                ) : (
-                  messages.map((message) => (
-                    // eslint-disable-next-line ts/no-use-before-define
-                    <MessageBubble
-                      key={message.id}
-                      message={message}
-                      liveSuffix={message.id === streamingMessageId ? liveText : undefined}
-                      isStreaming={message.id === streamingMessageId}
-                    />
-                  ))
-                )}
+            {messages.length === 0 ? (
+              <div className="flex flex-1 min-h-0 items-center justify-center overflow-y-auto px-4">
+                <EmptyStateComposer
+                  value={input}
+                  busy={busy}
+                  onChange={setInput}
+                  onSend={() => void send()}
+                  workspaceValue={activeWorkspaceId}
+                  onWorkspaceChange={setActiveWorkspaceId}
+                  workspaceLocked={conversationLocked}
+                  model={status?.model}
+                  onOpenModelSettings={() => setShowSettings(true)}
+                />
               </div>
-            </div>
+            ) : (
+              <>
+                <div ref={scrollRef} className="flex-1 overflow-y-auto pr-1">
+                  <div className="mx-auto w-full max-w-3xl space-y-6 px-1 py-2">
+                    {messages.map((message) => (
+                      // eslint-disable-next-line ts/no-use-before-define
+                      <MessageBubble
+                        key={message.id}
+                        message={message}
+                        liveSuffix={message.id === streamingMessageId ? liveText : undefined}
+                        isStreaming={message.id === streamingMessageId}
+                      />
+                    ))}
+                  </div>
+                </div>
 
-            {usage && (
-              <p className="text-right text-[11px] text-muted-foreground">
-                {t("chat.usage", {
-                  input: usage.inputTokens,
-                  output: usage.outputTokens,
-                  cached: usage.cacheReadInputTokens,
-                })}
-                {status && status.budgetTokens > 0 && (
-                  <span>
-                    {" · "}
-                    {t("chat.usageBudget", {
-                      used:
-                        usage.inputTokens +
-                        usage.outputTokens +
-                        usage.cacheCreationInputTokens +
-                        usage.cacheReadInputTokens,
-                      budget: status.budgetTokens,
+                {usage && (
+                  <p className="text-right text-[11px] text-muted-foreground">
+                    {t("chat.usage", {
+                      input: usage.inputTokens,
+                      output: usage.outputTokens,
+                      cached: usage.cacheReadInputTokens,
                     })}
-                  </span>
+                    {status && status.budgetTokens > 0 && (
+                      <span>
+                        {" · "}
+                        {t("chat.usageBudget", {
+                          used:
+                            usage.inputTokens +
+                            usage.outputTokens +
+                            usage.cacheCreationInputTokens +
+                            usage.cacheReadInputTokens,
+                          budget: status.budgetTokens,
+                        })}
+                      </span>
+                    )}
+                  </p>
                 )}
-              </p>
-            )}
 
-            <ChatComposer
-              value={input}
-              busy={busy}
-              onChange={setInput}
-              onSend={() => void send()}
-            />
+                <ChatComposer
+                  value={input}
+                  busy={busy}
+                  onChange={setInput}
+                  onSend={() => void send()}
+                  workspaceValue={activeWorkspaceId}
+                  onWorkspaceChange={setActiveWorkspaceId}
+                  workspaceLocked={conversationLocked}
+                  model={status?.model}
+                  onOpenModelSettings={() => setShowSettings(true)}
+                />
+              </>
+            )}
 
             <Dialog
               open={approval !== null}
@@ -434,90 +465,275 @@ export function ChatPage() {
   )
 }
 
-function ChatComposer({
-  value,
-  busy,
-  onChange,
-  onSend,
-}: {
-  value: string
-  busy: boolean
-  onChange: (value: string) => void
-  onSend: () => void
-}) {
-  const { t } = useTranslation()
-  const canSend = value.trim().length > 0 && !busy
+interface ComposerToolbarProps {
+  workspaceValue: string
+  onWorkspaceChange: (id: string) => void
+  workspaceLocked: boolean
+}
 
+/** The "+" attachment menu shown from the composer. Entries have no backend
+ *  yet, so they're rendered as placeholders that match the target menu shape
+ *  and can be wired up later without touching the layout. */
+function AttachMenu() {
+  const { t } = useTranslation()
   return (
-    <div className="mx-auto w-full max-w-3xl px-1 pb-1">
-      <div
-        className={cn(
-          "flex items-end gap-0.5 rounded-[28px] border border-border/80 bg-background px-2 py-1.5",
-          "shadow-sm ring-1 ring-border/40"
-        )}
-      >
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
         <Button
           type="button"
           variant="ghost"
           size="icon"
-          className="mb-0.5 size-9 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+          className="size-8 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
           aria-label={t("chat.attach")}
-          disabled
         >
           <Plus className="size-5 stroke-[1.75]" />
         </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" side="top" sideOffset={8} className="w-60">
+        <DropdownMenuItem disabled>
+          <Paperclip />
+          {t("chat.attachMenu.addFiles")}
+          <DropdownMenuShortcut>Ctrl+U</DropdownMenuShortcut>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <Scroll />
+            {t("chat.attachMenu.skills")}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            <DropdownMenuItem disabled>{t("chat.attachMenu.empty")}</DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <Boxes />
+            {t("chat.attachMenu.connectors")}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            <DropdownMenuItem disabled>{t("chat.attachMenu.empty")}</DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <Plug />
+            {t("chat.attachMenu.plugins")}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            <DropdownMenuItem disabled>{t("chat.attachMenu.empty")}</DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
 
-        <Textarea
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault()
-              if (canSend) onSend()
-            }
-          }}
-          placeholder={t("chat.placeholder")}
-          rows={1}
-          className="max-h-[200px] min-h-9 flex-1 resize-none border-0 bg-transparent px-1 py-2.5 text-[15px] leading-6 shadow-none focus-visible:ring-0"
+/** The attached footer bar that tucks in behind the elevated input pill. The
+ *  negative top margin lets the pill overlap it, and its own muted background +
+ *  shadow give the layered "attached bar" hierarchy. Act mode is a disabled
+ *  placeholder until it has a backend. */
+function ComposerToolbar({
+  workspaceValue,
+  onWorkspaceChange,
+  workspaceLocked,
+}: ComposerToolbarProps) {
+  const { t } = useTranslation()
+  return (
+    <div className="-mt-4 rounded-b-[22px] border border-t-0 border-border/50 bg-muted/50 px-4 pt-6 pb-2 shadow-sm dark:bg-white/[0.03]">
+      <div className="flex items-center gap-2">
+        <WorkspaceSwitcher
+          value={workspaceValue}
+          onChange={onWorkspaceChange}
+          disabled={workspaceLocked}
         />
-
-        <button
+        <Button
           type="button"
-          onClick={onSend}
-          disabled={!canSend}
-          aria-label={t("chat.send")}
-          className={cn(
-            "mb-0.5 flex size-9 shrink-0 items-center justify-center rounded-full transition-colors",
-            canSend
-              ? "bg-primary text-primary-foreground hover:bg-primary/90"
-              : "cursor-not-allowed bg-muted text-muted-foreground"
-          )}
+          variant="ghost"
+          size="sm"
+          className="h-7 gap-1 rounded-full px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+          disabled
         >
-          {busy ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <ArrowUp className="size-5 stroke-[2.25]" />
-          )}
-        </button>
+          <Play className="size-3" />
+          {t("chat.actMode")}
+          <ChevronDown className="size-3" />
+        </Button>
       </div>
     </div>
   )
 }
 
-function Header({
+interface ComposerPillProps {
+  value: string
+  busy: boolean
+  onChange: (value: string) => void
+  onSend: () => void
+  model?: string
+  onOpenModelSettings: () => void
+  /** Taller textarea for the centered empty-state composer. */
+  large?: boolean
+}
+
+/** The elevated input box: a full-width textarea stacked above a control row
+ *  with the attach (+) menu on the left and the model selector + mic/send on
+ *  the right. It floats above the footer bar via z-index + shadow. */
+function ComposerPill({
+  value,
+  busy,
+  onChange,
+  onSend,
   model,
+  onOpenModelSettings,
+  large,
+}: ComposerPillProps) {
+  const { t } = useTranslation()
+  const canSend = value.trim().length > 0 && !busy
+
+  return (
+    <div
+      className={cn(
+        "relative z-10 flex flex-col gap-1 rounded-[24px] border border-border/70 bg-background px-2.5 py-2 shadow-lg shadow-black/5",
+        large && "px-3 py-2.5"
+      )}
+    >
+      <Textarea
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault()
+            if (canSend) onSend()
+          }
+        }}
+        placeholder={t("chat.placeholder")}
+        rows={large ? 2 : 1}
+        className={cn(
+          "max-h-[200px] min-h-9 w-full resize-none border-0 bg-transparent px-1.5 py-1.5 text-[15px] leading-6 shadow-none focus-visible:ring-0 dark:bg-transparent",
+          large && "min-h-14 text-base"
+        )}
+      />
+
+      <div className="flex items-center gap-1.5">
+        <AttachMenu />
+
+        <div className="ml-auto flex items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1 rounded-full px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+            onClick={onOpenModelSettings}
+          >
+            {model ?? "…"}
+            <ChevronDown className="size-3" />
+          </Button>
+
+          {canSend || busy ? (
+            <button
+              type="button"
+              onClick={onSend}
+              disabled={!canSend}
+              aria-label={t("chat.send")}
+              className={cn(
+                "flex size-8 shrink-0 items-center justify-center rounded-full transition-colors",
+                canSend
+                  ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                  : "cursor-not-allowed bg-muted text-muted-foreground"
+              )}
+            >
+              {busy ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <ArrowUp className="size-4 stroke-[2.25]" />
+              )}
+            </button>
+          ) : (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+              aria-label={t("chat.voiceInput")}
+              disabled
+            >
+              <Mic className="size-4" />
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface ChatComposerProps extends ComposerToolbarProps {
+  value: string
+  busy: boolean
+  onChange: (value: string) => void
+  onSend: () => void
+  model?: string
+  onOpenModelSettings: () => void
+}
+
+/** The elevated pill plus the attached footer bar as one layered unit. */
+function Composer({
+  value,
+  busy,
+  onChange,
+  onSend,
+  model,
+  onOpenModelSettings,
+  large,
+  ...toolbar
+}: ChatComposerProps & { large?: boolean }) {
+  return (
+    <div className="relative">
+      <ComposerPill
+        value={value}
+        busy={busy}
+        onChange={onChange}
+        onSend={onSend}
+        model={model}
+        onOpenModelSettings={onOpenModelSettings}
+        large={large}
+      />
+      <ComposerToolbar {...toolbar} />
+    </div>
+  )
+}
+
+/** Bottom-docked composer for a conversation that already has messages. */
+function ChatComposer(props: ChatComposerProps) {
+  return (
+    <div className="mx-auto w-full max-w-3xl px-1 pb-1">
+      <Composer {...props} />
+    </div>
+  )
+}
+
+/** Centered, larger composer shown in place of the message list for a brand
+ *  new conversation — matches a "start a task" landing state instead of an
+ *  empty scroll region with placeholder text. */
+function EmptyStateComposer(props: ChatComposerProps) {
+  const { t } = useTranslation()
+  return (
+    <div className="mx-auto w-full max-w-2xl px-4">
+      <h1 className="mb-6 text-center text-2xl font-semibold text-foreground">
+        {t("chat.emptyHeadline")}
+      </h1>
+      <Composer {...props} large />
+    </div>
+  )
+}
+
+function Header({
   onToggleSidebar,
   onManageMcp,
   onManageMemory,
   onOpenSettings,
-  workspaceSwitcher,
 }: {
-  model?: string
   onToggleSidebar?: () => void
   onManageMcp: () => void
   onManageMemory: () => void
   onOpenSettings: () => void
-  workspaceSwitcher?: ReactNode
 }) {
   const { t } = useTranslation()
   return (
@@ -535,9 +751,7 @@ function Header({
       )}
       <Bot className="size-5 text-primary" />
       <h2 className="text-lg font-semibold">{t("chat.title")}</h2>
-      {workspaceSwitcher}
       <div className="ml-auto flex items-center gap-2">
-        {model && <span className="text-xs text-muted-foreground">{model}</span>}
         <Button variant="ghost" size="sm" onClick={onManageMcp}>
           <Server className="size-4" />
           {t("mcp.manage")}
@@ -566,24 +780,35 @@ const MessageBubble = memo(
     isStreaming?: boolean
   }) => {
     const isUser = message.role === "user"
-    const displayText = liveSuffix ? message.text + liveSuffix : message.text
 
     if (isUser) {
+      const text = message.blocks[0]?.kind === "text" ? message.blocks[0].text : ""
       return (
         <div className="flex justify-end">
           <div className="max-w-[min(85%,42rem)] rounded-[22px] bg-muted px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
-            <p className="whitespace-pre-wrap wrap-break-word">{displayText}</p>
+            <p className="whitespace-pre-wrap wrap-break-word">{text}</p>
           </div>
         </div>
       )
     }
 
+    const lastIndex = message.blocks.length - 1
+    const lastBlock = message.blocks[lastIndex]
     return (
       <div className="w-full space-y-3 text-[15px] leading-relaxed text-foreground">
-        {displayText && <Markdown streaming={isStreaming}>{displayText}</Markdown>}
-        {message.tools.map((tool) => (
-          <ToolCardView key={tool.id} tool={tool} />
-        ))}
+        {message.blocks.map((block, index) => {
+          if (block.kind === "tool") return <ToolCardView key={block.id} tool={block} />
+          const isLast = index === lastIndex
+          const text = isLast && liveSuffix ? block.text + liveSuffix : block.text
+          return text ? (
+            <Markdown key={`t${index}`} streaming={isStreaming && isLast}>
+              {text}
+            </Markdown>
+          ) : null
+        })}
+        {liveSuffix && lastBlock?.kind !== "text" && (
+          <Markdown streaming={isStreaming}>{liveSuffix}</Markdown>
+        )}
       </div>
     )
   }
@@ -608,40 +833,4 @@ function ToolCardView({ tool }: { tool: ToolCard }) {
       </div>
     </div>
   )
-}
-
-function applyEvent(messages: DisplayMessage[], event: AiChatEvent): DisplayMessage[] {
-  const next = messages.slice()
-  const lastIndex = next.length - 1
-  const last = next[lastIndex]
-  if (!last || last.role !== "assistant") return next
-
-  switch (event.type) {
-    case "tool_call":
-      next[lastIndex] = {
-        ...last,
-        tools: [
-          ...last.tools,
-          { id: event.id, name: event.name, input: event.input, status: "running" },
-        ],
-      }
-      break
-    case "tool_result":
-      next[lastIndex] = {
-        ...last,
-        tools: last.tools.map((tool) =>
-          tool.id === event.id ? { ...tool, status: event.isError ? "error" : "success" } : tool
-        ),
-      }
-      break
-    case "error":
-      next[lastIndex] = {
-        ...last,
-        text: last.text ? `${last.text}\n\n⚠️ ${event.message}` : `⚠️ ${event.message}`,
-      }
-      break
-    default:
-      break
-  }
-  return next
 }

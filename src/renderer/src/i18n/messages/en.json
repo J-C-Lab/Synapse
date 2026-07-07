@@ -25,9 +25,20 @@
   "chat": {
     "title": "Assistant",
     "empty": "Ask the assistant anything. It can call your enabled plugin tools.",
+    "emptyHeadline": "What can I help with?",
     "placeholder": "Ask anything",
     "send": "Send",
     "attach": "Add attachment",
+    "attachFolder": "Add folder context",
+    "actMode": "Act",
+    "voiceInput": "Voice input",
+    "attachMenu": {
+      "addFiles": "Add files or photos",
+      "skills": "Skills",
+      "connectors": "Connectors",
+      "plugins": "Plugins",
+      "empty": "Nothing here yet"
+    },
     "keyPrompt": "Add your API key to start chatting. It is stored encrypted on this device and never leaves the main process.",
     "saveKey": "Save key",
     "onboarding": {
