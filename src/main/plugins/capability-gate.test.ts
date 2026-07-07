@@ -122,6 +122,30 @@ describe("capabilityGate.ensure", () => {
     expect(approve).not.toHaveBeenCalled()
   })
 
+  it("per-call approves an already-granted elevated capability for an external MCP client", async () => {
+    const { gate, approve } = makeGate({
+      declared: ["clipboard:watch"],
+      granted: ["clipboard:watch"],
+      approve: async () => false,
+    })
+    await expect(
+      gate.ensure(req({ capability: "clipboard:watch", actor: "external-mcp" }))
+    ).rejects.toBeInstanceOf(CapabilityDenied)
+    expect(approve).toHaveBeenCalledOnce()
+  })
+
+  it("per-call approves an already-granted elevated capability for a subagent", async () => {
+    const { gate, approve } = makeGate({
+      declared: ["clipboard:watch"],
+      granted: ["clipboard:watch"],
+      approve: async () => false,
+    })
+    await expect(
+      gate.ensure(req({ capability: "clipboard:watch", actor: "subagent" }))
+    ).rejects.toBeInstanceOf(CapabilityDenied)
+    expect(approve).toHaveBeenCalledOnce()
+  })
+
   it("denies an unscoped capability call that carries a requestedScope", async () => {
     const { gate } = makeGate({ declared: ["clipboard:read"], granted: ["clipboard:read"] })
     await expect(

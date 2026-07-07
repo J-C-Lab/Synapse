@@ -378,6 +378,74 @@ describe("agentRuntime", () => {
     })
   })
 
+  it("backfills an internal-agent principal onto a caller supplied without one", async () => {
+    // Mirrors background-agent-runner.ts, which passes its own `caller`
+    // (kind "background-agent") but historically never stamped `principal` —
+    // silently leaving tool calls unattributed instead of internal-agent.
+    const host = fakeHost()
+    const runtime = new AgentRuntime({
+      provider: fakeProvider([
+        { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: {} }] },
+        { text: "done" },
+      ]),
+      tools: new AiToolRegistry(host),
+    })
+
+    await runtime.run({
+      conversationId: "inv-1",
+      messages: [userMessage("run")],
+      origin: "background-agent",
+      caller: { kind: "background-agent", invocationId: "inv-1", runId: "run-1" },
+    })
+
+    expect(host.invokeTool).toHaveBeenCalledWith(
+      "com.x.demo/greet",
+      {},
+      expect.objectContaining({
+        caller: expect.objectContaining({
+          kind: "background-agent",
+          principal: { kind: "internal-agent" },
+        }),
+      })
+    )
+  })
+
+  it("does not override an explicit principal already set on the supplied caller", async () => {
+    const host = fakeHost()
+    const runtime = new AgentRuntime({
+      provider: fakeProvider([
+        { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: {} }] },
+        { text: "child done" },
+      ]),
+      tools: new AiToolRegistry(host),
+    })
+
+    await runtime.run({
+      conversationId: "c1",
+      messages: [userMessage("subtask")],
+      runId: "child-1",
+      origin: "subagent",
+      parentRunId: "parent-1",
+      caller: {
+        kind: "subagent",
+        conversationId: "c1",
+        runId: "child-1",
+        parentRunId: "parent-1",
+        principal: { kind: "subagent", parentRunId: "parent-1" },
+      },
+    })
+
+    expect(host.invokeTool).toHaveBeenCalledWith(
+      "com.x.demo/greet",
+      {},
+      expect.objectContaining({
+        caller: expect.objectContaining({
+          principal: { kind: "subagent", parentRunId: "parent-1" },
+        }),
+      })
+    )
+  })
+
   it("folds the run's final plan into the recorded trace", async () => {
     const host = fakeHost()
     const recorded: RunTrace[] = []

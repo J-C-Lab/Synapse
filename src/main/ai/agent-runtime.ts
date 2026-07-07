@@ -292,15 +292,23 @@ export class AgentRuntime {
       return toolResult(call.id, "Tool call denied.", true)
     }
 
-    try {
-      const result = await this.options.tools.invoke(call.name, call.input, {
-        caller: options.caller ?? {
+    // Every caller of run() that supplies its own `caller` is still an
+    // internal Synapse origin (background-agent, subagent) — default the
+    // principal to internal-agent so it's never silently absent, but let an
+    // explicit principal on options.caller (e.g. subagent's own) win.
+    const caller: ToolCaller = options.caller
+      ? { principal: { kind: "internal-agent" }, ...options.caller }
+      : {
           kind: "agent",
           conversationId: options.conversationId,
           runId,
           principal: { kind: "internal-agent" },
           workspaceId: options.workspaceId,
-        },
+        }
+
+    try {
+      const result = await this.options.tools.invoke(call.name, call.input, {
+        caller,
         executionAuditDecision: outcome.executionAuditDecision,
         signal: options.signal,
       })
