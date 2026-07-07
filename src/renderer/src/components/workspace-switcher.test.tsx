@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WorkspaceSwitcher } from "./workspace-switcher"
 
@@ -13,13 +13,43 @@ vi.mock("@/lib/electron", () => ({
 afterEach(() => cleanup())
 
 describe("workspaceSwitcher", () => {
-  it("lists workspaces and reflects the active one", async () => {
+  it("lists workspaces and marks the active one selected", async () => {
     render(<WorkspaceSwitcher value="work" onChange={() => {}} />)
-    await waitFor(() => expect(screen.getByLabelText("Workspace")).toHaveValue("work"))
+    const trigger = await screen.findByRole("combobox", { name: "Workspace" })
+
+    fireEvent.click(trigger)
+
+    const options = await screen.findAllByRole("option")
+    expect(options.map((option) => option.textContent)).toEqual(
+      expect.arrayContaining(["Default", "Work"])
+    )
+    const active = options.find((option) => option.textContent === "Work")
+    expect(active).toHaveAttribute("aria-selected", "true")
   })
 
-  it("disables the select when locked", () => {
+  it("disables the trigger when locked", async () => {
     render(<WorkspaceSwitcher value="work" onChange={() => {}} disabled />)
-    expect(screen.getByLabelText("Workspace")).toBeDisabled()
+    expect(await screen.findByRole("combobox", { name: "Workspace" })).toBeDisabled()
+  })
+
+  it("calls onChange when a different workspace is picked", async () => {
+    const onChange = vi.fn()
+    render(<WorkspaceSwitcher value="default" onChange={onChange} />)
+    const trigger = await screen.findByRole("combobox", { name: "Workspace" })
+
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole("option", { name: "Work" }))
+
+    expect(onChange).toHaveBeenCalledWith("work")
+  })
+
+  it("switches to the inline create input when 'New workspace…' is picked", async () => {
+    render(<WorkspaceSwitcher value="default" onChange={() => {}} />)
+    const trigger = await screen.findByRole("combobox", { name: "Workspace" })
+
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole("option", { name: /New workspace/ }))
+
+    expect(await screen.findByLabelText("New workspace name")).toBeInTheDocument()
   })
 })

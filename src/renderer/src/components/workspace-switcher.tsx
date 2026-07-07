@@ -1,7 +1,18 @@
 import type { AiWorkspace } from "@/lib/electron"
+import { FolderKanban, Plus } from "lucide-react"
 import { useEffect, useState } from "react"
 import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { createAiWorkspace, listAiWorkspaces } from "@/lib/electron"
+
+const NEW_WORKSPACE_VALUE = "__new__"
 
 export function WorkspaceSwitcher({
   value,
@@ -59,22 +70,34 @@ export function WorkspaceSwitcher({
   }
 
   return (
-    <select
-      aria-label="Workspace"
-      className="rounded border bg-transparent px-2 py-1 text-sm"
+    <Select
       value={value}
       disabled={disabled}
-      onChange={(e) => {
-        if (e.target.value === "__new__") setCreating(true)
-        else onChange(e.target.value)
+      onValueChange={(next) => {
+        if (next === NEW_WORKSPACE_VALUE) setCreating(true)
+        else onChange(next)
       }}
     >
-      {workspaces.map((w) => (
-        <option key={w.id} value={w.id}>
-          {w.name}
-        </option>
-      ))}
-      {!disabled && <option value="__new__">New workspace…</option>}
-    </select>
+      <SelectTrigger aria-label="Workspace" size="sm" className="w-auto gap-1.5 text-sm">
+        <FolderKanban className="size-3.5" />
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {workspaces.map((w) => (
+          <SelectItem key={w.id} value={w.id}>
+            {w.name}
+          </SelectItem>
+        ))}
+        {!disabled && (
+          <>
+            <SelectSeparator />
+            <SelectItem value={NEW_WORKSPACE_VALUE} className="text-primary">
+              <Plus className="size-3.5" />
+              New workspace…
+            </SelectItem>
+          </>
+        )}
+      </SelectContent>
+    </Select>
   )
 }

@@ -2,7 +2,6 @@ import type { AiConversationSummary } from "@/lib/electron"
 import { MessageSquarePlus, Trash2 } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { Button } from "@/components/ui/button"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 
 export function ConversationSidebar({
@@ -26,8 +25,15 @@ export function ConversationSidebar({
         {t("chat.newConversation")}
       </Button>
 
-      <ScrollArea className="flex-1">
-        <div className="space-y-0.5 pr-1">
+      {/* Plain native scroll instead of Radix ScrollArea: ScrollArea wraps its
+          children in a `display:table` div (for scroll-size measurement) that
+          sizes to content's max-content width, which defeats `truncate`
+          no matter how many `min-w-0`s are added downstream — the row simply
+          never gets a bounded width to ellipsize within. A native overflow-y
+          container has no such quirk (same pattern as chat-page.tsx's message
+          list) and truncation genuinely tracks the panel's rendered width. */}
+      <div className="min-w-0 flex-1 overflow-y-auto">
+        <div className="min-w-0 space-y-0.5 pr-1">
           {conversations.length === 0 ? (
             <p className="px-2 py-4 text-center text-xs text-muted-foreground">
               {t("chat.noHistory")}
@@ -37,7 +43,7 @@ export function ConversationSidebar({
               <div
                 key={conversation.id}
                 className={cn(
-                  "group flex items-center gap-1 rounded-md pr-1 text-sm",
+                  "group flex min-w-0 items-center gap-1 rounded-md pr-1 text-sm",
                   conversation.id === activeId ? "bg-accent" : "hover:bg-accent/50"
                 )}
               >
@@ -51,7 +57,7 @@ export function ConversationSidebar({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="size-6 opacity-0 group-hover:opacity-100"
+                  className="size-6 shrink-0 opacity-0 group-hover:opacity-100"
                   aria-label={t("chat.deleteConversation")}
                   onClick={() => onDelete(conversation.id)}
                 >
@@ -61,7 +67,7 @@ export function ConversationSidebar({
             ))
           )}
         </div>
-      </ScrollArea>
+      </div>
     </div>
   )
 }
