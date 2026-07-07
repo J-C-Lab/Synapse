@@ -4,6 +4,7 @@ import type { ToolResilienceSettings } from "../ai/ai-settings-store"
 import type { ConversationSummary, StoredConversation } from "../ai/conversation-store"
 import type { McpServerStatus } from "../ai/mcp-client-manager"
 import type { McpServerConfig } from "../ai/mcp-server-config-store"
+import type { PlanStep } from "../ai/plan/plan-types"
 import type { ProviderToolSchema, TokenUsage } from "../ai/providers/types"
 import type { ToolStatSnapshot } from "../ai/tool-circuit-breaker"
 import type { Workspace } from "../ai/workspace/workspace-store"
@@ -27,7 +28,7 @@ export interface AiIpcService {
   listTools: () => ProviderToolSchema[]
   toolHealth: () => ToolStatSnapshot[]
   listConversations: () => Promise<ConversationSummary[]>
-  getConversation: (id: string) => Promise<StoredConversation | undefined>
+  getConversation: (id: string) => Promise<(StoredConversation & { plan?: PlanStep[] }) | undefined>
   deleteConversation: (id: string) => Promise<void>
   listWorkspaces: () => Promise<Workspace[]>
   createWorkspace: (name: string) => Promise<Workspace>

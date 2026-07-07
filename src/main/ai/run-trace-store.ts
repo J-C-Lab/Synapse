@@ -90,6 +90,18 @@ export function listRuns(
   return opts.limit !== undefined ? traces.slice(0, opts.limit) : traces
 }
 
+/**
+ * The most recent non-empty plan recorded for a conversation, so reselecting
+ * it (or reopening the app) can restore the Progress card instead of it only
+ * ever existing for the lifetime of the live run that produced it.
+ */
+export function getLatestPlan(dir: string, conversationId: string): PlanStep[] | undefined {
+  for (const trace of listRuns(dir, { conversationId })) {
+    if (trace.plan && trace.plan.length > 0) return trace.plan
+  }
+  return undefined
+}
+
 function readAll(dir: string): RunTrace[] {
   if (!existsSync(dir)) return []
   const out: RunTrace[] = []

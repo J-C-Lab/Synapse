@@ -59,7 +59,7 @@ import {
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/catalog"
 import { ResilientToolHost } from "./ai/resilient-tool-host"
 import { RunBudgetRegistry } from "./ai/run-budget-registry"
-import { recordRun as persistRunTrace } from "./ai/run-trace-store"
+import { getLatestPlan, recordRun as persistRunTrace } from "./ai/run-trace-store"
 import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
@@ -867,6 +867,7 @@ function createAgentService(): AgentService {
     approvals: new ApprovalStore(aiApprovalsFilePath(userDataDir)),
     sendEvent: broadcastAiChatEvent,
     recordRun,
+    getLatestPlan: (conversationId) => getLatestPlan(runsDir, conversationId),
     planRegistry,
     onTurnStart: ({ runId, budgetTokens }) => {
       runBudgetRegistry.set(runId, budgetTokens)

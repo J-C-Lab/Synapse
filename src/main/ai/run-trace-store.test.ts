@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { getRunTrace, listRuns, recordRun } from "./run-trace-store"
+import { getLatestPlan, getRunTrace, listRuns, recordRun } from "./run-trace-store"
 
 let dir: string
 
@@ -117,5 +117,65 @@ describe("runTraceStore", () => {
 
     const children = listRuns(dir, { parentRunId: "p" })
     expect(children.map((t) => t.runId).sort()).toEqual(["c1", "c2"])
+  })
+
+  describe("getLatestPlan", () => {
+    it("returns the newest run's plan for the conversation", () => {
+      recordRun(
+        dir,
+        trace({
+          runId: "older",
+          startedAt: 1,
+          plan: [{ title: "old step", status: "completed" }],
+        })
+      )
+      recordRun(
+        dir,
+        trace({
+          runId: "newer",
+          startedAt: 2,
+          plan: [
+            { title: "step 1", status: "completed" },
+            { title: "step 2", status: "in_progress" },
+          ],
+        })
+      )
+      expect(getLatestPlan(dir, "c1")).toEqual([
+        { title: "step 1", status: "completed" },
+        { title: "step 2", status: "in_progress" },
+      ])
+    })
+
+    it("skips runs with no plan or an empty plan to find the latest real one", () => {
+      recordRun(
+        dir,
+        trace({ runId: "has-plan", startedAt: 1, plan: [{ title: "a", status: "pending" }] })
+      )
+      recordRun(dir, trace({ runId: "no-plan", startedAt: 2 }))
+      recordRun(dir, trace({ runId: "empty-plan", startedAt: 3, plan: [] }))
+      expect(getLatestPlan(dir, "c1")).toEqual([{ title: "a", status: "pending" }])
+    })
+
+    it("returns undefined when the conversation has no run with a plan", () => {
+      recordRun(dir, trace({ runId: "no-plan" }))
+      expect(getLatestPlan(dir, "c1")).toBeUndefined()
+    })
+
+    it("returns undefined for a conversation with no runs at all", () => {
+      expect(getLatestPlan(dir, "unknown-conversation")).toBeUndefined()
+    })
+
+    it("does not leak another conversation's plan", () => {
+      recordRun(
+        dir,
+        trace({
+          runId: "other-convo",
+          conversationId: "c2",
+          startedAt: 5,
+          plan: [{ title: "not mine", status: "completed" }],
+        })
+      )
+      expect(getLatestPlan(dir, "c1")).toBeUndefined()
+    })
   })
 })

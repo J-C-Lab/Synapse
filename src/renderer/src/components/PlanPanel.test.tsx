@@ -1,6 +1,6 @@
 import type { PlanStep } from "./PlanPanel"
-import { render, screen } from "@testing-library/react"
-import { describe, expect, it } from "vitest"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { afterEach, describe, expect, it } from "vitest"
 import { PlanPanel } from "./PlanPanel"
 
 const steps: PlanStep[] = [
@@ -8,6 +8,8 @@ const steps: PlanStep[] = [
   { title: "Draft replies", status: "in_progress" },
   { title: "Send", status: "pending" },
 ]
+
+afterEach(() => cleanup())
 
 describe("planPanel", () => {
   it("renders each step title", () => {
@@ -28,5 +30,14 @@ describe("planPanel", () => {
   it("renders nothing when steps is empty", () => {
     const { container } = render(<PlanPanel steps={[]} />)
     expect(container.firstChild).toBeNull()
+  })
+
+  it("shows a completion count and collapses on trigger click", () => {
+    render(<PlanPanel steps={steps} />)
+    expect(screen.getByText("1/3")).toBeInTheDocument()
+    expect(screen.getByText("Fetch inbox")).toBeVisible()
+
+    fireEvent.click(screen.getByRole("button", { name: /Progress/ }))
+    expect(screen.queryByText("Fetch inbox")).not.toBeInTheDocument()
   })
 })
