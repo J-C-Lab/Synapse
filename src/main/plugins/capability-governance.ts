@@ -1,5 +1,10 @@
 import type { ToolCaller } from "@synapse/plugin-sdk"
-import type { CapabilityApprover, CapabilityAuditEntry, GrantPromptPort } from "./capability-gate"
+import type {
+  CapabilityActor,
+  CapabilityApprover,
+  CapabilityAuditEntry,
+  GrantPromptPort,
+} from "./capability-gate"
 import type { GrantIdentity } from "./grant-store"
 import type { PluginManifest, PluginSourceKind } from "./types"
 import { createHash } from "node:crypto"
@@ -40,12 +45,19 @@ export function buildGrantIdentity(
   }
 }
 
-/** Maps tool invocation origin to the capability actor used by `ensure()`. */
-export function callerToActor(
-  caller: ToolCaller
-): "user" | "agent" | "background" | "background-agent" {
+/**
+ * Maps tool invocation origin to the capability actor used by `ensure()`.
+ *
+ * `kind` drives the two actors with their own trigger/budget semantics
+ * (`user`, `background-agent`); everything else defers to the finer-grained
+ * `principal` so an external MCP client or a subagent isn't silently
+ * flattened into the same "agent" actor as Synapse's own chat loop.
+ */
+export function callerToActor(caller: ToolCaller): CapabilityActor {
   if (caller.kind === "user") return "user"
   if (caller.kind === "background-agent") return "background-agent"
+  if (caller.principal?.kind === "external-mcp") return "external-mcp"
+  if (caller.principal?.kind === "subagent") return "subagent"
   return "agent"
 }
 

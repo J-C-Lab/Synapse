@@ -10,7 +10,13 @@ import { getCapability } from "@synapse/plugin-manifest"
 // work. Trigger-origin calls (host-minted invocationId) require enable-time grants
 // and debit per-trigger `uses` budgets — no JIT prompt and no per-call approve.
 
-export type CapabilityActor = "user" | "agent" | "background" | "background-agent"
+export type CapabilityActor =
+  | "user"
+  | "agent"
+  | "background"
+  | "background-agent"
+  | "external-mcp"
+  | "subagent"
 
 export interface CapabilityRequest {
   capability: string
@@ -194,15 +200,15 @@ export class CapabilityGate implements CapabilityGatePort {
       }
     }
 
-    if (cap.tier === "elevated") {
-      if (
-        request.actor === "agent" ||
-        request.actor === "background" ||
-        request.actor === "background-agent"
-      ) {
-        const ok = await this.options.approve({ identity: this.options.identity, request })
-        if (!ok) deny("per-call approval refused", grantedNow)
-      }
+    // Fail-safe by default: every actor except the user sitting right in front
+    // of the prompt re-approves an elevated capability per call, even once
+    // granted. Expressed as a deny-list of "user" (not an allow-list of the
+    // non-user actors) so a future CapabilityActor addition is scrutinized by
+    // default instead of silently skipping approval until someone remembers
+    // to add it here.
+    if (cap.tier === "elevated" && request.actor !== "user") {
+      const ok = await this.options.approve({ identity: this.options.identity, request })
+      if (!ok) deny("per-call approval refused", grantedNow)
     }
 
     this.emit(request, "allow", grantedNow, "permitted", cap.tier)

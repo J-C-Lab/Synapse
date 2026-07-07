@@ -1,6 +1,7 @@
+import type { ToolCaller } from "@synapse/plugin-sdk"
 import type { PluginManifest } from "./types"
 import { describe, expect, it } from "vitest"
-import { buildGrantIdentity } from "./capability-governance"
+import { buildGrantIdentity, callerToActor } from "./capability-governance"
 
 const baseManifest: PluginManifest = {
   manifestVersion: 2,
@@ -92,5 +93,52 @@ describe("buildGrantIdentity trigger sensitivity", () => {
     const a = buildGrantIdentity("com.example.x", base as never, "user")
     const b = buildGrantIdentity("com.example.x", changed as never, "user")
     expect(a.capabilityDeclarationHash).not.toBe(b.capabilityDeclarationHash)
+  })
+})
+
+describe("callerToActor", () => {
+  it('maps a direct user invocation to "user", regardless of principal', () => {
+    const caller: ToolCaller = { kind: "user", principal: { kind: "local-user" } }
+    expect(callerToActor(caller)).toBe("user")
+  })
+
+  it('maps a trigger-driven background-agent run to "background-agent"', () => {
+    const caller: ToolCaller = {
+      kind: "background-agent",
+      invocationId: "inv-1",
+      principal: { kind: "internal-agent" },
+    }
+    expect(callerToActor(caller)).toBe("background-agent")
+  })
+
+  it('maps the built-in chat agent to "agent"', () => {
+    const caller: ToolCaller = {
+      kind: "agent",
+      conversationId: "c1",
+      principal: { kind: "internal-agent" },
+    }
+    expect(callerToActor(caller)).toBe("agent")
+  })
+
+  it('does not collapse an external MCP client into "agent"', () => {
+    const caller: ToolCaller = {
+      kind: "mcp",
+      principal: { kind: "external-mcp", clientId: "claude-desktop" },
+    }
+    expect(callerToActor(caller)).toBe("external-mcp")
+  })
+
+  it('does not collapse a subagent into "agent"', () => {
+    const caller: ToolCaller = {
+      kind: "subagent",
+      parentRunId: "parent-1",
+      principal: { kind: "subagent", parentRunId: "parent-1" },
+    }
+    expect(callerToActor(caller)).toBe("subagent")
+  })
+
+  it('falls back to "agent" when a non-user, non-background-agent caller has no principal', () => {
+    const caller: ToolCaller = { kind: "mcp" }
+    expect(callerToActor(caller)).toBe("agent")
   })
 })
