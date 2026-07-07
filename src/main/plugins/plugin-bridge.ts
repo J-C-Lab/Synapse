@@ -320,6 +320,8 @@ export class PluginBridge {
       isTriggerOrigin: this.budgetBreaker?.isTriggerOrigin(invocation.invocationId) ?? false,
       allowedUses: invRecord?.allowedUses,
       runId: invocation.runId,
+      principal: invocation.principal,
+      workspaceId: invocation.workspaceId,
     })
     const fetcher = createNetworkFetcher({
       gate,
@@ -328,6 +330,8 @@ export class PluginBridge {
       pluginId,
       invocationId: invocation.invocationId,
       runId: invocation.runId,
+      principal: invocation.principal,
+      workspaceId: invocation.workspaceId,
       injectCredential,
     })
     this.registerFetcher(pluginId, fetcher)

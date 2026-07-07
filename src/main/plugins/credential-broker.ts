@@ -4,7 +4,7 @@ import type {
   CredentialInjectScheme,
   TriggerUse,
 } from "@synapse/plugin-manifest"
-import type { CredentialStatus } from "@synapse/plugin-sdk"
+import type { CredentialStatus, ToolPrincipal } from "@synapse/plugin-sdk"
 import type { CapabilityAuditEntry } from "./capability-gate"
 import type { InjectionRequest } from "./credential-injector"
 import type { SecretPromptPort } from "./credential-secret-prompt"
@@ -350,6 +350,8 @@ export class CredentialBroker {
     isTriggerOrigin: boolean
     allowedUses?: readonly TriggerUse[]
     runId?: string
+    principal?: ToolPrincipal
+    workspaceId?: string
   }): (
     request: InjectionRequest,
     pluginHeaders: Record<string, string>
@@ -414,6 +416,8 @@ export class CredentialBroker {
               credentialId: entry.credentialId,
             },
             runId: args.runId,
+            principal: args.principal,
+            workspaceId: args.workspaceId,
           })
         }
         return injected
@@ -447,7 +451,15 @@ export class CredentialBroker {
     pluginId: string,
     partial: Pick<
       CapabilityAuditEntry,
-      "capabilityId" | "decision" | "actor" | "trigger" | "operation" | "requestedScope" | "runId"
+      | "capabilityId"
+      | "decision"
+      | "actor"
+      | "trigger"
+      | "operation"
+      | "requestedScope"
+      | "runId"
+      | "principal"
+      | "workspaceId"
     >
   ): void {
     this.options.audit?.({
@@ -463,6 +475,8 @@ export class CredentialBroker {
       grantedNow: false,
       why: "credential-broker",
       ...(partial.runId !== undefined ? { runId: partial.runId } : {}),
+      ...(partial.principal !== undefined ? { principal: partial.principal } : {}),
+      ...(partial.workspaceId !== undefined ? { workspaceId: partial.workspaceId } : {}),
     })
   }
 }
