@@ -1,6 +1,8 @@
+import type { MemoryEntry } from "../ai/memory/memory-store"
 import type { RunTrace } from "../ai/run-trace-store"
 import type { ToolHostPort } from "../ai/tool-registry"
 import type { RegisteredToolDescriptor } from "../plugins/types"
+import type { MemoryResourcePort } from "./synapse-mcp-server"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { describe, expect, it, vi } from "vitest"
@@ -170,5 +172,133 @@ describe("synapseMcpToolService", () => {
         }),
       })
     )
+  })
+})
+
+function fakeMemory(entries: MemoryEntry[]): MemoryResourcePort {
+  return {
+    list: async (limit, scope) =>
+      entries
+        .filter((e) =>
+          scope.includeGlobal
+            ? e.scope.visibility === "global" || e.scope.workspaceId === scope.workspaceId
+            : e.scope.workspaceId === scope.workspaceId
+        )
+        .slice(0, limit),
+    get: async (id, scope) => {
+      const entry = entries.find((e) => e.id === id)
+      if (!entry) return undefined
+      const visible = scope.includeGlobal
+        ? entry.scope.visibility === "global" || entry.scope.workspaceId === scope.workspaceId
+        : entry.scope.workspaceId === scope.workspaceId
+      return visible ? entry : undefined
+    },
+  }
+}
+
+function memoryEntry(overrides: Partial<MemoryEntry> = {}): MemoryEntry {
+  return {
+    id: "m1",
+    text: "a saved fact",
+    tags: [],
+    createdAt: 1,
+    scope: { visibility: "workspace", workspaceId: "ws-external" },
+    ...overrides,
+  }
+}
+
+describe("synapseMcpToolService resources", () => {
+  it("lists memory entries visible to the bound workspace as resources", async () => {
+    const service = new SynapseMcpToolService(host([]), {
+      workspaceId: "ws-external",
+      memory: fakeMemory([
+        memoryEntry({ id: "m1", text: "in scope" }),
+        memoryEntry({
+          id: "m2",
+          text: "other workspace",
+          scope: { visibility: "workspace", workspaceId: "ws-other" },
+        }),
+      ]),
+    })
+
+    const result = await service.listResources()
+    expect(result.resources).toHaveLength(1)
+    expect(result.resources[0]).toMatchObject({
+      uri: "synapse://memory/m1",
+      name: "in scope",
+      mimeType: "text/plain",
+    })
+  })
+
+  it("excludes global memories by default (includeGlobal defaults false)", async () => {
+    const service = new SynapseMcpToolService(host([]), {
+      workspaceId: "ws-external",
+      memory: fakeMemory([memoryEntry({ id: "m1", scope: { visibility: "global" } })]),
+    })
+    expect((await service.listResources()).resources).toHaveLength(0)
+  })
+
+  it("includes global memories when memoryIncludeGlobal is explicitly true", async () => {
+    const service = new SynapseMcpToolService(host([]), {
+      workspaceId: "ws-external",
+      memory: fakeMemory([memoryEntry({ id: "m1", scope: { visibility: "global" } })]),
+      memoryIncludeGlobal: true,
+    })
+    expect((await service.listResources()).resources).toHaveLength(1)
+  })
+
+  it("reads a visible resource's text by uri", async () => {
+    const service = new SynapseMcpToolService(host([]), {
+      workspaceId: "ws-external",
+      memory: fakeMemory([memoryEntry({ id: "m1", text: "the actual text" })]),
+    })
+
+    const result = await service.readResource("synapse://memory/m1")
+    expect(result).toEqual({
+      contents: [{ uri: "synapse://memory/m1", mimeType: "text/plain", text: "the actual text" }],
+    })
+  })
+
+  it("throws for a resource outside the bound scope, even with a guessed valid id", async () => {
+    const service = new SynapseMcpToolService(host([]), {
+      workspaceId: "ws-external",
+      memory: fakeMemory([
+        memoryEntry({ id: "m1", scope: { visibility: "workspace", workspaceId: "ws-other" } }),
+      ]),
+    })
+    await expect(service.readResource("synapse://memory/m1")).rejects.toThrow()
+  })
+
+  it("throws for an unknown uri shape", async () => {
+    const service = new SynapseMcpToolService(host([]), { memory: fakeMemory([]) })
+    await expect(service.readResource("not-a-synapse-uri")).rejects.toThrow()
+  })
+
+  it("records an mcp RunTrace for both listResources and readResource", async () => {
+    const traces: RunTrace[] = []
+    const service = new SynapseMcpToolService(host([]), {
+      recordRun: (trace) => traces.push(trace),
+      workspaceId: "ws-external",
+      clientId: "claude-desktop",
+      memory: fakeMemory([memoryEntry({ id: "m1" })]),
+    })
+
+    await service.listResources()
+    await service.readResource("synapse://memory/m1")
+
+    expect(traces).toHaveLength(2)
+    for (const t of traces) {
+      expect(t).toMatchObject({
+        origin: "mcp",
+        principal: { kind: "external-mcp", clientId: "claude-desktop" },
+        workspaceId: "ws-external",
+        outcome: "end_turn",
+      })
+    }
+  })
+
+  it("returns an empty resource list when no memory port is configured", async () => {
+    const service = new SynapseMcpToolService(host([]))
+    expect(await service.listResources()).toEqual({ resources: [] })
   })
 })
