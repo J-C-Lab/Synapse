@@ -2,6 +2,7 @@ import type { PluginBridgeAdapters } from "../plugins/plugin-bridge"
 import * as os from "node:os"
 import * as path from "node:path"
 import process from "node:process"
+import { recordRun } from "../ai/run-trace-store"
 import { PluginHost } from "../plugins/plugin-host"
 import { resolveStdioUserDataDir } from "./stdio-paths"
 import { runSynapseMcpStdioServer } from "./synapse-mcp-server"
@@ -49,7 +50,12 @@ async function main(): Promise<void> {
   })
 
   await host.init()
-  const server = await runSynapseMcpStdioServer(host, { version: process.env.npm_package_version })
+  const runsDir = path.join(userDataDir, "logs", "runs")
+  const server = await runSynapseMcpStdioServer(host, {
+    version: process.env.npm_package_version,
+    recordRun: (trace) => recordRun(runsDir, trace),
+    workspaceId: process.env.SYNAPSE_MCP_WORKSPACE?.trim() || "external",
+  })
 
   let closing = false
   const shutdown = (): void => {

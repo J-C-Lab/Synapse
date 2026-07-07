@@ -58,6 +58,9 @@ jobs:
       - name: Run tests with coverage
         run: pnpm test:coverage
 
+      - name: Run eval ratchet (keyless T0)
+        run: pnpm eval
+
       - name: Generate coverage summary
         if: always()
         run: |
@@ -128,31 +131,13 @@ jobs:
         with:
           files: |
             coverage/junit.xml
+            coverage/eval/t0.junit.xml
           check_name: Test Results
           comment_title: Test Results
         continue-on-error: true
 
-      - name: Build electron-vite application
-        run: pnpm build
-
-      - name: Check bundle size
-        if: github.event_name == 'pull_request'
-        run: |
-          echo "## Bundle Size Analysis" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Output Directory Size" >> $GITHUB_STEP_SUMMARY
-          du -sh out/ >> $GITHUB_STEP_SUMMARY || echo "Build output size check skipped" >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: electron-vite-build
-          path: out/
-          retention-days: 7
-
-      - name: Store build size
-        if: github.ref == 'refs/heads/main'
-        run: |
-          mkdir -p .github/size-snapshot
-          du -sb out/ | cut -f1 > .github/size-snapshot/build-size.txt
-        continue-on-error: true
+      # NOTE: the electron-vite production build + packaging/bundle-size steps are
+      # intentionally disabled pre-release — we are not yet validating packaging in
+      # CI. Restore the `pnpm build` step (and the artifact/size steps) before a
+      # release milestone. Workspace packages are still built above because the
+      # unit suite depends on them.

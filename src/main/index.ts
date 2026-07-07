@@ -63,6 +63,7 @@ import { recordRun as persistRunTrace } from "./ai/run-trace-store"
 import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
+import { WorkspaceStore } from "./ai/workspace/workspace-store"
 import {
   destroyFloatingBallWindow,
   hideFloatingBallWindow,
@@ -860,6 +861,7 @@ function createAgentService(): AgentService {
         input: ctx.input,
       }),
     conversations: new ConversationStore(path.join(userDataDir, "ai", "conversations")),
+    workspaces: new WorkspaceStore(path.join(userDataDir, "ai")),
     providers: defaultProviderCatalog(),
     settings: aiSettings,
     approvals: new ApprovalStore(aiApprovalsFilePath(userDataDir)),

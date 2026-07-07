@@ -1,3 +1,4 @@
+import type { ToolPrincipal } from "@synapse/plugin-sdk"
 import type { PlanStep } from "./plan/plan-types"
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import * as path from "node:path"
@@ -25,7 +26,9 @@ export interface RunTrace {
   conversationId?: string
   invocationId?: string
   parentRunId?: string
-  origin: "interactive" | "background-agent" | "subagent"
+  origin: "interactive" | "background-agent" | "subagent" | "mcp"
+  principal?: ToolPrincipal
+  workspaceId?: string
   startedAt: number
   endedAt: number
   outcome: "end_turn" | "max_steps" | "aborted" | "budget_exceeded" | "error"

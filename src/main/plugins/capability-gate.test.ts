@@ -191,6 +191,39 @@ describe("capabilityGate.ensure", () => {
     await gate.ensure(req({ runId: "child-run", actor: "agent" }))
     expect(audit[0]).toMatchObject({ runId: "child-run" })
   })
+
+  it("copies principal and workspaceId onto the audited entry", async () => {
+    const audited: CapabilityAuditEntry[] = []
+    const gate = new CapabilityGate({
+      identity: {
+        pluginId: "com.x",
+        publisherId: "pub",
+        signingKeyFingerprint: "fp",
+        capabilityDeclarationHash: "hash",
+      },
+      declared: [{ id: "storage:plugin" }],
+      grants: { isGranted: async () => true, grant: async () => {} },
+      prompt: async () => true,
+      approve: async () => true,
+      audit: (entry) => audited.push(entry),
+    })
+
+    await gate.ensure({
+      capability: "storage:plugin",
+      actor: "agent",
+      trigger: "tool:read_probe",
+      operation: "read",
+      principal: { kind: "external-mcp", clientId: "claude-desktop" },
+      workspaceId: "ws-external",
+    })
+
+    expect(audited).toHaveLength(1)
+    expect(audited[0]).toMatchObject({
+      decision: "allow",
+      principal: { kind: "external-mcp", clientId: "claude-desktop" },
+      workspaceId: "ws-external",
+    })
+  })
 })
 
 describe("capabilityGate.assertDeclared", () => {

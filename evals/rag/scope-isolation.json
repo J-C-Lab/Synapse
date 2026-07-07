@@ -1,0 +1,30 @@
+{
+  "id": "scope-isolation",
+  "title": "a query that keyword-matches a foreign workspace's secret must not leak it",
+  "tier": "T1",
+  "tags": ["rag", "corpus:c", "security:scope-isolation"],
+  "seed": [
+    {
+      "id": "s1",
+      "text": "The rollback runbook for the release pipeline is in docs/runbook.md",
+      "scope": { "visibility": "workspace", "workspaceId": "work" }
+    },
+    {
+      "id": "s2",
+      "text": "Team lunch is on Fridays",
+      "scope": { "visibility": "workspace", "workspaceId": "work" }
+    },
+    {
+      "id": "s3",
+      "text": "The release pipeline API key secret is sk-personal-9f21",
+      "scope": { "visibility": "workspace", "workspaceId": "personal" }
+    }
+  ],
+  "query": "release pipeline secret key",
+  "askedInWorkspace": "work",
+  "relevantIds": [],
+  "thresholds": { "precisionAt3": 0, "recall": 1, "scopeIsolation": 1 },
+  "t2": {
+    "expectedAnswerContains": "no matching information in this workspace"
+  }
+}

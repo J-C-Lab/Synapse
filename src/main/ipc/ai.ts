@@ -6,6 +6,7 @@ import type { McpServerStatus } from "../ai/mcp-client-manager"
 import type { McpServerConfig } from "../ai/mcp-server-config-store"
 import type { ProviderToolSchema, TokenUsage } from "../ai/providers/types"
 import type { ToolStatSnapshot } from "../ai/tool-circuit-breaker"
+import type { Workspace } from "../ai/workspace/workspace-store"
 import { logger } from "../logging"
 import { withCapabilityPromptTarget } from "./capability-prompt-router"
 
@@ -28,6 +29,9 @@ export interface AiIpcService {
   listConversations: () => Promise<ConversationSummary[]>
   getConversation: (id: string) => Promise<StoredConversation | undefined>
   deleteConversation: (id: string) => Promise<void>
+  listWorkspaces: () => Promise<Workspace[]>
+  createWorkspace: (name: string) => Promise<Workspace>
+  createConversation: (workspaceId: string) => Promise<{ id: string; workspaceId: string }>
   chat: (conversationId: string, text: string) => Promise<{ stopReason: string; usage: TokenUsage }>
   cancel: (conversationId: string) => void
   resolveApproval: (
@@ -111,6 +115,18 @@ export function registerAiIpc(
   ipcMain.handle("ai:delete-conversation", (event, id: unknown) => {
     guard(event, "ai:delete-conversation")
     return service.deleteConversation(requireString(id, "id"))
+  })
+  ipcMain.handle("ai:list-workspaces", (event) => {
+    guard(event, "ai:list-workspaces")
+    return service.listWorkspaces()
+  })
+  ipcMain.handle("ai:create-workspace", (event, payload: unknown) => {
+    guard(event, "ai:create-workspace")
+    return service.createWorkspace(coerceCreateWorkspace(payload).name)
+  })
+  ipcMain.handle("ai:create-conversation", (event, payload: unknown) => {
+    guard(event, "ai:create-conversation")
+    return service.createConversation(coerceCreateConversation(payload).workspaceId)
   })
   ipcMain.handle("ai:chat", (event, payload: unknown) => {
     guard(event, "ai:chat")
@@ -253,6 +269,20 @@ export function coerceChat(payload: unknown): { conversationId: string; text: st
     conversationId: requireString(v.conversationId, "conversationId"),
     text: requireString(v.text, "text"),
   }
+}
+
+export function coerceCreateWorkspace(payload: unknown): { name: string } {
+  if (!payload || typeof payload !== "object") throw new Error("payload must be an object")
+  const v = payload as Record<string, unknown>
+  const name = requireString(v.name, "name").trim()
+  if (!name) throw new Error("name is required")
+  return { name }
+}
+
+export function coerceCreateConversation(payload: unknown): { workspaceId: string } {
+  if (!payload || typeof payload !== "object") throw new Error("payload must be an object")
+  const v = payload as Record<string, unknown>
+  return { workspaceId: requireString(v.workspaceId, "workspaceId") }
 }
 
 export function coerceApprove(payload: unknown): {

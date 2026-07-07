@@ -1,5 +1,12 @@
 import type { PluginContext } from "./context"
 
+/** Who ultimately initiated a call — the anchor for scope, approval, and audit. */
+export type ToolPrincipal =
+  | { kind: "local-user" }
+  | { kind: "internal-agent" }
+  | { kind: "external-mcp"; clientId?: string }
+  | { kind: "subagent"; parentRunId: string }
+
 /**
  * Where a tool invocation originated.
  *
@@ -20,7 +27,9 @@ export interface ToolCaller {
   runId?: string
   /** The parent run that spawned this subagent run. Set only for kind "subagent". */
   parentRunId?: string
-  /** Future per-conversation workspace binding; absent today means global memory scope. */
+  /** Who initiated this call. Absent ⇒ treated as { kind: "local-user" }. */
+  principal?: ToolPrincipal
+  /** The workspace this call is bound to. Absent ⇒ global scope. */
   workspaceId?: string
 }
 

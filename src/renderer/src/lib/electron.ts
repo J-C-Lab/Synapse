@@ -484,6 +484,7 @@ export type AiStatus = SynapseAiStatus
 export type AiProviderStatus = SynapseAiProviderStatus
 export type AiTool = SynapseAiTool
 export type AiConversationSummary = SynapseAiConversationSummary
+export type AiWorkspace = SynapseAiWorkspace
 export type AiConversation = SynapseAiConversation
 export type AiChatMessage = SynapseAiChatMessage
 export type AiChatEvent = SynapseAiChatEvent
@@ -552,6 +553,20 @@ export async function getAiConversation(id: string): Promise<AiConversation | un
 
 export async function deleteAiConversation(id: string): Promise<void> {
   await api().deleteAiConversation(id)
+}
+
+export async function listAiWorkspaces(): Promise<AiWorkspace[]> {
+  return api().listAiWorkspaces()
+}
+
+export async function createAiWorkspace(name: string): Promise<AiWorkspace> {
+  return api().createAiWorkspace(name)
+}
+
+export async function createAiConversation(
+  workspaceId: string
+): Promise<{ id: string; workspaceId: string }> {
+  return api().createAiConversation(workspaceId)
 }
 
 export async function sendAiChat(

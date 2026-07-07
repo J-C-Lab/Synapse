@@ -66,7 +66,14 @@ export type {
 
 export { CredentialNotConnectedError } from "./network"
 
-export type { ToolCaller, ToolContentBlock, ToolContext, ToolHandler, ToolResult } from "./tools"
+export type {
+  ToolCaller,
+  ToolContentBlock,
+  ToolContext,
+  ToolHandler,
+  ToolPrincipal,
+  ToolResult,
+} from "./tools"
 
 export type {
   CheckboxField,

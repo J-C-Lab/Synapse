@@ -1,3 +1,4 @@
+import type { RunTrace } from "../ai/run-trace-store"
 import type { ToolHostPort } from "../ai/tool-registry"
 import type { RegisteredToolDescriptor } from "../plugins/types"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -71,7 +72,7 @@ describe("synapseMcpToolService", () => {
     expect(h.invokeTool).toHaveBeenCalledWith(
       "com.example.safe/greet",
       { name: "Ada" },
-      expect.objectContaining({ caller: { kind: "mcp" } })
+      expect.objectContaining({ caller: expect.objectContaining({ kind: "mcp" }) })
     )
     expect(result).toMatchObject({
       content: [
@@ -103,7 +104,7 @@ describe("synapseMcpToolService", () => {
     expect(h.invokeTool).toHaveBeenCalledWith(
       "com.example.risky/delete",
       {},
-      expect.objectContaining({ caller: { kind: "mcp" } })
+      expect.objectContaining({ caller: expect.objectContaining({ kind: "mcp" }) })
     )
   })
 
@@ -131,11 +132,43 @@ describe("synapseMcpToolService", () => {
       expect(h.invokeTool).toHaveBeenCalledWith(
         "com.example.safe/greet",
         { name: "Ada" },
-        expect.objectContaining({ caller: { kind: "mcp" } })
+        expect.objectContaining({ caller: expect.objectContaining({ kind: "mcp" }) })
       )
     } finally {
       await client.close()
       await server.close()
     }
+  })
+
+  it("opens a run and records an mcp trace with an external-mcp principal", async () => {
+    const traces: RunTrace[] = []
+    const h = host([descriptor("com.example.safe/greet", { readOnlyHint: true })])
+    const service = new SynapseMcpToolService(h, {
+      recordRun: (trace) => traces.push(trace),
+      workspaceId: "ws-external",
+      clientId: "claude-desktop",
+    })
+
+    await service.callTool("com_example_safe_greet", { name: "Ada" })
+
+    expect(traces).toHaveLength(1)
+    expect(traces[0]).toMatchObject({
+      origin: "mcp",
+      principal: { kind: "external-mcp", clientId: "claude-desktop" },
+      workspaceId: "ws-external",
+      outcome: "end_turn",
+    })
+    expect(traces[0].toolCalls[0]).toMatchObject({ name: "com.example.safe/greet", ok: true })
+    expect(h.invokeTool).toHaveBeenCalledWith(
+      "com.example.safe/greet",
+      { name: "Ada" },
+      expect.objectContaining({
+        caller: expect.objectContaining({
+          kind: "mcp",
+          principal: { kind: "external-mcp", clientId: "claude-desktop" },
+          workspaceId: "ws-external",
+        }),
+      })
+    )
   })
 })

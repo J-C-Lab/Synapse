@@ -60,6 +60,7 @@ export class SubagentRunner {
         conversationId: input.parentConversationId,
         runId: childRunId,
         parentRunId: input.parentRunId,
+        principal: { kind: "subagent", parentRunId: input.parentRunId },
       },
     })
 

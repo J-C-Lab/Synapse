@@ -326,15 +326,23 @@ declare global {
     content: SynapseAiChatContentBlock[]
   }
 
+  interface SynapseAiWorkspace {
+    id: string
+    name: string
+    createdAt: number
+  }
+
   interface SynapseAiConversationSummary {
     id: string
     title?: string
+    workspaceId: string
     updatedAt: number
   }
 
   interface SynapseAiConversation {
     id: string
     title?: string
+    workspaceId: string
     messages: SynapseAiChatMessage[]
     createdAt: number
     updatedAt: number
@@ -653,6 +661,9 @@ declare global {
       listAiConversations: () => Promise<SynapseAiConversationSummary[]>
       getAiConversation: (id: string) => Promise<SynapseAiConversation | undefined>
       deleteAiConversation: (id: string) => Promise<void>
+      listAiWorkspaces: () => Promise<SynapseAiWorkspace[]>
+      createAiWorkspace: (name: string) => Promise<SynapseAiWorkspace>
+      createAiConversation: (workspaceId: string) => Promise<{ id: string; workspaceId: string }>
       sendAiChat: (
         conversationId: string,
         text: string

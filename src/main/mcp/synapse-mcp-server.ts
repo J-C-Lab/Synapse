@@ -5,8 +5,10 @@ import type {
 } from "@modelcontextprotocol/sdk/types.js"
 import type { JsonSchema } from "@synapse/plugin-manifest"
 import type { ToolResult } from "@synapse/plugin-sdk"
+import type { RunTrace } from "../ai/run-trace-store"
 import type { ToolHostPort } from "../ai/tool-registry"
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../plugins/types"
+import { randomUUID } from "node:crypto"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
@@ -17,6 +19,12 @@ export type McpToolExposurePolicy = "readOnlyOnly" | "all"
 
 export interface SynapseMcpToolServiceOptions {
   exposurePolicy?: McpToolExposurePolicy
+  /** Writes a per-call RunTrace when set (the substrate's trace port). */
+  recordRun?: (trace: RunTrace) => void
+  /** Default workspace every external call is bound to. */
+  workspaceId?: string
+  /** Identifies the external MCP client (from `initialize`), for the principal. */
+  clientId?: string
 }
 
 export interface SynapseMcpServerOptions extends SynapseMcpToolServiceOptions {
@@ -75,17 +83,49 @@ export class SynapseMcpToolService {
       return errorResult(`Synapse MCP policy does not expose tool: ${entry.descriptor.fqName}`)
     }
 
+    const runId = randomUUID()
+    const startedAt = Date.now()
+    const principal = { kind: "external-mcp" as const, clientId: this.options.clientId }
     try {
-      return toMcpResult(
+      const result = toMcpResult(
         await this.host.invokeTool(entry.descriptor.fqName, input, {
-          caller: { kind: "mcp" },
+          caller: {
+            kind: "mcp",
+            runId,
+            principal,
+            workspaceId: this.options.workspaceId,
+          },
           signal: options.signal,
           progress: options.progress,
         })
       )
+      this.recordRun(entry, runId, principal, startedAt, !result.isError)
+      return result
     } catch (err) {
+      this.recordRun(entry, runId, principal, startedAt, false)
       return errorResult(err instanceof Error ? err.message : String(err))
     }
+  }
+
+  private recordRun(
+    entry: McpToolEntry,
+    runId: string,
+    principal: { kind: "external-mcp"; clientId?: string },
+    startedAt: number,
+    ok: boolean
+  ): void {
+    if (!this.options.recordRun) return
+    const endedAt = Date.now()
+    this.options.recordRun({
+      runId,
+      origin: "mcp",
+      principal,
+      workspaceId: this.options.workspaceId,
+      startedAt,
+      endedAt,
+      outcome: ok ? "end_turn" : "error",
+      toolCalls: [{ name: entry.descriptor.fqName, startedAt, ms: endedAt - startedAt, ok }],
+    })
   }
 
   private refresh(): McpToolEntry[] {

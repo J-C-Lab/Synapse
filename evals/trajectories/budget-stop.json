@@ -1,0 +1,29 @@
+{
+  "id": "budget-stop",
+  "title": "A run that exceeds its token budget stops with budget_exceeded",
+  "tier": "T0",
+  "tags": ["trajectory", "budget"],
+  "tools": [
+    {
+      "fqName": "com.probe/greet",
+      "pluginId": "com.probe",
+      "manifestTool": {
+        "name": "greet",
+        "description": "greet",
+        "inputSchema": { "type": "object", "properties": {} },
+        "annotations": { "readOnlyHint": true }
+      }
+    }
+  ],
+  "budgetTokens": 500,
+  "script": [
+    {
+      "toolUses": [{ "id": "t1", "name": "com_probe_greet", "input": {} }],
+      "usage": { "outputTokens": 1000 }
+    }
+  ],
+  "expect": {
+    "toolCalls": [{ "name": "com.probe/greet", "ok": true }],
+    "stopReason": "budget_exceeded"
+  }
+}

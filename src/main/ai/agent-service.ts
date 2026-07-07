@@ -18,6 +18,7 @@ import type { ChatMessage, ChatProvider, ProviderToolSchema, TokenUsage } from "
 import type { RunTrace } from "./run-trace-store"
 import type { ToolStatSnapshot } from "./tool-circuit-breaker"
 import type { AiToolRegistry } from "./tool-registry"
+import type { Workspace, WorkspaceStore } from "./workspace/workspace-store"
 import { randomUUID } from "node:crypto"
 import { logger } from "../logging"
 import { AgentRuntime } from "./agent-runtime"
@@ -27,6 +28,7 @@ import { ContextCompressor } from "./context/context-compressor"
 import { summarizeViaProvider } from "./context/summarize-via-provider"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./providers/catalog"
+import { DEFAULT_WORKSPACE } from "./workspace/workspace-store"
 
 // Assembles the AI pieces (credentials + provider catalog + tools + runtime +
 // stores) into the surface the IPC layer drives. Owns provider selection (BYOK,
@@ -62,6 +64,7 @@ export interface AgentServiceOptions {
   credentials: AiCredentialStore
   tools: AiToolRegistry
   conversations: ConversationStore
+  workspaces?: Pick<WorkspaceStore, "exists"> & Partial<Pick<WorkspaceStore, "list" | "create">>
   sendEvent: (event: AiChatEvent) => void
   /** Policy hook that can hard-deny or auto-allow before the annotation gate. */
   approvalResolver?: (context: ToolApprovalContext) => Promise<ApprovalDecision | undefined>
@@ -314,6 +317,30 @@ export class AgentService {
     return this.options.conversations.get(id)
   }
 
+  listWorkspaces(): Promise<Workspace[]> {
+    if (!this.options.workspaces?.list) return Promise.resolve([DEFAULT_WORKSPACE])
+    return this.options.workspaces.list()
+  }
+
+  createWorkspace(name: string): Promise<Workspace> {
+    if (!this.options.workspaces?.create) throw new Error("Workspace store not configured")
+    return this.options.workspaces.create(name)
+  }
+
+  async createConversation(workspaceId: string): Promise<{ id: string; workspaceId: string }> {
+    const ok = (await this.options.workspaces?.exists(workspaceId)) ?? workspaceId === "default"
+    if (!ok) throw new Error(`Unknown workspace: ${workspaceId}`)
+    const id = randomUUID()
+    await this.options.conversations.save({
+      id,
+      workspaceId,
+      messages: [],
+      createdAt: this.now(),
+      updatedAt: this.now(),
+    })
+    return { id, workspaceId }
+  }
+
   /** Delete a stored conversation. Cancels it first if a turn is in flight. */
   async deleteConversation(id: string): Promise<void> {
     this.cancel(id)
@@ -361,6 +388,7 @@ export class AgentService {
     })
 
     const existing = await this.options.conversations.get(conversationId)
+    const workspaceId = existing?.workspaceId ?? "default"
     const messages: ChatMessage[] = existing?.messages ? [...existing.messages] : []
     messages.push({ role: "user", content: [{ type: "text", text }] })
 
@@ -376,6 +404,7 @@ export class AgentService {
         conversationId,
         runId,
         messages,
+        workspaceId,
         signal: controller.signal,
         onText: (delta) => textBatcher.push(delta),
         onEvent: (event) => {
@@ -385,7 +414,7 @@ export class AgentService {
         approve: (request) => this.approve(conversationId, request.toolName, request.input),
       })
       textBatcher.flush()
-      await this.persist(conversationId, existing, result.messages)
+      await this.persist(conversationId, existing, result.messages, workspaceId)
       this.options.sendEvent({
         type: "done",
         conversationId,
@@ -526,11 +555,13 @@ export class AgentService {
   private async persist(
     conversationId: string,
     existing: StoredConversation | undefined,
-    messages: ChatMessage[]
+    messages: ChatMessage[],
+    workspaceId: string
   ): Promise<void> {
     await this.options.conversations.save({
       id: conversationId,
       title: existing?.title ?? deriveTitle(messages),
+      workspaceId: existing?.workspaceId ?? workspaceId,
       messages,
       createdAt: existing?.createdAt ?? this.now(),
       updatedAt: this.now(),

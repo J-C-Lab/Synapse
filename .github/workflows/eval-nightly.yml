@@ -1,0 +1,35 @@
+name: Eval Nightly (keyed)
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+jobs:
+  judged:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.x
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:packages
+      - name: Run keyed eval
+        continue-on-error: true
+        env:
+          EVAL_JUDGE_PROVIDER: ${{ secrets.EVAL_JUDGE_PROVIDER }}
+          EVAL_JUDGE_KEY: ${{ secrets.EVAL_JUDGE_KEY }}
+          EVAL_JUDGE_MODEL: ${{ secrets.EVAL_JUDGE_MODEL }}
+        run: pnpm eval:judged
+      - name: Upload judged scorecard
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: eval-judged-scorecard
+          path: coverage/eval/
+          retention-days: 30

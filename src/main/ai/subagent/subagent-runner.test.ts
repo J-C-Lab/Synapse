@@ -51,7 +51,11 @@ describe("subagentRunner", () => {
     expect(result.summary).toContain("subtask complete")
     expect(typeof result.childRunId).toBe("string")
     expect(result.outcome).toBe("end_turn")
-    expect(recorded[0]).toMatchObject({ origin: "subagent", parentRunId: "parent-1" })
+    expect(recorded[0]).toMatchObject({
+      origin: "subagent",
+      parentRunId: "parent-1",
+      principal: { kind: "subagent", parentRunId: "parent-1" },
+    })
     expect(recorded[0].runId).toBe(result.childRunId)
   })
 })

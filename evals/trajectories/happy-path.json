@@ -1,0 +1,30 @@
+{
+  "id": "happy-path",
+  "title": "Model calls a read-only tool and answers from the result",
+  "tier": "T0",
+  "tags": ["trajectory"],
+  "tools": [
+    {
+      "fqName": "com.probe/greet",
+      "pluginId": "com.probe",
+      "manifestTool": {
+        "name": "greet",
+        "description": "greet",
+        "inputSchema": { "type": "object", "properties": {} },
+        "annotations": { "readOnlyHint": true }
+      }
+    }
+  ],
+  "script": [
+    { "toolUses": [{ "id": "t1", "name": "com_probe_greet", "input": {} }] },
+    { "text": "Hello Ada" }
+  ],
+  "workspaceId": "default",
+  "expect": {
+    "toolCalls": [{ "name": "com.probe/greet", "ok": true }],
+    "stopReason": "end_turn",
+    "finalTextMatches": "Hello Ada",
+    "workspaceId": "default",
+    "principalKind": "internal-agent"
+  }
+}

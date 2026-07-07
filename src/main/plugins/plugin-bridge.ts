@@ -9,6 +9,7 @@ import type {
   SystemAPI,
   ToolCaller,
   ToolContext,
+  ToolPrincipal,
 } from "@synapse/plugin-sdk"
 import type { BackgroundInvoker } from "./background-invoker"
 import type {
@@ -97,6 +98,8 @@ export interface InvocationContext {
   signal?: AbortSignal
   invocationId?: string
   runId?: string
+  principal?: ToolPrincipal
+  workspaceId?: string
 }
 
 export interface PluginBridgeOptions {
@@ -231,6 +234,8 @@ export class PluginBridge {
       signal: options.signal,
       invocationId: options.caller.invocationId,
       runId: options.caller.runId,
+      principal: options.caller.principal,
+      workspaceId: options.caller.workspaceId,
     }
 
     return {
@@ -286,7 +291,10 @@ export class PluginBridge {
     invocation: InvocationContext
   ): PluginCapabilities {
     const ensure = (
-      request: Omit<CapabilityRequest, "actor" | "trigger" | "signal" | "invocationId" | "runId">
+      request: Omit<
+        CapabilityRequest,
+        "actor" | "trigger" | "signal" | "invocationId" | "runId" | "principal" | "workspaceId"
+      >
     ) =>
       gate.ensure({
         ...request,
@@ -295,6 +303,8 @@ export class PluginBridge {
         signal: invocation.signal,
         invocationId: invocation.invocationId,
         runId: invocation.runId,
+        principal: invocation.principal,
+        workspaceId: invocation.workspaceId,
       })
 
     // The fetcher runs its own gate.ensure inside fetch(), so network needs no
@@ -658,6 +668,8 @@ export class PluginBridge {
         operation: key === undefined ? operation : `${operation} ${key}`,
         signal: invocation.signal,
         runId: invocation.runId,
+        principal: invocation.principal,
+        workspaceId: invocation.workspaceId,
       })
 
     return {
