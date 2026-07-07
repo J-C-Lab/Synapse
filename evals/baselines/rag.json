@@ -1,0 +1,5 @@
+{
+  "recall": 1,
+  "precisionAt3": 0.3,
+  "scopeIsolation": 1
+}
