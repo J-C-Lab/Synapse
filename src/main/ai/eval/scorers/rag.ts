@@ -1,6 +1,6 @@
 import type { MemoryScope } from "../../memory/memory-store"
 import type { FixtureMeta, ScoreResult } from "../fixture-types"
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
 import { MemoryService } from "../../memory/memory-service"
@@ -54,31 +54,40 @@ interface TaggedHit {
   crossesWorkspace: boolean
 }
 
-/** Seeds a fresh keyless MemoryService with the fixture's data and runs the real search. */
+/**
+ * Seeds a fresh keyless MemoryService with the fixture's data and runs the real
+ * search. Runs once per fixture on every `pnpm eval` invocation (i.e. every CI
+ * run), so the temp dir is always removed before returning — never left behind
+ * for a CI runner or dev machine to accumulate across repeated runs.
+ */
 async function retrieve(fixture: RagFixture): Promise<TaggedHit[]> {
   const dir = mkdtempSync(path.join(tmpdir(), "eval-rag-"))
-  // Keyless embedder → BM25-only recall (memory-service.ts's safeEmbed fallback).
-  const service = new MemoryService(new MemoryStore(path.join(dir, "memory.json")), {
-    embed: async () => null,
-  })
+  try {
+    // Keyless embedder → BM25-only recall (memory-service.ts's safeEmbed fallback).
+    const service = new MemoryService(new MemoryStore(path.join(dir, "memory.json")), {
+      embed: async () => null,
+    })
 
-  const idMap = new Map<string, string>() // stored id -> fixture id
-  for (const s of fixture.seed) {
-    const entry = await service.save({ text: s.text, scope: s.scope })
-    idMap.set(entry.id, s.id)
+    const idMap = new Map<string, string>() // stored id -> fixture id
+    for (const s of fixture.seed) {
+      const entry = await service.save({ text: s.text, scope: s.scope })
+      idMap.set(entry.id, s.id)
+    }
+
+    const hits = await service.search(fixture.query, 10, {
+      workspaceId: fixture.askedInWorkspace,
+      includeGlobal: true,
+    })
+
+    return hits.map((h) => ({
+      fixtureId: idMap.get(h.entry.id),
+      crossesWorkspace:
+        h.entry.scope.visibility === "workspace" &&
+        h.entry.scope.workspaceId !== fixture.askedInWorkspace,
+    }))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
-
-  const hits = await service.search(fixture.query, 10, {
-    workspaceId: fixture.askedInWorkspace,
-    includeGlobal: true,
-  })
-
-  return hits.map((h) => ({
-    fixtureId: idMap.get(h.entry.id),
-    crossesWorkspace:
-      h.entry.scope.visibility === "workspace" &&
-      h.entry.scope.workspaceId !== fixture.askedInWorkspace,
-  }))
 }
 
 /** Computes precision@3 / recall / scope isolation from tagged hits. */
