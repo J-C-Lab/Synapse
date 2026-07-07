@@ -2,8 +2,11 @@ import type { PluginBridgeAdapters } from "../plugins/plugin-bridge"
 import * as os from "node:os"
 import * as path from "node:path"
 import process from "node:process"
+import { asFallbackSource, CompositeToolHost } from "../ai/composite-tool-host"
+import { MEMORY_FQ_PREFIX, MemoryToolSource } from "../ai/memory/memory-tools"
 import { recordRun } from "../ai/run-trace-store"
 import { PluginHost } from "../plugins/plugin-host"
+import { createHeadlessMemoryService } from "./headless-memory"
 import { resolveStdioUserDataDir } from "./stdio-paths"
 import { runSynapseMcpStdioServer } from "./synapse-mcp-server"
 
@@ -41,7 +44,7 @@ async function main(): Promise<void> {
   const resourcesDir =
     process.env.SYNAPSE_RESOURCES_DIR?.trim() || path.join(__dirname, "..", "..", "resources")
 
-  const host = new PluginHost({
+  const pluginHost = new PluginHost({
     userDataDir,
     resourcesDir,
     adapters: headlessAdapters(),
@@ -49,19 +52,29 @@ async function main(): Promise<void> {
     runtime: () => ({ locale: "en", theme: { mode: "light", accent: "neutral" } }),
   })
 
-  await host.init()
+  await pluginHost.init()
+  const memory = createHeadlessMemoryService(userDataDir)
+  const host = new CompositeToolHost([
+    asFallbackSource(pluginHost, (fqName) => fqName.startsWith(MEMORY_FQ_PREFIX)),
+    new MemoryToolSource(memory),
+  ])
+
   const runsDir = path.join(userDataDir, "logs", "runs")
   const server = await runSynapseMcpStdioServer(host, {
     version: process.env.npm_package_version,
     recordRun: (trace) => recordRun(runsDir, trace),
     workspaceId: process.env.SYNAPSE_MCP_WORKSPACE?.trim() || "external",
+    memory: {
+      list: (limit, scope) => memory.list(limit, scope),
+      get: (id, scope) => memory.get(id, scope),
+    },
   })
 
   let closing = false
   const shutdown = (): void => {
     if (closing) return
     closing = true
-    void Promise.resolve(host.dispose()).finally(() => process.exit(0))
+    void Promise.resolve(pluginHost.dispose()).finally(() => process.exit(0))
   }
   server.onclose = shutdown
   process.on("SIGINT", shutdown)
