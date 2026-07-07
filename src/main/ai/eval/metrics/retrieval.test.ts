@@ -11,4 +11,10 @@ describe("retrieval metrics", () => {
   it("recall is 1 when there is nothing relevant to find", () => {
     expect(recall([], [])).toBe(1)
   })
+  it("precision@k penalizes a shorter-than-k result list rather than normalizing by its length", () => {
+    expect(precisionAtK(["a"], ["a", "b"], 5)).toBeCloseTo(0.2)
+  })
+  it("precision@k is 0 for a non-positive k", () => {
+    expect(precisionAtK(["a"], ["a"], 0)).toBe(0)
+  })
 })
