@@ -533,7 +533,7 @@ describe("agentRuntime", () => {
       else process.env[ENV_KEY] = original
     })
 
-    it("is inert (legacy envelope) when the flag is unset", async () => {
+    it("adds the strong reminder to a non-memory tool result by default (flag unset)", async () => {
       delete process.env[ENV_KEY]
       const host = fakeHostWithTextResult("actual output")
       const runtime = new AgentRuntime({
@@ -551,10 +551,10 @@ describe("agentRuntime", () => {
         .find(
           (b): b is Extract<ChatContentBlock, { type: "tool_result" }> => b.type === "tool_result"
         )
-      expect(toolResultBlock?.content).not.toContain("untrusted external data")
+      expect(toolResultBlock?.content).toContain("untrusted external data")
     })
 
-    it("adds the strong reminder to a non-memory tool result when the flag is set", async () => {
+    it('adds the strong reminder to a non-memory tool result when the flag is explicitly "1"', async () => {
       process.env[ENV_KEY] = "1"
       const host = fakeHostWithTextResult("actual output")
       const runtime = new AgentRuntime({
@@ -573,6 +573,27 @@ describe("agentRuntime", () => {
           (b): b is Extract<ChatContentBlock, { type: "tool_result" }> => b.type === "tool_result"
         )
       expect(toolResultBlock?.content).toContain("untrusted external data")
+    })
+
+    it('falls back to the legacy envelope when the flag is explicitly "0" (kill switch)', async () => {
+      process.env[ENV_KEY] = "0"
+      const host = fakeHostWithTextResult("actual output")
+      const runtime = new AgentRuntime({
+        provider: fakeProvider([
+          { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: {} }] },
+          { text: "ok" },
+        ]),
+        tools: new AiToolRegistry(host),
+      })
+
+      const result = await runtime.run({ conversationId: "c1", messages: [userMessage("go")] })
+
+      const toolResultBlock = result.messages
+        .flatMap((m) => m.content)
+        .find(
+          (b): b is Extract<ChatContentBlock, { type: "tool_result" }> => b.type === "tool_result"
+        )
+      expect(toolResultBlock?.content).not.toContain("untrusted external data")
     })
   })
 
