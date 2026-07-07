@@ -5,7 +5,8 @@ import type { ToolHostPort } from "./tool-registry"
 import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import process from "node:process"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AgentRuntime, buildSystemPrompt } from "./agent-runtime"
 import { emptyUsage } from "./providers/types"
 import { AiToolRegistry } from "./tool-registry"
@@ -481,6 +482,98 @@ describe("agentRuntime", () => {
     expect(outgoingText).toContain("Run tests before committing.")
     expect(outgoingText).toContain("&lt;/untrusted>")
     expect(result.messages[0]).toEqual(userMessage("hello"))
+  })
+
+  it("includes the untrusted-context notice even when there are no workspace instructions", async () => {
+    // Tool results are ALWAYS labeled via labelUntrustedContent in runOneTool,
+    // unconditionally, regardless of whether any workspace instruction files
+    // exist. The notice explaining what that labeling means must therefore be
+    // present on every run that can call a tool — not gated on workspace
+    // instructions happening to also be configured. A run with no
+    // executionWorkspaces at all still calls a tool and gets a labeled result.
+    const host = fakeHost()
+    const seenSystems: string[] = []
+    const provider: ChatProvider = {
+      id: "fake",
+      async *stream(req) {
+        seenSystems.push(req.system)
+        yield {
+          type: "message",
+          message: {
+            role: "assistant",
+            content:
+              seenSystems.length === 1
+                ? [{ type: "tool_use", id: "t1", name: "com_x_demo_greet", input: {} }]
+                : [{ type: "text", text: "ok" }],
+          },
+          usage: emptyUsage(),
+          stopReason: seenSystems.length === 1 ? "tool_use" : "end_turn",
+        }
+      },
+    }
+    const runtime = new AgentRuntime({ provider, tools: new AiToolRegistry(host) })
+
+    await runtime.run({ conversationId: "c1", messages: [userMessage("run the tool")] })
+
+    expect(seenSystems).toHaveLength(2)
+    for (const system of seenSystems) {
+      expect(system).toContain("marked as untrusted")
+    }
+  })
+
+  describe("untrusted envelope v2 (SYNAPSE_UNTRUSTED_ENVELOPE_V2)", () => {
+    const ENV_KEY = "SYNAPSE_UNTRUSTED_ENVELOPE_V2"
+    let original: string | undefined
+
+    beforeEach(() => {
+      original = process.env[ENV_KEY]
+    })
+    afterEach(() => {
+      if (original === undefined) delete process.env[ENV_KEY]
+      else process.env[ENV_KEY] = original
+    })
+
+    it("is inert (legacy envelope) when the flag is unset", async () => {
+      delete process.env[ENV_KEY]
+      const host = fakeHostWithTextResult("actual output")
+      const runtime = new AgentRuntime({
+        provider: fakeProvider([
+          { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: {} }] },
+          { text: "ok" },
+        ]),
+        tools: new AiToolRegistry(host),
+      })
+
+      const result = await runtime.run({ conversationId: "c1", messages: [userMessage("go")] })
+
+      const toolResultBlock = result.messages
+        .flatMap((m) => m.content)
+        .find(
+          (b): b is Extract<ChatContentBlock, { type: "tool_result" }> => b.type === "tool_result"
+        )
+      expect(toolResultBlock?.content).not.toContain("untrusted external data")
+    })
+
+    it("adds the strong reminder to a non-memory tool result when the flag is set", async () => {
+      process.env[ENV_KEY] = "1"
+      const host = fakeHostWithTextResult("actual output")
+      const runtime = new AgentRuntime({
+        provider: fakeProvider([
+          { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: {} }] },
+          { text: "ok" },
+        ]),
+        tools: new AiToolRegistry(host),
+      })
+
+      const result = await runtime.run({ conversationId: "c1", messages: [userMessage("go")] })
+
+      const toolResultBlock = result.messages
+        .flatMap((m) => m.content)
+        .find(
+          (b): b is Extract<ChatContentBlock, { type: "tool_result" }> => b.type === "tool_result"
+        )
+      expect(toolResultBlock?.content).toContain("untrusted external data")
+    })
   })
 
   it("labels and truncates tool results before feeding them back to the model", async () => {
