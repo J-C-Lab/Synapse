@@ -151,6 +151,11 @@ export class MemoryService {
     return entries.sort((a, b) => b.createdAt - a.createdAt).slice(0, Math.max(1, limit))
   }
 
+  async get(id: string, scope?: MemoryQueryScope): Promise<MemoryEntry | undefined> {
+    const entries = await this.store.all()
+    return entries.find((entry) => entry.id === id && (!scope || entryMatchesQuery(entry, scope)))
+  }
+
   async delete(id: string): Promise<boolean> {
     return this.store.remove(id)
   }
