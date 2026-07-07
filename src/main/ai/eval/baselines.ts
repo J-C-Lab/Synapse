@@ -5,7 +5,13 @@ export type Baseline = Record<string, number>
 
 export function loadBaseline(file: string): Baseline {
   if (!existsSync(file)) return {}
-  return JSON.parse(readFileSync(file, "utf8")) as Baseline
+  try {
+    return JSON.parse(readFileSync(file, "utf8")) as Baseline
+  } catch (err) {
+    throw new Error(
+      `Baseline ${file} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
 }
 
 export function checkAgainstBaseline(

@@ -35,4 +35,16 @@ describe("loadBaseline", () => {
   it("returns an empty baseline when the file does not exist", () => {
     expect(loadBaseline(join(tmpdir(), "does-not-exist-baseline.json"))).toEqual({})
   })
+
+  it("throws with the file path on malformed JSON", () => {
+    const dir = mkdtempSync(join(tmpdir(), "baselines-bad-"))
+    try {
+      const file = join(dir, "rag.json")
+      writeFileSync(file, "{ not valid json")
+
+      expect(() => loadBaseline(file)).toThrow(/rag\.json is not valid JSON/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
