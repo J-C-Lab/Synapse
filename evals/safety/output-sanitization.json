@@ -1,0 +1,9 @@
+{
+  "id": "oversized-truncated",
+  "title": "oversized tool output is truncated",
+  "tier": "T0",
+  "tags": ["owasp:llm05"],
+  "check": "output-sanitization",
+  "length": 100000,
+  "maxChars": 4000
+}

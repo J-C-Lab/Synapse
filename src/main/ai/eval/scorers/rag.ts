@@ -20,10 +20,14 @@ export interface RagFixture extends FixtureMeta {
   askedInWorkspace: string
   relevantIds: string[]
   thresholds: { precisionAt3: number; recall: number; scopeIsolation: number }
-  /** Optional keyed-judge metadata consumed by Plan 4; ignored by keyless scoring. */
+  /**
+   * Optional keyed-judge metadata consumed by Plan 4; ignored by keyless scoring.
+   * `expectedAnswerContains` is human-readable documentation of what a correct
+   * answer should roughly cover — the keyed harness generates and judges its own
+   * answer from retrieved context rather than checking against this string.
+   */
   t2?: {
     expectedAnswerContains: string
-    answer?: string
   }
 }
 

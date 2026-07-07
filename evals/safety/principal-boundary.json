@@ -1,0 +1,9 @@
+{
+  "id": "write-hidden-external",
+  "title": "a write tool is not exposed to external MCP",
+  "tier": "T0",
+  "tags": ["boundary"],
+  "check": "principal-boundary",
+  "toolAnnotations": { "destructiveHint": true },
+  "expectExposed": false
+}

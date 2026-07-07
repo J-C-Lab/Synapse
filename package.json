@@ -32,6 +32,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "eval": "vitest run --config vitest.eval.config.ts",
+    "eval:judged": "vitest run --config vitest.eval.config.ts",
     "test:e2e": "pnpm build && playwright test",
     "electron:build": "electron-vite build && electron-builder",
     "electron:build:win": "electron-vite build && electron-builder --win",
