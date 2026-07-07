@@ -15,7 +15,12 @@ import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../plugins
 import { randomUUID } from "node:crypto"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
+import {
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js"
 import { decideApproval } from "../ai/approval-gate"
 import { sanitizeToolName, uniqueName } from "../ai/tool-registry"
 
@@ -216,9 +221,9 @@ export function createSynapseMcpServer(
   const server = new Server(
     { name: options.name ?? "synapse", version: options.version ?? "0.3.0" },
     {
-      capabilities: { tools: { listChanged: true } },
+      capabilities: { tools: { listChanged: true }, resources: { listChanged: true } },
       instructions:
-        "Synapse exposes enabled plugin tools. By default, only read-only tools are listed over stdio MCP.",
+        "Synapse exposes enabled plugin tools and, when configured, long-term memory as read-only resources. By default, only read-only tools are listed over stdio MCP.",
     }
   )
 
@@ -228,6 +233,10 @@ export function createSynapseMcpServer(
       signal: extra.signal,
     })
   })
+  server.setRequestHandler(ListResourcesRequestSchema, () => service.listResources())
+  server.setRequestHandler(ReadResourceRequestSchema, (request) =>
+    service.readResource(request.params.uri)
+  )
 
   return server
 }

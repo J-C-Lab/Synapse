@@ -142,6 +142,50 @@ describe("synapseMcpToolService", () => {
     }
   })
 
+  it("serves resources/list and resources/read through the MCP protocol", async () => {
+    const server = createSynapseMcpServer(host([]), {
+      workspaceId: "ws-external",
+      memory: fakeMemory([memoryEntry({ id: "m1", text: "hello from memory" })]),
+    })
+    const client = new Client({ name: "test-client", version: "1.0.0" })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+
+    await server.connect(serverTransport)
+    await client.connect(clientTransport)
+    try {
+      const list = await client.listResources()
+      expect(list.resources).toEqual([
+        expect.objectContaining({ uri: "synapse://memory/m1", name: "hello from memory" }),
+      ])
+
+      const read = await client.readResource({ uri: "synapse://memory/m1" })
+      expect(read.contents).toEqual([
+        { uri: "synapse://memory/m1", mimeType: "text/plain", text: "hello from memory" },
+      ])
+    } finally {
+      await client.close()
+      await server.close()
+    }
+  })
+
+  it("advertises the resources capability", async () => {
+    const server = createSynapseMcpServer(host([]))
+    const client = new Client({ name: "test-client", version: "1.0.0" })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+
+    await server.connect(serverTransport)
+    await client.connect(clientTransport)
+    try {
+      expect(client.getServerCapabilities()).toMatchObject({
+        tools: { listChanged: true },
+        resources: { listChanged: true },
+      })
+    } finally {
+      await client.close()
+      await server.close()
+    }
+  })
+
   it("opens a run and records an mcp trace with an external-mcp principal", async () => {
     const traces: RunTrace[] = []
     const h = host([descriptor("com.example.safe/greet", { readOnlyHint: true })])
