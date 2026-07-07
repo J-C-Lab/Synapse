@@ -112,6 +112,31 @@ describe("credentialBroker", () => {
     expect(injectionEntry?.runId).toBe("run-cred")
   })
 
+  it("tags the injection audit event with principal and workspaceId", async () => {
+    const audited: import("./capability-gate").CapabilityAuditEntry[] = []
+    const broker = new CredentialBroker({
+      userDataDir: dir,
+      safeStorage: fakeSafeStorage,
+      secretPrompt: createFixedSecretPrompt("ghp_test"),
+      audit: (entry) => audited.push(entry),
+    })
+    await broker.connectStatic("com.example.x", manifest, "user", "gh")
+    const inject = broker.createInjectCredential({
+      pluginId: "com.example.x",
+      manifest,
+      sourceKind: "user",
+      isTriggerOrigin: false,
+      principal: { kind: "external-mcp", clientId: "claude-desktop" },
+      workspaceId: "ws-external",
+    })
+    await inject({ host: "api.github.com", method: "GET", path: "/repos/foo" }, {})
+
+    const injectionEntry = audited.find((e) => e.trigger === "network:fetch")
+    expect(injectionEntry).toBeDefined()
+    expect(injectionEntry?.principal).toEqual({ kind: "external-mcp", clientId: "claude-desktop" })
+    expect(injectionEntry?.workspaceId).toBe("ws-external")
+  })
+
   it("connects oauth credentials via injected flow ports", async () => {
     const broker = new CredentialBroker({
       userDataDir: dir,
