@@ -178,6 +178,16 @@
       "trendingEmpty": "暂时没有可展示的市场插件。",
       "updateLine": "v{{from}} → v{{to}}",
       "downloadsLine": "{{count}} 次下载"
+    },
+    "cortex": {
+      "title": "Cortex",
+      "continue": "继续对话",
+      "start": "开始新对话",
+      "emptyHint": "还没有对话记录，开始第一次对话吧。"
+    },
+    "recommendations": {
+      "title": "今日推荐",
+      "placeholder": "Cortex 正在学习你的使用习惯，很快会带来个性化建议。"
     }
   },
   "settings": {

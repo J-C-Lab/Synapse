@@ -178,6 +178,16 @@
       "trendingEmpty": "No marketplace plugins to show right now.",
       "updateLine": "v{{from}} → v{{to}}",
       "downloadsLine": "{{count}} downloads"
+    },
+    "cortex": {
+      "title": "Cortex",
+      "continue": "Continue conversation",
+      "start": "Start a new conversation",
+      "emptyHint": "No conversations yet — start your first one."
+    },
+    "recommendations": {
+      "title": "Today's Picks",
+      "placeholder": "Cortex is learning how you work — personalized suggestions are coming soon."
     }
   },
   "settings": {
