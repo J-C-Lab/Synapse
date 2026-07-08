@@ -1,5 +1,5 @@
 import type { AiConversationSummary } from "@/lib/electron"
-import { Brain } from "lucide-react"
+import { BrainCircuit } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Button } from "@/components/ui/button"
@@ -32,7 +32,7 @@ export function CortexQuickEntryCard({
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
-          <Brain className="size-4 text-primary" aria-hidden />
+          <BrainCircuit className="size-4 text-primary" aria-hidden />
           {t("home.cortex.title")}
         </CardTitle>
         <CardDescription className="line-clamp-2">

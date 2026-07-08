@@ -17,7 +17,9 @@
     "settings": "设置",
     "plugins": "插件",
     "marketplace": "应用市场",
-    "lanTransfer": "局域网传输"
+    "lanTransfer": "局域网传输",
+    "openLauncher": "打开命令启动器",
+    "openLauncherHint": "打开命令启动器（{{hotkey}}）"
   },
   "chat": {
     "title": "智能助手",

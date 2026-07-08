@@ -1,9 +1,18 @@
-import { Brain, House, Puzzle, Settings as SettingsIcon, Store, Wifi } from "lucide-react"
+import {
+  BrainCircuit,
+  House,
+  Puzzle,
+  Search,
+  Settings as SettingsIcon,
+  Store,
+  Wifi,
+} from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import logoDarkUrl from "@/assets/logo-dark.png"
 import logoUrl from "@/assets/logo.png"
 import { HomePage } from "@/components/pages/home-page"
+import { Button } from "@/components/ui/button"
 import {
   Sidebar,
   SidebarContent,
@@ -19,9 +28,41 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 import { Spinner } from "@/components/ui/spinner"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { UpdateBanner } from "@/components/update-banner"
 import { useTheme } from "@/hooks/use-theme"
+import { getSettings, isElectron, openFloatingBallFeature } from "@/lib/electron"
 import { cn } from "@/lib/utils"
+
+/** Minimal renderer-side accelerator prettifier for the launcher tooltip —
+ * intentionally lighter than the full parser in launcher-settings.tsx since
+ * this only ever needs to render a short hint, not round-trip a capture. */
+function prettyHotkey(accelerator: string): string {
+  return accelerator
+    .split("+")
+    .map((part) => {
+      switch (part.toLowerCase()) {
+        case "commandorcontrol":
+        case "cmdorctrl":
+        case "control":
+        case "ctrl":
+          return "Ctrl"
+        case "command":
+        case "cmd":
+          return "⌘"
+        case "alt":
+          return "Alt"
+        case "shift":
+          return "Shift"
+        case "space":
+          return "Space"
+        default:
+          return part
+      }
+    })
+    .join("+")
+}
 
 const ChatPage = lazy(() =>
   import("@/components/pages/chat-page").then((m) => ({ default: m.ChatPage }))
@@ -84,6 +125,12 @@ export function AppShell() {
   const [pendingCortexConversationId, setPendingCortexConversationId] = useState<
     string | undefined
   >(undefined)
+  const [hotkey, setHotkey] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!isElectron()) return
+    void getSettings().then((settings) => setHotkey(settings.hotkey))
+  }, [])
 
   function handleHomeNavigate(id: NavId, conversationId?: string): void {
     if (id === "cortex") {
@@ -122,9 +169,25 @@ export function AppShell() {
               className="size-6 shrink-0"
               aria-hidden
             />
-            <span className="truncate text-sm font-semibold group-data-[collapsible=icon]:hidden">
-              {t("app.title")}
-            </span>
+            <div className="flex-1 group-data-[collapsible=icon]:hidden" />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-6 shrink-0 [-webkit-app-region:no-drag] group-data-[collapsible=icon]:hidden"
+                  onClick={() => void openFloatingBallFeature("appLauncher")}
+                  aria-label={t("nav.openLauncher")}
+                >
+                  <Search className="size-3.5" aria-hidden />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {hotkey
+                  ? t("nav.openLauncherHint", { hotkey: prettyHotkey(hotkey) })
+                  : t("nav.openLauncher")}
+              </TooltipContent>
+            </Tooltip>
           </div>
         </SidebarHeader>
 
@@ -148,9 +211,33 @@ export function AppShell() {
                     onClick={() => setNav("cortex")}
                     tooltip={t("nav.cortex")}
                   >
-                    <Brain />
+                    <BrainCircuit />
                     <span>{t("nav.cortex")}</span>
                   </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <ToggleGroup
+                    type="single"
+                    value={nav === "marketplace" ? "marketplace" : "plugins"}
+                    onValueChange={(value) => {
+                      if (value) setNav(value as NavId)
+                    }}
+                    variant="outline"
+                    className="w-full"
+                  >
+                    <ToggleGroupItem value="plugins" className="flex-1 gap-1.5">
+                      <Puzzle className="size-3.5" aria-hidden />
+                      <span className="group-data-[collapsible=icon]:hidden">
+                        {t("nav.plugins")}
+                      </span>
+                    </ToggleGroupItem>
+                    <ToggleGroupItem value="marketplace" className="flex-1 gap-1.5">
+                      <Store className="size-3.5" aria-hidden />
+                      <span className="group-data-[collapsible=icon]:hidden">
+                        {t("nav.marketplace")}
+                      </span>
+                    </ToggleGroupItem>
+                  </ToggleGroup>
                 </SidebarMenuItem>
                 <SidebarMenuItem>
                   <SidebarMenuButton
@@ -162,45 +249,24 @@ export function AppShell() {
                     <span>{t("nav.lanTransfer")}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={nav === "settings"}
-                    onClick={() => setNav("settings")}
-                    tooltip={t("nav.settings")}
-                  >
-                    <SettingsIcon />
-                    <span>{t("nav.settings")}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={nav === "plugins"}
-                    onClick={() => setNav("plugins")}
-                    tooltip={t("nav.plugins")}
-                  >
-                    <Puzzle />
-                    <span>{t("nav.plugins")}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={nav === "marketplace"}
-                    onClick={() => setNav("marketplace")}
-                    tooltip={t("nav.marketplace")}
-                  >
-                    <Store />
-                    <span>{t("nav.marketplace")}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
 
         <SidebarFooter>
-          <span className="px-2 py-1 text-[10px] text-muted-foreground group-data-[collapsible=icon]:hidden">
-            Synapse
-          </span>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                isActive={nav === "settings"}
+                onClick={() => setNav("settings")}
+                tooltip={t("nav.settings")}
+              >
+                <SettingsIcon />
+                <span>{t("nav.settings")}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
         </SidebarFooter>
       </Sidebar>
 

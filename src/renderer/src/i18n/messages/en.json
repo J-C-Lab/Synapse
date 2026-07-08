@@ -17,7 +17,9 @@
     "settings": "Settings",
     "plugins": "Plugins",
     "marketplace": "Marketplace",
-    "lanTransfer": "LAN Transfer"
+    "lanTransfer": "LAN Transfer",
+    "openLauncher": "Open command launcher",
+    "openLauncherHint": "Open command launcher ({{hotkey}})"
   },
   "chat": {
     "title": "Assistant",
