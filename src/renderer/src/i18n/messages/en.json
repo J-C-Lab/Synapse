@@ -162,7 +162,14 @@
     "quickActions": "Quick actions",
     "quickActionsHint": "Common tasks from the home page so you don't have to dig into settings.",
     "rescan": "Rescan apps",
-    "openSettings": "Open settings"
+    "openSettings": "Open settings",
+    "frequentApps": {
+      "title": "Frequent Apps",
+      "subtitle": "Apps you've launched recently — open them again in one click.",
+      "rescan": "Rescan",
+      "empty": "No usage recorded yet.",
+      "emptyAction": "Rescan the app list"
+    }
   },
   "settings": {
     "title": "Settings",
