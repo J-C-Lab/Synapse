@@ -15,11 +15,6 @@ export function HomePage({
 
   return (
     <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-balance text-2xl font-semibold tracking-tight">{t("app.title")}</h1>
-        <p className="text-pretty text-sm text-muted-foreground">{t("app.subtitle")}</p>
-      </header>
-
       <Card className="border-dashed">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
