@@ -1,28 +1,21 @@
 import type { NavId } from "../app-shell"
-import { RefreshCw, Settings as SettingsIcon, Sparkles } from "lucide-react"
-import { useState } from "react"
+import { Sparkles } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import logoDarkUrl from "@/assets/logo-dark.png"
 import logoUrl from "@/assets/logo.png"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { CortexQuickEntryCard } from "@/components/home/cortex-quick-entry-card"
+import { FrequentAppsCard } from "@/components/home/frequent-apps-card"
+import { PluginsStatusCard } from "@/components/home/plugins-status-card"
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { useTheme } from "@/hooks/use-theme"
-import { isElectron, refreshApps } from "@/lib/electron"
 
-export function HomePage({ onNavigate }: { onNavigate: (id: NavId) => void }) {
+export function HomePage({
+  onNavigate,
+}: {
+  onNavigate: (id: NavId, conversationId?: string) => void
+}) {
   const { t } = useTranslation()
   const { resolvedScheme } = useTheme()
-  const [rescanning, setRescanning] = useState(false)
-
-  async function onRescan() {
-    if (!isElectron()) return
-    setRescanning(true)
-    try {
-      await refreshApps()
-    } finally {
-      setRescanning(false)
-    }
-  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -34,32 +27,27 @@ export function HomePage({ onNavigate }: { onNavigate: (id: NavId) => void }) {
           aria-hidden
         />
         <div className="flex flex-col gap-1">
-          <h1 className="text-2xl font-semibold tracking-tight">{t("app.title")}</h1>
-          <p className="text-sm text-muted-foreground">{t("app.subtitle")}</p>
+          <h1 className="text-balance text-2xl font-semibold tracking-tight">{t("app.title")}</h1>
+          <p className="text-pretty text-sm text-muted-foreground">{t("app.subtitle")}</p>
         </div>
       </header>
 
-      <Card>
+      <Card className="border-dashed">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <Sparkles className="size-4 text-primary" aria-hidden />
-            {t("home.quickActions")}
+            {t("home.recommendations.title")}
           </CardTitle>
-          <CardDescription>{t("home.quickActionsHint")}</CardDescription>
+          <CardDescription>{t("home.recommendations.placeholder")}</CardDescription>
         </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap gap-3">
-            <Button onClick={onRescan} disabled={rescanning || !isElectron()}>
-              <RefreshCw className={`size-3.5 ${rescanning ? "animate-spin" : ""}`} aria-hidden />
-              {rescanning ? t("launcher.settings.rescanning") : t("home.rescan")}
-            </Button>
-            <Button variant="outline" onClick={() => onNavigate("settings")}>
-              <SettingsIcon className="size-3.5" aria-hidden />
-              {t("home.openSettings")}
-            </Button>
-          </div>
-        </CardContent>
       </Card>
+
+      <CortexQuickEntryCard onOpenCortex={(id) => onNavigate("cortex", id)} />
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <FrequentAppsCard />
+        <PluginsStatusCard />
+      </div>
     </div>
   )
 }

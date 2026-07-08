@@ -159,10 +159,6 @@
     }
   },
   "home": {
-    "quickActions": "快捷操作",
-    "quickActionsHint": "在主页快速执行常用任务，无需进入设置。",
-    "rescan": "重新扫描应用",
-    "openSettings": "前往设置",
     "frequentApps": {
       "title": "常用应用",
       "subtitle": "最近启动过的应用，一键再次打开。",
