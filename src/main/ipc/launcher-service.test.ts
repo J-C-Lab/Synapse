@@ -1,4 +1,5 @@
 import type { AppEntry } from "../launcher/types"
+import type { UserSettings } from "../settings/settings"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const listMock = vi.fn<() => readonly AppEntry[]>()
@@ -16,7 +17,20 @@ vi.mock("../launcher/launch-app", () => ({
   launchApp: launchAppMock,
 }))
 
+const loadSettingsMock = vi.fn<() => Promise<UserSettings>>()
+const saveSettingsMock = vi.fn<(filePath: string, settings: UserSettings) => Promise<void>>()
+
+vi.mock("../settings/settings", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../settings/settings")>()
+  return {
+    ...actual,
+    loadSettings: loadSettingsMock,
+    saveSettings: saveSettingsMock,
+  }
+})
+
 const { LauncherService } = await import("./launcher-service")
+const { defaultSettings } = await import("../settings/settings")
 
 function makeEntry(id: string, name = id): AppEntry {
   return { id, kind: "win32", name, nameLower: name.toLowerCase(), target: `C:\\${name}.exe` }
@@ -27,6 +41,8 @@ describe("launcherService usage tracking", () => {
     vi.clearAllMocks()
     listMock.mockReturnValue([makeEntry("vscode", "VS Code"), makeEntry("chrome", "Chrome")])
     launchAppMock.mockResolvedValue(true)
+    loadSettingsMock.mockResolvedValue({ ...defaultSettings })
+    saveSettingsMock.mockResolvedValue(undefined)
   })
 
   it("records a launch's timestamp and count", async () => {
@@ -75,5 +91,27 @@ describe("launcherService usage tracking", () => {
     await service.launchById("chrome")
 
     expect(await service.getFrequentApps(1)).toHaveLength(1)
+  })
+
+  it("persists usage to disk after init, incrementing launchCount across repeated launches", async () => {
+    const service = new LauncherService()
+    await service.init()
+    vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValueOnce(2_000)
+
+    await service.launchById("vscode")
+    await service.launchById("vscode")
+
+    expect(saveSettingsMock).toHaveBeenCalledTimes(2)
+    const lastCall = saveSettingsMock.mock.calls.at(-1)
+    expect(lastCall?.[1].appUsage.vscode).toEqual({ lastLaunchedAt: 2_000, launchCount: 2 })
+    expect(service.getSettings().appUsage.vscode).toEqual({ lastLaunchedAt: 2_000, launchCount: 2 })
+  })
+
+  it("resolves the launch as successful even when persisting usage fails", async () => {
+    saveSettingsMock.mockRejectedValueOnce(new Error("disk full"))
+    const service = new LauncherService()
+    await service.init()
+
+    await expect(service.launchById("vscode")).resolves.toBe(true)
   })
 })

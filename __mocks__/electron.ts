@@ -62,6 +62,7 @@ export const ipcMain = { handle: vi.fn(), on: vi.fn() }
 export const app = {
   whenReady: vi.fn(() => Promise.resolve()),
   getAppPath: vi.fn(() => "/app"),
+  getPath: vi.fn((name: string) => `/mock-${name}`),
   getVersion: vi.fn(() => "0.0.0"),
   isPackaged: false,
   on: vi.fn(),

@@ -4,6 +4,7 @@ import { app } from "electron"
 import { AppCache } from "../launcher/app-cache"
 import { launchApp } from "../launcher/launch-app"
 import { searchApps } from "../launcher/search"
+import { logger } from "../logging"
 import {
   defaultSettings,
   loadSettings,
@@ -82,6 +83,16 @@ export class LauncherService {
       },
     }
     this.settings = next
-    if (this.settingsPath) await saveSettings(this.settingsPath, next)
+    if (this.settingsPath) {
+      try {
+        await saveSettings(this.settingsPath, next)
+      } catch (err) {
+        // Usage telemetry is incidental to the launch itself — a persistence
+        // failure here must never propagate out of launchById() and fail an
+        // otherwise-successful launch (see launcher:launch in main/index.ts,
+        // which only calls hideSearchWindow() once launchById() resolves).
+        logger.child("launcher-service").warn("failed to persist app usage", { err })
+      }
+    }
   }
 }
