@@ -333,4 +333,72 @@ describe("launcher settings", () => {
 
     expect(input).toHaveValue("Meta+K")
   })
+
+  it("pauses the global hotkey while capturing and resumes after a successful capture", async () => {
+    const api = installElectronApi({
+      hotkey: "Control+Space",
+      themeMode: "system",
+      accent: "neutral",
+      floatingBallEnabled: false,
+      floatingBallFeatures: [],
+      lanEnabled: false,
+      trustedSourcePolicy: "official-marketplace",
+      allowAgentShell: false,
+      agentShellRoots: [],
+    })
+    const user = userEvent.setup()
+    render(<LauncherSettings />)
+
+    const input = await screen.findByLabelText("launcher.settings.hotkeyLabel")
+    await user.click(screen.getByRole("button", { name: "launcher.settings.capture" }))
+    expect(api.pauseHotkeyCapture).toHaveBeenCalledTimes(1)
+    expect(api.resumeHotkeyCapture).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(input, { altKey: true, code: "Space", key: " " })
+    expect(api.resumeHotkeyCapture).toHaveBeenCalledTimes(1)
+  })
+
+  it("resumes the global hotkey when capture is cancelled with Escape", async () => {
+    const api = installElectronApi({
+      hotkey: "Control+Space",
+      themeMode: "system",
+      accent: "neutral",
+      floatingBallEnabled: false,
+      floatingBallFeatures: [],
+      lanEnabled: false,
+      trustedSourcePolicy: "official-marketplace",
+      allowAgentShell: false,
+      agentShellRoots: [],
+    })
+    const user = userEvent.setup()
+    render(<LauncherSettings />)
+
+    const input = await screen.findByLabelText("launcher.settings.hotkeyLabel")
+    await user.click(screen.getByRole("button", { name: "launcher.settings.capture" }))
+    fireEvent.keyDown(input, { code: "Escape", key: "Escape" })
+
+    expect(api.resumeHotkeyCapture).toHaveBeenCalledTimes(1)
+  })
+
+  it("resumes the global hotkey when the input loses focus mid-capture", async () => {
+    const api = installElectronApi({
+      hotkey: "Control+Space",
+      themeMode: "system",
+      accent: "neutral",
+      floatingBallEnabled: false,
+      floatingBallFeatures: [],
+      lanEnabled: false,
+      trustedSourcePolicy: "official-marketplace",
+      allowAgentShell: false,
+      agentShellRoots: [],
+    })
+    const user = userEvent.setup()
+    render(<LauncherSettings />)
+
+    const input = await screen.findByLabelText("launcher.settings.hotkeyLabel")
+    await user.click(screen.getByRole("button", { name: "launcher.settings.capture" }))
+    fireEvent.blur(input)
+
+    expect(api.resumeHotkeyCapture).toHaveBeenCalledTimes(1)
+  })
 })

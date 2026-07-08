@@ -15,7 +15,14 @@ import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Kbd, KbdGroup } from "@/components/ui/kbd"
 import { Separator } from "@/components/ui/separator"
-import { getSettings, isElectron, refreshApps, updateSettings } from "@/lib/electron"
+import {
+  getSettings,
+  isElectron,
+  pauseHotkeyCapture,
+  refreshApps,
+  resumeHotkeyCapture,
+  updateSettings,
+} from "@/lib/electron"
 
 /**
  * Render an Electron accelerator string ("Control+Shift+P") as a row of
@@ -169,6 +176,7 @@ export function LauncherSettings() {
 
     if (event.key === "Escape") {
       setCapturingHotkey(false)
+      void resumeHotkeyCapture()
       return
     }
 
@@ -182,11 +190,13 @@ export function LauncherSettings() {
     setStatus(null)
     setHotkey(next)
     setCapturingHotkey(false)
+    void resumeHotkeyCapture()
   }
 
   function onCaptureHotkey() {
     setCapturingHotkey(true)
     setStatus(null)
+    void pauseHotkeyCapture()
     hotkeyInputRef.current?.focus()
   }
 
@@ -246,7 +256,11 @@ export function LauncherSettings() {
               onChange={(e) => {
                 if (!capturingHotkey) setHotkey(e.target.value)
               }}
-              onBlur={() => setCapturingHotkey(false)}
+              onBlur={() => {
+                if (!capturingHotkey) return
+                setCapturingHotkey(false)
+                void resumeHotkeyCapture()
+              }}
               onKeyDown={onHotkeyKeyDown}
               onPaste={(e) => {
                 if (capturingHotkey) e.preventDefault()
