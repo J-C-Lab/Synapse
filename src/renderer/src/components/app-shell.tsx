@@ -92,14 +92,6 @@ export function AppShell() {
     setNav(id)
   }
 
-  useEffect(() => {
-    if (nav !== "cortex" || pendingCortexConversationId === undefined) return
-    // Consumed by ChatPage's mount-time initializer above — clear it so a
-    // later plain sidebar click into Cortex starts a fresh conversation
-    // instead of silently re-resuming this one.
-    setPendingCortexConversationId(undefined)
-  }, [nav, pendingCortexConversationId])
-
   return (
     <SidebarProvider>
       <Sidebar collapsible="icon" variant="inset">
@@ -231,7 +223,12 @@ export function AppShell() {
               }
             >
               {nav === "home" && <HomePage onNavigate={handleHomeNavigate} />}
-              {nav === "cortex" && <ChatPage initialConversationId={pendingCortexConversationId} />}
+              {nav === "cortex" && (
+                <ChatPage
+                  initialConversationId={pendingCortexConversationId}
+                  onInitialConversationConsumed={() => setPendingCortexConversationId(undefined)}
+                />
+              )}
               {nav === "settings" && <SettingsPage />}
               {nav === "plugins" && <PluginsPage />}
               {nav === "marketplace" && <MarketplacePage />}
