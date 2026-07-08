@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs"
+import { unlink } from "node:fs/promises"
 import * as path from "node:path"
 import process from "node:process"
 import { app } from "electron"
@@ -60,11 +61,11 @@ public struct PROPVARIANT {
 
 [ComImport, Guid("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 public interface IPropertyStore {
-    int GetCount(out uint cProps);
-    int GetAt(uint iProp, out PROPERTYKEY pkey);
-    int GetValue(ref PROPERTYKEY key, out PROPVARIANT pv);
-    int SetValue(ref PROPERTYKEY key, ref PROPVARIANT pv);
-    int Commit();
+    void GetCount(out uint cProps);
+    void GetAt(uint iProp, out PROPERTYKEY pkey);
+    void GetValue(ref PROPERTYKEY key, out PROPVARIANT pv);
+    void SetValue(ref PROPERTYKEY key, ref PROPVARIANT pv);
+    void Commit();
 }
 
 [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
@@ -101,10 +102,13 @@ public static class AumidStamper {
         var store = (IPropertyStore)link;
         var key = new PROPERTYKEY { fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), pid = 5 };
         var value = new PROPVARIANT { vt = 31 /* VT_LPWSTR */, p = Marshal.StringToCoTaskMemUni(aumid) };
-        store.SetValue(ref key, ref value);
-        store.Commit();
-        persistFile.Save(shortcutPath, true);
-        Marshal.FreeCoTaskMem(value.p);
+        try {
+            store.SetValue(ref key, ref value);
+            store.Commit();
+            persistFile.Save(shortcutPath, true);
+        } finally {
+            Marshal.FreeCoTaskMem(value.p);
+        }
     }
 }
 "@ -ReferencedAssemblies System.Runtime.InteropServices
@@ -138,13 +142,28 @@ export async function ensureDevAppUserModelShortcut(): Promise<void> {
 
   const { execFile } = await import("node:child_process")
   await new Promise<void>((resolve) => {
-    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], (err) => {
-      if (err) {
-        logger
-          .child("synapse")
-          .warn("failed to create dev Start Menu shortcut for toast identity", { err })
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { windowsHide: true },
+      (err) => {
+        if (err) {
+          // The script may have already created the .lnk (via WScript.Shell)
+          // before failing on the AUMID-stamping step. Remove it so the next
+          // launch's existsSync() check doesn't treat a half-created,
+          // AUMID-less shortcut as "already done" and skip retrying forever.
+          unlink(shortcutPath)
+            .catch(() => {})
+            .finally(() => {
+              logger
+                .child("synapse")
+                .warn("failed to create dev Start Menu shortcut for toast identity", { err })
+              resolve()
+            })
+          return
+        }
+        resolve()
       }
-      resolve()
-    })
+    )
   })
 }
