@@ -169,6 +169,15 @@
       "rescan": "Rescan",
       "empty": "No usage recorded yet.",
       "emptyAction": "Rescan the app list"
+    },
+    "plugins": {
+      "title": "Plugins",
+      "updatesTab": "Updates",
+      "trendingTab": "Trending",
+      "updatesEmpty": "All installed plugins are up to date.",
+      "trendingEmpty": "No marketplace plugins to show right now.",
+      "updateLine": "v{{from}} → v{{to}}",
+      "downloadsLine": "{{count}} downloads"
     }
   },
   "settings": {
