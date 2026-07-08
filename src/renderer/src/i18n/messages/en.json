@@ -16,8 +16,6 @@
     "cortex": "Cortex",
     "settings": "Settings",
     "features": "Features",
-    "appLauncher": "App Launcher",
-    "floatingBall": "Floating Ball",
     "plugins": "Plugins",
     "marketplace": "Marketplace",
     "lanTransfer": "LAN Transfer"
@@ -204,26 +202,10 @@
     "accent.rose": "Rose",
     "accent.violet": "Violet"
   },
-  "appLauncher": {
-    "feature": {
-      "title": "App Launcher",
-      "subtitle": "Summon a command palette from anywhere to launch installed apps.",
-      "aboutTitle": "About this feature",
-      "aboutBody": "Press the global shortcut to open a search box. Installed apps are indexed automatically.",
-      "openSettings": "Configure in Settings"
-    }
-  },
   "floatingBall": {
     "title": "Synapse Floating Ball",
     "features": {
       "appLauncher": "App Launcher"
-    },
-    "feature": {
-      "title": "Floating Ball",
-      "subtitle": "Keep a small launcher control on the desktop and open radial shortcuts around it.",
-      "aboutTitle": "About this feature",
-      "aboutBody": "Enable it in Settings to show the desktop ball. Click the ball to open its radial menu, or right-click it to close it.",
-      "openSettings": "Configure in Settings"
     },
     "settings": {
       "title": "Floating Ball",

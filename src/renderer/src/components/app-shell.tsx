@@ -1,13 +1,4 @@
-import {
-  Brain,
-  CircleDot,
-  House,
-  Puzzle,
-  Search,
-  Settings as SettingsIcon,
-  Store,
-  Wifi,
-} from "lucide-react"
+import { Brain, House, Puzzle, Settings as SettingsIcon, Store, Wifi } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import logoDarkUrl from "@/assets/logo-dark.png"
@@ -19,7 +10,6 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
@@ -39,12 +29,6 @@ const ChatPage = lazy(() =>
 const SettingsPage = lazy(() =>
   import("@/components/pages/settings-page").then((m) => ({ default: m.SettingsPage }))
 )
-const AppLauncherPage = lazy(() =>
-  import("@/components/pages/app-launcher-page").then((m) => ({ default: m.AppLauncherPage }))
-)
-const FloatingBallPage = lazy(() =>
-  import("@/components/pages/floating-ball-page").then((m) => ({ default: m.FloatingBallPage }))
-)
 const PluginsPage = lazy(() =>
   import("@/components/pages/plugins-page").then((m) => ({ default: m.PluginsPage }))
 )
@@ -55,22 +39,12 @@ const LanTransferPage = lazy(() =>
   import("@/components/pages/lan-transfer-page").then((m) => ({ default: m.LanTransferPage }))
 )
 
-export type NavId =
-  | "home"
-  | "cortex"
-  | "settings"
-  | "app-launcher"
-  | "floating-ball"
-  | "plugins"
-  | "marketplace"
-  | "lan-transfer"
+export type NavId = "home" | "cortex" | "settings" | "plugins" | "marketplace" | "lan-transfer"
 
 const NAV_IDS = new Set<NavId>([
   "home",
   "cortex",
   "settings",
-  "app-launcher",
-  "floating-ball",
   "plugins",
   "marketplace",
   "lan-transfer",
@@ -171,34 +145,6 @@ export function AppShell() {
                     <span>{t("nav.settings")}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-
-          <SidebarGroup className="mt-auto">
-            <SidebarGroupLabel>{t("nav.features")}</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={nav === "app-launcher"}
-                    onClick={() => setNav("app-launcher")}
-                    tooltip={t("nav.appLauncher")}
-                  >
-                    <Search />
-                    <span>{t("nav.appLauncher")}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={nav === "floating-ball"}
-                    onClick={() => setNav("floating-ball")}
-                    tooltip={t("nav.floatingBall")}
-                  >
-                    <CircleDot />
-                    <span>{t("nav.floatingBall")}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     isActive={nav === "plugins"}
@@ -268,8 +214,6 @@ export function AppShell() {
               {nav === "home" && <HomePage onNavigate={setNav} />}
               {nav === "cortex" && <ChatPage />}
               {nav === "settings" && <SettingsPage />}
-              {nav === "app-launcher" && <AppLauncherPage onNavigate={setNav} />}
-              {nav === "floating-ball" && <FloatingBallPage onNavigate={setNav} />}
               {nav === "plugins" && <PluginsPage />}
               {nav === "marketplace" && <MarketplacePage />}
               {nav === "lan-transfer" && <LanTransferPage />}
@@ -289,10 +233,6 @@ function navKey(id: NavId): string {
       return "cortex"
     case "settings":
       return "settings"
-    case "app-launcher":
-      return "appLauncher"
-    case "floating-ball":
-      return "floatingBall"
     case "plugins":
       return "plugins"
     case "marketplace":

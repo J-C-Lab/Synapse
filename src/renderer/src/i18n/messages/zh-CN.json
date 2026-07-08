@@ -16,8 +16,6 @@
     "cortex": "Cortex",
     "settings": "设置",
     "features": "功能",
-    "appLauncher": "应用启动器",
-    "floatingBall": "桌面悬浮球",
     "plugins": "插件",
     "marketplace": "应用市场",
     "lanTransfer": "局域网传输"
@@ -204,26 +202,10 @@
     "accent.rose": "玫红",
     "accent.violet": "紫罗兰"
   },
-  "appLauncher": {
-    "feature": {
-      "title": "应用启动器",
-      "subtitle": "在任意位置唤出命令面板，快速启动已安装的应用。",
-      "aboutTitle": "关于该功能",
-      "aboutBody": "按下全局快捷键即可打开搜索框，自动索引系统里的已安装应用。",
-      "openSettings": "前往设置配置"
-    }
-  },
   "floatingBall": {
     "title": "Synapse 桌面悬浮球",
     "features": {
       "appLauncher": "应用启动器"
-    },
-    "feature": {
-      "title": "桌面悬浮球",
-      "subtitle": "在桌面保留一个小型入口，点击后以圆形菜单打开快捷功能。",
-      "aboutTitle": "关于该功能",
-      "aboutBody": "在设置中开启后显示悬浮球。点击悬浮球展开圆形菜单，右击可关闭。",
-      "openSettings": "前往设置配置"
     },
     "settings": {
       "title": "桌面悬浮球",
