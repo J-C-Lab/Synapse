@@ -174,7 +174,9 @@
       "updatesEmpty": "All installed plugins are up to date.",
       "trendingEmpty": "No marketplace plugins to show right now.",
       "updateLine": "v{{from}} → v{{to}}",
-      "downloadsLine": "{{count}} downloads"
+      "downloadsLine": "{{count}} downloads",
+      "viewInPlugins": "Open in Plugins",
+      "viewInMarketplace": "Open in Marketplace"
     },
     "cortex": {
       "title": "Cortex",

@@ -44,9 +44,9 @@ export function HomePage({
 
       <CortexQuickEntryCard onOpenCortex={(id) => onNavigate("cortex", id)} />
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid items-start gap-4 md:grid-cols-2">
         <FrequentAppsCard />
-        <PluginsStatusCard />
+        <PluginsStatusCard onNavigate={onNavigate} />
       </div>
     </div>
   )

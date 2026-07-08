@@ -174,7 +174,9 @@
       "updatesEmpty": "已安装插件都是最新版本。",
       "trendingEmpty": "暂时没有可展示的市场插件。",
       "updateLine": "v{{from}} → v{{to}}",
-      "downloadsLine": "{{count}} 次下载"
+      "downloadsLine": "{{count}} 次下载",
+      "viewInPlugins": "前往插件页",
+      "viewInMarketplace": "前往应用市场"
     },
     "cortex": {
       "title": "Cortex",
