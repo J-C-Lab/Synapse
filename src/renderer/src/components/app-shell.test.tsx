@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, render, screen, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { ThemeProvider } from "@/hooks/use-theme"
 import { AppShell } from "./app-shell"
@@ -54,10 +54,14 @@ describe("appShell nav", () => {
 
   it("ignores a stale #/app-launcher hash and falls back to home", () => {
     window.location.hash = "#/app-launcher"
-    renderAppShell()
-    // The fallback nav is "home", which renders as "nav.home" text in both
-    // the sidebar item and the header's current-tab label — hence
-    // getAllByText rather than getByText (which would throw on >1 match).
-    expect(screen.getAllByText("nav.home").length).toBeGreaterThan(0)
+    const { container } = renderAppShell()
+    // The sidebar's Home menu item always renders the literal text
+    // "nav.home" unconditionally — it is a static label, not gated on the
+    // fallback logic — so asserting anywhere in the document would pass even
+    // if the fallback were broken. Scope to the header's current-tab label,
+    // which only reads "nav.home" when `nav` actually resolved to "home".
+    const header = container.querySelector("header")
+    expect(header).not.toBeNull()
+    expect(within(header!).getByText("nav.home")).toBeInTheDocument()
   })
 })
