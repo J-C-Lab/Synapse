@@ -23,6 +23,7 @@ const electronAPI = {
   searchApps: (query: string) => ipcRenderer.invoke("launcher:search", query),
   launchApp: (id: string) => ipcRenderer.invoke("launcher:launch", id),
   refreshApps: () => ipcRenderer.invoke("launcher:refresh"),
+  getFrequentApps: (limit?: number) => ipcRenderer.invoke("launcher:frequent", limit),
   hideLauncher: () => ipcRenderer.invoke("launcher:hide"),
   openExternalUrl: (url: string) => ipcRenderer.invoke("system:open-external", url),
   writeClipboardContent: (content: unknown) =>

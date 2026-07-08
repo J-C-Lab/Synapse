@@ -27,6 +27,7 @@ function api(): NonNullable<Window["electronAPI"]> {
 
 export type AppEntry = LauncherAppEntry
 export type SearchResult = LauncherSearchResult
+export type FrequentAppEntry = LauncherFrequentAppEntry
 export type UserSettings = SynapseUserSettings
 export type FloatingBallFeature = SynapseFloatingBallFeature
 export type LanDevice = SynapseLanDevice
@@ -99,6 +100,10 @@ export async function launchApp(id: string): Promise<boolean> {
 
 export async function refreshApps(): Promise<AppEntry[]> {
   return api().refreshApps()
+}
+
+export async function getFrequentApps(limit?: number): Promise<FrequentAppEntry[]> {
+  return api().getFrequentApps(limit)
 }
 
 export async function hideLauncher(): Promise<void> {

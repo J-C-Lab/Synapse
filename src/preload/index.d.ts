@@ -24,6 +24,11 @@ declare global {
     matches: number[]
   }
 
+  interface LauncherFrequentAppEntry {
+    entry: LauncherAppEntry
+    lastLaunchedAt: number
+  }
+
   type SynapseThemeMode = "light" | "dark" | "system"
   type SynapseThemeAccent = "neutral" | "blue" | "green" | "rose" | "violet"
   type SynapseTrustedSourcePolicy = "official-marketplace" | "any-url" | "local-syn"
@@ -456,6 +461,7 @@ declare global {
       searchApps: (query: string) => Promise<LauncherSearchResult[]>
       launchApp: (id: string) => Promise<boolean>
       refreshApps: () => Promise<LauncherAppEntry[]>
+      getFrequentApps: (limit?: number) => Promise<LauncherFrequentAppEntry[]>
       hideLauncher: () => Promise<void>
       openExternalUrl: (url: string) => Promise<boolean>
       writeClipboardContent: (content: SynapseClipboardContent) => Promise<boolean>

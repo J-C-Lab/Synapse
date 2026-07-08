@@ -288,6 +288,10 @@ function registerIpc(): void {
 
   ipcMain.handle("launcher:refresh", () => launcher.refreshApps())
 
+  ipcMain.handle("launcher:frequent", (_event, limit: unknown) => {
+    return launcher.getFrequentApps(typeof limit === "number" ? limit : undefined)
+  })
+
   ipcMain.handle("launcher:pause-hotkey", () => {
     suspendGlobalShortcut()
   })
