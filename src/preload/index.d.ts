@@ -346,6 +346,8 @@ declare global {
     messages: SynapseAiChatMessage[]
     createdAt: number
     updatedAt: number
+    /** The most recent plan recorded for this conversation, if any run called update_plan. */
+    plan?: Array<{ title: string; status: "pending" | "in_progress" | "completed" }>
   }
 
   type SynapseAiChatEvent =

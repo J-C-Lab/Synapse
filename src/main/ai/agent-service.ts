@@ -86,6 +86,8 @@ export interface AgentServiceOptions {
   getExecutionWorkspaces?: () => readonly WorkspaceRoot[]
   /** Sink for per-run summary traces. Omitted in tests that don't assert tracing. */
   recordRun?: (trace: RunTrace) => void
+  /** Reads back the most recent plan recorded for a conversation, so reselecting it can restore the Progress card. */
+  getLatestPlan?: (conversationId: string) => PlanStep[] | undefined
   /** The in-run plan store, so chat() can clear it per turn and expose getPlan. */
   planRegistry?: RunPlanRegistry
   /** Fired at the start of each interactive turn with the resolved per-run token budget. */
@@ -313,8 +315,13 @@ export class AgentService {
     return this.options.conversations.list()
   }
 
-  getConversation(id: string): Promise<StoredConversation | undefined> {
-    return this.options.conversations.get(id)
+  async getConversation(
+    id: string
+  ): Promise<(StoredConversation & { plan?: PlanStep[] }) | undefined> {
+    const stored = await this.options.conversations.get(id)
+    if (!stored) return undefined
+    const plan = this.options.getLatestPlan?.(id)
+    return plan && plan.length > 0 ? { ...stored, plan } : stored
   }
 
   listWorkspaces(): Promise<Workspace[]> {

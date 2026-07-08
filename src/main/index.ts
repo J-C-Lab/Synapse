@@ -23,6 +23,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  nativeTheme,
   net,
   protocol,
   safeStorage,
@@ -59,7 +60,7 @@ import {
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/catalog"
 import { ResilientToolHost } from "./ai/resilient-tool-host"
 import { RunBudgetRegistry } from "./ai/run-budget-registry"
-import { recordRun as persistRunTrace } from "./ai/run-trace-store"
+import { getLatestPlan, recordRun as persistRunTrace } from "./ai/run-trace-store"
 import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
@@ -345,6 +346,9 @@ function registerIpc(): void {
     refreshTrayMenu(trayActions())
     syncFloatingBallWindow(floatingBallDeps())
     broadcastSettingsChanged(next)
+    if (next.themeMode !== previous.themeMode && mainWindow) {
+      applyTitleBarScheme(mainWindow, next.themeMode)
+    }
     return next
   })
 
@@ -867,6 +871,7 @@ function createAgentService(): AgentService {
     approvals: new ApprovalStore(aiApprovalsFilePath(userDataDir)),
     sendEvent: broadcastAiChatEvent,
     recordRun,
+    getLatestPlan: (conversationId) => getLatestPlan(runsDir, conversationId),
     planRegistry,
     onTurnStart: ({ runId, budgetTokens }) => {
       runBudgetRegistry.set(runId, budgetTokens)
@@ -923,7 +928,45 @@ async function disableFloatingBall(): Promise<void> {
   broadcastSettingsChanged(next)
 }
 
+interface TitleBarOverlayColors {
+  color: string
+  symbolColor: string
+  height: number
+}
+
+/** "system" resolves through Electron's OS-level preference, mirroring the
+ *  renderer's own matchMedia("prefers-color-scheme: dark") resolution in
+ *  use-theme.tsx — the two must never disagree about which scheme is active. */
+function resolveTitleBarScheme(themeMode: "light" | "dark" | "system"): "light" | "dark" {
+  if (themeMode === "system") return nativeTheme.shouldUseDarkColors ? "dark" : "light"
+  return themeMode
+}
+
+/** Colors match globals.css's --background/--foreground oklch tokens exactly
+ *  (oklch(1 0 0)/oklch(0.145 0 0) light, oklch(0.145 0 0)/oklch(0.985 0 0)
+ *  dark) so the native window-control overlay never clashes with whichever
+ *  scheme the renderer actually painted. */
+function titleBarOverlayForScheme(scheme: "light" | "dark"): TitleBarOverlayColors {
+  return scheme === "dark"
+    ? { color: "#0a0a0a", symbolColor: "#fafafa", height: 48 }
+    : { color: "#ffffff", symbolColor: "#0a0a0a", height: 48 }
+}
+
+/** Re-themes an existing window's native title bar overlay — called on
+ *  settings:update (explicit theme change) and on OS theme change while in
+ *  "system" mode, so the min/maximize/close buttons never get stuck on
+ *  whatever scheme was active when the window was created. */
+function applyTitleBarScheme(win: BrowserWindow, themeMode: "light" | "dark" | "system"): void {
+  if (win.isDestroyed()) return
+  const overlay = titleBarOverlayForScheme(resolveTitleBarScheme(themeMode))
+  win.setTitleBarOverlay(overlay)
+  win.setBackgroundColor(overlay.color)
+}
+
 function createMainWindow(): BrowserWindow {
+  const initialOverlay = titleBarOverlayForScheme(
+    resolveTitleBarScheme(launcher.getSettings().themeMode)
+  )
   const win = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -931,7 +974,18 @@ function createMainWindow(): BrowserWindow {
     minHeight: 480,
     title: lanSimulation ? `Synapse - ${lanSimulation.deviceName}` : "Synapse",
     show: false, // launcher app stays in tray; window is shown on demand
-    backgroundColor: "#0a0a0a",
+    backgroundColor: initialOverlay.color,
+    // Hide the native (light, OS-themed) title bar so the app's own themed
+    // header can extend to the top of the window, matching the rest of the
+    // UI instead of a jarring OS-default caption bar. The native min/
+    // maximize/close buttons stay (as an "overlay") so window controls still
+    // feel native; only their color is themed, and it's kept in sync with
+    // the app's light/dark setting via applyTitleBarScheme. The renderer's
+    // header must mark itself `-webkit-app-region: drag` (with `no-drag` on
+    // any interactive children) to keep the window draggable without a real
+    // title bar — see app-shell.tsx.
+    titleBarStyle: "hidden",
+    titleBarOverlay: initialOverlay,
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
       contextIsolation: true,
@@ -1076,6 +1130,14 @@ if (isMcpStdioMode) {
       plugins = initPluginHost()
       app.on("browser-window-created", (_, win) => {
         bindCapabilityPromptLifecycle(win)
+      })
+      // Live-follow the OS light/dark switch while the user is on "system" —
+      // mirrors use-theme.tsx's matchMedia listener on the renderer side, but
+      // this one specifically keeps the native title bar overlay in sync.
+      nativeTheme.on("updated", () => {
+        if (launcher.getSettings().themeMode === "system" && mainWindow) {
+          applyTitleBarScheme(mainWindow, "system")
+        }
       })
       for (const win of BrowserWindow.getAllWindows()) {
         bindCapabilityPromptLifecycle(win)

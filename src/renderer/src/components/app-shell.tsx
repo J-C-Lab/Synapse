@@ -10,6 +10,7 @@ import {
 } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
+import logoDarkUrl from "@/assets/logo-dark.png"
 import logoUrl from "@/assets/logo.png"
 import { HomePage } from "@/components/pages/home-page"
 import {
@@ -29,6 +30,7 @@ import {
 } from "@/components/ui/sidebar"
 import { Spinner } from "@/components/ui/spinner"
 import { UpdateBanner } from "@/components/update-banner"
+import { useTheme } from "@/hooks/use-theme"
 import { cn } from "@/lib/utils"
 
 const ChatPage = lazy(() =>
@@ -103,13 +105,22 @@ function useNav(): [NavId, (id: NavId) => void] {
 export function AppShell() {
   const { t } = useTranslation()
   const [nav, setNav] = useNav()
+  const { resolvedScheme } = useTheme()
 
   return (
     <SidebarProvider>
       <Sidebar collapsible="icon" variant="inset">
-        <SidebarHeader>
+        {/* No native title bar (see createMainWindow) — this doubles as the
+            left half of the draggable title bar strip, like Claude Desktop's
+            dark integrated header. */}
+        <SidebarHeader className="[-webkit-app-region:drag]">
           <div className="flex items-center gap-2 px-2 py-1.5">
-            <img src={logoUrl} alt="" className="size-6 shrink-0" aria-hidden />
+            <img
+              src={resolvedScheme === "dark" ? logoDarkUrl : logoUrl}
+              alt=""
+              className="size-6 shrink-0"
+              aria-hidden
+            />
             <span className="truncate text-sm font-semibold group-data-[collapsible=icon]:hidden">
               {t("app.title")}
             </span>
@@ -222,8 +233,11 @@ export function AppShell() {
 
       <SidebarInset>
         <UpdateBanner />
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
-          <SidebarTrigger />
+        {/* Draggable (no native title bar); the overlay window controls sit
+            top-right (Windows/Linux) so this never needs to reserve space for
+            them — nothing here is right-anchored. */}
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3 [-webkit-app-region:drag]">
+          <SidebarTrigger className="[-webkit-app-region:no-drag]" />
           <span className="text-sm font-medium">{t(`nav.${navKey(nav)}`)}</span>
         </header>
         <main

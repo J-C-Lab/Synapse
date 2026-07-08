@@ -25,9 +25,20 @@
   "chat": {
     "title": "智能助手",
     "empty": "向助手提问。它可以调用你已启用的插件工具。",
+    "emptyHeadline": "有什么可以帮你的？",
     "placeholder": "有问题，尽管问",
     "send": "发送",
     "attach": "添加附件",
+    "attachFolder": "添加文件夹上下文",
+    "actMode": "执行模式",
+    "voiceInput": "语音输入",
+    "attachMenu": {
+      "addFiles": "添加文件或图片",
+      "skills": "技能",
+      "connectors": "连接器",
+      "plugins": "插件",
+      "empty": "暂无可用项"
+    },
     "keyPrompt": "添加 API 密钥即可开始对话。密钥在本机加密存储，永不离开主进程。",
     "saveKey": "保存密钥",
     "onboarding": {

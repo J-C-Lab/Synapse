@@ -2,13 +2,16 @@ import type { NavId } from "../app-shell"
 import { RefreshCw, Settings as SettingsIcon, Sparkles } from "lucide-react"
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
+import logoDarkUrl from "@/assets/logo-dark.png"
 import logoUrl from "@/assets/logo.png"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { useTheme } from "@/hooks/use-theme"
 import { isElectron, refreshApps } from "@/lib/electron"
 
 export function HomePage({ onNavigate }: { onNavigate: (id: NavId) => void }) {
   const { t } = useTranslation()
+  const { resolvedScheme } = useTheme()
   const [rescanning, setRescanning] = useState(false)
 
   async function onRescan() {
@@ -24,7 +27,12 @@ export function HomePage({ onNavigate }: { onNavigate: (id: NavId) => void }) {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex items-center gap-4">
-        <img src={logoUrl} alt="" className="size-12 shrink-0" aria-hidden />
+        <img
+          src={resolvedScheme === "dark" ? logoDarkUrl : logoUrl}
+          alt=""
+          className="size-12 shrink-0"
+          aria-hidden
+        />
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-semibold tracking-tight">{t("app.title")}</h1>
           <p className="text-sm text-muted-foreground">{t("app.subtitle")}</p>

@@ -131,7 +131,13 @@ function SidebarProvider({
             } as React.CSSProperties
           }
           className={cn(
-            "group/sidebar-wrapper flex min-h-svh w-full has-data-[variant=inset]:bg-sidebar",
+            // h-svh (not min-h-svh): this is a fixed-viewport desktop app shell, not a
+            // scrollable web page. `min-h-svh` only sets a floor, so a growing child (e.g.
+            // a long chat) stretches this wrapper past the viewport instead of triggering
+            // the intended internal `overflow-y-auto` regions, pushing fixed UI (composer)
+            // off-screen. `h-svh` caps it so every descendant's flex-1/min-h-0/overflow
+            // chain has an actual bound to work against.
+            "group/sidebar-wrapper flex h-svh w-full has-data-[variant=inset]:bg-sidebar",
             className
           )}
           {...props}

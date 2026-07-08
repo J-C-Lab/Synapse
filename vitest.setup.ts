@@ -15,3 +15,21 @@ if (typeof globalThis.ResizeObserver === "undefined") {
 if (typeof document !== "undefined" && typeof document.elementFromPoint !== "function") {
   document.elementFromPoint = () => null
 }
+
+// jsdom doesn't implement pointer capture or scrollIntoView, which Radix's
+// Select/DropdownMenu/Popover primitives call when opening. No-op stubs let
+// tests open these popups without polyfilling full pointer-event geometry.
+if (typeof Element !== "undefined") {
+  if (!Element.prototype.hasPointerCapture) {
+    Element.prototype.hasPointerCapture = () => false
+  }
+  if (!Element.prototype.setPointerCapture) {
+    Element.prototype.setPointerCapture = () => {}
+  }
+  if (!Element.prototype.releasePointerCapture) {
+    Element.prototype.releasePointerCapture = () => {}
+  }
+  if (!Element.prototype.scrollIntoView) {
+    Element.prototype.scrollIntoView = () => {}
+  }
+}

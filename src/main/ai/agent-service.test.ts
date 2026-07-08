@@ -149,6 +149,7 @@ function service(options: {
   recordRun?: (trace: import("./run-trace-store").RunTrace) => void
   workspaces?: { exists: (id: string) => Promise<boolean> }
   getToolHealth?: () => import("./tool-circuit-breaker").ToolStatSnapshot[]
+  getLatestPlan?: (conversationId: string) => import("./plan/plan-types").PlanStep[] | undefined
 }): {
   service: AgentService
   events: AiChatEvent[]
@@ -165,6 +166,7 @@ function service(options: {
     sendEvent: (event) => events.push(event),
     recordRun: options.recordRun,
     getToolHealth: options.getToolHealth,
+    getLatestPlan: options.getLatestPlan,
     now: () => 1000,
   })
   return { service: svc, events, saved: convo.saved }
@@ -583,5 +585,41 @@ describe("agentService", () => {
     expect(created.workspaceId).toBe("work")
     expect((await svc.getConversation(created.id))?.workspaceId).toBe("work")
     await expect(svc.createConversation("ghost")).rejects.toThrow(/Unknown workspace/)
+  })
+
+  it("getConversation attaches the latest recorded plan for that conversation", async () => {
+    const plan = [
+      { title: "step 1", status: "completed" as const },
+      { title: "step 2", status: "in_progress" as const },
+    ]
+    const { service: svc } = service({
+      host: fakeHost(),
+      provider: fakeProvider([{ text: "x" }]),
+      getLatestPlan: (id) => (id === "c1" ? plan : undefined),
+    })
+    await svc.chat("c1", "go")
+
+    expect((await svc.getConversation("c1"))?.plan).toEqual(plan)
+  })
+
+  it("getConversation omits plan when getLatestPlan finds nothing", async () => {
+    const { service: svc } = service({
+      host: fakeHost(),
+      provider: fakeProvider([{ text: "x" }]),
+      getLatestPlan: () => undefined,
+    })
+    await svc.chat("c1", "go")
+
+    expect((await svc.getConversation("c1"))?.plan).toBeUndefined()
+  })
+
+  it("getConversation works when getLatestPlan is not configured at all", async () => {
+    const { service: svc } = service({
+      host: fakeHost(),
+      provider: fakeProvider([{ text: "x" }]),
+    })
+    await svc.chat("c1", "go")
+
+    expect((await svc.getConversation("c1"))?.plan).toBeUndefined()
   })
 })
