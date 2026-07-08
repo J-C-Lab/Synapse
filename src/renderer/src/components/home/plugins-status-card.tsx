@@ -77,8 +77,8 @@ export function PluginsStatusCard() {
                     key={row.id}
                     className="flex items-center justify-between rounded-md bg-accent/50 px-2 py-1.5 text-sm"
                   >
-                    <span className="truncate font-medium">{row.name}</span>
-                    <span className="text-xs text-muted-foreground">
+                    <span className="min-w-0 flex-1 truncate font-medium">{row.name}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">
                       {t("home.plugins.updateLine", { from: row.from, to: row.to })}
                     </span>
                   </div>
@@ -94,8 +94,8 @@ export function PluginsStatusCard() {
                     key={row.id}
                     className="flex items-center justify-between rounded-md bg-accent/50 px-2 py-1.5 text-sm"
                   >
-                    <span className="truncate font-medium">{row.name}</span>
-                    <span className="text-xs tabular-nums text-muted-foreground">
+                    <span className="min-w-0 flex-1 truncate font-medium">{row.name}</span>
+                    <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
                       {t("home.plugins.downloadsLine", { count: row.downloads })}
                     </span>
                   </div>
