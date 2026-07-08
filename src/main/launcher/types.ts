@@ -30,3 +30,10 @@ export interface SearchResult {
   /** Character indices in `entry.name` that matched the query (for highlighting). */
   matches: number[]
 }
+
+export interface FrequentAppEntry {
+  entry: AppEntry
+  lastLaunchedAt: number
+  /** Data URL, when the icon could be resolved from disk — see app-icon.ts. */
+  iconDataUrl?: string
+}

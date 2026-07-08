@@ -13,17 +13,16 @@
   },
   "nav": {
     "home": "Home",
-    "assistant": "Assistant",
+    "cortex": "Cortex",
     "settings": "Settings",
-    "features": "Features",
-    "appLauncher": "App Launcher",
-    "floatingBall": "Floating Ball",
     "plugins": "Plugins",
     "marketplace": "Marketplace",
-    "lanTransfer": "LAN Transfer"
+    "lanTransfer": "LAN Transfer",
+    "openLauncher": "Open command launcher",
+    "openLauncherHint": "Open command launcher ({{hotkey}})"
   },
   "chat": {
-    "title": "Assistant",
+    "title": "Cortex",
     "empty": "Ask the assistant anything. It can call your enabled plugin tools.",
     "emptyHeadline": "What can I help with?",
     "placeholder": "Ask anything",
@@ -162,10 +161,33 @@
     }
   },
   "home": {
-    "quickActions": "Quick actions",
-    "quickActionsHint": "Common tasks from the home page so you don't have to dig into settings.",
-    "rescan": "Rescan apps",
-    "openSettings": "Open settings"
+    "frequentApps": {
+      "title": "Frequent Apps",
+      "subtitle": "Apps you've launched recently — open them again in one click.",
+      "empty": "No usage recorded yet.",
+      "remove": "Remove {{name}} from Frequent Apps"
+    },
+    "plugins": {
+      "title": "Plugins",
+      "updatesTab": "Updates",
+      "trendingTab": "Trending",
+      "updatesEmpty": "All installed plugins are up to date.",
+      "trendingEmpty": "No marketplace plugins to show right now.",
+      "updateLine": "v{{from}} → v{{to}}",
+      "downloadsLine": "{{count}} downloads",
+      "viewInPlugins": "Open in Plugins",
+      "viewInMarketplace": "Open in Marketplace"
+    },
+    "cortex": {
+      "title": "Cortex",
+      "continue": "Continue conversation",
+      "start": "Start a new conversation",
+      "emptyHint": "No conversations yet — start your first one."
+    },
+    "recommendations": {
+      "title": "Today's Picks",
+      "placeholder": "Cortex is learning how you work — personalized suggestions are coming soon."
+    }
   },
   "settings": {
     "title": "Settings",
@@ -204,26 +226,10 @@
     "accent.rose": "Rose",
     "accent.violet": "Violet"
   },
-  "appLauncher": {
-    "feature": {
-      "title": "App Launcher",
-      "subtitle": "Summon a command palette from anywhere to launch installed apps.",
-      "aboutTitle": "About this feature",
-      "aboutBody": "Press the global shortcut to open a search box. Installed apps are indexed automatically.",
-      "openSettings": "Configure in Settings"
-    }
-  },
   "floatingBall": {
     "title": "Synapse Floating Ball",
     "features": {
       "appLauncher": "App Launcher"
-    },
-    "feature": {
-      "title": "Floating Ball",
-      "subtitle": "Keep a small launcher control on the desktop and open radial shortcuts around it.",
-      "aboutTitle": "About this feature",
-      "aboutBody": "Enable it in Settings to show the desktop ball. Click the ball to open its radial menu, or right-click it to close it.",
-      "openSettings": "Configure in Settings"
     },
     "settings": {
       "title": "Floating Ball",
@@ -669,7 +675,8 @@
       "rescanning": "Rescanning…",
       "rescanned": "App list refreshed.",
       "saved": "Hotkey updated.",
-      "invalid": "Could not register that combination. The previous shortcut is still active."
+      "invalid": "Could not register that combination. The previous shortcut is still active.",
+      "resumeFailed": "The hotkey couldn't be restored — it may now be in use by another app."
     }
   }
 }

@@ -13,17 +13,16 @@
   },
   "nav": {
     "home": "主页",
-    "assistant": "智能助手",
+    "cortex": "Cortex",
     "settings": "设置",
-    "features": "功能",
-    "appLauncher": "应用启动器",
-    "floatingBall": "桌面悬浮球",
     "plugins": "插件",
     "marketplace": "应用市场",
-    "lanTransfer": "局域网传输"
+    "lanTransfer": "局域网传输",
+    "openLauncher": "打开命令启动器",
+    "openLauncherHint": "打开命令启动器（{{hotkey}}）"
   },
   "chat": {
-    "title": "智能助手",
+    "title": "Cortex",
     "empty": "向助手提问。它可以调用你已启用的插件工具。",
     "emptyHeadline": "有什么可以帮你的？",
     "placeholder": "有问题，尽管问",
@@ -162,10 +161,33 @@
     }
   },
   "home": {
-    "quickActions": "快捷操作",
-    "quickActionsHint": "在主页快速执行常用任务，无需进入设置。",
-    "rescan": "重新扫描应用",
-    "openSettings": "前往设置"
+    "frequentApps": {
+      "title": "常用应用",
+      "subtitle": "最近启动过的应用，一键再次打开。",
+      "empty": "还没有使用记录。",
+      "remove": "从常用应用中移除 {{name}}"
+    },
+    "plugins": {
+      "title": "插件",
+      "updatesTab": "可更新",
+      "trendingTab": "市场热门",
+      "updatesEmpty": "已安装插件都是最新版本。",
+      "trendingEmpty": "暂时没有可展示的市场插件。",
+      "updateLine": "v{{from}} → v{{to}}",
+      "downloadsLine": "{{count}} 次下载",
+      "viewInPlugins": "前往插件页",
+      "viewInMarketplace": "前往应用市场"
+    },
+    "cortex": {
+      "title": "Cortex",
+      "continue": "继续对话",
+      "start": "开始新对话",
+      "emptyHint": "还没有对话记录，开始第一次对话吧。"
+    },
+    "recommendations": {
+      "title": "今日推荐",
+      "placeholder": "Cortex 正在学习你的使用习惯，很快会带来个性化建议。"
+    }
   },
   "settings": {
     "title": "设置",
@@ -204,26 +226,10 @@
     "accent.rose": "玫红",
     "accent.violet": "紫罗兰"
   },
-  "appLauncher": {
-    "feature": {
-      "title": "应用启动器",
-      "subtitle": "在任意位置唤出命令面板，快速启动已安装的应用。",
-      "aboutTitle": "关于该功能",
-      "aboutBody": "按下全局快捷键即可打开搜索框，自动索引系统里的已安装应用。",
-      "openSettings": "前往设置配置"
-    }
-  },
   "floatingBall": {
     "title": "Synapse 桌面悬浮球",
     "features": {
       "appLauncher": "应用启动器"
-    },
-    "feature": {
-      "title": "桌面悬浮球",
-      "subtitle": "在桌面保留一个小型入口，点击后以圆形菜单打开快捷功能。",
-      "aboutTitle": "关于该功能",
-      "aboutBody": "在设置中开启后显示悬浮球。点击悬浮球展开圆形菜单，右击可关闭。",
-      "openSettings": "前往设置配置"
     },
     "settings": {
       "title": "桌面悬浮球",
@@ -669,7 +675,8 @@
       "rescanning": "扫描中…",
       "rescanned": "应用列表已刷新。",
       "saved": "快捷键已更新。",
-      "invalid": "无法注册该组合，仍使用上一次的快捷键。"
+      "invalid": "无法注册该组合，仍使用上一次的快捷键。",
+      "resumeFailed": "快捷键未能恢复，可能已被其他程序占用。"
     }
   }
 }

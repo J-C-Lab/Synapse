@@ -24,6 +24,12 @@ declare global {
     matches: number[]
   }
 
+  interface LauncherFrequentAppEntry {
+    entry: LauncherAppEntry
+    lastLaunchedAt: number
+    iconDataUrl?: string
+  }
+
   type SynapseThemeMode = "light" | "dark" | "system"
   type SynapseThemeAccent = "neutral" | "blue" | "green" | "rose" | "violet"
   type SynapseTrustedSourcePolicy = "official-marketplace" | "any-url" | "local-syn"
@@ -456,10 +462,14 @@ declare global {
       searchApps: (query: string) => Promise<LauncherSearchResult[]>
       launchApp: (id: string) => Promise<boolean>
       refreshApps: () => Promise<LauncherAppEntry[]>
+      getFrequentApps: (limit?: number) => Promise<LauncherFrequentAppEntry[]>
+      removeFrequentApp: (id: string) => Promise<void>
       hideLauncher: () => Promise<void>
       openExternalUrl: (url: string) => Promise<boolean>
       writeClipboardContent: (content: SynapseClipboardContent) => Promise<boolean>
       notifyLauncherReady: () => void
+      pauseHotkeyCapture: () => Promise<void>
+      resumeHotkeyCapture: () => Promise<boolean>
       openFloatingBallFeature: (feature: SynapseFloatingBallFeature) => Promise<void>
       toggleFloatingBallMenu: () => Promise<void>
       moveFloatingBallBy: (delta: { x: number; y: number }) => Promise<void>
@@ -700,6 +710,7 @@ declare global {
       downloadUpdate: () => Promise<void>
       installUpdate: () => Promise<void>
       onUpdateEvent: (handler: (state: SynapseUpdateState) => void) => () => void
+      setTitleBarDimmed: (dimmed: boolean) => Promise<void>
     }
   }
 }

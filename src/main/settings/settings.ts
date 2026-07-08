@@ -19,6 +19,11 @@ export const TRUSTED_SOURCE_POLICIES: readonly TrustedSourcePolicy[] = [
 ]
 const MAX_FLOATING_BALL_FEATURES = 6
 
+export interface AppUsageEntry {
+  lastLaunchedAt: number
+  launchCount: number
+}
+
 export interface UserSettings {
   /** Electron Accelerator string, e.g. "Control+Space". */
   hotkey: string
@@ -38,6 +43,8 @@ export interface UserSettings {
   allowAgentShell: boolean
   /** Absolute workspace directories the assistant may use. Empty = host falls back to home. */
   agentShellRoots: string[]
+  /** Per-app launch history keyed by `AppEntry.id`, used to surface "frequently used" apps on Home. */
+  appUsage: Record<string, AppUsageEntry>
 }
 
 export const defaultSettings: UserSettings = {
@@ -50,6 +57,7 @@ export const defaultSettings: UserSettings = {
   trustedSourcePolicy: "official-marketplace",
   allowAgentShell: false,
   agentShellRoots: [],
+  appUsage: {},
 }
 
 export function settingsFilePath(userDataDir: string): string {
@@ -93,6 +101,9 @@ export function normalizeSettings(raw: unknown): UserSettings {
     if (Array.isArray(r.agentShellRoots)) {
       next.agentShellRoots = r.agentShellRoots.filter((p): p is string => typeof p === "string")
     }
+    if (r.appUsage && typeof r.appUsage === "object" && !Array.isArray(r.appUsage)) {
+      next.appUsage = normalizeAppUsage(r.appUsage as Record<string, unknown>)
+    }
   }
   return next
 }
@@ -110,6 +121,18 @@ function normalizeFloatingBallFeatures(raw: unknown[]): FloatingBallFeature[] {
     }
   }
   return seen.size > 0 ? [...seen] : [...defaultSettings.floatingBallFeatures]
+}
+
+function normalizeAppUsage(raw: Record<string, unknown>): Record<string, AppUsageEntry> {
+  const next: Record<string, AppUsageEntry> = {}
+  for (const [id, value] of Object.entries(raw)) {
+    if (!value || typeof value !== "object") continue
+    const v = value as Record<string, unknown>
+    if (typeof v.lastLaunchedAt === "number" && typeof v.launchCount === "number") {
+      next[id] = { lastLaunchedAt: v.lastLaunchedAt, launchCount: v.launchCount }
+    }
+  }
+  return next
 }
 
 export async function loadSettings(filePath: string): Promise<UserSettings> {

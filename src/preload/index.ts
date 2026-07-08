@@ -23,11 +23,15 @@ const electronAPI = {
   searchApps: (query: string) => ipcRenderer.invoke("launcher:search", query),
   launchApp: (id: string) => ipcRenderer.invoke("launcher:launch", id),
   refreshApps: () => ipcRenderer.invoke("launcher:refresh"),
+  getFrequentApps: (limit?: number) => ipcRenderer.invoke("launcher:frequent", limit),
+  removeFrequentApp: (id: string) => ipcRenderer.invoke("launcher:remove-frequent", id),
   hideLauncher: () => ipcRenderer.invoke("launcher:hide"),
   openExternalUrl: (url: string) => ipcRenderer.invoke("system:open-external", url),
   writeClipboardContent: (content: unknown) =>
     ipcRenderer.invoke("system:write-clipboard", content),
   notifyLauncherReady: () => ipcRenderer.send("launcher:ready"),
+  pauseHotkeyCapture: () => ipcRenderer.invoke("launcher:pause-hotkey"),
+  resumeHotkeyCapture: () => ipcRenderer.invoke("launcher:resume-hotkey"),
 
   // ---- Floating Ball ----
   openFloatingBallFeature: (feature: "appLauncher") =>
@@ -197,6 +201,8 @@ const electronAPI = {
     ipcRenderer.on("updates:event", listener)
     return () => ipcRenderer.removeListener("updates:event", listener)
   },
+
+  setTitleBarDimmed: (dimmed: boolean) => ipcRenderer.invoke("window:set-title-bar-dimmed", dimmed),
 
   // Subscribe to the "search window just gained focus" pulse so the
   // renderer can reset its input + selection without polling.

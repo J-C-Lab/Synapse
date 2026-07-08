@@ -62,7 +62,9 @@ export const ipcMain = { handle: vi.fn(), on: vi.fn() }
 export const app = {
   whenReady: vi.fn(() => Promise.resolve()),
   getAppPath: vi.fn(() => "/app"),
+  getPath: vi.fn((name: string) => `/mock-${name}`),
   getVersion: vi.fn(() => "0.0.0"),
+  getFileIcon: vi.fn(() => Promise.resolve({ isEmpty: () => true, toDataURL: () => "" })),
   isPackaged: false,
   on: vi.fn(),
   quit: vi.fn(),
@@ -133,6 +135,15 @@ export const clipboard = {
 export const desktopCapturer = {
   getSources: vi.fn(() => Promise.resolve([])),
 }
+export const globalShortcut = {
+  register: vi.fn(() => true),
+  unregister: vi.fn(),
+  isRegistered: vi.fn(() => false),
+}
+export const nativeTheme = {
+  shouldUseDarkColors: false,
+  on: vi.fn(),
+}
 
 export default {
   contextBridge,
@@ -150,7 +161,9 @@ export default {
   net,
   shell,
   dialog,
+  nativeTheme,
   safeStorage,
   clipboard,
   desktopCapturer,
+  globalShortcut,
 }

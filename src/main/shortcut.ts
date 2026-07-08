@@ -43,3 +43,25 @@ export function unbindGlobalShortcut(): void {
 export function currentBinding(): string | null {
   return currentAccelerator
 }
+
+/**
+ * Temporarily unregister the current accelerator without forgetting it.
+ * Use this while a UI surface wants to capture the *next* raw keystroke
+ * (e.g. the hotkey-rebind input) — otherwise Windows intercepts the
+ * currently-bound combination at the OS level (WM_HOTKEY) and it never
+ * reaches the focused renderer as a keydown event.
+ */
+export function suspendGlobalShortcut(): void {
+  if (currentAccelerator) globalShortcut.unregister(currentAccelerator)
+}
+
+/** Re-registers the accelerator suspended by {@link suspendGlobalShortcut}. */
+export function resumeGlobalShortcut(handler: () => void): boolean {
+  if (!currentAccelerator) return true
+  if (globalShortcut.isRegistered(currentAccelerator)) return true
+  try {
+    return globalShortcut.register(currentAccelerator, handler)
+  } catch {
+    return false
+  }
+}

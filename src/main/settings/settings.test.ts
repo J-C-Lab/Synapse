@@ -99,6 +99,28 @@ describe("normalizeSettings", () => {
     expect(s.allowAgentShell).toBe(true)
     expect(s.agentShellRoots).toEqual(["/work", "/data"])
   })
+
+  it("defaults appUsage to an empty object", () => {
+    expect(normalizeSettings({})).toEqual({ ...defaultSettings, appUsage: {} })
+  })
+
+  it("keeps well-formed appUsage entries", () => {
+    const s = normalizeSettings({
+      appUsage: { vscode: { lastLaunchedAt: 100, launchCount: 3 } },
+    })
+    expect(s.appUsage).toEqual({ vscode: { lastLaunchedAt: 100, launchCount: 3 } })
+  })
+
+  it("drops malformed appUsage entries", () => {
+    const s = normalizeSettings({
+      appUsage: {
+        good: { lastLaunchedAt: 1, launchCount: 1 },
+        missingCount: { lastLaunchedAt: 1 },
+        notAnObject: "nope",
+      },
+    })
+    expect(s.appUsage).toEqual({ good: { lastLaunchedAt: 1, launchCount: 1 } })
+  })
 })
 
 describe("loadSettings / saveSettings", () => {

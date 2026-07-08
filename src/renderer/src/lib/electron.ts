@@ -27,6 +27,7 @@ function api(): NonNullable<Window["electronAPI"]> {
 
 export type AppEntry = LauncherAppEntry
 export type SearchResult = LauncherSearchResult
+export type FrequentAppEntry = LauncherFrequentAppEntry
 export type UserSettings = SynapseUserSettings
 export type FloatingBallFeature = SynapseFloatingBallFeature
 export type LanDevice = SynapseLanDevice
@@ -101,8 +102,24 @@ export async function refreshApps(): Promise<AppEntry[]> {
   return api().refreshApps()
 }
 
+export async function getFrequentApps(limit?: number): Promise<FrequentAppEntry[]> {
+  return api().getFrequentApps(limit)
+}
+
+export async function removeFrequentApp(id: string): Promise<void> {
+  await api().removeFrequentApp(id)
+}
+
 export async function hideLauncher(): Promise<void> {
   await api().hideLauncher()
+}
+
+export async function pauseHotkeyCapture(): Promise<void> {
+  await api().pauseHotkeyCapture()
+}
+
+export async function resumeHotkeyCapture(): Promise<boolean> {
+  return api().resumeHotkeyCapture()
 }
 
 export async function openExternalUrl(url: string): Promise<boolean> {
@@ -664,4 +681,8 @@ export async function installUpdate(): Promise<void> {
 
 export function onUpdateEvent(handler: (state: UpdateState) => void): () => void {
   return api().onUpdateEvent(handler)
+}
+
+export async function setTitleBarDimmed(dimmed: boolean): Promise<void> {
+  await api().setTitleBarDimmed(dimmed)
 }

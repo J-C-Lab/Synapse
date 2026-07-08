@@ -65,6 +65,7 @@ import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
 import { WorkspaceStore } from "./ai/workspace/workspace-store"
+import { ensureDevAppUserModelShortcut } from "./dev-app-shortcut"
 import {
   destroyFloatingBallWindow,
   hideFloatingBallWindow,
@@ -113,10 +114,20 @@ import {
   showSearchWindow,
   toggleSearchWindow,
 } from "./search-window"
-import { bindGlobalShortcut, unbindGlobalShortcut } from "./shortcut"
+import {
+  bindGlobalShortcut,
+  resumeGlobalShortcut,
+  suspendGlobalShortcut,
+  unbindGlobalShortcut,
+} from "./shortcut"
 import { createTray, defaultTrayIcon, destroyTray, refreshTrayMenu } from "./tray"
 import { shouldAutoCheckOnStartup, UpdateService } from "./updates/update-service"
 import { attachWindowSecurity, isSameOrigin } from "./window-security"
+import {
+  dimTitleBarOverlay,
+  resolveTitleBarScheme,
+  titleBarOverlayForScheme,
+} from "./window-title-bar"
 
 const isDev = !app.isPackaged
 const lanSimulation = resolveDevLanSimulation({
@@ -260,6 +271,13 @@ let synapseImportInFlight = false
 let quitRequested = false
 const capabilityPromptLifecycleBound = new WeakSet<WebContents>()
 
+/** Whether the title-bar overlay should render its dimmed variant right now
+ *  — set by the renderer via `window:set-title-bar-dimmed` whenever any
+ *  modal dialog is open (see useAnyModalOpen in the renderer), since the
+ *  native overlay buttons sit outside the web content's stacking context
+ *  and never dim along with a dialog's own backdrop otherwise. */
+let titleBarDimmed = false
+
 function bindCapabilityPromptLifecycle(win: BrowserWindow): void {
   if (win.isDestroyed()) return
   const { webContents } = win
@@ -282,6 +300,23 @@ function registerIpc(): void {
 
   ipcMain.handle("launcher:refresh", () => launcher.refreshApps())
 
+  ipcMain.handle("launcher:frequent", (_event, limit: unknown) => {
+    return launcher.getFrequentApps(typeof limit === "number" ? limit : undefined)
+  })
+
+  ipcMain.handle("launcher:remove-frequent", (_event, id: unknown) => {
+    if (typeof id !== "string") return
+    return launcher.removeFrequentApp(id)
+  })
+
+  ipcMain.handle("launcher:pause-hotkey", () => {
+    suspendGlobalShortcut()
+  })
+
+  ipcMain.handle("launcher:resume-hotkey", () => {
+    return resumeGlobalShortcut(() => toggleSearchWindow(searchWindowDeps()))
+  })
+
   ipcMain.handle("launcher:hide", () => {
     hideSearchWindow()
   })
@@ -303,6 +338,12 @@ function registerIpc(): void {
     if (!isTrustedIpcSender(event) || !isClipboardContent(content)) return false
     writeClipboardContent(content)
     return true
+  })
+
+  ipcMain.handle("window:set-title-bar-dimmed", (event, dimmed: unknown) => {
+    titleBarDimmed = dimmed === true
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win) applyTitleBarScheme(win, launcher.getSettings().themeMode)
   })
 
   ipcMain.on("launcher:ready", (event) => {
@@ -928,37 +969,14 @@ async function disableFloatingBall(): Promise<void> {
   broadcastSettingsChanged(next)
 }
 
-interface TitleBarOverlayColors {
-  color: string
-  symbolColor: string
-  height: number
-}
-
-/** "system" resolves through Electron's OS-level preference, mirroring the
- *  renderer's own matchMedia("prefers-color-scheme: dark") resolution in
- *  use-theme.tsx — the two must never disagree about which scheme is active. */
-function resolveTitleBarScheme(themeMode: "light" | "dark" | "system"): "light" | "dark" {
-  if (themeMode === "system") return nativeTheme.shouldUseDarkColors ? "dark" : "light"
-  return themeMode
-}
-
-/** Colors match globals.css's --background/--foreground oklch tokens exactly
- *  (oklch(1 0 0)/oklch(0.145 0 0) light, oklch(0.145 0 0)/oklch(0.985 0 0)
- *  dark) so the native window-control overlay never clashes with whichever
- *  scheme the renderer actually painted. */
-function titleBarOverlayForScheme(scheme: "light" | "dark"): TitleBarOverlayColors {
-  return scheme === "dark"
-    ? { color: "#0a0a0a", symbolColor: "#fafafa", height: 48 }
-    : { color: "#ffffff", symbolColor: "#0a0a0a", height: 48 }
-}
-
 /** Re-themes an existing window's native title bar overlay — called on
- *  settings:update (explicit theme change) and on OS theme change while in
- *  "system" mode, so the min/maximize/close buttons never get stuck on
- *  whatever scheme was active when the window was created. */
+ *  settings:update (explicit theme change), on OS theme change while in
+ *  "system" mode, and on any dimmed-state change, so the min/maximize/close
+ *  buttons never get stuck on a stale scheme or dimming state. */
 function applyTitleBarScheme(win: BrowserWindow, themeMode: "light" | "dark" | "system"): void {
   if (win.isDestroyed()) return
-  const overlay = titleBarOverlayForScheme(resolveTitleBarScheme(themeMode))
+  const base = titleBarOverlayForScheme(resolveTitleBarScheme(themeMode))
+  const overlay = titleBarDimmed ? dimTitleBarOverlay(base) : base
   win.setTitleBarOverlay(overlay)
   win.setBackgroundColor(overlay.color)
 }
@@ -1123,6 +1141,7 @@ if (isMcpStdioMode) {
       // as "electron.app.Electron" and shows Electron's default logo.
       if (process.platform === "win32") {
         app.setAppUserModelId("com.synapse.desktop")
+        void ensureDevAppUserModelShortcut()
       }
 
       applyCsp()

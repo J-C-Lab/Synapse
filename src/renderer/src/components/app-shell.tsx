@@ -1,6 +1,5 @@
 import {
-  Bot,
-  CircleDot,
+  BrainCircuit,
   House,
   Puzzle,
   Search,
@@ -19,7 +18,6 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
@@ -29,21 +27,47 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 import { Spinner } from "@/components/ui/spinner"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { UpdateBanner } from "@/components/update-banner"
+import { useAnyModalOpen } from "@/hooks/use-any-modal-open"
 import { useTheme } from "@/hooks/use-theme"
+import { getSettings, isElectron, openFloatingBallFeature, setTitleBarDimmed } from "@/lib/electron"
 import { cn } from "@/lib/utils"
+
+/** Minimal renderer-side accelerator prettifier for the launcher tooltip —
+ * intentionally lighter than the full parser in launcher-settings.tsx since
+ * this only ever needs to render a short hint, not round-trip a capture. */
+function prettyHotkey(accelerator: string): string {
+  return accelerator
+    .split("+")
+    .map((part) => {
+      switch (part.toLowerCase()) {
+        case "commandorcontrol":
+        case "cmdorctrl":
+        case "control":
+        case "ctrl":
+          return "Ctrl"
+        case "command":
+        case "cmd":
+          return "⌘"
+        case "alt":
+          return "Alt"
+        case "shift":
+          return "Shift"
+        case "space":
+          return "Space"
+        default:
+          return part
+      }
+    })
+    .join("+")
+}
 
 const ChatPage = lazy(() =>
   import("@/components/pages/chat-page").then((m) => ({ default: m.ChatPage }))
 )
 const SettingsPage = lazy(() =>
   import("@/components/pages/settings-page").then((m) => ({ default: m.SettingsPage }))
-)
-const AppLauncherPage = lazy(() =>
-  import("@/components/pages/app-launcher-page").then((m) => ({ default: m.AppLauncherPage }))
-)
-const FloatingBallPage = lazy(() =>
-  import("@/components/pages/floating-ball-page").then((m) => ({ default: m.FloatingBallPage }))
 )
 const PluginsPage = lazy(() =>
   import("@/components/pages/plugins-page").then((m) => ({ default: m.PluginsPage }))
@@ -55,22 +79,12 @@ const LanTransferPage = lazy(() =>
   import("@/components/pages/lan-transfer-page").then((m) => ({ default: m.LanTransferPage }))
 )
 
-export type NavId =
-  | "home"
-  | "assistant"
-  | "settings"
-  | "app-launcher"
-  | "floating-ball"
-  | "plugins"
-  | "marketplace"
-  | "lan-transfer"
+export type NavId = "home" | "cortex" | "settings" | "plugins" | "marketplace" | "lan-transfer"
 
 const NAV_IDS = new Set<NavId>([
   "home",
-  "assistant",
+  "cortex",
   "settings",
-  "app-launcher",
-  "floating-ball",
   "plugins",
   "marketplace",
   "lan-transfer",
@@ -107,6 +121,46 @@ export function AppShell() {
   const [nav, setNav] = useNav()
   const { resolvedScheme } = useTheme()
 
+  const [pendingCortexConversationId, setPendingCortexConversationId] = useState<
+    string | undefined
+  >(undefined)
+  const [hotkey, setHotkey] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!isElectron()) return
+    void getSettings().then((settings) => setHotkey(settings.hotkey))
+  }, [])
+
+  const anyModalOpen = useAnyModalOpen()
+
+  useEffect(() => {
+    if (!isElectron()) return
+    void setTitleBarDimmed(anyModalOpen)
+  }, [anyModalOpen])
+
+  function handleHomeNavigate(id: NavId, conversationId?: string): void {
+    if (id === "cortex") {
+      setPendingCortexConversationId(conversationId)
+    }
+    setNav(id)
+  }
+
+  useEffect(() => {
+    if (nav === "cortex" || pendingCortexConversationId === undefined) return
+    // The user has navigated away from Cortex without ChatPage ever mounting
+    // to consume the pending id (e.g. its lazy chunk was still loading, or
+    // simply never got the chance) — that visit's resume opportunity has
+    // unambiguously passed, so clear it now. This is gated on the OPPOSITE
+    // condition from the mount-time race the id-clearing callback fixes
+    // (nav !== "cortex", not nav === "cortex"), so it can't reintroduce that
+    // bug: it never fires while ChatPage could still be in its Suspense
+    // window for this visit, only after that window has definitely closed.
+    // Without this, a stale id could silently outlive its visit and get
+    // resumed by a later plain sidebar click into Cortex instead of starting
+    // a fresh draft.
+    setPendingCortexConversationId(undefined)
+  }, [nav])
+
   return (
     <SidebarProvider>
       <Sidebar collapsible="icon" variant="inset">
@@ -114,16 +168,33 @@ export function AppShell() {
             left half of the draggable title bar strip, like Claude Desktop's
             dark integrated header. */}
         <SidebarHeader className="[-webkit-app-region:drag]">
-          <div className="flex items-center gap-2 px-2 py-1.5">
-            <img
-              src={resolvedScheme === "dark" ? logoDarkUrl : logoUrl}
-              alt=""
-              className="size-6 shrink-0"
-              aria-hidden
-            />
-            <span className="truncate text-sm font-semibold group-data-[collapsible=icon]:hidden">
-              {t("app.title")}
-            </span>
+          <div className="flex items-center px-2 py-1.5">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => void openFloatingBallFeature("appLauncher")}
+                  aria-label={t("nav.openLauncher")}
+                  className="group/logo relative size-6 shrink-0 rounded outline-none [-webkit-app-region:no-drag] focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <img
+                    src={resolvedScheme === "dark" ? logoDarkUrl : logoUrl}
+                    alt=""
+                    aria-hidden
+                    className="absolute inset-0 size-6 transition-opacity duration-200 group-hover/logo:opacity-0 group-focus-visible/logo:opacity-0"
+                  />
+                  <Search
+                    aria-hidden
+                    className="absolute inset-0 size-6 p-0.5 text-muted-foreground opacity-0 transition-opacity duration-200 group-hover/logo:opacity-100 group-focus-visible/logo:opacity-100"
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {hotkey
+                  ? t("nav.openLauncherHint", { hotkey: prettyHotkey(hotkey) })
+                  : t("nav.openLauncher")}
+              </TooltipContent>
+            </Tooltip>
           </div>
         </SidebarHeader>
 
@@ -143,60 +214,12 @@ export function AppShell() {
                 </SidebarMenuItem>
                 <SidebarMenuItem>
                   <SidebarMenuButton
-                    isActive={nav === "assistant"}
-                    onClick={() => setNav("assistant")}
-                    tooltip={t("nav.assistant")}
+                    isActive={nav === "cortex"}
+                    onClick={() => setNav("cortex")}
+                    tooltip={t("nav.cortex")}
                   >
-                    <Bot />
-                    <span>{t("nav.assistant")}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={nav === "lan-transfer"}
-                    onClick={() => setNav("lan-transfer")}
-                    tooltip={t("nav.lanTransfer")}
-                  >
-                    <Wifi />
-                    <span>{t("nav.lanTransfer")}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={nav === "settings"}
-                    onClick={() => setNav("settings")}
-                    tooltip={t("nav.settings")}
-                  >
-                    <SettingsIcon />
-                    <span>{t("nav.settings")}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-
-          <SidebarGroup className="mt-auto">
-            <SidebarGroupLabel>{t("nav.features")}</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={nav === "app-launcher"}
-                    onClick={() => setNav("app-launcher")}
-                    tooltip={t("nav.appLauncher")}
-                  >
-                    <Search />
-                    <span>{t("nav.appLauncher")}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={nav === "floating-ball"}
-                    onClick={() => setNav("floating-ball")}
-                    tooltip={t("nav.floatingBall")}
-                  >
-                    <CircleDot />
-                    <span>{t("nav.floatingBall")}</span>
+                    <BrainCircuit />
+                    <span>{t("nav.cortex")}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
                 <SidebarMenuItem>
@@ -225,9 +248,28 @@ export function AppShell() {
         </SidebarContent>
 
         <SidebarFooter>
-          <span className="px-2 py-1 text-[10px] text-muted-foreground group-data-[collapsible=icon]:hidden">
-            Synapse
-          </span>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                isActive={nav === "lan-transfer"}
+                onClick={() => setNav("lan-transfer")}
+                tooltip={t("nav.lanTransfer")}
+              >
+                <Wifi />
+                <span>{t("nav.lanTransfer")}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                isActive={nav === "settings"}
+                onClick={() => setNav("settings")}
+                tooltip={t("nav.settings")}
+              >
+                <SettingsIcon />
+                <span>{t("nav.settings")}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
         </SidebarFooter>
       </Sidebar>
 
@@ -243,7 +285,7 @@ export function AppShell() {
         <main
           className={cn(
             "flex-1",
-            nav === "assistant"
+            nav === "cortex"
               ? "flex min-h-0 flex-col overflow-hidden px-4 py-4"
               : "overflow-y-auto px-6 py-8"
           )}
@@ -251,7 +293,7 @@ export function AppShell() {
           <div
             className={cn(
               "mx-auto w-full",
-              nav === "assistant"
+              nav === "cortex"
                 ? "flex min-h-0 flex-1 flex-col"
                 : nav === "plugins" || nav === "marketplace" || nav === "lan-transfer"
                   ? "max-w-5xl"
@@ -265,11 +307,14 @@ export function AppShell() {
                 </div>
               }
             >
-              {nav === "home" && <HomePage onNavigate={setNav} />}
-              {nav === "assistant" && <ChatPage />}
+              {nav === "home" && <HomePage onNavigate={handleHomeNavigate} />}
+              {nav === "cortex" && (
+                <ChatPage
+                  initialConversationId={pendingCortexConversationId}
+                  onInitialConversationConsumed={() => setPendingCortexConversationId(undefined)}
+                />
+              )}
               {nav === "settings" && <SettingsPage />}
-              {nav === "app-launcher" && <AppLauncherPage onNavigate={setNav} />}
-              {nav === "floating-ball" && <FloatingBallPage onNavigate={setNav} />}
               {nav === "plugins" && <PluginsPage />}
               {nav === "marketplace" && <MarketplacePage />}
               {nav === "lan-transfer" && <LanTransferPage />}
@@ -285,14 +330,10 @@ function navKey(id: NavId): string {
   switch (id) {
     case "home":
       return "home"
-    case "assistant":
-      return "assistant"
+    case "cortex":
+      return "cortex"
     case "settings":
       return "settings"
-    case "app-launcher":
-      return "appLauncher"
-    case "floating-ball":
-      return "floatingBall"
     case "plugins":
       return "plugins"
     case "marketplace":

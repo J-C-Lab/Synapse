@@ -58,3 +58,6 @@ Synapse/
 /.idea
 /.codex
 /.pnpm-store
+
+# superpowers brainstorming scratch
+.superpowers/

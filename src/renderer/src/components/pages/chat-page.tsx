@@ -4,9 +4,9 @@ import type { PlanStep } from "@/components/PlanPanel"
 import type { AiChatEvent, AiConversationSummary, AiStatus, AiTokenUsage } from "@/lib/electron"
 import {
   ArrowUp,
-  Bot,
   Boxes,
   Brain,
+  BrainCircuit,
   ChevronDown,
   Loader2,
   Mic,
@@ -73,7 +73,13 @@ interface PendingApproval {
   input: unknown
 }
 
-export function ChatPage() {
+export function ChatPage({
+  initialConversationId,
+  onInitialConversationConsumed,
+}: {
+  initialConversationId?: string
+  onInitialConversationConsumed?: () => void
+} = {}) {
   const { t } = useTranslation()
   const [status, setStatus] = useState<AiStatus | null>(null)
   const [keyDraft, setKeyDraft] = useState("")
@@ -212,6 +218,24 @@ export function ChatPage() {
     setPlanSteps(stored?.plan ?? [])
     setConversationLocked(true)
   }
+
+  useEffect(() => {
+    if (initialConversationId) void selectConversation(initialConversationId)
+    // Signal that THIS mount has read `initialConversationId`, regardless of
+    // whether it was set — this is what lets AppShell safely clear its
+    // one-shot pending id. Clearing must happen only after this component has
+    // actually mounted and consumed the prop, not merely "around the same
+    // time" as the nav change: ChatPage is lazy-loaded, so on a cold first
+    // visit to Cortex there can be an arbitrarily long Suspense-fallback gap
+    // between `nav` flipping to "cortex" and this component mounting. A
+    // parent-side effect keyed only on `nav` would fire during that gap and
+    // clear the id before it was ever read, silently dropping the resume.
+    onInitialConversationConsumed?.()
+    // Intentionally runs once on mount only: `initialConversationId` is a
+    // one-shot instruction from Home's "continue conversation" card, not a
+    // prop that should re-trigger a reload if it were to change later.
+    // eslint-disable-next-line react/exhaustive-deps
+  }, [])
 
   function newConversation() {
     if (busy) return
@@ -749,7 +773,7 @@ function Header({
           <PanelLeft className="size-4" />
         </Button>
       )}
-      <Bot className="size-5 text-primary" />
+      <BrainCircuit className="size-5 text-primary" />
       <h2 className="text-lg font-semibold">{t("chat.title")}</h2>
       <div className="ml-auto flex items-center gap-2">
         <Button variant="ghost" size="sm" onClick={onManageMcp}>
