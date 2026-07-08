@@ -65,6 +65,7 @@ import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
 import { WorkspaceStore } from "./ai/workspace/workspace-store"
+import { ensureDevAppUserModelShortcut } from "./dev-app-shortcut"
 import {
   destroyFloatingBallWindow,
   hideFloatingBallWindow,
@@ -1136,6 +1137,7 @@ if (isMcpStdioMode) {
       // as "electron.app.Electron" and shows Electron's default logo.
       if (process.platform === "win32") {
         app.setAppUserModelId("com.synapse.desktop")
+        void ensureDevAppUserModelShortcut()
       }
 
       applyCsp()
