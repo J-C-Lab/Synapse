@@ -92,6 +92,22 @@ export function AppShell() {
     setNav(id)
   }
 
+  useEffect(() => {
+    if (nav === "cortex" || pendingCortexConversationId === undefined) return
+    // The user has navigated away from Cortex without ChatPage ever mounting
+    // to consume the pending id (e.g. its lazy chunk was still loading, or
+    // simply never got the chance) — that visit's resume opportunity has
+    // unambiguously passed, so clear it now. This is gated on the OPPOSITE
+    // condition from the mount-time race the id-clearing callback fixes
+    // (nav !== "cortex", not nav === "cortex"), so it can't reintroduce that
+    // bug: it never fires while ChatPage could still be in its Suspense
+    // window for this visit, only after that window has definitely closed.
+    // Without this, a stale id could silently outlive its visit and get
+    // resumed by a later plain sidebar click into Cortex instead of starting
+    // a fresh draft.
+    setPendingCortexConversationId(undefined)
+  }, [nav])
+
   return (
     <SidebarProvider>
       <Sidebar collapsible="icon" variant="inset">
