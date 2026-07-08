@@ -1,4 +1,4 @@
-import type { AppEntry, SearchResult } from "../launcher/types"
+import type { AppEntry, FrequentAppEntry, SearchResult } from "../launcher/types"
 import type { UserSettings } from "../settings/settings"
 import { app } from "electron"
 import { AppCache } from "../launcher/app-cache"
@@ -48,10 +48,40 @@ export class LauncherService {
   async launchById(id: string): Promise<boolean> {
     const entry = this.cache.list().find((app) => app.id === id)
     if (!entry) return false
-    return launchApp(entry)
+    const ok = await launchApp(entry)
+    if (ok) await this.recordLaunch(id)
+    return ok
   }
 
   refreshApps(): Promise<readonly AppEntry[]> {
     return this.cache.refresh()
+  }
+
+  async getFrequentApps(limit = 8): Promise<FrequentAppEntry[]> {
+    if (this.cache.list().length === 0) {
+      await this.cache.refresh()
+    }
+    const byId = new Map(this.cache.list().map((entry) => [entry.id, entry]))
+    return Object.entries(this.settings.appUsage)
+      .map(([id, usage]) => {
+        const entry = byId.get(id)
+        return entry ? { entry, lastLaunchedAt: usage.lastLaunchedAt } : null
+      })
+      .filter((row): row is FrequentAppEntry => row !== null)
+      .sort((a, b) => b.lastLaunchedAt - a.lastLaunchedAt)
+      .slice(0, limit)
+  }
+
+  private async recordLaunch(id: string): Promise<void> {
+    const previous = this.settings.appUsage[id]
+    const next: UserSettings = {
+      ...this.settings,
+      appUsage: {
+        ...this.settings.appUsage,
+        [id]: { lastLaunchedAt: Date.now(), launchCount: (previous?.launchCount ?? 0) + 1 },
+      },
+    }
+    this.settings = next
+    if (this.settingsPath) await saveSettings(this.settingsPath, next)
   }
 }

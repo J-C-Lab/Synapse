@@ -30,3 +30,8 @@ export interface SearchResult {
   /** Character indices in `entry.name` that matched the query (for highlighting). */
   matches: number[]
 }
+
+export interface FrequentAppEntry {
+  entry: AppEntry
+  lastLaunchedAt: number
+}
