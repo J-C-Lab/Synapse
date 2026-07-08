@@ -401,4 +401,50 @@ describe("launcher settings", () => {
 
     expect(api.resumeHotkeyCapture).toHaveBeenCalledTimes(1)
   })
+
+  it("does not resume the hotkey twice when a blur follows a successful capture", async () => {
+    const api = installElectronApi({
+      hotkey: "Control+Space",
+      themeMode: "system",
+      accent: "neutral",
+      floatingBallEnabled: false,
+      floatingBallFeatures: [],
+      lanEnabled: false,
+      trustedSourcePolicy: "official-marketplace",
+      allowAgentShell: false,
+      agentShellRoots: [],
+    })
+    const user = userEvent.setup()
+    render(<LauncherSettings />)
+
+    const input = await screen.findByLabelText("launcher.settings.hotkeyLabel")
+    await user.click(screen.getByRole("button", { name: "launcher.settings.capture" }))
+    fireEvent.keyDown(input, { altKey: true, code: "Space", key: " " })
+    fireEvent.blur(input)
+
+    expect(api.resumeHotkeyCapture).toHaveBeenCalledTimes(1)
+  })
+
+  it("shows an error status when the hotkey fails to resume after capture", async () => {
+    const api = installElectronApi({
+      hotkey: "Control+Space",
+      themeMode: "system",
+      accent: "neutral",
+      floatingBallEnabled: false,
+      floatingBallFeatures: [],
+      lanEnabled: false,
+      trustedSourcePolicy: "official-marketplace",
+      allowAgentShell: false,
+      agentShellRoots: [],
+    })
+    vi.mocked(api.resumeHotkeyCapture).mockResolvedValue(false)
+    const user = userEvent.setup()
+    render(<LauncherSettings />)
+
+    const input = await screen.findByLabelText("launcher.settings.hotkeyLabel")
+    await user.click(screen.getByRole("button", { name: "launcher.settings.capture" }))
+    fireEvent.keyDown(input, { altKey: true, code: "Space", key: " " })
+
+    expect(await screen.findByText("launcher.settings.resumeFailed")).toBeInTheDocument()
+  })
 })

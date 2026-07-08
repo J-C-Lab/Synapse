@@ -669,7 +669,8 @@
       "rescanning": "Rescanning…",
       "rescanned": "App list refreshed.",
       "saved": "Hotkey updated.",
-      "invalid": "Could not register that combination. The previous shortcut is still active."
+      "invalid": "Could not register that combination. The previous shortcut is still active.",
+      "resumeFailed": "The hotkey couldn't be restored — it may now be in use by another app."
     }
   }
 }

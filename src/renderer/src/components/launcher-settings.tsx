@@ -155,6 +155,7 @@ export function LauncherSettings() {
   const [refreshing, setRefreshing] = useState(false)
   const [capturingHotkey, setCapturingHotkey] = useState(false)
   const hotkeyInputRef = useRef<HTMLInputElement>(null)
+  const capturingHotkeyRef = useRef(capturingHotkey)
 
   useEffect(() => {
     if (!isElectron()) return
@@ -164,9 +165,32 @@ export function LauncherSettings() {
     })
   }, [])
 
+  useEffect(() => {
+    capturingHotkeyRef.current = capturingHotkey
+  }, [capturingHotkey])
+
+  // Safety net: if this component unmounts while a capture is in flight
+  // (e.g. the user switches settings tabs) without a DOM blur firing
+  // first, the global hotkey would otherwise stay suspended forever.
+  useEffect(() => {
+    return () => {
+      if (capturingHotkeyRef.current) void resumeHotkeyCapture()
+    }
+  }, [])
+
   if (!isElectron()) return null
 
   const dirty = hotkey.trim() !== "" && hotkey !== savedHotkey
+
+  // `resumeGlobalShortcut` can fail to re-register the accelerator (e.g.
+  // another app grabbed it during the brief suspend window). Surface that
+  // instead of silently leaving the user without a working global hotkey.
+  async function resumeAndReportFailure() {
+    const resumed = await resumeHotkeyCapture()
+    if (!resumed) {
+      setStatus({ kind: "error", text: t("launcher.settings.resumeFailed") })
+    }
+  }
 
   function onHotkeyKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (!capturingHotkey) return
@@ -176,7 +200,7 @@ export function LauncherSettings() {
 
     if (event.key === "Escape") {
       setCapturingHotkey(false)
-      void resumeHotkeyCapture()
+      void resumeAndReportFailure()
       return
     }
 
@@ -190,7 +214,7 @@ export function LauncherSettings() {
     setStatus(null)
     setHotkey(next)
     setCapturingHotkey(false)
-    void resumeHotkeyCapture()
+    void resumeAndReportFailure()
   }
 
   function onCaptureHotkey() {
@@ -259,7 +283,7 @@ export function LauncherSettings() {
               onBlur={() => {
                 if (!capturingHotkey) return
                 setCapturingHotkey(false)
-                void resumeHotkeyCapture()
+                void resumeAndReportFailure()
               }}
               onKeyDown={onHotkeyKeyDown}
               onPaste={(e) => {
