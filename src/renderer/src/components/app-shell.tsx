@@ -12,7 +12,6 @@ import { useTranslation } from "react-i18next"
 import logoDarkUrl from "@/assets/logo-dark.png"
 import logoUrl from "@/assets/logo.png"
 import { HomePage } from "@/components/pages/home-page"
-import { Button } from "@/components/ui/button"
 import {
   Sidebar,
   SidebarContent,
@@ -28,7 +27,6 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 import { Spinner } from "@/components/ui/spinner"
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { UpdateBanner } from "@/components/update-banner"
 import { useAnyModalOpen } from "@/hooks/use-any-modal-open"
@@ -170,25 +168,26 @@ export function AppShell() {
             left half of the draggable title bar strip, like Claude Desktop's
             dark integrated header. */}
         <SidebarHeader className="[-webkit-app-region:drag]">
-          <div className="flex items-center gap-2 px-2 py-1.5">
-            <img
-              src={resolvedScheme === "dark" ? logoDarkUrl : logoUrl}
-              alt=""
-              className="size-6 shrink-0"
-              aria-hidden
-            />
-            <div className="flex-1 group-data-[collapsible=icon]:hidden" />
+          <div className="flex items-center px-2 py-1.5">
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-6 shrink-0 [-webkit-app-region:no-drag] group-data-[collapsible=icon]:hidden"
+                <button
+                  type="button"
                   onClick={() => void openFloatingBallFeature("appLauncher")}
                   aria-label={t("nav.openLauncher")}
+                  className="group/logo relative size-6 shrink-0 rounded outline-none [-webkit-app-region:no-drag] focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  <Search className="size-3.5" aria-hidden />
-                </Button>
+                  <img
+                    src={resolvedScheme === "dark" ? logoDarkUrl : logoUrl}
+                    alt=""
+                    aria-hidden
+                    className="absolute inset-0 size-6 transition-opacity duration-200 group-hover/logo:opacity-0 group-focus-visible/logo:opacity-0"
+                  />
+                  <Search
+                    aria-hidden
+                    className="absolute inset-0 size-6 p-0.5 text-muted-foreground opacity-0 transition-opacity duration-200 group-hover/logo:opacity-100 group-focus-visible/logo:opacity-100"
+                  />
+                </button>
               </TooltipTrigger>
               <TooltipContent side="bottom">
                 {hotkey
@@ -224,37 +223,23 @@ export function AppShell() {
                   </SidebarMenuButton>
                 </SidebarMenuItem>
                 <SidebarMenuItem>
-                  <ToggleGroup
-                    type="single"
-                    value={nav === "marketplace" ? "marketplace" : "plugins"}
-                    onValueChange={(value) => {
-                      if (value) setNav(value as NavId)
-                    }}
-                    variant="outline"
-                    className="w-full"
+                  <SidebarMenuButton
+                    isActive={nav === "plugins"}
+                    onClick={() => setNav("plugins")}
+                    tooltip={t("nav.plugins")}
                   >
-                    <ToggleGroupItem value="plugins" className="flex-1 gap-1.5">
-                      <Puzzle className="size-3.5" aria-hidden />
-                      <span className="group-data-[collapsible=icon]:hidden">
-                        {t("nav.plugins")}
-                      </span>
-                    </ToggleGroupItem>
-                    <ToggleGroupItem value="marketplace" className="flex-1 gap-1.5">
-                      <Store className="size-3.5" aria-hidden />
-                      <span className="group-data-[collapsible=icon]:hidden">
-                        {t("nav.marketplace")}
-                      </span>
-                    </ToggleGroupItem>
-                  </ToggleGroup>
+                    <Puzzle />
+                    <span>{t("nav.plugins")}</span>
+                  </SidebarMenuButton>
                 </SidebarMenuItem>
                 <SidebarMenuItem>
                   <SidebarMenuButton
-                    isActive={nav === "lan-transfer"}
-                    onClick={() => setNav("lan-transfer")}
-                    tooltip={t("nav.lanTransfer")}
+                    isActive={nav === "marketplace"}
+                    onClick={() => setNav("marketplace")}
+                    tooltip={t("nav.marketplace")}
                   >
-                    <Wifi />
-                    <span>{t("nav.lanTransfer")}</span>
+                    <Store />
+                    <span>{t("nav.marketplace")}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               </SidebarMenu>
@@ -264,6 +249,16 @@ export function AppShell() {
 
         <SidebarFooter>
           <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                isActive={nav === "lan-transfer"}
+                onClick={() => setNav("lan-transfer")}
+                tooltip={t("nav.lanTransfer")}
+              >
+                <Wifi />
+                <span>{t("nav.lanTransfer")}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton
                 isActive={nav === "settings"}

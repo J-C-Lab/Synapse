@@ -20,10 +20,22 @@ export function FrequentAppsCard() {
 
   useEffect(() => {
     if (!isElectron()) return
-    void getFrequentApps().then((rows) => {
-      setApps(rows)
-      setLoading(false)
-    })
+
+    function refresh() {
+      void getFrequentApps().then((rows) => {
+        setApps(rows)
+        setLoading(false)
+      })
+    }
+
+    refresh()
+    // The list can go stale without this component ever unmounting — e.g.
+    // launching an app via the global-hotkey launcher popup while this card
+    // is already on screen updates usage in the main process, but this card
+    // has no push channel for that. Refetching on window focus (the user
+    // switching back into the app) catches that case cheaply.
+    window.addEventListener("focus", refresh)
+    return () => window.removeEventListener("focus", refresh)
   }, [])
 
   async function onLaunch(id: string) {

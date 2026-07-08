@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FrequentAppsCard } from "./frequent-apps-card"
@@ -100,6 +100,34 @@ describe("frequentAppsCard", () => {
     await user.click(await screen.findByRole("button", { name: "home.frequentApps.remove" }))
 
     expect(launchAppMock).not.toHaveBeenCalled()
+  })
+
+  it("refetches when the window regains focus, without needing to remount", async () => {
+    getFrequentAppsMock.mockResolvedValue([
+      {
+        entry: { id: "vscode", kind: "win32", name: "VS Code", nameLower: "vs code", target: "x" },
+        lastLaunchedAt: Date.now(),
+      },
+    ])
+
+    render(<FrequentAppsCard />)
+    await screen.findByRole("button", { name: /VS Code/ })
+    expect(getFrequentAppsMock).toHaveBeenCalledTimes(1)
+
+    getFrequentAppsMock.mockResolvedValue([
+      {
+        entry: { id: "vscode", kind: "win32", name: "VS Code", nameLower: "vs code", target: "x" },
+        lastLaunchedAt: Date.now(),
+      },
+      {
+        entry: { id: "chrome", kind: "win32", name: "Chrome", nameLower: "chrome", target: "y" },
+        lastLaunchedAt: Date.now(),
+      },
+    ])
+    window.dispatchEvent(new Event("focus"))
+
+    await waitFor(() => expect(getFrequentAppsMock).toHaveBeenCalledTimes(2))
+    expect(await screen.findByRole("button", { name: /Chrome/ })).toBeInTheDocument()
   })
 
   it("shows a short empty-state message with no action when there's no usage yet", async () => {
