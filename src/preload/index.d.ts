@@ -27,6 +27,7 @@ declare global {
   interface LauncherFrequentAppEntry {
     entry: LauncherAppEntry
     lastLaunchedAt: number
+    iconDataUrl?: string
   }
 
   type SynapseThemeMode = "light" | "dark" | "system"
@@ -462,6 +463,7 @@ declare global {
       launchApp: (id: string) => Promise<boolean>
       refreshApps: () => Promise<LauncherAppEntry[]>
       getFrequentApps: (limit?: number) => Promise<LauncherFrequentAppEntry[]>
+      removeFrequentApp: (id: string) => Promise<void>
       hideLauncher: () => Promise<void>
       openExternalUrl: (url: string) => Promise<boolean>
       writeClipboardContent: (content: SynapseClipboardContent) => Promise<boolean>

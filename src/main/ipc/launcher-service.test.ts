@@ -1,5 +1,6 @@
 import type { AppEntry } from "../launcher/types"
 import type { UserSettings } from "../settings/settings"
+import { app } from "electron"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const listMock = vi.fn<() => readonly AppEntry[]>()
@@ -113,5 +114,38 @@ describe("launcherService usage tracking", () => {
     await service.init()
 
     await expect(service.launchById("vscode")).resolves.toBe(true)
+  })
+
+  it("attaches a resolved icon data URL when the entry has an iconPath", async () => {
+    listMock.mockReturnValue([{ ...makeEntry("vscode", "VS Code"), iconPath: "C:\\vscode.exe" }])
+    vi.mocked(app.getFileIcon).mockResolvedValue({
+      isEmpty: () => false,
+      toDataURL: () => "data:image/png;base64,icon",
+    } as never)
+    const service = new LauncherService()
+    vi.spyOn(Date, "now").mockReturnValue(1_000)
+
+    await service.launchById("vscode")
+
+    const [frequent] = await service.getFrequentApps()
+    expect(frequent.iconDataUrl).toBe("data:image/png;base64,icon")
+  })
+
+  it("removes an app from the frequent list without touching other entries", async () => {
+    const service = new LauncherService()
+    vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValueOnce(2_000)
+    await service.launchById("vscode")
+    await service.launchById("chrome")
+
+    await service.removeFrequentApp("vscode")
+
+    const frequent = await service.getFrequentApps()
+    expect(frequent.map((row) => row.entry.id)).toEqual(["chrome"])
+  })
+
+  it("removeFrequentApp is a harmless no-op for an id with no usage record", async () => {
+    const service = new LauncherService()
+
+    await expect(service.removeFrequentApp("never-launched")).resolves.toBeUndefined()
   })
 })

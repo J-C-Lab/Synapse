@@ -106,6 +106,10 @@ export async function getFrequentApps(limit?: number): Promise<FrequentAppEntry[
   return api().getFrequentApps(limit)
 }
 
+export async function removeFrequentApp(id: string): Promise<void> {
+  await api().removeFrequentApp(id)
+}
+
 export async function hideLauncher(): Promise<void> {
   await api().hideLauncher()
 }

@@ -164,9 +164,8 @@
     "frequentApps": {
       "title": "常用应用",
       "subtitle": "最近启动过的应用，一键再次打开。",
-      "rescan": "重新扫描",
       "empty": "还没有使用记录。",
-      "emptyAction": "重新扫描应用列表"
+      "remove": "从常用应用中移除 {{name}}"
     },
     "plugins": {
       "title": "插件",

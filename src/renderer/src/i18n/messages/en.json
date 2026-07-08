@@ -164,9 +164,8 @@
     "frequentApps": {
       "title": "Frequent Apps",
       "subtitle": "Apps you've launched recently — open them again in one click.",
-      "rescan": "Rescan",
       "empty": "No usage recorded yet.",
-      "emptyAction": "Rescan the app list"
+      "remove": "Remove {{name}} from Frequent Apps"
     },
     "plugins": {
       "title": "Plugins",

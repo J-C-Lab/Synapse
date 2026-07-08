@@ -34,4 +34,6 @@ export interface SearchResult {
 export interface FrequentAppEntry {
   entry: AppEntry
   lastLaunchedAt: number
+  /** Data URL, when the icon could be resolved from disk — see app-icon.ts. */
+  iconDataUrl?: string
 }

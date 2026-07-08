@@ -64,6 +64,7 @@ export const app = {
   getAppPath: vi.fn(() => "/app"),
   getPath: vi.fn((name: string) => `/mock-${name}`),
   getVersion: vi.fn(() => "0.0.0"),
+  getFileIcon: vi.fn(() => Promise.resolve({ isEmpty: () => true, toDataURL: () => "" })),
   isPackaged: false,
   on: vi.fn(),
   quit: vi.fn(),

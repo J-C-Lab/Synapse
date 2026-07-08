@@ -2,6 +2,7 @@ import type { AppEntry, FrequentAppEntry, SearchResult } from "../launcher/types
 import type { UserSettings } from "../settings/settings"
 import { app } from "electron"
 import { AppCache } from "../launcher/app-cache"
+import { resolveAppIcon } from "../launcher/app-icon"
 import { launchApp } from "../launcher/launch-app"
 import { searchApps } from "../launcher/search"
 import { logger } from "../logging"
@@ -63,7 +64,7 @@ export class LauncherService {
       await this.cache.refresh()
     }
     const byId = new Map(this.cache.list().map((entry) => [entry.id, entry]))
-    return Object.entries(this.settings.appUsage)
+    const rows = Object.entries(this.settings.appUsage)
       .map(([id, usage]) => {
         const entry = byId.get(id)
         return entry ? { entry, lastLaunchedAt: usage.lastLaunchedAt } : null
@@ -71,6 +72,29 @@ export class LauncherService {
       .filter((row): row is FrequentAppEntry => row !== null)
       .sort((a, b) => b.lastLaunchedAt - a.lastLaunchedAt)
       .slice(0, limit)
+
+    return Promise.all(
+      rows.map(async (row) => ({
+        ...row,
+        iconDataUrl: await resolveAppIcon(row.entry.iconPath),
+      }))
+    )
+  }
+
+  /** Removes an app from the Home page's frequent-apps list without uninstalling it. */
+  async removeFrequentApp(id: string): Promise<void> {
+    if (!(id in this.settings.appUsage)) return
+    const appUsage = { ...this.settings.appUsage }
+    delete appUsage[id]
+    const next: UserSettings = { ...this.settings, appUsage }
+    this.settings = next
+    if (this.settingsPath) {
+      try {
+        await saveSettings(this.settingsPath, next)
+      } catch (err) {
+        logger.child("launcher-service").warn("failed to persist frequent-app removal", { err })
+      }
+    }
   }
 
   private async recordLaunch(id: string): Promise<void> {

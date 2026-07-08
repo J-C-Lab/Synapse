@@ -292,6 +292,11 @@ function registerIpc(): void {
     return launcher.getFrequentApps(typeof limit === "number" ? limit : undefined)
   })
 
+  ipcMain.handle("launcher:remove-frequent", (_event, id: unknown) => {
+    if (typeof id !== "string") return
+    return launcher.removeFrequentApp(id)
+  })
+
   ipcMain.handle("launcher:pause-hotkey", () => {
     suspendGlobalShortcut()
   })

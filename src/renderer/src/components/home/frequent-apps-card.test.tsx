@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react"
+import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FrequentAppsCard } from "./frequent-apps-card"
@@ -8,14 +8,14 @@ vi.mock("react-i18next", () => ({
 }))
 
 const getFrequentAppsMock = vi.fn()
-const refreshAppsMock = vi.fn()
 const launchAppMock = vi.fn()
+const removeFrequentAppMock = vi.fn()
 
 vi.mock("@/lib/electron", () => ({
   isElectron: () => true,
   getFrequentApps: (...args: unknown[]) => getFrequentAppsMock(...args),
-  refreshApps: (...args: unknown[]) => refreshAppsMock(...args),
   launchApp: (...args: unknown[]) => launchAppMock(...args),
+  removeFrequentApp: (...args: unknown[]) => removeFrequentAppMock(...args),
 }))
 
 afterEach(() => {
@@ -37,6 +37,21 @@ describe("frequentAppsCard", () => {
     expect(await screen.findByRole("button", { name: /VS Code/ })).toBeInTheDocument()
   })
 
+  it("renders the real app icon when one was resolved", async () => {
+    getFrequentAppsMock.mockResolvedValue([
+      {
+        entry: { id: "vscode", kind: "win32", name: "VS Code", nameLower: "vs code", target: "x" },
+        lastLaunchedAt: Date.now(),
+        iconDataUrl: "data:image/png;base64,abc",
+      },
+    ])
+
+    const { container } = render(<FrequentAppsCard />)
+    await screen.findByRole("button", { name: /VS Code/ })
+
+    expect(container.querySelector("img")).toHaveAttribute("src", "data:image/png;base64,abc")
+  })
+
   it("launches an app when its tile is clicked", async () => {
     getFrequentAppsMock.mockResolvedValue([
       {
@@ -53,28 +68,46 @@ describe("frequentAppsCard", () => {
     expect(launchAppMock).toHaveBeenCalledWith("vscode")
   })
 
-  it("shows an empty state with a working rescan action when there's no usage yet", async () => {
-    getFrequentAppsMock.mockResolvedValue([])
-    refreshAppsMock.mockResolvedValue([])
+  it("removes an app from the list when its delete button is clicked", async () => {
+    getFrequentAppsMock.mockResolvedValue([
+      {
+        entry: { id: "vscode", kind: "win32", name: "VS Code", nameLower: "vs code", target: "x" },
+        lastLaunchedAt: Date.now(),
+      },
+    ])
+    removeFrequentAppMock.mockResolvedValue(undefined)
     const user = userEvent.setup()
 
     render(<FrequentAppsCard />)
-    expect(await screen.findByText("home.frequentApps.empty")).toBeInTheDocument()
+    await screen.findByRole("button", { name: /VS Code/ })
+    await user.click(screen.getByRole("button", { name: "home.frequentApps.remove" }))
 
-    await user.click(screen.getByRole("button", { name: "home.frequentApps.emptyAction" }))
-    await waitFor(() => expect(refreshAppsMock).toHaveBeenCalledTimes(1))
+    expect(removeFrequentAppMock).toHaveBeenCalledWith("vscode")
+    expect(screen.queryByRole("button", { name: /VS Code/ })).not.toBeInTheDocument()
   })
 
-  it("rescans and refetches when the header rescan button is clicked", async () => {
-    getFrequentAppsMock.mockResolvedValue([])
-    refreshAppsMock.mockResolvedValue([])
+  it("does not launch the app when its delete button is clicked", async () => {
+    getFrequentAppsMock.mockResolvedValue([
+      {
+        entry: { id: "vscode", kind: "win32", name: "VS Code", nameLower: "vs code", target: "x" },
+        lastLaunchedAt: Date.now(),
+      },
+    ])
+    removeFrequentAppMock.mockResolvedValue(undefined)
     const user = userEvent.setup()
 
     render(<FrequentAppsCard />)
-    await screen.findByText("home.frequentApps.empty")
-    await user.click(screen.getByRole("button", { name: "home.frequentApps.rescan" }))
+    await user.click(await screen.findByRole("button", { name: "home.frequentApps.remove" }))
 
-    await waitFor(() => expect(refreshAppsMock).toHaveBeenCalledTimes(1))
-    expect(getFrequentAppsMock).toHaveBeenCalledTimes(2) // initial load + post-rescan refetch
+    expect(launchAppMock).not.toHaveBeenCalled()
+  })
+
+  it("shows a short empty-state message with no action when there's no usage yet", async () => {
+    getFrequentAppsMock.mockResolvedValue([])
+
+    render(<FrequentAppsCard />)
+
+    expect(await screen.findByText("home.frequentApps.empty")).toBeInTheDocument()
+    expect(screen.queryByRole("button")).not.toBeInTheDocument()
   })
 })
