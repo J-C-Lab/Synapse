@@ -1,5 +1,5 @@
 import {
-  Bot,
+  Brain,
   CircleDot,
   House,
   Puzzle,
@@ -57,7 +57,7 @@ const LanTransferPage = lazy(() =>
 
 export type NavId =
   | "home"
-  | "assistant"
+  | "cortex"
   | "settings"
   | "app-launcher"
   | "floating-ball"
@@ -67,7 +67,7 @@ export type NavId =
 
 const NAV_IDS = new Set<NavId>([
   "home",
-  "assistant",
+  "cortex",
   "settings",
   "app-launcher",
   "floating-ball",
@@ -143,12 +143,12 @@ export function AppShell() {
                 </SidebarMenuItem>
                 <SidebarMenuItem>
                   <SidebarMenuButton
-                    isActive={nav === "assistant"}
-                    onClick={() => setNav("assistant")}
-                    tooltip={t("nav.assistant")}
+                    isActive={nav === "cortex"}
+                    onClick={() => setNav("cortex")}
+                    tooltip={t("nav.cortex")}
                   >
-                    <Bot />
-                    <span>{t("nav.assistant")}</span>
+                    <Brain />
+                    <span>{t("nav.cortex")}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
                 <SidebarMenuItem>
@@ -243,7 +243,7 @@ export function AppShell() {
         <main
           className={cn(
             "flex-1",
-            nav === "assistant"
+            nav === "cortex"
               ? "flex min-h-0 flex-col overflow-hidden px-4 py-4"
               : "overflow-y-auto px-6 py-8"
           )}
@@ -251,7 +251,7 @@ export function AppShell() {
           <div
             className={cn(
               "mx-auto w-full",
-              nav === "assistant"
+              nav === "cortex"
                 ? "flex min-h-0 flex-1 flex-col"
                 : nav === "plugins" || nav === "marketplace" || nav === "lan-transfer"
                   ? "max-w-5xl"
@@ -266,7 +266,7 @@ export function AppShell() {
               }
             >
               {nav === "home" && <HomePage onNavigate={setNav} />}
-              {nav === "assistant" && <ChatPage />}
+              {nav === "cortex" && <ChatPage />}
               {nav === "settings" && <SettingsPage />}
               {nav === "app-launcher" && <AppLauncherPage onNavigate={setNav} />}
               {nav === "floating-ball" && <FloatingBallPage onNavigate={setNav} />}
@@ -285,8 +285,8 @@ function navKey(id: NavId): string {
   switch (id) {
     case "home":
       return "home"
-    case "assistant":
-      return "assistant"
+    case "cortex":
+      return "cortex"
     case "settings":
       return "settings"
     case "app-launcher":
