@@ -4,9 +4,9 @@ import type { PlanStep } from "@/components/PlanPanel"
 import type { AiChatEvent, AiConversationSummary, AiStatus, AiTokenUsage } from "@/lib/electron"
 import {
   ArrowUp,
-  Bot,
   Boxes,
   Brain,
+  BrainCircuit,
   ChevronDown,
   Loader2,
   Mic,
@@ -773,7 +773,7 @@ function Header({
           <PanelLeft className="size-4" />
         </Button>
       )}
-      <Bot className="size-5 text-primary" />
+      <BrainCircuit className="size-5 text-primary" />
       <h2 className="text-lg font-semibold">{t("chat.title")}</h2>
       <div className="ml-auto flex items-center gap-2">
         <Button variant="ghost" size="sm" onClick={onManageMcp}>

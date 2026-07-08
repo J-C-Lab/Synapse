@@ -22,7 +22,7 @@
     "openLauncherHint": "打开命令启动器（{{hotkey}}）"
   },
   "chat": {
-    "title": "智能助手",
+    "title": "Cortex",
     "empty": "向助手提问。它可以调用你已启用的插件工具。",
     "emptyHeadline": "有什么可以帮你的？",
     "placeholder": "有问题，尽管问",

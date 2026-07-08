@@ -22,7 +22,7 @@
     "openLauncherHint": "Open command launcher ({{hotkey}})"
   },
   "chat": {
-    "title": "Assistant",
+    "title": "Cortex",
     "empty": "Ask the assistant anything. It can call your enabled plugin tools.",
     "emptyHeadline": "What can I help with?",
     "placeholder": "Ask anything",
