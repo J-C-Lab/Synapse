@@ -18,14 +18,11 @@ function KindIcon({ kind, className }: { kind: LauncherAppKind; className?: stri
 export function FrequentAppsCard() {
   const { t, i18n } = useTranslation()
   const [apps, setApps] = useState<FrequentAppEntry[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => isElectron())
   const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => {
-    if (!isElectron()) {
-      setLoading(false)
-      return
-    }
+    if (!isElectron()) return
     void getFrequentApps().then((rows) => {
       setApps(rows)
       setLoading(false)
@@ -90,7 +87,7 @@ export function FrequentAppsCard() {
                 key={entry.id}
                 type="button"
                 onClick={() => void onLaunch(entry.id)}
-                className="flex flex-col items-center gap-1 rounded-lg border border-transparent p-2 text-center hover:bg-accent focus-visible:border-ring focus-visible:outline-none"
+                className="flex flex-col items-center gap-1 rounded-lg p-2 text-center outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
               >
                 <KindIcon kind={entry.kind} className="size-5 text-muted-foreground" />
                 <span className="w-full truncate text-xs font-medium">{entry.name}</span>
