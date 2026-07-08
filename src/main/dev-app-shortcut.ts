@@ -10,7 +10,14 @@ const AUMID = "com.synapse.desktop"
 
 /** Start Menu path for the dev-only shortcut, given `%APPDATA%`. */
 export function devShortcutPath(appDataDir: string): string {
-  return path.join(appDataDir, "Microsoft", "Windows", "Start Menu", "Programs", SHORTCUT_NAME)
+  return path.win32.join(
+    appDataDir,
+    "Microsoft",
+    "Windows",
+    "Start Menu",
+    "Programs",
+    SHORTCUT_NAME
+  )
 }
 
 interface ShortcutScriptOptions {
