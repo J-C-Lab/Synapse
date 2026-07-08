@@ -460,6 +460,8 @@ declare global {
       openExternalUrl: (url: string) => Promise<boolean>
       writeClipboardContent: (content: SynapseClipboardContent) => Promise<boolean>
       notifyLauncherReady: () => void
+      pauseHotkeyCapture: () => Promise<void>
+      resumeHotkeyCapture: () => Promise<boolean>
       openFloatingBallFeature: (feature: SynapseFloatingBallFeature) => Promise<void>
       toggleFloatingBallMenu: () => Promise<void>
       moveFloatingBallBy: (delta: { x: number; y: number }) => Promise<void>

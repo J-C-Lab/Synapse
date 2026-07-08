@@ -28,6 +28,8 @@ const electronAPI = {
   writeClipboardContent: (content: unknown) =>
     ipcRenderer.invoke("system:write-clipboard", content),
   notifyLauncherReady: () => ipcRenderer.send("launcher:ready"),
+  pauseHotkeyCapture: () => ipcRenderer.invoke("launcher:pause-hotkey"),
+  resumeHotkeyCapture: () => ipcRenderer.invoke("launcher:resume-hotkey"),
 
   // ---- Floating Ball ----
   openFloatingBallFeature: (feature: "appLauncher") =>

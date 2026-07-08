@@ -23,6 +23,8 @@ function installElectronApi(settings: SynapseUserSettings): TestElectronApi {
     searchApps: vi.fn().mockResolvedValue([]),
     launchApp: vi.fn().mockResolvedValue(true),
     hideLauncher: vi.fn().mockResolvedValue(undefined),
+    pauseHotkeyCapture: vi.fn().mockResolvedValue(undefined),
+    resumeHotkeyCapture: vi.fn().mockResolvedValue(true),
     openExternalUrl: vi.fn().mockResolvedValue(true),
     writeClipboardContent: vi.fn().mockResolvedValue(true),
     notifyLauncherReady: vi.fn(),

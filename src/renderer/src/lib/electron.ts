@@ -105,6 +105,14 @@ export async function hideLauncher(): Promise<void> {
   await api().hideLauncher()
 }
 
+export async function pauseHotkeyCapture(): Promise<void> {
+  await api().pauseHotkeyCapture()
+}
+
+export async function resumeHotkeyCapture(): Promise<boolean> {
+  return api().resumeHotkeyCapture()
+}
+
 export async function openExternalUrl(url: string): Promise<boolean> {
   return api().openExternalUrl(url)
 }

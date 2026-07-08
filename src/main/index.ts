@@ -113,7 +113,12 @@ import {
   showSearchWindow,
   toggleSearchWindow,
 } from "./search-window"
-import { bindGlobalShortcut, unbindGlobalShortcut } from "./shortcut"
+import {
+  bindGlobalShortcut,
+  resumeGlobalShortcut,
+  suspendGlobalShortcut,
+  unbindGlobalShortcut,
+} from "./shortcut"
 import { createTray, defaultTrayIcon, destroyTray, refreshTrayMenu } from "./tray"
 import { shouldAutoCheckOnStartup, UpdateService } from "./updates/update-service"
 import { attachWindowSecurity, isSameOrigin } from "./window-security"
@@ -281,6 +286,14 @@ function registerIpc(): void {
   })
 
   ipcMain.handle("launcher:refresh", () => launcher.refreshApps())
+
+  ipcMain.handle("launcher:pause-hotkey", () => {
+    suspendGlobalShortcut()
+  })
+
+  ipcMain.handle("launcher:resume-hotkey", () => {
+    return resumeGlobalShortcut(() => toggleSearchWindow(searchWindowDeps()))
+  })
 
   ipcMain.handle("launcher:hide", () => {
     hideSearchWindow()
