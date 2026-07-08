@@ -35,11 +35,15 @@ export function CortexQuickEntryCard({
           <Brain className="size-4 text-primary" aria-hidden />
           {t("home.cortex.title")}
         </CardTitle>
-        {!loading && (
-          <CardDescription className="line-clamp-2">
-            {recent ? (recent.title ?? t("chat.untitled")) : t("home.cortex.emptyHint")}
-          </CardDescription>
-        )}
+        <CardDescription className="line-clamp-2">
+          {loading ? (
+            <Skeleton className="h-4 w-48" />
+          ) : recent ? (
+            (recent.title ?? t("chat.untitled"))
+          ) : (
+            t("home.cortex.emptyHint")
+          )}
+        </CardDescription>
       </CardHeader>
       <CardContent>
         {loading ? (
