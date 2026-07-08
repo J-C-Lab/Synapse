@@ -133,6 +133,11 @@ export const clipboard = {
 export const desktopCapturer = {
   getSources: vi.fn(() => Promise.resolve([])),
 }
+export const globalShortcut = {
+  register: vi.fn(() => true),
+  unregister: vi.fn(),
+  isRegistered: vi.fn(() => false),
+}
 
 export default {
   contextBridge,
@@ -153,4 +158,5 @@ export default {
   safeStorage,
   clipboard,
   desktopCapturer,
+  globalShortcut,
 }
