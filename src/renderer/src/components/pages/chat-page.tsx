@@ -73,7 +73,7 @@ interface PendingApproval {
   input: unknown
 }
 
-export function ChatPage() {
+export function ChatPage({ initialConversationId }: { initialConversationId?: string } = {}) {
   const { t } = useTranslation()
   const [status, setStatus] = useState<AiStatus | null>(null)
   const [keyDraft, setKeyDraft] = useState("")
@@ -212,6 +212,14 @@ export function ChatPage() {
     setPlanSteps(stored?.plan ?? [])
     setConversationLocked(true)
   }
+
+  useEffect(() => {
+    if (initialConversationId) void selectConversation(initialConversationId)
+    // Intentionally runs once on mount only: `initialConversationId` is a
+    // one-shot instruction from Home's "continue conversation" card, not a
+    // prop that should re-trigger a reload if it were to change later.
+    // eslint-disable-next-line react/exhaustive-deps
+  }, [])
 
   function newConversation() {
     if (busy) return

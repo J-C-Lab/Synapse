@@ -81,6 +81,25 @@ export function AppShell() {
   const [nav, setNav] = useNav()
   const { resolvedScheme } = useTheme()
 
+  const [pendingCortexConversationId, setPendingCortexConversationId] = useState<
+    string | undefined
+  >(undefined)
+
+  function handleHomeNavigate(id: NavId, conversationId?: string): void {
+    if (id === "cortex") {
+      setPendingCortexConversationId(conversationId)
+    }
+    setNav(id)
+  }
+
+  useEffect(() => {
+    if (nav !== "cortex" || pendingCortexConversationId === undefined) return
+    // Consumed by ChatPage's mount-time initializer above — clear it so a
+    // later plain sidebar click into Cortex starts a fresh conversation
+    // instead of silently re-resuming this one.
+    setPendingCortexConversationId(undefined)
+  }, [nav, pendingCortexConversationId])
+
   return (
     <SidebarProvider>
       <Sidebar collapsible="icon" variant="inset">
@@ -211,8 +230,8 @@ export function AppShell() {
                 </div>
               }
             >
-              {nav === "home" && <HomePage onNavigate={setNav} />}
-              {nav === "cortex" && <ChatPage />}
+              {nav === "home" && <HomePage onNavigate={handleHomeNavigate} />}
+              {nav === "cortex" && <ChatPage initialConversationId={pendingCortexConversationId} />}
               {nav === "settings" && <SettingsPage />}
               {nav === "plugins" && <PluginsPage />}
               {nav === "marketplace" && <MarketplacePage />}
