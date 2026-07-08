@@ -1,13 +1,10 @@
 import type { NavId } from "../app-shell"
 import { Sparkles } from "lucide-react"
 import { useTranslation } from "react-i18next"
-import logoDarkUrl from "@/assets/logo-dark.png"
-import logoUrl from "@/assets/logo.png"
 import { CortexQuickEntryCard } from "@/components/home/cortex-quick-entry-card"
 import { FrequentAppsCard } from "@/components/home/frequent-apps-card"
 import { PluginsStatusCard } from "@/components/home/plugins-status-card"
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { useTheme } from "@/hooks/use-theme"
 
 export function HomePage({
   onNavigate,
@@ -15,21 +12,12 @@ export function HomePage({
   onNavigate: (id: NavId, conversationId?: string) => void
 }) {
   const { t } = useTranslation()
-  const { resolvedScheme } = useTheme()
 
   return (
     <div className="flex flex-col gap-6">
-      <header className="flex items-center gap-4">
-        <img
-          src={resolvedScheme === "dark" ? logoDarkUrl : logoUrl}
-          alt=""
-          className="size-12 shrink-0"
-          aria-hidden
-        />
-        <div className="flex flex-col gap-1">
-          <h1 className="text-balance text-2xl font-semibold tracking-tight">{t("app.title")}</h1>
-          <p className="text-pretty text-sm text-muted-foreground">{t("app.subtitle")}</p>
-        </div>
+      <header className="flex flex-col gap-1">
+        <h1 className="text-balance text-2xl font-semibold tracking-tight">{t("app.title")}</h1>
+        <p className="text-pretty text-sm text-muted-foreground">{t("app.subtitle")}</p>
       </header>
 
       <Card className="border-dashed">
