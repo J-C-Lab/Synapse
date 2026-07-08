@@ -31,8 +31,9 @@ import { Spinner } from "@/components/ui/spinner"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { UpdateBanner } from "@/components/update-banner"
+import { useAnyModalOpen } from "@/hooks/use-any-modal-open"
 import { useTheme } from "@/hooks/use-theme"
-import { getSettings, isElectron, openFloatingBallFeature } from "@/lib/electron"
+import { getSettings, isElectron, openFloatingBallFeature, setTitleBarDimmed } from "@/lib/electron"
 import { cn } from "@/lib/utils"
 
 /** Minimal renderer-side accelerator prettifier for the launcher tooltip —
@@ -131,6 +132,13 @@ export function AppShell() {
     if (!isElectron()) return
     void getSettings().then((settings) => setHotkey(settings.hotkey))
   }, [])
+
+  const anyModalOpen = useAnyModalOpen()
+
+  useEffect(() => {
+    if (!isElectron()) return
+    void setTitleBarDimmed(anyModalOpen)
+  }, [anyModalOpen])
 
   function handleHomeNavigate(id: NavId, conversationId?: string): void {
     if (id === "cortex") {

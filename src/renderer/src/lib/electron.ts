@@ -682,3 +682,7 @@ export async function installUpdate(): Promise<void> {
 export function onUpdateEvent(handler: (state: UpdateState) => void): () => void {
   return api().onUpdateEvent(handler)
 }
+
+export async function setTitleBarDimmed(dimmed: boolean): Promise<void> {
+  await api().setTitleBarDimmed(dimmed)
+}

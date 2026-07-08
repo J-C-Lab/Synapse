@@ -202,6 +202,8 @@ const electronAPI = {
     return () => ipcRenderer.removeListener("updates:event", listener)
   },
 
+  setTitleBarDimmed: (dimmed: boolean) => ipcRenderer.invoke("window:set-title-bar-dimmed", dimmed),
+
   // Subscribe to the "search window just gained focus" pulse so the
   // renderer can reset its input + selection without polling.
   onLauncherFocus: (handler: () => void): (() => void) => {

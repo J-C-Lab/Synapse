@@ -710,6 +710,7 @@ declare global {
       downloadUpdate: () => Promise<void>
       installUpdate: () => Promise<void>
       onUpdateEvent: (handler: (state: SynapseUpdateState) => void) => () => void
+      setTitleBarDimmed: (dimmed: boolean) => Promise<void>
     }
   }
 }

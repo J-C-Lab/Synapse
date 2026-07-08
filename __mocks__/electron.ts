@@ -140,6 +140,10 @@ export const globalShortcut = {
   unregister: vi.fn(),
   isRegistered: vi.fn(() => false),
 }
+export const nativeTheme = {
+  shouldUseDarkColors: false,
+  on: vi.fn(),
+}
 
 export default {
   contextBridge,
@@ -157,6 +161,7 @@ export default {
   net,
   shell,
   dialog,
+  nativeTheme,
   safeStorage,
   clipboard,
   desktopCapturer,

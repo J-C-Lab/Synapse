@@ -151,6 +151,7 @@ function installElectronApi(settings: SynapseUserSettings): TestElectronApi {
     downloadUpdate: vi.fn().mockResolvedValue(undefined),
     installUpdate: vi.fn().mockResolvedValue(undefined),
     onUpdateEvent: vi.fn(() => () => undefined),
+    setTitleBarDimmed: vi.fn().mockResolvedValue(undefined),
   } satisfies TestElectronApi
 
   window.electronAPI = api
