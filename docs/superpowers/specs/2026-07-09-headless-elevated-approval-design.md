@@ -1,6 +1,8 @@
 # Headless Elevated-Capability Approval
 
-> Date: 2026-07-09 · Status: draft, pending review
+> Date: 2026-07-09 · Status: draft, pending review (§1's Settings-UI copy
+> requirement added after code review flagged the original draft as
+> under-specifying how clearly non-per-client this is to the user)
 > Answers the "how does an external principal get elevated approval" question
 > parked by the caller-parity spec (§ non-goals: *"Interactive approval from
 > the headless process... Naming the question is in scope; answering it is
@@ -101,7 +103,23 @@ grant the base capability). The Settings UI lists only already-granted
 capabilities, grouped by plugin, with a per-plugin "allow all" toggle that
 sets the flag on every currently-granted capability under that plugin (the
 "plugin-level" granularity from the design conversation) and a per-capability
-expand-to-override (the "capability-level" granularity).
+override.
+
+**Required copy on this screen, not optional polish**: the toggle must not
+be labeled or implied as "allow Claude Desktop" or any other specific
+client name, and must carry explicit text to the effect of *"This allows any
+external MCP client able to launch Synapse's local MCP connection —
+not just the one you're currently using — to call this capability without a
+per-call prompt."* This isn't a phrasing nicety: `clientId` is self-reported
+over the `initialize` handshake by whatever process opens the stdio
+connection, so pre-authorization is inherently un-scoped by identity (see
+"Why this exists" above) — a user who reads "allow Claude Desktop" and
+believes that grant is specific to the Claude Desktop app they see running
+would be relying on a security boundary that doesn't exist. The prompt
+forwarded to the GUI for a *non*-preauthorized call (§3) should carry the
+same framing: display `clientId` as "reported identity: Claude Desktop" or
+similar, not as an unqualified name, so a live approval decision isn't
+misread as identity-verified either.
 
 ## 2. `CapabilityGate.ensure()` — the new branch
 
