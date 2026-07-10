@@ -13,6 +13,7 @@ import type { RunTrace } from "../ai/run-trace-store"
 import type { ToolHostPort } from "../ai/tool-registry"
 import type { GrantIdentity } from "../plugins/grant-store"
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../plugins/types"
+import type { WorkspaceInstructionsResourcePort } from "./workspace-instructions-resource"
 import { randomUUID } from "node:crypto"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
@@ -24,6 +25,24 @@ import {
 } from "@modelcontextprotocol/sdk/types.js"
 import { decideApproval } from "../ai/approval-gate"
 import { sanitizeToolName, uniqueName } from "../ai/tool-registry"
+import { WORKSPACE_INSTRUCTIONS_PREFIX } from "./workspace-instructions-resource"
+
+const MEMORY_RESOURCE_PREFIX = "synapse://memory/"
+
+function toMemoryResourceUri(id: string): string {
+  return `${MEMORY_RESOURCE_PREFIX}${encodeURIComponent(id)}`
+}
+
+function parseResourceId(uri: string): string | undefined {
+  if (!uri.startsWith(MEMORY_RESOURCE_PREFIX)) return undefined
+  const id = uri.slice(MEMORY_RESOURCE_PREFIX.length)
+  if (!id) return undefined
+  try {
+    return decodeURIComponent(id)
+  } catch {
+    return undefined
+  }
+}
 
 export type McpToolExposurePolicy = "readOnlyOnly" | "all"
 
@@ -41,8 +60,11 @@ export interface SynapseMcpToolServiceOptions {
   workspaceId?: string
   /** Identifies the external MCP client (from `initialize`), for the principal. */
   clientId?: string
-  /** Backs `resources/list` + `resources/read` over long-term memory. Omit to disable resources entirely. */
+  /** Backs `resources/list` + `resources/read` over long-term memory. Omit to disable this resource kind entirely. */
   memory?: MemoryResourcePort
+  /** Backs `resources/list` + `resources/read` over workspace-instructions
+   *  (AGENTS.md/CLAUDE.md). Omit to disable this resource kind entirely. */
+  workspaceInstructions?: WorkspaceInstructionsResourcePort
   /** Whether global-visibility memories are listed/readable for this external caller. Default false (§4a). */
   memoryIncludeGlobal?: boolean
   /** Hard cap on `resources/list` (no cursor pagination in this phase, §4b). Default 200. */
@@ -120,7 +142,7 @@ export class SynapseMcpToolService {
 
     const runId = randomUUID()
     const startedAt = Date.now()
-    const principal = { kind: "external-mcp" as const, clientId: this.options.clientId }
+    const principal = this.principal()
     try {
       const result = toMcpResult(
         await this.host.invokeTool(entry.descriptor.fqName, input, {
@@ -143,29 +165,48 @@ export class SynapseMcpToolService {
   }
 
   async listResources(): Promise<ListResourcesResult> {
-    if (!this.options.memory) return { resources: [] }
-    const scope = this.resourceScope()
-    const entries = await this.options.memory.list(this.options.memoryListLimit ?? 200, scope)
-
     const runId = randomUUID()
     const startedAt = Date.now()
-    const principal = { kind: "external-mcp" as const, clientId: this.options.clientId }
-    this.recordTrace("resources/list", runId, principal, startedAt, true)
-
-    return {
-      resources: entries.map((entry) => ({
-        uri: toResourceUri(entry.id),
-        name: summarize(entry.text),
-        mimeType: "text/plain",
-        ...(entry.tags.length > 0 ? { description: entry.tags.join(", ") } : {}),
-      })),
-    }
+    const [memoryResources, workspaceInstructionResources] = await Promise.all([
+      this.listMemoryResources(),
+      this.listWorkspaceInstructionResources(),
+    ])
+    this.recordTrace("resources/list", runId, this.principal(), startedAt, true)
+    return { resources: [...memoryResources, ...workspaceInstructionResources] }
   }
 
-  async readResource(uri: string): Promise<ReadResourceResult> {
+  private async listMemoryResources(): Promise<ListResourcesResult["resources"]> {
+    if (!this.options.memory) return []
+    const scope = this.resourceScope()
+    const entries = await this.options.memory.list(this.options.memoryListLimit ?? 200, scope)
+    return entries.map((entry) => ({
+      uri: toMemoryResourceUri(entry.id),
+      name: summarize(entry.text),
+      mimeType: "text/plain",
+      ...(entry.tags.length > 0 ? { description: entry.tags.join(", ") } : {}),
+    }))
+  }
+
+  private async listWorkspaceInstructionResources(): Promise<ListResourcesResult["resources"]> {
+    if (!this.options.workspaceInstructions || !this.options.workspaceId) return []
+    const descriptors = await this.options.workspaceInstructions.list(this.options.workspaceId)
+    return descriptors.map((d) => ({ uri: d.uri, name: d.fileName, mimeType: "text/plain" }))
+  }
+
+  async readResource(
+    uri: string,
+    options: { signal?: AbortSignal } = {}
+  ): Promise<ReadResourceResult> {
+    if (uri.startsWith(MEMORY_RESOURCE_PREFIX)) return this.readMemoryResource(uri)
+    if (uri.startsWith(WORKSPACE_INSTRUCTIONS_PREFIX)) {
+      return this.readWorkspaceInstructionsResource(uri, options.signal)
+    }
+    throw new Error(`Unknown Synapse resource: ${uri}`)
+  }
+
+  private async readMemoryResource(uri: string): Promise<ReadResourceResult> {
     const runId = randomUUID()
     const startedAt = Date.now()
-    const principal = { kind: "external-mcp" as const, clientId: this.options.clientId }
     const id = parseResourceId(uri)
     const entry =
       id && this.options.memory
@@ -173,12 +214,40 @@ export class SynapseMcpToolService {
         : undefined
 
     if (!entry) {
-      this.recordTrace(`resources/read:${uri}`, runId, principal, startedAt, false)
+      this.recordTrace(`resources/read:${uri}`, runId, this.principal(), startedAt, false)
       throw new Error(`Unknown Synapse resource: ${uri}`)
     }
 
-    this.recordTrace(`resources/read:${uri}`, runId, principal, startedAt, true)
+    this.recordTrace(`resources/read:${uri}`, runId, this.principal(), startedAt, true)
     return { contents: [{ uri, mimeType: "text/plain", text: entry.text }] }
+  }
+
+  private async readWorkspaceInstructionsResource(
+    uri: string,
+    signal: AbortSignal | undefined
+  ): Promise<ReadResourceResult> {
+    const runId = randomUUID()
+    const startedAt = Date.now()
+    const content =
+      this.options.workspaceInstructions && this.options.workspaceId
+        ? await this.options.workspaceInstructions.read({
+            workspaceId: this.options.workspaceId,
+            uri,
+            clientId: this.options.clientId,
+            signal,
+          })
+        : undefined
+
+    if (!content) {
+      this.recordTrace(`resources/read:${uri}`, runId, this.principal(), startedAt, false)
+      throw new Error(`Unknown Synapse resource: ${uri}`)
+    }
+    this.recordTrace(`resources/read:${uri}`, runId, this.principal(), startedAt, true)
+    return { contents: [{ uri, mimeType: "text/plain", text: content.text }] }
+  }
+
+  private principal(): { kind: "external-mcp"; clientId?: string } {
+    return { kind: "external-mcp", clientId: this.options.clientId }
   }
 
   private resourceScope(): MemoryQueryScope {
@@ -251,8 +320,8 @@ export function createSynapseMcpServer(
     })
   })
   server.setRequestHandler(ListResourcesRequestSchema, () => service.listResources())
-  server.setRequestHandler(ReadResourceRequestSchema, (request) =>
-    service.readResource(request.params.uri)
+  server.setRequestHandler(ReadResourceRequestSchema, (request, extra) =>
+    service.readResource(request.params.uri, { signal: extra.signal })
   )
 
   return server
@@ -324,18 +393,6 @@ function mcpObjectSchema(schema: JsonSchema): McpObjectSchema {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value))
-}
-
-const MEMORY_RESOURCE_PREFIX = "synapse://memory/"
-
-function toResourceUri(id: string): string {
-  return `${MEMORY_RESOURCE_PREFIX}${encodeURIComponent(id)}`
-}
-
-function parseResourceId(uri: string): string | undefined {
-  if (!uri.startsWith(MEMORY_RESOURCE_PREFIX)) return undefined
-  const id = uri.slice(MEMORY_RESOURCE_PREFIX.length)
-  return id ? decodeURIComponent(id) : undefined
 }
 
 function summarize(text: string, maxChars = 60): string {

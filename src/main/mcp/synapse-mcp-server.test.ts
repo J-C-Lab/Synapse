@@ -3,6 +3,7 @@ import type { RunTrace } from "../ai/run-trace-store"
 import type { ToolHostPort } from "../ai/tool-registry"
 import type { RegisteredToolDescriptor } from "../plugins/types"
 import type { MemoryResourcePort } from "./synapse-mcp-server"
+import type { WorkspaceInstructionsResourcePort } from "./workspace-instructions-resource"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { describe, expect, it, vi } from "vitest"
@@ -383,5 +384,123 @@ describe("synapseMcpToolService resources", () => {
   it("returns an empty resource list when no memory port is configured", async () => {
     const service = new SynapseMcpToolService(host([]))
     expect(await service.listResources()).toEqual({ resources: [] })
+  })
+
+  it("treats a memory URI with an invalid %-encoding as unknown rather than throwing", async () => {
+    const service = new SynapseMcpToolService(host([]), { memory: fakeMemory([]) })
+    await expect(service.readResource("synapse://memory/%zz")).rejects.toThrow(
+      "Unknown Synapse resource: synapse://memory/%zz"
+    )
+  })
+})
+
+function fakeWorkspaceInstructions(
+  descriptors: { uri: string; fileName: "AGENTS.md" | "CLAUDE.md" }[],
+  content: Record<string, string> = {}
+): WorkspaceInstructionsResourcePort {
+  return {
+    list: async () => descriptors,
+    read: async (input) =>
+      input.uri in content ? { uri: input.uri, text: content[input.uri]! } : undefined,
+  }
+}
+
+describe("synapseMcpToolService workspace-instructions resources", () => {
+  it("lists workspace-instructions entries alongside memory ones", async () => {
+    const service = new SynapseMcpToolService(host([]), {
+      workspaceId: "w1",
+      memory: fakeMemory([
+        memoryEntry({ id: "m1", scope: { visibility: "workspace", workspaceId: "w1" } }),
+      ]),
+      workspaceInstructions: fakeWorkspaceInstructions([
+        { uri: "synapse://workspace-instructions/w1/AGENTS.md", fileName: "AGENTS.md" },
+      ]),
+    })
+
+    const result = await service.listResources()
+
+    expect(result.resources.map((r) => r.uri)).toEqual(
+      expect.arrayContaining([
+        "synapse://memory/m1",
+        "synapse://workspace-instructions/w1/AGENTS.md",
+      ])
+    )
+  })
+
+  it("still returns workspace-instructions entries when memory is not configured", async () => {
+    const service = new SynapseMcpToolService(host([]), {
+      workspaceId: "w1",
+      workspaceInstructions: fakeWorkspaceInstructions([
+        { uri: "synapse://workspace-instructions/w1/AGENTS.md", fileName: "AGENTS.md" },
+      ]),
+    })
+
+    const result = await service.listResources()
+
+    expect(result.resources).toEqual([
+      {
+        uri: "synapse://workspace-instructions/w1/AGENTS.md",
+        name: "AGENTS.md",
+        mimeType: "text/plain",
+      },
+    ])
+  })
+
+  it("records exactly one resources/list trace per call, not one per source", async () => {
+    const traces: RunTrace[] = []
+    const service = new SynapseMcpToolService(host([]), {
+      workspaceId: "w1",
+      recordRun: (trace) => traces.push(trace),
+      memory: fakeMemory([memoryEntry({ id: "m1" })]),
+      workspaceInstructions: fakeWorkspaceInstructions([
+        { uri: "synapse://workspace-instructions/w1/AGENTS.md", fileName: "AGENTS.md" },
+      ]),
+    })
+
+    await service.listResources()
+
+    expect(traces).toHaveLength(1)
+  })
+
+  it("reads a workspace-instructions resource's text by uri", async () => {
+    const uri = "synapse://workspace-instructions/w1/AGENTS.md"
+    const service = new SynapseMcpToolService(host([]), {
+      workspaceId: "w1",
+      workspaceInstructions: fakeWorkspaceInstructions([{ uri, fileName: "AGENTS.md" }], {
+        [uri]: "Run tests before committing.",
+      }),
+    })
+
+    const result = await service.readResource(uri)
+
+    expect(result).toEqual({
+      contents: [{ uri, mimeType: "text/plain", text: "Run tests before committing." }],
+    })
+  })
+
+  it("throws the same Unknown Synapse resource message for a denied workspace-instructions read as for a nonexistent memory one", async () => {
+    const uri = "synapse://workspace-instructions/w1/AGENTS.md"
+    const service = new SynapseMcpToolService(host([]), {
+      workspaceId: "w1",
+      workspaceInstructions: fakeWorkspaceInstructions([{ uri, fileName: "AGENTS.md" }]),
+    })
+
+    await expect(service.readResource(uri)).rejects.toThrow(`Unknown Synapse resource: ${uri}`)
+  })
+
+  it("passes signal through to workspaceInstructions.read", async () => {
+    const uri = "synapse://workspace-instructions/w1/AGENTS.md"
+    const readSpy = vi.fn(async () => ({ uri, text: "content" }))
+    const service = new SynapseMcpToolService(host([]), {
+      workspaceId: "w1",
+      workspaceInstructions: { list: async () => [], read: readSpy },
+    })
+    const controller = new AbortController()
+
+    await service.readResource(uri, { signal: controller.signal })
+
+    expect(readSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: "w1", uri, signal: controller.signal })
+    )
   })
 })

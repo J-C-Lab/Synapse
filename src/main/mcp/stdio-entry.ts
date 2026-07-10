@@ -7,12 +7,17 @@ import process from "node:process"
 import { asFallbackSource, CompositeToolHost } from "../ai/composite-tool-host"
 import { MEMORY_FQ_PREFIX, MemoryToolSource } from "../ai/memory/memory-tools"
 import { recordRun } from "../ai/run-trace-store"
+import { WorkspaceRootStore } from "../ai/workspace/workspace-root-store"
+import { WorkspaceStore } from "../ai/workspace/workspace-store"
+import { createFileSink } from "../logging/file-sink"
 import { buildGrantIdentity } from "../plugins/capability-governance"
 import { PluginHost } from "../plugins/plugin-host"
 import { createGuiApprovalPort } from "./gui-approval-client"
 import { createHeadlessMemoryService } from "./headless-memory"
+import { createHostResourceAccessAudit } from "./host-resource-audit"
 import { resolveStdioUserDataDir } from "./stdio-paths"
 import { runSynapseMcpStdioServer } from "./synapse-mcp-server"
+import { createWorkspaceInstructionsResourcePort } from "./workspace-instructions-resource"
 
 // Headless entry for the Synapse-as-MCP-server (`tools/list` + `tools/call`
 // over stdio), consumed by external agents such as Claude Desktop.
@@ -70,6 +75,17 @@ async function main(): Promise<void> {
     portFilePath: approvalPortFilePath,
     spawnGui: spawnGuiProcess,
   })
+  const workspaceStore = new WorkspaceStore(path.join(userDataDir, "ai"))
+  const workspaceRootStore = new WorkspaceRootStore(path.join(userDataDir, "ai"))
+  const hostResourceAccessAudit = createHostResourceAccessAudit(
+    createFileSink(path.join(userDataDir, "logs"), { fileName: "host-resource-audit.log" })
+  )
+  const workspaceInstructions = createWorkspaceInstructionsResourcePort({
+    workspaces: workspaceStore,
+    workspaceRoots: workspaceRootStore,
+    approve: (input) => guiApprovalPort.requestHostResourceApproval(input),
+    recordAccess: hostResourceAccessAudit,
+  })
   const approve: CapabilityApprover = ({ identity, request }) =>
     guiApprovalPort.requestApproval({ identity, request: stripSignal(request) })
 
@@ -98,6 +114,7 @@ async function main(): Promise<void> {
       list: (limit, scope) => memory.list(limit, scope),
       get: (id, scope) => memory.get(id, scope),
     },
+    workspaceInstructions,
     exposure: pluginHost.mcpExposure,
     identityForPlugin: (pluginId) => {
       const entry = pluginHost.get(pluginId)

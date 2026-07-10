@@ -20,6 +20,34 @@ export interface HostResourceAuditEntry {
   timestamp: number
 }
 
+export interface HostResourceAccessAuditEntry {
+  event: "resource-access"
+  resourceType: "workspace-instructions"
+  workspaceId: string
+  rootId: string
+  fileName: string
+  uri: string
+  clientId?: string
+  /** Length of the content actually returned — never the content itself. */
+  charsReturned: number
+  timestamp: number
+}
+
+export function createHostResourceAccessAudit(
+  sink: LogSink
+): (entry: HostResourceAccessAuditEntry) => void {
+  const log = new Logger({ scope: "host-resource", sinks: [sink], minLevel: "info" })
+  return (entry) => {
+    const safe: HostResourceAccessAuditEntry = {
+      ...entry,
+      fileName: scrubText(entry.fileName),
+      uri: scrubText(entry.uri),
+    }
+    if (entry.clientId !== undefined) safe.clientId = scrubText(entry.clientId)
+    log.info(entry.event, safe as unknown as Record<string, unknown>)
+  }
+}
+
 export function createHostResourceAudit(sink: LogSink): (entry: HostResourceAuditEntry) => void {
   const log = new Logger({ scope: "host-resource", sinks: [sink], minLevel: "info" })
   return (entry) => {
