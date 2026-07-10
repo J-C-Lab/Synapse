@@ -78,8 +78,12 @@ import {
 import { registerAiIpc } from "./ipc/ai"
 import { CapabilityIpcService, registerCapabilitiesIpc } from "./ipc/capabilities"
 import { attachCapabilityPromptLifecycle } from "./ipc/capability-prompt-lifecycle"
-import { createCapabilityPromptSender } from "./ipc/capability-prompt-router"
+import {
+  createCapabilityPromptSender,
+  createHostResourcePromptSender,
+} from "./ipc/capability-prompt-router"
 import { registerCredentialsIpc } from "./ipc/credentials"
+import { HostResourceIpcService, registerHostResourcesIpc } from "./ipc/host-resources"
 import { registerLanIpc } from "./ipc/lan"
 import { LauncherService } from "./ipc/launcher-service"
 import { registerMarketplaceIpc } from "./ipc/marketplace"
@@ -101,6 +105,7 @@ import { createFileSink } from "./logging/file-sink"
 import { MarketplaceAccountService } from "./marketplace/account-service"
 import { marketplaceTokenFilePath, MarketplaceTokenStore } from "./marketplace/token-store"
 import { startHeadlessApprovalServer } from "./mcp/headless-approval-server"
+import { createHostResourceAudit } from "./mcp/host-resource-audit"
 import { defaultNotificationIcon, showStartupNotification } from "./notifications"
 import { createCapabilityAudit } from "./plugins/capability-audit"
 import { createElectronSecretPrompt, CredentialBroker } from "./plugins/credential-broker"
@@ -242,6 +247,7 @@ function registerStaticProtocol(): void {
 const launcher = new LauncherService()
 let plugins: PluginHost
 let capabilityService!: CapabilityIpcService
+let hostResourceIpcService!: HostResourceIpcService
 let lan: LanService
 let agent: AgentService
 let runTraceRecorder: (trace: RunTrace) => void = () => {}
@@ -288,7 +294,10 @@ function bindCapabilityPromptLifecycle(win: BrowserWindow): void {
   const { webContents } = win
   if (capabilityPromptLifecycleBound.has(webContents)) return
   capabilityPromptLifecycleBound.add(webContents)
-  attachCapabilityPromptLifecycle(webContents, () => capabilityService?.dispose())
+  attachCapabilityPromptLifecycle(webContents, () => {
+    capabilityService?.dispose()
+    hostResourceIpcService?.dispose()
+  })
 }
 
 function registerIpc(): void {
@@ -411,6 +420,9 @@ function registerIpc(): void {
     pickPackageFile: pickSynapsePackageFile,
   })
   registerCapabilitiesIpc(ipcMain, capabilityService, {
+    isTrustedSender: isTrustedIpcSender,
+  })
+  registerHostResourcesIpc(ipcMain, hostResourceIpcService, {
     isTrustedSender: isTrustedIpcSender,
   })
   registerCredentialsIpc(ipcMain, () => plugins, {
@@ -729,11 +741,19 @@ function initPluginHost(): PluginHost {
   const audit = createCapabilityAudit(
     createFileSink(path.join(userDataDir, "logs"), { fileName: "audit.log" })
   )
+  const hostResourceAudit = createHostResourceAudit(
+    createFileSink(path.join(userDataDir, "logs"), { fileName: "host-resource-audit.log" })
+  )
 
   capabilityService = new CapabilityIpcService(
     () => plugins,
     createCapabilityPromptSender(broadcast)
   )
+
+  hostResourceIpcService = new HostResourceIpcService({
+    ...createHostResourcePromptSender(broadcast),
+    audit: hostResourceAudit,
+  })
 
   return new PluginHost({
     fetch: (url, init) => net.fetch(url, init),
@@ -1213,7 +1233,8 @@ if (isMcpStdioMode) {
       registerIpc()
 
       headlessApprovalServer = await startHeadlessApprovalServer({
-        approve: capabilityService.capabilityApprover,
+        approveCapability: capabilityService.capabilityApprover,
+        approveHostResource: hostResourceIpcService.hostResourceApprover,
         portFilePath: path.join(app.getPath("userData"), "mcp-approval.json"),
       })
 
@@ -1287,6 +1308,7 @@ if (isMcpStdioMode) {
       unbindGlobalShortcut()
       destroyTray()
       capabilityService?.dispose()
+      hostResourceIpcService?.dispose()
       plugins?.dispose()
     })
 
