@@ -525,6 +525,7 @@ export type AiTokenUsage = SynapseAiTokenUsage
 export type AiRememberScope = SynapseAiRememberScope
 export type McpServerConfig = SynapseMcpServerConfig
 export type ExecutionWorkspace = SynapseExecutionWorkspace
+export type WorkspaceRoot = SynapseWorkspaceRoot
 export type McpServerStatus = SynapseMcpServerStatus
 export type ToolHealth = SynapseToolHealth
 export type ToolResilience = SynapseToolResilience
@@ -597,6 +598,31 @@ export async function createAiWorkspace(name: string): Promise<AiWorkspace> {
   return api().createAiWorkspace(name)
 }
 
+export async function listWorkspaceRoots(workspaceId: string): Promise<WorkspaceRoot[]> {
+  return api().listWorkspaceRoots(workspaceId)
+}
+
+export async function createWorkspaceRoot(
+  workspaceId: string,
+  name: string,
+  root: string,
+  role: "primary" | "additional"
+): Promise<WorkspaceRoot> {
+  return api().createWorkspaceRoot(workspaceId, name, root, role)
+}
+
+export async function removeWorkspaceRoot(id: string): Promise<void> {
+  await api().removeWorkspaceRoot(id)
+}
+
+export async function setPrimaryWorkspaceRoot(id: string): Promise<void> {
+  await api().setPrimaryWorkspaceRoot(id)
+}
+
+export async function pickWorkspaceRootDirectory(): Promise<string | null> {
+  return api().pickWorkspaceRootDirectory()
+}
+
 export async function createAiConversation(
   workspaceId: string
 ): Promise<{ id: string; workspaceId: string }> {
@@ -638,8 +664,10 @@ export async function listAiMcpServers(): Promise<McpServerConfig[]> {
   return api().listAiMcpServers()
 }
 
-export async function listExecutionWorkspaces(): Promise<ExecutionWorkspace[]> {
-  return api().listExecutionWorkspaces()
+export async function listExecutionWorkspaces(
+  workspaceId = "default"
+): Promise<ExecutionWorkspace[]> {
+  return api().listExecutionWorkspaces(workspaceId)
 }
 
 export async function getAiMcpServerStatus(): Promise<McpServerStatus[]> {

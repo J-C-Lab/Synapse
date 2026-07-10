@@ -109,7 +109,6 @@ beforeEach(() => {
     lanEnabled: false,
     trustedSourcePolicy: "official-marketplace",
     allowAgentShell: false,
-    agentShellRoots: [],
   })
 })
 

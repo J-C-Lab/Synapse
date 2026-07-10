@@ -8,18 +8,11 @@ import { getSettings, isElectron, onSettingsChanged, updateSettings } from "@/li
 export function AgentShellSettings() {
   const { t } = useTranslation()
   const [enabled, setEnabled] = useState(false)
-  const [roots, setRoots] = useState<string[]>([])
 
   useEffect(() => {
     if (!isElectron()) return
-    void getSettings().then((settings) => {
-      setEnabled(settings.allowAgentShell)
-      setRoots(settings.agentShellRoots)
-    })
-    return onSettingsChanged((settings) => {
-      setEnabled(settings.allowAgentShell)
-      setRoots(settings.agentShellRoots)
-    })
+    void getSettings().then((settings) => setEnabled(settings.allowAgentShell))
+    return onSettingsChanged((settings) => setEnabled(settings.allowAgentShell))
   }, [])
 
   async function setAllowAgentShell(next: boolean) {
@@ -27,7 +20,6 @@ export function AgentShellSettings() {
     if (isElectron()) {
       const settings = await updateSettings({ allowAgentShell: next })
       setEnabled(settings.allowAgentShell)
-      setRoots(settings.agentShellRoots)
     }
   }
 
@@ -52,20 +44,10 @@ export function AgentShellSettings() {
             aria-label={t("settings.agentShell.title")}
           />
         </div>
-
         {enabled ? (
-          <div className="flex flex-col gap-2">
-            <span className="text-sm font-medium">{t("settings.agentShell.rootsLabel")}</span>
-            {roots.length > 0 ? (
-              <ul className="list-inside list-disc text-sm text-muted-foreground">
-                {roots.map((root) => (
-                  <li key={root}>{root}</li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-xs text-muted-foreground">{t("settings.agentShell.rootsEmpty")}</p>
-            )}
-          </div>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.agentShell.rootsMovedNotice")}
+          </p>
         ) : null}
       </CardContent>
     </Card>

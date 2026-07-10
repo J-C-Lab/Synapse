@@ -18,7 +18,6 @@ const baseSettings: SynapseUserSettings = {
   lanEnabled: false,
   trustedSourcePolicy: "official-marketplace",
   allowAgentShell: false,
-  agentShellRoots: [],
 }
 
 function installElectronApi(settings: SynapseUserSettings): NonNullable<Window["electronAPI"]> {
@@ -59,5 +58,14 @@ describe("agent local execution settings", () => {
     await waitFor(() => {
       expect(api.updateSettings).toHaveBeenCalledWith({ allowAgentShell: true })
     })
+  })
+
+  it("no longer renders a roots list — that moved to per-workspace settings", async () => {
+    installElectronApi({ ...baseSettings, allowAgentShell: true })
+    render(<AgentShellSettings />)
+    await screen.findByRole("switch")
+    expect(screen.queryByText("settings.agentShell.rootsLabel")).not.toBeInTheDocument()
+    expect(screen.queryByText("settings.agentShell.rootsEmpty")).not.toBeInTheDocument()
+    expect(screen.getByText("settings.agentShell.rootsMovedNotice")).toBeInTheDocument()
   })
 })

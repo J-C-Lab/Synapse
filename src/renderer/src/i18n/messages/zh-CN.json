@@ -199,8 +199,17 @@
     "agentShell": {
       "title": "允许助手使用本地执行",
       "description": "高危。助手可在授权 workspace 内读取文件、应用补丁并运行本地命令。写入与命令均需你确认，并限制在允许的 workspace 内；系统级或灾难性命令会被拒绝。",
-      "rootsLabel": "允许的 workspace",
-      "rootsEmpty": "未设置时默认为你的主目录 workspace。"
+      "rootsMovedNotice": "在每个 workspace 自己的设置里管理已授权的文件夹。"
+    },
+    "workspaceRoots": {
+      "title": "管理根目录",
+      "manageButton": "管理根目录",
+      "empty": "该 workspace 尚未配置根目录。",
+      "addButton": "添加根目录",
+      "disabledNotice": "请先在设置中开启「允许助手使用本地执行」，再添加根目录。",
+      "setPrimary": "设为主目录",
+      "remove": "移除",
+      "primaryBadge": "主目录"
     }
   },
   "trustedSources": {

@@ -199,8 +199,17 @@
     "agentShell": {
       "title": "Allow local execution",
       "description": "High-risk. The assistant can read files, apply patches, and run local commands inside authorized workspaces. Writes and commands require your confirmation, stay confined to allowed workspaces, and system-level or catastrophic commands are refused.",
-      "rootsLabel": "Allowed workspaces",
-      "rootsEmpty": "Defaults to your home workspace when none are set."
+      "rootsMovedNotice": "Manage which folders are authorized from each workspace's own settings."
+    },
+    "workspaceRoots": {
+      "title": "Manage roots",
+      "manageButton": "Manage roots",
+      "empty": "No roots configured for this workspace.",
+      "addButton": "Add root",
+      "disabledNotice": "Turn on \"Allow local execution\" in Settings before adding roots.",
+      "setPrimary": "Set as primary",
+      "remove": "Remove",
+      "primaryBadge": "Primary"
     }
   },
   "trustedSources": {
