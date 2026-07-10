@@ -9,7 +9,7 @@ const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_OUTPUT_CHARS = 32_000
 
 export interface CommandRunInput {
-  workspaceId: string
+  rootId: string
   command: string
   cwd?: string
   timeoutMs?: number
@@ -30,7 +30,7 @@ export async function runCommand(
   input: CommandRunInput,
   signal?: AbortSignal
 ): Promise<CommandRunResult> {
-  const resolved = await policy.resolvePath(input.workspaceId, input.cwd ?? ".")
+  const resolved = await policy.resolvePath(input.rootId, input.cwd ?? ".")
   const shell = process.platform === "win32" ? "powershell.exe" : "/bin/sh"
   const shellArgs =
     process.platform === "win32" ? ["-NoProfile", "-Command", input.command] : ["-c", input.command]

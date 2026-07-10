@@ -5,9 +5,9 @@ import * as path from "node:path"
 export class WorkspacePolicy {
   constructor(private readonly roots: WorkspaceRoot[]) {}
 
-  async resolvePath(workspaceId: string, requestedPath: string): Promise<ResolvedWorkspacePath> {
-    const root = this.roots.find((item) => item.id === workspaceId)
-    if (!root) throw new Error(`Unknown workspace: ${workspaceId}`)
+  async resolvePath(rootId: string, requestedPath: string): Promise<ResolvedWorkspacePath> {
+    const root = this.roots.find((item) => item.id === rootId)
+    if (!root) throw new Error(`Unknown root: ${rootId}`)
 
     const realRoot = await fs.realpath(root.root)
     const candidate = path.isAbsolute(requestedPath)
@@ -19,7 +19,7 @@ export class WorkspacePolicy {
       throw new Error(`Path is outside workspace: ${requestedPath}`)
     }
     return {
-      workspaceId,
+      rootId,
       root: realRoot,
       absolutePath: realCandidate,
       relativePath: normalizeRelative(relative),

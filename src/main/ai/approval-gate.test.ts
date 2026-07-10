@@ -24,11 +24,34 @@ describe("decideApproval", () => {
     expect(decideApproval({ readOnlyHint: true }, { alwaysAsk: true })).toBe("ask")
   })
 
-  it("asks for run_command via its destructive annotation", () => {
+  it("asks for run_command via its destructive annotation", async () => {
     const source = new ExecutionToolHostSource({
-      workspaces: { listWorkspaces: () => [{ id: "work", root: "/work" }] },
+      workspaceRoots: {
+        listAll: async () => [
+          {
+            id: "work",
+            workspaceId: "default",
+            name: "work",
+            root: "/work",
+            role: "primary",
+            createdAt: 1,
+          },
+        ],
+        listForWorkspace: async () => [
+          {
+            id: "work",
+            workspaceId: "default",
+            name: "work",
+            root: "/work",
+            role: "primary",
+            createdAt: 1,
+          },
+        ],
+      },
       log: new ExecutionLogStore("/tmp/does-not-matter.json"),
+      isAllowed: () => true,
     })
+    await source.refresh()
     const runCommand = source.listTools().find((tool) => tool.manifestTool.name === "run_command")
     expect(runCommand).toBeDefined()
     expect(decideApproval(runCommand!.manifestTool.annotations)).toBe("ask")

@@ -3,7 +3,7 @@ import type { ToolResult } from "@synapse/plugin-sdk"
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../../plugins/types"
 import type { ToolHostSource } from "../composite-tool-host"
 import type { ExecutionLogStore } from "./execution-log-store"
-import type { WorkspaceRoot } from "./types"
+import type { WorkspaceRootRecord } from "./types"
 import { classifyCommand } from "./command-policy"
 import { runCommand, truncatePreview } from "./command-runner"
 import { listFiles, readFile, searchFiles } from "./file-tools"
@@ -13,13 +13,17 @@ import { WorkspacePolicy } from "./workspace-policy"
 export const EXECUTION_FQ_PREFIX = "execution:"
 const EXECUTION_PLUGIN_ID = "execution:core"
 
-export interface ExecutionWorkspaceProvider {
-  listWorkspaces: () => WorkspaceRoot[]
+export interface ExecutionWorkspaceRootProvider {
+  listAll: () => Promise<WorkspaceRootRecord[]>
+  listForWorkspace: (workspaceId: string) => Promise<WorkspaceRootRecord[]>
 }
 
 export interface ExecutionToolHostSourceOptions {
-  workspaces: ExecutionWorkspaceProvider
+  workspaceRoots: ExecutionWorkspaceRootProvider
   log: ExecutionLogStore
+  /** Global master switch for local execution tools. When false, tools are
+   *  hidden and invocations are denied even if roots exist. */
+  isAllowed?: () => boolean
   now?: () => number
 }
 
@@ -35,13 +39,13 @@ const TOOL_DESCRIPTORS: RegisteredToolDescriptor[] = [
     manifestTool: {
       name: "list_files",
       title: "List files",
-      description: "List files and directories inside an authorized workspace.",
+      description: "List files and directories inside an authorized workspace root.",
       inputSchema: objectSchema(
         {
-          workspaceId: { type: "string" },
+          rootId: { type: "string" },
           path: { type: "string", description: "Relative directory path (default .)." },
         },
-        ["workspaceId"]
+        ["rootId"]
       ),
       annotations: { readOnlyHint: true },
     },
@@ -52,9 +56,9 @@ const TOOL_DESCRIPTORS: RegisteredToolDescriptor[] = [
     manifestTool: {
       name: "read_file",
       title: "Read file",
-      description: "Read a bounded text file inside an authorized workspace.",
-      inputSchema: objectSchema({ workspaceId: { type: "string" }, path: { type: "string" } }, [
-        "workspaceId",
+      description: "Read a bounded text file inside an authorized workspace root.",
+      inputSchema: objectSchema({ rootId: { type: "string" }, path: { type: "string" } }, [
+        "rootId",
         "path",
       ]),
       annotations: { readOnlyHint: true },
@@ -66,14 +70,14 @@ const TOOL_DESCRIPTORS: RegisteredToolDescriptor[] = [
     manifestTool: {
       name: "search_files",
       title: "Search files",
-      description: "Search text inside an authorized workspace.",
+      description: "Search text inside an authorized workspace root.",
       inputSchema: objectSchema(
         {
-          workspaceId: { type: "string" },
+          rootId: { type: "string" },
           query: { type: "string" },
           path: { type: "string" },
         },
-        ["workspaceId", "query"]
+        ["rootId", "query"]
       ),
       annotations: { readOnlyHint: true },
     },
@@ -84,9 +88,9 @@ const TOOL_DESCRIPTORS: RegisteredToolDescriptor[] = [
     manifestTool: {
       name: "apply_patch",
       title: "Apply patch",
-      description: "Apply a unified patch inside an authorized workspace.",
-      inputSchema: objectSchema({ workspaceId: { type: "string" }, patch: { type: "string" } }, [
-        "workspaceId",
+      description: "Apply a unified patch inside an authorized workspace root.",
+      inputSchema: objectSchema({ rootId: { type: "string" }, patch: { type: "string" } }, [
+        "rootId",
         "patch",
       ]),
       annotations: { destructiveHint: true },
@@ -98,15 +102,15 @@ const TOOL_DESCRIPTORS: RegisteredToolDescriptor[] = [
     manifestTool: {
       name: "run_command",
       title: "Run command",
-      description: "Run a local command inside an authorized workspace.",
+      description: "Run a local command inside an authorized workspace root.",
       inputSchema: objectSchema(
         {
-          workspaceId: { type: "string" },
+          rootId: { type: "string" },
           command: { type: "string" },
           cwd: { type: "string" },
           timeoutMs: { type: "number" },
         },
-        ["workspaceId", "command"]
+        ["rootId", "command"]
       ),
       annotations: { destructiveHint: true },
     },
@@ -114,15 +118,24 @@ const TOOL_DESCRIPTORS: RegisteredToolDescriptor[] = [
 ]
 
 export class ExecutionToolHostSource implements ToolHostSource {
+  private anyRootsExist = false
+
   constructor(private readonly options: ExecutionToolHostSourceOptions) {}
+
+  /** Refreshes the in-memory "does any root exist anywhere" gate `listTools()`
+   *  reads synchronously. Call once at startup and again after any root is
+   *  created or removed. */
+  async refresh(): Promise<void> {
+    this.anyRootsExist = (await this.options.workspaceRoots.listAll()).length > 0
+  }
 
   ownsTool(fqName: string): boolean {
     return fqName.startsWith(EXECUTION_FQ_PREFIX)
   }
 
   listTools(): RegisteredToolDescriptor[] {
-    const roots = this.options.workspaces.listWorkspaces()
-    return roots.length > 0 ? TOOL_DESCRIPTORS : []
+    if (!this.options.isAllowed?.()) return []
+    return this.anyRootsExist ? TOOL_DESCRIPTORS : []
   }
 
   async invokeTool(
@@ -130,34 +143,72 @@ export class ExecutionToolHostSource implements ToolHostSource {
     input: unknown,
     options: ToolInvocationOptions
   ): Promise<ToolResult> {
-    const policy = await this.policy()
+    if (!this.options.isAllowed?.()) {
+      const message = "agent shell is disabled"
+      await this.audit({
+        fqName,
+        input,
+        conversationId: options.caller.conversationId,
+        workspaceId: options.caller.workspaceId,
+        decision: "deny",
+        startedAt: this.now(),
+        errorPreview: message,
+      })
+      return errorResult(message)
+    }
+
     const toolName = fqName.slice(`${EXECUTION_PLUGIN_ID}/`.length)
     const startedAt = this.now()
+    const args = asRecord(input)
+    const callerWorkspaceId = options.caller.workspaceId ?? ""
+    const roots = await this.options.workspaceRoots.listForWorkspace(callerWorkspaceId)
+    const requestedRootId = typeof args.rootId === "string" ? args.rootId : undefined
+    const rootId = requestedRootId ?? roots.find((r) => r.role === "primary")?.id
+    const root = roots.find((r) => r.id === rootId)
+    if (!root) {
+      const message = "root not available to this workspace"
+      await this.audit({
+        fqName,
+        input,
+        conversationId: options.caller.conversationId,
+        workspaceId: options.caller.workspaceId,
+        rootId: requestedRootId,
+        decision: "deny",
+        startedAt,
+        errorPreview: message,
+      })
+      return errorResult(message)
+    }
+    const policy = new WorkspacePolicy(roots)
+    const scopedInput = { ...args, rootId: root.id }
+
     try {
       let result: ToolResult
       switch (toolName) {
         case "list_files":
-          result = await listFiles(policy, input)
+          result = await listFiles(policy, scopedInput)
           break
         case "read_file":
-          result = await readFile(policy, input)
+          result = await readFile(policy, scopedInput)
           break
         case "search_files":
-          result = await searchFiles(policy, input)
+          result = await searchFiles(policy, scopedInput)
           break
         case "apply_patch":
-          result = await applyPatch(policy, input)
+          result = await applyPatch(policy, scopedInput)
           await this.audit({
             fqName,
             input,
             conversationId: options.caller.conversationId,
+            workspaceId: options.caller.workspaceId,
+            rootId: root.id,
             decision: auditDecision(options),
             startedAt,
             result,
           })
           break
         case "run_command":
-          result = await this.runCommand(policy, input, options)
+          result = await this.runCommand(policy, scopedInput, root.id, options)
           break
         default:
           return errorResult(`Unknown execution tool: ${toolName}`)
@@ -167,6 +218,8 @@ export class ExecutionToolHostSource implements ToolHostSource {
           fqName,
           input,
           conversationId: options.caller.conversationId,
+          workspaceId: options.caller.workspaceId,
+          rootId: root.id,
           decision: auditDecision(options),
           startedAt,
           result,
@@ -179,6 +232,8 @@ export class ExecutionToolHostSource implements ToolHostSource {
         fqName,
         input,
         conversationId: options.caller.conversationId,
+        workspaceId: options.caller.workspaceId,
+        rootId: root.id,
         decision: "allow",
         startedAt,
         errorPreview: message,
@@ -189,17 +244,19 @@ export class ExecutionToolHostSource implements ToolHostSource {
 
   private async runCommand(
     policy: WorkspacePolicy,
-    input: unknown,
+    input: Record<string, unknown>,
+    rootId: string,
     options: ToolInvocationOptions
   ): Promise<ToolResult> {
-    const args = asRecord(input)
-    const command = typeof args.command === "string" ? args.command : ""
+    const command = typeof input.command === "string" ? input.command : ""
     const classification = classifyCommand(command)
     if (classification.decision === "deny") {
       await this.audit({
         fqName: `${EXECUTION_PLUGIN_ID}/run_command`,
         input,
         conversationId: options.caller.conversationId,
+        workspaceId: options.caller.workspaceId,
+        rootId,
         decision: "deny",
         startedAt: this.now(),
         errorPreview: classification.reason,
@@ -211,10 +268,10 @@ export class ExecutionToolHostSource implements ToolHostSource {
     const result = await runCommand(
       policy,
       {
-        workspaceId: requireString(args.workspaceId, "workspaceId"),
+        rootId,
         command,
-        cwd: typeof args.cwd === "string" ? args.cwd : undefined,
-        timeoutMs: typeof args.timeoutMs === "number" ? args.timeoutMs : undefined,
+        cwd: typeof input.cwd === "string" ? input.cwd : undefined,
+        timeoutMs: typeof input.timeoutMs === "number" ? input.timeoutMs : undefined,
       },
       options.signal
     )
@@ -234,18 +291,14 @@ export class ExecutionToolHostSource implements ToolHostSource {
       fqName: `${EXECUTION_PLUGIN_ID}/run_command`,
       input,
       conversationId: options.caller.conversationId,
+      workspaceId: options.caller.workspaceId,
+      rootId,
       decision: auditDecision(options),
       startedAt,
       result: toolResult,
       errorPreview: result.exitCode === 0 ? "" : `exit code ${result.exitCode ?? "unknown"}`,
     })
     return toolResult
-  }
-
-  private async policy(): Promise<WorkspacePolicy> {
-    const roots = this.options.workspaces.listWorkspaces()
-    if (roots.length === 0) throw new Error("No authorized workspace is configured")
-    return new WorkspacePolicy(roots)
   }
 
   private now(): number {
@@ -256,6 +309,8 @@ export class ExecutionToolHostSource implements ToolHostSource {
     fqName: string
     input: unknown
     conversationId?: string
+    workspaceId?: string
+    rootId?: string
     decision: "allow" | "ask" | "deny" | "approved"
     startedAt: number
     result?: ToolResult
@@ -269,7 +324,8 @@ export class ExecutionToolHostSource implements ToolHostSource {
       id: crypto.randomUUID(),
       conversationId: params.conversationId,
       toolName: params.fqName,
-      workspaceId: typeof args.workspaceId === "string" ? args.workspaceId : undefined,
+      workspaceId: params.workspaceId,
+      rootId: params.rootId,
       cwd: typeof args.cwd === "string" ? args.cwd : undefined,
       normalizedPaths: typeof args.path === "string" ? [args.path] : [],
       decision: params.decision,
@@ -280,6 +336,10 @@ export class ExecutionToolHostSource implements ToolHostSource {
       errorPreview: params.errorPreview ?? "",
     })
   }
+}
+
+function auditDecision(options: ToolInvocationOptions): "allow" | "approved" {
+  return options.executionAuditDecision === "approved" ? "approved" : "allow"
 }
 
 function renderResult(result: ToolResult): string {
@@ -300,13 +360,4 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {}
-}
-
-function requireString(value: unknown, field: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`Missing ${field}`)
-  return value
-}
-
-function auditDecision(options: ToolInvocationOptions): "allow" | "approved" {
-  return options.executionAuditDecision === "approved" ? "approved" : "allow"
 }

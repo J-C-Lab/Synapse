@@ -4,13 +4,13 @@ import { promises as fs } from "node:fs"
 
 export async function applyPatch(policy: WorkspacePolicy, input: unknown): Promise<ToolResult> {
   const args = asRecord(input)
-  const workspaceId = requireString(args.workspaceId, "workspaceId")
+  const rootId = requireString(args.rootId, "rootId")
   const patch = requireString(args.patch, "patch")
   const hunks = parsePatch(patch)
   const touched: string[] = []
 
   for (const hunk of hunks) {
-    const resolved = await policy.resolvePath(workspaceId, hunk.path)
+    const resolved = await policy.resolvePath(rootId, hunk.path)
     touched.push(resolved.relativePath)
     if (hunk.kind === "add") {
       await fs.mkdir(pathDir(resolved.absolutePath), { recursive: true })

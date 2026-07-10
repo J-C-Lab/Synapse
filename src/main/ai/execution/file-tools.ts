@@ -8,9 +8,9 @@ const MAX_SEARCH_MATCHES = 100
 
 export async function listFiles(policy: WorkspacePolicy, input: unknown): Promise<ToolResult> {
   const args = asRecord(input)
-  const workspaceId = requireString(args.workspaceId, "workspaceId")
+  const rootId = requireString(args.rootId, "rootId")
   const relativePath = typeof args.path === "string" ? args.path : "."
-  const resolved = await policy.resolvePath(workspaceId, relativePath)
+  const resolved = await policy.resolvePath(rootId, relativePath)
   const entries = await fs.readdir(resolved.absolutePath, { withFileTypes: true })
   const items = entries.map((entry) => ({
     name: entry.name,
@@ -21,9 +21,9 @@ export async function listFiles(policy: WorkspacePolicy, input: unknown): Promis
 
 export async function readFile(policy: WorkspacePolicy, input: unknown): Promise<ToolResult> {
   const args = asRecord(input)
-  const workspaceId = requireString(args.workspaceId, "workspaceId")
+  const rootId = requireString(args.rootId, "rootId")
   const filePath = requireString(args.path, "path")
-  const resolved = await policy.resolvePath(workspaceId, filePath)
+  const resolved = await policy.resolvePath(rootId, filePath)
   const buffer = await fs.readFile(resolved.absolutePath)
   const truncated = buffer.length > MAX_READ_BYTES
   const text = (truncated ? buffer.subarray(0, MAX_READ_BYTES) : buffer).toString("utf8")
@@ -37,10 +37,10 @@ export async function readFile(policy: WorkspacePolicy, input: unknown): Promise
 
 export async function searchFiles(policy: WorkspacePolicy, input: unknown): Promise<ToolResult> {
   const args = asRecord(input)
-  const workspaceId = requireString(args.workspaceId, "workspaceId")
+  const rootId = requireString(args.rootId, "rootId")
   const query = requireString(args.query, "query")
   const searchPath = typeof args.path === "string" ? args.path : "."
-  const resolved = await policy.resolvePath(workspaceId, searchPath)
+  const resolved = await policy.resolvePath(rootId, searchPath)
   const matches: { path: string; line: number; text: string }[] = []
   await walk(resolved.absolutePath, resolved.root, async (absolute, relative) => {
     if (matches.length >= MAX_SEARCH_MATCHES) return
