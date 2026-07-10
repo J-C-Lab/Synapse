@@ -781,4 +781,56 @@ describe("agentRuntime", () => {
     expect(traces[0].principal).toEqual({ kind: "internal-agent" })
     expect(traces[0].workspaceId).toBe("ws-int")
   })
+
+  it("workspaceInstructionRoots folds instructions in without emitting execution-tool guidance text", async () => {
+    const root = await tempWorkspace()
+    await fs.writeFile(path.join(root, "AGENTS.md"), "Run tests before committing.\n", "utf-8")
+    const seenSystems: string[] = []
+    const provider: ChatProvider = {
+      id: "fake",
+      async *stream(req) {
+        seenSystems.push(req.system)
+        yield {
+          type: "message",
+          message: { role: "assistant", content: [{ type: "text", text: "ok" }] },
+          usage: emptyUsage(),
+          stopReason: "end_turn",
+        }
+      },
+    }
+    const runtime = new AgentRuntime({
+      provider,
+      tools: new AiToolRegistry(fakeHost()),
+      workspaceInstructionRoots: () => [
+        {
+          id: "repo",
+          workspaceId: "work",
+          name: "Work",
+          root,
+          role: "primary",
+          createdAt: 0,
+        },
+      ],
+    })
+    await runtime.run({ conversationId: "c1", messages: [userMessage("hello")] })
+    expect(seenSystems[0]).not.toContain("list_files")
+    expect(seenSystems[0]).not.toContain("read_file")
+  })
+
+  it("a run with options.workspaceId/triggerInstanceId produces a RunTrace carrying both", async () => {
+    const traces: import("./run-trace-store").RunTrace[] = []
+    const runtime = new AgentRuntime({
+      provider: fakeProvider([{ text: "ok" }]),
+      tools: new AiToolRegistry(fakeHost()),
+      recordRun: (trace) => traces.push(trace),
+    })
+    await runtime.run({
+      conversationId: "c1",
+      messages: [userMessage("hi")],
+      workspaceId: "work",
+      triggerInstanceId: "instance-1",
+    })
+    expect(traces[0]?.workspaceId).toBe("work")
+    expect(traces[0]?.triggerInstanceId).toBe("instance-1")
+  })
 })

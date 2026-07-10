@@ -29,6 +29,7 @@ export interface RunTrace {
   origin: "interactive" | "background-agent" | "subagent" | "mcp"
   principal?: ToolPrincipal
   workspaceId?: string
+  triggerInstanceId?: string
   startedAt: number
   endedAt: number
   outcome: "end_turn" | "max_steps" | "aborted" | "budget_exceeded" | "error"

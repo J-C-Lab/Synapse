@@ -85,6 +85,10 @@ export interface AgentRuntimeOptions {
   defaultSystem?: string
   /** Authorized execution workspaces, enumerated into the system prompt. */
   executionWorkspaces?: () => readonly WorkspaceRootRecord[]
+  /** Roots to fold into the run as workspace-instructions context, WITHOUT
+   *  emitting execution-tool guidance text. Independent of
+   *  executionWorkspaces — a run can have one, the other, both, or neither. */
+  workspaceInstructionRoots?: () => readonly WorkspaceRootRecord[]
   /** Max characters from a tool result to return to the model before truncation. */
   maxToolResultChars?: number
   recordRun?: (trace: RunTrace) => void
@@ -129,6 +133,7 @@ export interface AgentRunOptions {
   parentRunId?: string
   /** The workspace this run is bound to; stamped onto the trace and tool caller. */
   workspaceId?: string
+  triggerInstanceId?: string
 }
 
 export interface AgentRunResult {
@@ -152,7 +157,8 @@ export class AgentRuntime {
     const budgetTokens = this.options.budgetTokens
     const base = options.system ?? this.options.defaultSystem ?? DEFAULT_SYSTEM_PROMPT
     const executionWorkspaces = this.options.executionWorkspaces?.() ?? []
-    const instructionContext = await this.workspaceInstructionContext(executionWorkspaces)
+    const instructionRoots = this.options.workspaceInstructionRoots?.() ?? executionWorkspaces
+    const instructionContext = await this.workspaceInstructionContext(instructionRoots)
     // Every tool result is labeled via labelUntrustedContent in runOneTool,
     // unconditionally — not just when workspace instructions happen to also be
     // configured. The notice must therefore always be present on any run that
@@ -255,6 +261,8 @@ export class AgentRuntime {
     const plan = this.options.getPlan?.(args.runId)
     if (plan && plan.length > 0) trace.plan = plan
     if (args.options.workspaceId !== undefined) trace.workspaceId = args.options.workspaceId
+    if (args.options.triggerInstanceId !== undefined)
+      trace.triggerInstanceId = args.options.triggerInstanceId
 
     try {
       record(trace)

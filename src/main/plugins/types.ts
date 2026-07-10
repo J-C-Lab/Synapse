@@ -120,6 +120,8 @@ export interface PluginTriggerDispatch {
 export interface PluginAgentTriggerDispatchRequest {
   pluginId: string
   triggerId: string
+  instanceId: string
+  workspaceId: string
   /** Capability-gate trigger label, e.g. "fs.watch:downloads". */
   trigger: string
   invocationId: string
