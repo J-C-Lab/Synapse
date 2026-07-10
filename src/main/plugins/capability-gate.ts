@@ -39,6 +39,7 @@ export interface CapabilityRequest {
   principal?: ToolPrincipal
   /** The workspace this call is bound to; copied through to the audit entry. */
   workspaceId?: string
+  triggerInstanceId?: string
   /** Host-computed: whether this concrete write operation can be reversed. */
   reversible?: boolean
 }
@@ -81,6 +82,7 @@ export interface CapabilityAuditEntry {
   runId?: string
   principal?: ToolPrincipal
   workspaceId?: string
+  triggerInstanceId?: string
 }
 
 export type BudgetDebitOutcome = "debited" | "not-in-uses" | "exhausted"
@@ -253,6 +255,9 @@ export class CapabilityGate implements CapabilityGatePort {
       ...(request.runId !== undefined ? { runId: request.runId } : {}),
       ...(request.principal !== undefined ? { principal: request.principal } : {}),
       ...(request.workspaceId !== undefined ? { workspaceId: request.workspaceId } : {}),
+      ...(request.triggerInstanceId !== undefined
+        ? { triggerInstanceId: request.triggerInstanceId }
+        : {}),
     })
   }
 }

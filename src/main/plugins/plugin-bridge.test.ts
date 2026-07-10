@@ -108,6 +108,29 @@ describe("pluginBridge capability ensure", () => {
 
     await expect(pluginCtx.storage.set("key", "value")).rejects.toBeInstanceOf(CapabilityDenied)
   })
+
+  it("threads caller.triggerInstanceId through ensure()", async () => {
+    const ensured: CapabilityRequest[] = []
+    const ensure = vi.fn(async (request: CapabilityRequest) => {
+      ensured.push(request)
+    })
+    const bridge = bridgeWithGate({ ensure, declared: ["notification"] })
+    const ctx = bridge.createToolContext(
+      "com.synapse.test",
+      manifest({ permissions: ["notification"] }),
+      {
+        toolName: "notify",
+        signal: new AbortController().signal,
+        caller: {
+          kind: "background-agent",
+          workspaceId: "work",
+          triggerInstanceId: "instance-1",
+        },
+      }
+    )
+    await ctx.notifications.show({ title: "x", body: "y" })
+    expect(ensured.at(-1)?.triggerInstanceId).toBe("instance-1")
+  })
 })
 
 describe("pluginBridge storage and clipboard", () => {

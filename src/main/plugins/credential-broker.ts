@@ -352,6 +352,7 @@ export class CredentialBroker {
     runId?: string
     principal?: ToolPrincipal
     workspaceId?: string
+    triggerInstanceId?: string
   }): (
     request: InjectionRequest,
     pluginHeaders: Record<string, string>
@@ -418,6 +419,7 @@ export class CredentialBroker {
             runId: args.runId,
             principal: args.principal,
             workspaceId: args.workspaceId,
+            triggerInstanceId: args.triggerInstanceId,
           })
         }
         return injected
@@ -460,6 +462,7 @@ export class CredentialBroker {
       | "runId"
       | "principal"
       | "workspaceId"
+      | "triggerInstanceId"
     >
   ): void {
     this.options.audit?.({
@@ -477,6 +480,9 @@ export class CredentialBroker {
       ...(partial.runId !== undefined ? { runId: partial.runId } : {}),
       ...(partial.principal !== undefined ? { principal: partial.principal } : {}),
       ...(partial.workspaceId !== undefined ? { workspaceId: partial.workspaceId } : {}),
+      ...(partial.triggerInstanceId !== undefined
+        ? { triggerInstanceId: partial.triggerInstanceId }
+        : {}),
     })
   }
 }
