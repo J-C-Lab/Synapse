@@ -12,7 +12,13 @@ export function writeJsonLine(socket: Socket, value: unknown): void {
   socket.write(`${JSON.stringify(value)}\n`)
 }
 
-export function readJsonLine(socket: Socket, timeoutMs: number): Promise<unknown> {
+const DEFAULT_MAX_BYTES = 64 * 1024
+
+export function readJsonLine(
+  socket: Socket,
+  timeoutMs: number,
+  maxBytes = DEFAULT_MAX_BYTES
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let buffer = ""
     let timer: ReturnType<typeof setTimeout>
@@ -25,6 +31,12 @@ export function readJsonLine(socket: Socket, timeoutMs: number): Promise<unknown
     }
     function onData(chunk: Buffer): void {
       buffer += chunk.toString("utf-8")
+      if (buffer.length > maxBytes) {
+        cleanup()
+        socket.destroy()
+        reject(new Error(`line exceeded ${maxBytes} bytes`))
+        return
+      }
       const newline = buffer.indexOf("\n")
       if (newline === -1) return
       cleanup()

@@ -3,6 +3,7 @@ import type { CapabilityAuditEntry } from "./capability-gate"
 import * as path from "node:path"
 import { getCapability } from "@synapse/plugin-manifest"
 import { Logger } from "../logging"
+import { scrubText } from "../logging/audit-sanitize"
 
 // Writes capability decisions as redacted JSON lines to a dedicated sink (its
 // own audit.log in production). Reuses the structured logger's redaction so a
@@ -18,9 +19,6 @@ export function createCapabilityAudit(sink: LogSink): (entry: CapabilityAuditEnt
 }
 
 const MAX_REASON_LENGTH = 200
-const SECRET_TEXT =
-  /(api[-_]?key|token|secret|password|authorization|cookie|bearer)\s*[:=]\s*["']?[^"',\s&]+/gi
-const SECRET_VALUE = /\b(sk-[\w-]+|gh[pousr]_\w+|xox[baprs]-[\w-]+)/gi
 const PAYLOAD_KEY =
   /^(?:body|requestBody|content|fileContent|clipboardContent|screenshotContent|secret)$/i
 const SECRET_KEY = /api[-_]?key|token|secret|password|authorization|cookie/i
@@ -68,10 +66,6 @@ function sanitizeReason(value: string): string {
   return scrubbed.length <= MAX_REASON_LENGTH
     ? scrubbed
     : `${scrubbed.slice(0, MAX_REASON_LENGTH)}...[truncated]`
-}
-
-function scrubText(value: string): string {
-  return value.replace(SECRET_TEXT, "$1=[redacted]").replace(SECRET_VALUE, "[redacted]")
 }
 
 function sanitizeScope(value: unknown, depth = 0): unknown {
