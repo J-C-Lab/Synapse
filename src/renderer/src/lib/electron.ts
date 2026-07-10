@@ -38,6 +38,8 @@ export type PluginRegistryEntry = SynapsePluginRegistryEntry
 export type PluginCapabilityRow = SynapsePluginCapabilityRow
 export type PluginCredentialRow = SynapsePluginCredentialRow
 export type PluginTriggerRow = SynapsePluginTriggerRow
+export type TriggerInstanceRow = SynapseTriggerInstanceRow
+export type TriggerMigrationNoticeState = SynapseTriggerMigrationNoticeState
 export type CapabilityGrantRequestEvent = SynapseCapabilityGrantRequestEvent
 export type CapabilityApprovalRequestEvent = SynapseCapabilityApprovalRequestEvent
 export type HostResourceApprovalRequestEvent = SynapseHostResourceApprovalRequestEvent
@@ -315,6 +317,45 @@ export async function resumeTrigger(pluginId: string, triggerId: string): Promis
 
 export async function killTrigger(pluginId: string, triggerId: string): Promise<void> {
   unwrapIpcResult(await api().killTrigger(pluginId, triggerId))
+}
+
+export async function listTriggerInstances(
+  pluginId: string,
+  triggerId: string
+): Promise<TriggerInstanceRow[]> {
+  return unwrapIpcResult(await api().listTriggerInstances(pluginId, triggerId))
+}
+
+export async function createTriggerInstance(
+  pluginId: string,
+  triggerId: string,
+  workspaceId: string
+): Promise<TriggerInstanceRow> {
+  return unwrapIpcResult(await api().createTriggerInstance(pluginId, triggerId, workspaceId))
+}
+
+export async function reactivateTriggerInstance(instanceId: string): Promise<TriggerInstanceRow> {
+  return unwrapIpcResult(await api().reactivateTriggerInstance(instanceId))
+}
+
+export async function pauseTriggerInstance(instanceId: string): Promise<void> {
+  unwrapIpcResult(await api().pauseTriggerInstance(instanceId))
+}
+
+export async function resumeTriggerInstance(instanceId: string): Promise<void> {
+  unwrapIpcResult(await api().resumeTriggerInstance(instanceId))
+}
+
+export async function removeTriggerInstance(instanceId: string): Promise<void> {
+  unwrapIpcResult(await api().removeTriggerInstance(instanceId))
+}
+
+export async function getTriggerMigrationNotice(): Promise<TriggerMigrationNoticeState> {
+  return unwrapIpcResult(await api().getTriggerMigrationNotice())
+}
+
+export async function dismissTriggerMigrationNotice(): Promise<void> {
+  unwrapIpcResult(await api().dismissTriggerMigrationNotice())
 }
 
 export async function getPlugin(pluginId: string): Promise<PluginRegistryEntry | null> {
