@@ -72,6 +72,7 @@ describe("downloadsOrganizer", () => {
       adapters,
       fsWatchAdapter,
       storageFlushMs: 0,
+      workspaceRoots: { listForWorkspace: async () => [] },
       backgroundAgentProvider: async () => ({ provider, model: "fake-model" }),
       capabilityGovernance: {
         userDataDir: dir,
@@ -82,6 +83,7 @@ describe("downloadsOrganizer", () => {
 
     await host.init()
     expect(host.get("com.synapse.downloads-organizer")?.status).toBe("active")
+    await host.createTriggerInstance("com.synapse.downloads-organizer", "downloads", "default")
     expect(fires["com.synapse.downloads-organizer:downloads"]).toBeTypeOf("function")
     fires["com.synapse.downloads-organizer:downloads"]?.({
       rootId,

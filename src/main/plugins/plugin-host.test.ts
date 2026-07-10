@@ -11,7 +11,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { emptyUsage } from "../ai/providers/types"
 import { CapabilityIpcService } from "../ipc/capabilities"
 import { buildGrantIdentity } from "./capability-governance"
-import { GrantStore } from "./grant-store"
+import { createMigrationMarker } from "./grant-migration"
+import { GrantStore, grantStoreFilePath } from "./grant-store"
 import {
   PluginHost,
   PluginHostNotImplementedError,
@@ -68,6 +69,16 @@ function hostOptions(
     resourcesDir: path.join(dir, "resources"),
     storageFlushMs: 0,
     adapters: noopAdapters,
+    workspaceRoots: { listForWorkspace: async () => [] },
+    workspaces: {
+      get: async (id: string) =>
+        id === "default"
+          ? { id: "default", name: "Default", createdAt: 0 }
+          : id === "work"
+            ? { id: "work", name: "Work", createdAt: 0 }
+            : undefined,
+      exists: async (id: string) => id === "default" || id === "work",
+    },
     ...overrides,
   }
 }
@@ -988,6 +999,7 @@ describe("pluginHost trigger registration", () => {
     })
 
     await host.init()
+    await host.createTriggerInstance(pluginId, "tick", "default")
     fires.tick?.({ scheduledAt: 0, firedAt: 1, driftMs: 0 })
 
     await vi.waitFor(() => expect(providerStreamed).toHaveBeenCalledTimes(1))
@@ -999,6 +1011,80 @@ describe("pluginHost trigger registration", () => {
       })
     )
   })
+
+  it("flags a pre-existing plugin's agent-trigger, not a freshly-enabled one, as affected by the migration notice", async () => {
+    const pluginId = "com.synapse.migration-agent"
+    await writeHostPlugin({
+      id: pluginId,
+      permissions: ["notification"],
+      triggers: [
+        {
+          id: "tick",
+          type: "timer",
+          schedule: { intervalMs: 60_000 },
+          handler: "triggers.onTick",
+          uses: [{ capability: "notification", budget: { maxCalls: 1, period: "1h" } }],
+          agent: {
+            maxRuns: 1,
+            period: "1d",
+            maxToolCallsPerRun: 1,
+            maxTokensPerRun: 100,
+            timeoutMs: 1000,
+          },
+        },
+      ],
+    })
+
+    const manifest = JSON.parse(
+      await fs.readFile(path.join(dir, "plugins", pluginId, "synapse.json"), "utf8")
+    ) as PluginManifest
+    const identity = buildGrantIdentity(pluginId, manifest, "user")
+    const grants = new GrantStore(grantStoreFilePath(dir))
+    await grants.grant(identity, "notification", "user")
+
+    const host = new PluginHost(hostOptions({ migrationMarker: migrationAlreadyDone() }))
+    await host.init()
+    expect(host.getTriggerMigrationNotice()?.affectedTriggers).toEqual([
+      { pluginId, triggerId: "tick" },
+    ])
+
+    const freshDir = await fs.mkdtemp(path.join(os.tmpdir(), "plugin-host-migration-fresh-"))
+    await fs.mkdir(path.join(freshDir, "plugins"), { recursive: true })
+    await fs.cp(path.join(dir, "plugins", pluginId), path.join(freshDir, "plugins", pluginId), {
+      recursive: true,
+    })
+    const freshHost = new PluginHost(
+      hostOptions({ migrationMarker: migrationAlreadyDone(), userDataDir: freshDir })
+    )
+    await freshHost.init()
+    expect(freshHost.getTriggerMigrationNotice()?.affectedTriggers).toEqual([])
+    await fs.rm(freshDir, { recursive: true, force: true })
+  })
+
+  it("does not flag a true first boot after migrateGrants writes install grants", async () => {
+    const freshDir = await fs.mkdtemp(path.join(os.tmpdir(), "plugin-host-migration-first-boot-"))
+    const host = new PluginHost(
+      hostOptions({
+        userDataDir: freshDir,
+        resourcesDir: path.resolve("resources"),
+      })
+    )
+    await host.init()
+
+    const inbox = host.get("com.synapse.github-inbox")
+    expect(inbox?.manifest?.triggers?.some((t) => t.agent)).toBe(true)
+    const inboxIdentity = buildGrantIdentity(
+      "com.synapse.github-inbox",
+      inbox!.manifest!,
+      inbox!.source.kind
+    )
+    const grants = new GrantStore(grantStoreFilePath(freshDir))
+    expect((await grants.list(inboxIdentity)).length).toBeGreaterThan(0)
+    expect(await createMigrationMarker(freshDir).done()).toBe(true)
+    expect(host.getTriggerMigrationNotice()?.affectedTriggers).toEqual([])
+
+    await fs.rm(freshDir, { recursive: true, force: true })
+  })
 })
 
 describe("github inbox bundled plugin", () => {
@@ -1008,6 +1094,7 @@ describe("github inbox bundled plugin", () => {
       resourcesDir: path.resolve("resources"),
       adapters: noopAdapters,
       fsWatchAdapter: noopFsWatchAdapter,
+      workspaceRoots: { listForWorkspace: async () => [] },
       capabilityGovernance: {
         userDataDir: dir,
         approve: async () => true,

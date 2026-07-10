@@ -737,6 +737,8 @@ function broadcastCredentialConnectPrompt(prompt: unknown): void {
 
 function initPluginHost(): PluginHost {
   const userDataDir = app.getPath("userData")
+  const workspaceRootStore = new WorkspaceRootStore(path.join(userDataDir, "ai"))
+  const workspaces = new WorkspaceStore(path.join(userDataDir, "ai"))
   const grants = new GrantStore(grantStoreFilePath(userDataDir))
   const audit = createCapabilityAudit(
     createFileSink(path.join(userDataDir, "logs"), { fileName: "audit.log" })
@@ -780,6 +782,8 @@ function initPluginHost(): PluginHost {
     backgroundAgentProvider: () => agent.createBackgroundAgentProvider(),
     recordRun: (trace) => runTraceRecorder(trace),
     runBudgetRegistry,
+    workspaceRoots: workspaceRootStore,
+    workspaces,
     reservedAccelerators: () => [launcher.getSettings().hotkey],
     credentialBroker: new CredentialBroker({
       userDataDir,

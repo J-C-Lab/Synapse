@@ -46,6 +46,7 @@ describe("github inbox plugin", () => {
       resourcesDir: path.resolve("resources"),
       timerAdapter,
       fsWatchAdapter: noopFsWatchAdapter,
+      workspaceRoots: { listForWorkspace: async () => [] },
       adapters: {
         clipboard: { read: async () => undefined, write: async () => {} },
         notifications: { show: async () => {} },
@@ -66,6 +67,7 @@ describe("github inbox plugin", () => {
 
     await host.init()
     expect(host.get("com.synapse.github-inbox")?.status).toBe("active")
+    await host.createTriggerInstance("com.synapse.github-inbox", "poll-inbox", "default")
     expect(fire).toBeTypeOf("function")
     fire?.({ scheduledAt: 0, firedAt: 1, driftMs: 0 })
 
