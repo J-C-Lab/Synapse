@@ -106,6 +106,8 @@ const electronAPI = {
     ipcRenderer.invoke("capabilities:grant-resolve", { promptId, allow }),
   resolveCapabilityApproval: (promptId: string, allow: boolean) =>
     ipcRenderer.invoke("capabilities:approval-resolve", { promptId, allow }),
+  resolveHostResourceApproval: (promptId: string, allow: boolean) =>
+    ipcRenderer.invoke("host-resources:approval-resolve", { promptId, allow }),
   listPluginCredentials: (pluginId: string) => ipcRenderer.invoke("credentials:list", pluginId),
   connectPluginCredential: (pluginId: string, credentialId: string) =>
     ipcRenderer.invoke("credentials:connect", { pluginId, credentialId }),
@@ -263,6 +265,12 @@ const electronAPI = {
     const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
     ipcRenderer.on("capabilities:approval-request", listener)
     return () => ipcRenderer.removeListener("capabilities:approval-request", listener)
+  },
+
+  onHostResourceApprovalRequest: (handler: (event: unknown) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
+    ipcRenderer.on("host-resources:approval-request", listener)
+    return () => ipcRenderer.removeListener("host-resources:approval-request", listener)
   },
 
   // Pushed by main after any settings:update so that windows other than

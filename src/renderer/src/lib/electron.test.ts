@@ -23,6 +23,7 @@ import {
   notifyLauncherReady,
   onFloatingBallFeatures,
   onFloatingBallMenuState,
+  onHostResourceApprovalRequest,
   onLanDevicesChanged,
   onLanStatusChanged,
   onLanTransfersChanged,
@@ -37,6 +38,7 @@ import {
   reloadPlugin,
   removeLanTransferHistory,
   removeWorkspaceRoot,
+  resolveHostResourceApproval,
   searchApps,
   searchPluginCommands,
   sendLanFile,
@@ -86,6 +88,7 @@ function mockApi() {
     disconnectPluginCredential: vi.fn().mockResolvedValue(ok(undefined)),
     resolveCapabilityGrant: vi.fn().mockResolvedValue(ok(undefined)),
     resolveCapabilityApproval: vi.fn().mockResolvedValue(ok(undefined)),
+    resolveHostResourceApproval: vi.fn().mockResolvedValue(ok(undefined)),
     listMarketplacePlugins: vi.fn().mockResolvedValue(ok([])),
     installMarketplacePlugin: vi.fn().mockResolvedValue(ok({ id: "plugin" })),
     getSettings: vi.fn().mockResolvedValue({
@@ -114,6 +117,7 @@ function mockApi() {
     onPluginRegistryChanged: vi.fn().mockReturnValue(() => {}),
     onCapabilityGrantRequest: vi.fn().mockReturnValue(() => {}),
     onCapabilityApprovalRequest: vi.fn().mockReturnValue(() => {}),
+    onHostResourceApprovalRequest: vi.fn().mockReturnValue(() => {}),
     onSettingsChanged: vi.fn().mockReturnValue(() => {}),
     getLanStatus: vi.fn().mockResolvedValue({
       enabled: false,
@@ -419,6 +423,20 @@ describe("lib/electron", () => {
       const handler = vi.fn()
       onSettingsChanged(handler)
       expect(api.onSettingsChanged).toHaveBeenCalledWith(handler)
+    })
+
+    it("onHostResourceApprovalRequest forwards events from the preload channel", () => {
+      const api = mockApi()
+      const handler = vi.fn()
+      const off = onHostResourceApprovalRequest(handler)
+      expect(api.onHostResourceApprovalRequest).toHaveBeenCalledWith(handler)
+      off()
+    })
+
+    it("resolveHostResourceApproval forwards to the preload API", async () => {
+      const api = mockApi()
+      await resolveHostResourceApproval("host_res_apr_1", true)
+      expect(api.resolveHostResourceApproval).toHaveBeenCalledWith("host_res_apr_1", true)
     })
 
     it("onLanDevicesChanged forwards handler", () => {

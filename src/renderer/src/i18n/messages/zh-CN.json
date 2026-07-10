@@ -368,6 +368,11 @@
       "preauthorizeWarning": "这会允许任何能启动本地 Synapse MCP 连接的外部 MCP client 调用此能力而无需逐次确认。",
       "reportedIdentity": "自报身份：{{clientId}}（由 client 自己上报，未经验证）"
     },
+    "hostResources": {
+      "approvalTitle": "允许这次读取吗？",
+      "approvalBody": "一个外部 MCP client 想读取 workspace「{{workspaceName}}」（root：{{rootName}}）的 {{resourceLabel}}。",
+      "reportedIdentity": "自报身份：{{clientId}}（客户端自报，未经验证）"
+    },
     "mcpExposure": {
       "toggleLabel": "允许外部 MCP client 使用非只读工具",
       "warning": "打开后，该插件所有非只读工具（含标记为破坏性的）都会对外部 MCP client 可见并可被调用。是否仍需逐次确认取决于该工具用到的能力——如果一个工具完全不使用任何受管能力，打开后将不经确认即可被调用。"
