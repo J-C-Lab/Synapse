@@ -4,8 +4,9 @@ import { BrowserWindow } from "electron"
 const promptTargetStack: WebContents[] = []
 
 /**
- * While `fn` runs, capability JIT / approval prompts are delivered to this
- * renderer (the IPC caller) instead of every window.
+ * While `fn` runs, capability JIT / approval / host-resource-approval
+ * prompts are delivered to this renderer (the IPC caller) instead of
+ * every window.
  */
 export async function withCapabilityPromptTarget<T>(
   target: WebContents,
@@ -30,14 +31,36 @@ export function createCapabilityPromptSender(
   sendApprovalRequest: (payload: unknown) => void
 } {
   return {
-    sendGrantRequest: (payload) =>
-      deliverCapabilityPrompt("capabilities:grant-request", payload, broadcast),
+    sendGrantRequest: (payload) => deliverPrompt("capabilities:grant-request", payload, broadcast),
     sendApprovalRequest: (payload) =>
-      deliverCapabilityPrompt("capabilities:approval-request", payload, broadcast),
+      deliverPrompt("capabilities:approval-request", payload, broadcast),
   }
 }
 
-function deliverCapabilityPrompt(
+/**
+ * Host-resource approval prompts share the exact same window-selection
+ * logic as capability prompts (deliverPrompt below) — verified there is
+ * no scenario today where a host-resource request actually arrives inside
+ * an active withCapabilityPromptTarget scope (that scope is only pushed
+ * around synchronous IPC-handler-invoked work; hostResourceApprover is
+ * only ever invoked from headless-approval-server's socket callback,
+ * which never runs inside such a scope) — every host-resource prompt
+ * falls through to the focused-window / single-visible-window / broadcast
+ * chain. The sharing here is implementation reuse, not an active
+ * target-scoping scenario.
+ */
+export function createHostResourcePromptSender(
+  broadcast: (channel: string, payload: unknown) => void
+): {
+  sendApprovalRequest: (payload: unknown) => void
+} {
+  return {
+    sendApprovalRequest: (payload) =>
+      deliverPrompt("host-resources:approval-request", payload, broadcast),
+  }
+}
+
+function deliverPrompt(
   channel: string,
   payload: unknown,
   broadcast: (channel: string, payload: unknown) => void

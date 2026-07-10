@@ -1,6 +1,7 @@
 import type { AddressInfo, Server, Socket } from "node:net"
 import type { CapabilityRequest } from "../plugins/capability-gate"
 import type { GrantIdentity } from "../plugins/grant-store"
+import type { HostResourceApprovalRequest } from "./host-resource-approval"
 import { promises as fs, mkdtempSync, rmSync } from "node:fs"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
@@ -43,6 +44,17 @@ function request(): Omit<CapabilityRequest, "signal"> {
     actor: "external-mcp",
     trigger: "mcp:call",
     operation: "watch",
+  }
+}
+
+function hostResourceRequest(): HostResourceApprovalRequest {
+  return {
+    resourceType: "workspace-instructions",
+    workspaceId: "w1",
+    rootId: "r1",
+    workspaceName: "My Workspace",
+    rootName: "repo",
+    uri: "workspace://w1/instructions",
   }
 }
 
@@ -124,6 +136,48 @@ describe("createGuiApprovalPort", () => {
     expect(result).toBe(false)
     // Connected successfully on the first attempt — must not spawn/retry once
     // a connection is established, even though the response itself timed out.
+    expect(spawnGui).not.toHaveBeenCalled()
+  })
+})
+
+describe("createGuiApprovalPort — requestHostResourceApproval", () => {
+  it("resolves true when the GUI is already listening and answers true", async () => {
+    await startFakeGui(true)
+    const port = createGuiApprovalPort({ portFilePath, spawnGui: vi.fn() })
+    const result = await port.requestHostResourceApproval({ request: hostResourceRequest() })
+    expect(result).toBe(true)
+  })
+
+  it("resolves false when the GUI is already listening and answers false", async () => {
+    await startFakeGui(false)
+    const port = createGuiApprovalPort({ portFilePath, spawnGui: vi.fn() })
+    const result = await port.requestHostResourceApproval({ request: hostResourceRequest() })
+    expect(result).toBe(false)
+  })
+
+  it("fails closed when nothing ever starts listening before connectTimeoutMs", async () => {
+    const spawnGui = vi.fn()
+    const port = createGuiApprovalPort({
+      portFilePath,
+      spawnGui,
+      connectTimeoutMs: 300,
+      retryIntervalMs: 50,
+    })
+    const result = await port.requestHostResourceApproval({ request: hostResourceRequest() })
+    expect(result).toBe(false)
+    expect(spawnGui).toHaveBeenCalledOnce()
+  })
+
+  it("returns false immediately without connecting when signal is already aborted", async () => {
+    const spawnGui = vi.fn()
+    const port = createGuiApprovalPort({ portFilePath, spawnGui })
+    const controller = new AbortController()
+    controller.abort()
+    const result = await port.requestHostResourceApproval({
+      request: hostResourceRequest(),
+      signal: controller.signal,
+    })
+    expect(result).toBe(false)
     expect(spawnGui).not.toHaveBeenCalled()
   })
 })

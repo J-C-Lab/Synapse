@@ -368,6 +368,11 @@
       "preauthorizeWarning": "Allows any external MCP client able to launch Synapse's local MCP connection to call this capability without a per-call prompt.",
       "reportedIdentity": "Reported identity: {{clientId}} (self-reported by the client, not verified)"
     },
+    "hostResources": {
+      "approvalTitle": "Allow this read?",
+      "approvalBody": "An external MCP client wants to read {{resourceLabel}} for workspace {{workspaceName}} (root: {{rootName}}).",
+      "reportedIdentity": "Reported identity: {{clientId}} (self-reported by the client, not verified)"
+    },
     "mcpExposure": {
       "toggleLabel": "Expose non-read-only tools to external MCP clients",
       "warning": "Turns on external visibility for every non-read-only tool this plugin has (including ones marked destructive). Whether a call still needs per-call confirmation depends on the capability it uses — a tool that uses no managed capability at all would be callable with no prompt."

@@ -40,6 +40,7 @@ export type PluginCredentialRow = SynapsePluginCredentialRow
 export type PluginTriggerRow = SynapsePluginTriggerRow
 export type CapabilityGrantRequestEvent = SynapseCapabilityGrantRequestEvent
 export type CapabilityApprovalRequestEvent = SynapseCapabilityApprovalRequestEvent
+export type HostResourceApprovalRequestEvent = SynapseHostResourceApprovalRequestEvent
 export type MarketplaceEntry = SynapseMarketplaceEntry
 export type MarketplaceSummary = PluginSummary
 export type MarketplaceDetail = PluginDetailResponse
@@ -278,6 +279,10 @@ export async function resolveCapabilityApproval(promptId: string, allow: boolean
   unwrapIpcResult(await api().resolveCapabilityApproval(promptId, allow))
 }
 
+export async function resolveHostResourceApproval(promptId: string, allow: boolean): Promise<void> {
+  unwrapIpcResult(await api().resolveHostResourceApproval(promptId, allow))
+}
+
 export function onCapabilityGrantRequest(
   handler: (event: CapabilityGrantRequestEvent) => void
 ): () => void {
@@ -288,6 +293,12 @@ export function onCapabilityApprovalRequest(
   handler: (event: CapabilityApprovalRequestEvent) => void
 ): () => void {
   return api().onCapabilityApprovalRequest(handler)
+}
+
+export function onHostResourceApprovalRequest(
+  handler: (event: HostResourceApprovalRequestEvent) => void
+): () => void {
+  return api().onHostResourceApprovalRequest(handler)
 }
 
 export async function listTriggers(): Promise<PluginTriggerRow[]> {

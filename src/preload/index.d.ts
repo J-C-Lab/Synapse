@@ -255,6 +255,18 @@ declare global {
     clientId?: string
   }
 
+  interface SynapseHostResourceApprovalRequestEvent {
+    promptId: string
+    resourceType: "workspace-instructions"
+    workspaceId: string
+    rootId: string
+    workspaceName: string
+    rootName: string
+    uri: string
+    clientId?: string
+    reason?: string
+  }
+
   interface SynapseMarketplaceEntry {
     id: string
     name: string
@@ -582,6 +594,10 @@ declare global {
         promptId: string,
         allow: boolean
       ) => Promise<SynapsePluginIpcResult<void>>
+      resolveHostResourceApproval: (
+        promptId: string,
+        allow: boolean
+      ) => Promise<SynapsePluginIpcResult<void>>
       listPluginCredentials: (
         pluginId: string
       ) => Promise<SynapsePluginIpcResult<SynapsePluginCredentialRow[]>>
@@ -679,6 +695,9 @@ declare global {
       ) => () => void
       onCapabilityApprovalRequest: (
         handler: (event: SynapseCapabilityApprovalRequestEvent) => void
+      ) => () => void
+      onHostResourceApprovalRequest: (
+        handler: (event: SynapseHostResourceApprovalRequestEvent) => void
       ) => () => void
       onSettingsChanged: (handler: (settings: SynapseUserSettings) => void) => () => void
       onLanDevicesChanged: (handler: (devices: SynapseLanDevice[]) => void) => () => void

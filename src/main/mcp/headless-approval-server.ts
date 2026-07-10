@@ -1,23 +1,34 @@
 import type { Server, Socket } from "node:net"
 import type { CapabilityApprover, CapabilityRequest } from "../plugins/capability-gate"
 import type { GrantIdentity } from "../plugins/grant-store"
+import type { HostResourceApprovalRequest, HostResourceApprover } from "./host-resource-approval"
 import { randomBytes } from "node:crypto"
 import { promises as fs } from "node:fs"
 import { createServer } from "node:net"
 import { readJsonLine, writeJsonLine } from "./line-delimited-socket"
 
 // Listens on a loopback-only, OS-assigned TCP port and forwards each
-// approval request to `approve` — in production, the exact same
-// CapabilityIpcService.capabilityApprover the GUI's own in-app elevated
-// prompts already use, so a forwarded request renders through the identical
-// renderer dialog. The random token written alongside the port number (not
-// loopback-only TCP by itself) is the trust boundary: any local process
-// could otherwise connect, but only a process able to read this file under
-// userDataDir (the same trust boundary this app already uses for other
-// local secrets) has the token.
+// approval request to the matching approver — in production, the exact
+// same CapabilityIpcService.capabilityApprover / HostResourceIpcService
+// .hostResourceApprover the GUI's own in-app prompts already use, so a
+// forwarded request renders through the identical renderer dialog. The
+// random token written alongside the port number (not loopback-only TCP
+// by itself) is the trust boundary: any local process could otherwise
+// connect, but only a process able to read this file under userDataDir
+// (the same trust boundary this app already uses for other local
+// secrets) has the token.
+//
+// Carries two independent request kinds over one socket/token/spawn/
+// timeout/fail-closed implementation: plugin-capability approvals
+// (GrantIdentity + CapabilityRequest) and host-resource approvals
+// (HostResourceApprovalRequest) — see the spec's "Why this exists" for
+// why these two share a transport but nothing else.
+
+const MAX_FIELD_LENGTH = 500
 
 export interface HeadlessApprovalServerOptions {
-  approve: CapabilityApprover
+  approveCapability: CapabilityApprover
+  approveHostResource: HostResourceApprover
   portFilePath: string
   /** Time budget for one connection to send a complete request line.
    *  Defaults to 10s — generous for a same-machine round trip, short enough
@@ -70,7 +81,10 @@ async function handleConnection(
       writeJsonLine(socket, { allow: false, error: "unauthorized" })
       return
     }
-    const allow = await options.approve({ identity: parsed.identity, request: parsed.request })
+    const allow =
+      parsed.kind === "plugin-capability"
+        ? await options.approveCapability({ identity: parsed.identity, request: parsed.request })
+        : await options.approveHostResource({ request: parsed.request })
     writeJsonLine(socket, { allow })
   } catch (err) {
     writeJsonLine(socket, { allow: false, error: err instanceof Error ? err.message : String(err) })
@@ -79,16 +93,27 @@ async function handleConnection(
   }
 }
 
-interface ParsedPayload {
-  token: string
-  identity: GrantIdentity
-  request: CapabilityRequest
-}
+type ParsedPayload =
+  | {
+      token: string
+      kind: "plugin-capability"
+      identity: GrantIdentity
+      request: CapabilityRequest
+    }
+  | { token: string; kind: "host-resource"; request: HostResourceApprovalRequest }
 
 function parsePayload(value: unknown): ParsedPayload | undefined {
   if (!value || typeof value !== "object") return undefined
   const v = value as Record<string, unknown>
   if (typeof v.token !== "string") return undefined
+  if (v.kind === "plugin-capability") return parseCapabilityPayload(v)
+  if (v.kind === "host-resource") return parseHostResourcePayload(v)
+  return undefined
+}
+
+function parseCapabilityPayload(
+  v: Record<string, unknown>
+): Extract<ParsedPayload, { kind: "plugin-capability" }> | undefined {
   if (!v.identity || typeof v.identity !== "object") return undefined
   if (!v.request || typeof v.request !== "object") return undefined
   const request = v.request as Record<string, unknown>
@@ -97,8 +122,38 @@ function parsePayload(value: unknown): ParsedPayload | undefined {
   if (typeof request.trigger !== "string") return undefined
   if (typeof request.operation !== "string") return undefined
   return {
-    token: v.token,
+    token: v.token as string,
+    kind: "plugin-capability",
     identity: v.identity as GrantIdentity,
     request: request as unknown as CapabilityRequest,
+  }
+}
+
+function parseHostResourcePayload(
+  v: Record<string, unknown>
+): Extract<ParsedPayload, { kind: "host-resource" }> | undefined {
+  if (!v.request || typeof v.request !== "object") return undefined
+  const r = v.request as Record<string, unknown>
+  const requiredStrings = [
+    r.resourceType,
+    r.workspaceId,
+    r.rootId,
+    r.workspaceName,
+    r.rootName,
+    r.uri,
+  ]
+  if (requiredStrings.some((field) => typeof field !== "string")) return undefined
+  if (r.resourceType !== "workspace-instructions") return undefined
+  const optionalStrings = [r.clientId, r.reason]
+  if (optionalStrings.some((field) => field !== undefined && typeof field !== "string"))
+    return undefined
+  const allStrings = [...requiredStrings, ...optionalStrings].filter(
+    (field): field is string => typeof field === "string"
+  )
+  if (allStrings.some((field) => field.length > MAX_FIELD_LENGTH)) return undefined
+  return {
+    token: v.token as string,
+    kind: "host-resource",
+    request: r as unknown as HostResourceApprovalRequest,
   }
 }
