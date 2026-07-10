@@ -561,6 +561,11 @@ declare global {
         capability: string,
         value: boolean
       ) => Promise<SynapsePluginIpcResult<void>>
+      getMcpNonReadOnlyExposed: (pluginId: string) => Promise<SynapsePluginIpcResult<boolean>>
+      setMcpNonReadOnlyExposed: (
+        pluginId: string,
+        value: boolean
+      ) => Promise<SynapsePluginIpcResult<void>>
       resolveCapabilityGrant: (
         promptId: string,
         allow: boolean

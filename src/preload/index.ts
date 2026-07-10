@@ -99,6 +99,10 @@ const electronAPI = {
       capability,
       value,
     }),
+  getMcpNonReadOnlyExposed: (pluginId: string) =>
+    ipcRenderer.invoke("capabilities:get-mcp-exposure", pluginId),
+  setMcpNonReadOnlyExposed: (pluginId: string, value: boolean) =>
+    ipcRenderer.invoke("capabilities:set-mcp-nonreadonly-exposed", { pluginId, value }),
   resolveCapabilityGrant: (promptId: string, allow: boolean) =>
     ipcRenderer.invoke("capabilities:grant-resolve", { promptId, allow }),
   resolveCapabilityApproval: (promptId: string, allow: boolean) =>

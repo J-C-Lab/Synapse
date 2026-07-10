@@ -30,7 +30,7 @@ describe("mcp resources over real memory", () => {
     ])
     const service = new SynapseMcpToolService(host, { workspaceId: "ws-external" })
 
-    const names = service.listTools().tools.map((t) => t.name)
+    const names = (await service.listTools()).tools.map((t) => t.name)
     expect(names).toEqual(
       expect.arrayContaining(["memory_core_memory_search", "memory_core_memory_list"])
     )

@@ -57,6 +57,7 @@ import {
   fetchMarketplaceRegistry,
   findMarketplaceEntry,
 } from "./marketplace-registry"
+import { mcpExposureFilePath, McpExposureStore } from "./mcp-exposure-store"
 import { PluginBridge } from "./plugin-bridge"
 import { discoverPlugins } from "./plugin-discovery"
 import { pluginPreferenceFilePath, PluginPreferenceStore } from "./plugin-preferences"
@@ -88,6 +89,8 @@ export interface PluginHostOptions {
   capabilityGovernance?: CreateCapabilityGovernanceOptions
   /** Test seam: override the one-time grandfather-migration epoch marker. */
   migrationMarker?: MigrationMarker
+  /** Test seam: override the mcpExposure store (defaults to a real one under userDataDir). */
+  mcpExposure?: McpExposureStore
   /** Test seam: inject a fake timer adapter (no real intervals). */
   timerAdapter?: TimerAdapter
   /** Test seam: inject a fake clipboard adapter (no real polling). */
@@ -161,6 +164,7 @@ export class PluginHost {
   readonly preferences: PluginPreferenceStore
   readonly capabilityGovernance: CapabilityGovernance
   readonly grants: GrantStore
+  readonly mcpExposure: McpExposureStore
   private readonly migrationMarker: MigrationMarker
   private readonly builtinDir: string
   private readonly userDir: string
@@ -191,6 +195,8 @@ export class PluginHost {
     this.grants =
       options.capabilityGovernance?.grants ??
       new GrantStore(grantStoreFilePath(options.userDataDir))
+    this.mcpExposure =
+      options.mcpExposure ?? new McpExposureStore(mcpExposureFilePath(options.userDataDir))
     this.capabilityGovernance = createCapabilityGovernance({
       userDataDir: options.userDataDir,
       ...options.capabilityGovernance,

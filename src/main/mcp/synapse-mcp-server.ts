@@ -11,6 +11,7 @@ import type { MemoryQueryScope } from "../ai/memory/memory-scope"
 import type { MemoryEntry } from "../ai/memory/memory-store"
 import type { RunTrace } from "../ai/run-trace-store"
 import type { ToolHostPort } from "../ai/tool-registry"
+import type { GrantIdentity } from "../plugins/grant-store"
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../plugins/types"
 import { randomUUID } from "node:crypto"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
@@ -46,6 +47,13 @@ export interface SynapseMcpToolServiceOptions {
   memoryIncludeGlobal?: boolean
   /** Hard cap on `resources/list` (no cursor pagination in this phase, §4b). Default 200. */
   memoryListLimit?: number
+  /** Backs the per-plugin non-read-only exposure toggle. Omit to disable
+   *  entirely (every non-read-only tool stays unexposed — today's behavior). */
+  exposure?: { isNonReadOnlyExposed: (identity: GrantIdentity) => Promise<boolean> }
+  /** Synchronous identity lookup — both hosts keep their plugin registry in
+   *  memory, so this never needs to be async. Returns undefined for an
+   *  unknown pluginId (denies exposure). */
+  identityForPlugin?: (pluginId: string) => GrantIdentity | undefined
 }
 
 export interface SynapseMcpServerOptions extends SynapseMcpToolServiceOptions {
@@ -68,10 +76,16 @@ export class SynapseMcpToolService {
     private readonly options: SynapseMcpToolServiceOptions = {}
   ) {}
 
-  listTools(): ListToolsResult {
+  async listTools(): Promise<ListToolsResult> {
+    const entries = this.refresh()
+    const included = await Promise.all(
+      entries.map(async (entry) =>
+        (await this.shouldExpose(entry.descriptor)) ? entry : undefined
+      )
+    )
     return {
-      tools: this.refresh()
-        .filter((entry) => this.shouldExpose(entry.descriptor))
+      tools: included
+        .filter((entry): entry is McpToolEntry => entry !== undefined)
         .map((entry) => {
           const tool = entry.descriptor.manifestTool
           return {
@@ -100,7 +114,7 @@ export class SynapseMcpToolService {
     if (!entry) {
       return errorResult(`Unknown Synapse tool: ${safeName}`)
     }
-    if (!this.shouldExpose(entry.descriptor)) {
+    if (!(await this.shouldExpose(entry.descriptor))) {
       return errorResult(`Synapse MCP policy does not expose tool: ${entry.descriptor.fqName}`)
     }
 
@@ -207,9 +221,12 @@ export class SynapseMcpToolService {
     })
   }
 
-  private shouldExpose(descriptor: RegisteredToolDescriptor): boolean {
+  private async shouldExpose(descriptor: RegisteredToolDescriptor): Promise<boolean> {
     if (this.options.exposurePolicy === "all") return true
-    return decideApproval(descriptor.manifestTool.annotations) === "allow"
+    if (decideApproval(descriptor.manifestTool.annotations) === "allow") return true
+    const identity = this.options.identityForPlugin?.(descriptor.pluginId)
+    if (!identity || !this.options.exposure) return false
+    return this.options.exposure.isNonReadOnlyExposed(identity)
   }
 }
 

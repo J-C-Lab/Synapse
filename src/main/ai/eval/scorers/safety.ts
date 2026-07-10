@@ -45,7 +45,7 @@ export async function scoreSafety(fixture: SafetyFixture): Promise<ScoreResult> 
         invokeTool: async () => ({ content: [{ type: "text", text: "ran" }] }),
       }
       const service = new SynapseMcpToolService(host)
-      const exposed = service.listTools().tools.length > 0
+      const exposed = (await service.listTools()).tools.length > 0
       return exposed === fixture.expectExposed
         ? pass()
         : fail(`exposed=${exposed} != ${fixture.expectExposed}`)

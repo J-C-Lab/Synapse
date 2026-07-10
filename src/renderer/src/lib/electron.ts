@@ -244,6 +244,14 @@ export async function setExternalMcpPreauthorized(
   unwrapIpcResult(await api().setExternalMcpPreauthorized(pluginId, capability, value))
 }
 
+export async function getMcpNonReadOnlyExposed(pluginId: string): Promise<boolean> {
+  return unwrapIpcResult(await api().getMcpNonReadOnlyExposed(pluginId))
+}
+
+export async function setMcpNonReadOnlyExposed(pluginId: string, value: boolean): Promise<void> {
+  unwrapIpcResult(await api().setMcpNonReadOnlyExposed(pluginId, value))
+}
+
 export async function listPluginCredentials(pluginId: string): Promise<PluginCredentialRow[]> {
   return unwrapIpcResult(await api().listPluginCredentials(pluginId))
 }
