@@ -1,22 +1,159 @@
-import type { PluginTriggerRow } from "@/lib/electron"
+import type { PluginTriggerRow, TriggerInstanceRow } from "@/lib/electron"
 import { useCallback, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
+  createTriggerInstance,
   ElectronIpcError,
   killTrigger,
+  listAiWorkspaces,
+  listTriggerInstances,
   listTriggers,
   pauseTrigger,
+  pauseTriggerInstance,
+  reactivateTriggerInstance,
+  removeTriggerInstance,
   resumeTrigger,
+  resumeTriggerInstance,
 } from "@/lib/electron"
 import { cn } from "@/lib/utils"
 
 function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
-  if (status === "faulted" || status === "budget-exhausted") return "destructive"
+  if (status === "faulted" || status === "budget-exhausted" || status === "failed") {
+    return "destructive"
+  }
   if (status === "throttled" || status === "paused") return "secondary"
   return "outline"
+}
+
+function AgentTriggerRow({ row }: { row: PluginTriggerRow }) {
+  const { t } = useTranslation()
+  const [instances, setInstances] = useState<TriggerInstanceRow[]>([])
+  const [workspaces, setWorkspaces] = useState<Array<{ id: string; name: string }>>([])
+  const [busy, setBusy] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    setInstances(await listTriggerInstances(row.pluginId, row.triggerId))
+  }, [row.pluginId, row.triggerId])
+
+  useEffect(() => {
+    void load()
+    void listAiWorkspaces().then(setWorkspaces)
+  }, [load])
+
+  async function act(key: string, fn: () => Promise<unknown>): Promise<void> {
+    setBusy(key)
+    try {
+      await fn()
+      await load()
+    } catch (err) {
+      toast.error(err instanceof ElectronIpcError ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div
+      data-testid="trigger-row"
+      className="flex flex-col gap-2 rounded-md border border-border/60 px-3 py-2 text-sm"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="min-w-0 flex-1 font-medium">
+          {t(`plugins.triggers.typeLabel.${row.type}`, { defaultValue: row.type })}
+        </span>
+        <select
+          className="rounded border bg-transparent px-2 py-1 text-xs"
+          onChange={(e) => {
+            if (e.target.value) {
+              void act("add", () =>
+                createTriggerInstance(row.pluginId, row.triggerId, e.target.value)
+              )
+            }
+          }}
+          value=""
+        >
+          <option value="">{t("plugins.triggers.addToWorkspace")}</option>
+          {workspaces
+            .filter((w) => !instances.some((i) => i.workspaceId === w.id))
+            .map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name}
+              </option>
+            ))}
+        </select>
+      </div>
+      {instances.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{t("plugins.triggers.noInstances")}</p>
+      ) : (
+        instances.map((instance) => (
+          <div
+            key={instance.id}
+            className="flex flex-wrap items-center gap-2 border-t border-border/40 pt-2 text-xs"
+          >
+            <span className="min-w-0 flex-1">{instance.workspaceName}</span>
+            <Badge
+              variant={instance.stale ? "destructive" : statusVariant(instance.status)}
+              className="font-normal capitalize"
+            >
+              {instance.stale
+                ? t("plugins.triggers.needsReview")
+                : t(`plugins.triggers.status.${instance.status}`, {
+                    defaultValue: instance.status,
+                  })}
+            </Badge>
+            {instance.budgets.map((budget) => (
+              <span key={budget.capabilityId} className="text-muted-foreground">
+                {t("plugins.triggers.budgetUsage", {
+                  capability: t(`permissions.items.${budget.capabilityId}`, {
+                    defaultValue: budget.capabilityId,
+                    nsSeparator: false,
+                  }),
+                  used: budget.used,
+                  max: budget.max,
+                })}
+              </span>
+            ))}
+            {instance.stale ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy === instance.id}
+                onClick={() => act(instance.id, () => reactivateTriggerInstance(instance.id))}
+              >
+                {t("plugins.triggers.reactivate")}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy === instance.id}
+                onClick={() =>
+                  act(instance.id, () =>
+                    instance.paused
+                      ? resumeTriggerInstance(instance.id)
+                      : pauseTriggerInstance(instance.id)
+                  )
+                }
+              >
+                {t(instance.paused ? "plugins.triggers.resume" : "plugins.triggers.pause")}
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={busy === instance.id}
+              onClick={() => act(instance.id, () => removeTriggerInstance(instance.id))}
+            >
+              {t("plugins.triggers.remove")}
+            </Button>
+          </div>
+        ))
+      )}
+    </div>
+  )
 }
 
 export function ActiveBackgroundPanel({
@@ -80,6 +217,9 @@ export function ActiveBackgroundPanel({
   return (
     <div className={cn("space-y-2", className)}>
       {rows.map((row) => {
+        if (row.isAgentTrigger) {
+          return <AgentTriggerRow key={`${row.pluginId}:${row.triggerId}`} row={row} />
+        }
         const rowKey = `${row.pluginId}:${row.triggerId}`
         return (
           <div

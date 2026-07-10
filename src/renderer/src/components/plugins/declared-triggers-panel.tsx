@@ -13,6 +13,7 @@ export interface DeclaredTrigger {
   type: string
   handler: string
   uses: DeclaredTriggerUse[]
+  agent?: unknown
   scope?: { contentTypes?: string[]; paths?: string[]; events?: string[]; accelerator?: string }
   schedule?: { intervalMs: number } | string
 }
@@ -87,6 +88,11 @@ export function DeclaredTriggersPanel({
                 })}
               </p>
             </>
+          ) : null}
+          {trigger.agent ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t("plugins.triggers.agentActivationNote")}
+            </p>
           ) : null}
           {(trigger.type === "timer" || trigger.type === "cron") && trigger.schedule ? (
             <p className="mt-1 text-xs text-muted-foreground">

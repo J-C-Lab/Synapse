@@ -43,6 +43,9 @@ const mocks = vi.hoisted(() => ({
   setPluginEnabled: vi.fn(),
   setPluginPreference: vi.fn(),
   uninstallPlugin: vi.fn(),
+  listTriggers: vi.fn().mockResolvedValue([]),
+  getTriggerMigrationNotice: vi.fn().mockResolvedValue({ affectedTriggers: [] }),
+  dismissTriggerMigrationNotice: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock("@/lib/electron", () => ({
