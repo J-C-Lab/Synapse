@@ -2,6 +2,7 @@ import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { AiStatus, RememberScope } from "../ai/agent-service"
 import type { ToolResilienceSettings } from "../ai/ai-settings-store"
 import type { ConversationSummary, StoredConversation } from "../ai/conversation-store"
+import type { WorkspaceRootRecord } from "../ai/execution/types"
 import type { McpServerStatus } from "../ai/mcp-client-manager"
 import type { McpServerConfig } from "../ai/mcp-server-config-store"
 import type { PlanStep } from "../ai/plan/plan-types"
@@ -32,6 +33,16 @@ export interface AiIpcService {
   deleteConversation: (id: string) => Promise<void>
   listWorkspaces: () => Promise<Workspace[]>
   createWorkspace: (name: string) => Promise<Workspace>
+  listWorkspaceRoots: (workspaceId: string) => Promise<WorkspaceRootRecord[]>
+  createWorkspaceRoot: (
+    workspaceId: string,
+    name: string,
+    root: string,
+    role: "primary" | "additional"
+  ) => Promise<WorkspaceRootRecord>
+  removeWorkspaceRoot: (id: string) => Promise<void>
+  setPrimaryWorkspaceRoot: (id: string) => Promise<void>
+  pickWorkspaceRootDirectory: () => Promise<string | null>
   createConversation: (workspaceId: string) => Promise<{ id: string; workspaceId: string }>
   chat: (conversationId: string, text: string) => Promise<{ stopReason: string; usage: TokenUsage }>
   cancel: (conversationId: string) => void
@@ -124,6 +135,27 @@ export function registerAiIpc(
   ipcMain.handle("ai:create-workspace", (event, payload: unknown) => {
     guard(event, "ai:create-workspace")
     return service.createWorkspace(coerceCreateWorkspace(payload).name)
+  })
+  ipcMain.handle("ai:list-workspace-roots", (event, workspaceId: unknown) => {
+    guard(event, "ai:list-workspace-roots")
+    return service.listWorkspaceRoots(requireString(workspaceId, "workspaceId"))
+  })
+  ipcMain.handle("ai:create-workspace-root", (event, payload: unknown) => {
+    guard(event, "ai:create-workspace-root")
+    const { workspaceId, name, root, role } = coerceCreateWorkspaceRoot(payload)
+    return service.createWorkspaceRoot(workspaceId, name, root, role)
+  })
+  ipcMain.handle("ai:remove-workspace-root", (event, id: unknown) => {
+    guard(event, "ai:remove-workspace-root")
+    return service.removeWorkspaceRoot(requireString(id, "id"))
+  })
+  ipcMain.handle("ai:set-primary-workspace-root", (event, id: unknown) => {
+    guard(event, "ai:set-primary-workspace-root")
+    return service.setPrimaryWorkspaceRoot(requireString(id, "id"))
+  })
+  ipcMain.handle("ai:pick-workspace-root-directory", (event) => {
+    guard(event, "ai:pick-workspace-root-directory")
+    return service.pickWorkspaceRootDirectory()
   })
   ipcMain.handle("ai:create-conversation", (event, payload: unknown) => {
     guard(event, "ai:create-conversation")
@@ -278,6 +310,22 @@ export function coerceCreateWorkspace(payload: unknown): { name: string } {
   const name = requireString(v.name, "name").trim()
   if (!name) throw new Error("name is required")
   return { name }
+}
+
+export function coerceCreateWorkspaceRoot(payload: unknown): {
+  workspaceId: string
+  name: string
+  root: string
+  role: "primary" | "additional"
+} {
+  if (!payload || typeof payload !== "object") throw new Error("payload must be an object")
+  const v = payload as Record<string, unknown>
+  return {
+    workspaceId: requireString(v.workspaceId, "workspaceId"),
+    name: requireString(v.name, "name"),
+    root: requireString(v.root, "root"),
+    role: v.role === "primary" ? "primary" : "additional",
+  }
 }
 
 export function coerceCreateConversation(payload: unknown): { workspaceId: string } {

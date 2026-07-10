@@ -43,7 +43,6 @@ declare global {
     lanEnabled: boolean
     trustedSourcePolicy: SynapseTrustedSourcePolicy
     allowAgentShell: boolean
-    agentShellRoots: string[]
   }
 
   type SynapseLanPlatform = "win32" | "darwin" | "linux" | "unknown"
@@ -339,6 +338,15 @@ declare global {
   interface SynapseAiWorkspace {
     id: string
     name: string
+    createdAt: number
+  }
+
+  interface SynapseWorkspaceRoot {
+    id: string
+    workspaceId: string
+    name: string
+    root: string
+    role: "primary" | "additional"
     createdAt: number
   }
 
@@ -695,6 +703,16 @@ declare global {
       deleteAiConversation: (id: string) => Promise<void>
       listAiWorkspaces: () => Promise<SynapseAiWorkspace[]>
       createAiWorkspace: (name: string) => Promise<SynapseAiWorkspace>
+      listWorkspaceRoots: (workspaceId: string) => Promise<SynapseWorkspaceRoot[]>
+      createWorkspaceRoot: (
+        workspaceId: string,
+        name: string,
+        root: string,
+        role: "primary" | "additional"
+      ) => Promise<SynapseWorkspaceRoot>
+      removeWorkspaceRoot: (id: string) => Promise<void>
+      setPrimaryWorkspaceRoot: (id: string) => Promise<void>
+      pickWorkspaceRootDirectory: () => Promise<string | null>
       createAiConversation: (workspaceId: string) => Promise<{ id: string; workspaceId: string }>
       sendAiChat: (
         conversationId: string,
@@ -709,7 +727,7 @@ declare global {
       listAiAllowedTools: () => Promise<string[]>
       revokeAiTool: (fqName: string) => Promise<void>
       listAiMcpServers: () => Promise<SynapseMcpServerConfig[]>
-      listExecutionWorkspaces: () => Promise<SynapseExecutionWorkspace[]>
+      listExecutionWorkspaces: (workspaceId?: string) => Promise<SynapseExecutionWorkspace[]>
       getAiMcpServerStatus: () => Promise<SynapseMcpServerStatus[]>
       saveAiMcpServer: (config: SynapseMcpServerConfig) => Promise<SynapseMcpServerStatus[]>
       deleteAiMcpServer: (id: string) => Promise<void>
