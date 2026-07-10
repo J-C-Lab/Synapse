@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   createCapabilityPromptSender,
+  createHostResourcePromptSender,
   resetCapabilityPromptTargetsForTests,
   withCapabilityPromptTarget,
 } from "./capability-prompt-router"
@@ -64,5 +65,33 @@ describe("capabilityPromptRouter", () => {
     expect(inner.send).toHaveBeenCalledWith("capabilities:grant-request", { promptId: "inner" })
     expect(outer.send).toHaveBeenCalledWith("capabilities:grant-request", { promptId: "outer" })
     expect(broadcast).not.toHaveBeenCalled()
+  })
+})
+
+describe("createHostResourcePromptSender", () => {
+  it("delivers to the active IPC target", async () => {
+    const target = mockWebContents("app://app/index.html#search")
+    const broadcast = vi.fn()
+    const sender = createHostResourcePromptSender(broadcast)
+
+    await withCapabilityPromptTarget(target, async () => {
+      sender.sendApprovalRequest({ promptId: "host_res_apr_1" })
+    })
+
+    expect(target.send).toHaveBeenCalledWith("host-resources:approval-request", {
+      promptId: "host_res_apr_1",
+    })
+    expect(broadcast).not.toHaveBeenCalled()
+  })
+
+  it("falls back to broadcast when no target is registered", () => {
+    const broadcast = vi.fn()
+    const sender = createHostResourcePromptSender(broadcast)
+
+    sender.sendApprovalRequest({ promptId: "host_res_apr_2" })
+
+    expect(broadcast).toHaveBeenCalledWith("host-resources:approval-request", {
+      promptId: "host_res_apr_2",
+    })
   })
 })
