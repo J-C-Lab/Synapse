@@ -105,6 +105,11 @@ export function CapabilityPromptHost() {
           </DialogDescription>
         </DialogHeader>
         {profile ? <PluginCapabilityProfileCard profile={profile} /> : null}
+        {pending?.kind === "approval" && pending.clientId ? (
+          <p className="text-xs text-muted-foreground">
+            {t("plugins.capabilities.reportedIdentity", { clientId: pending.clientId })}
+          </p>
+        ) : null}
         {pending?.reason ? <p className="text-sm text-muted-foreground">{pending.reason}</p> : null}
         <DialogFooter className="gap-2 sm:justify-end">
           <Button variant="outline" disabled={busy} onClick={() => void respond(false)}>
