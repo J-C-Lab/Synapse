@@ -48,7 +48,10 @@ audit sanitization) untouched and un-reused.
 ## Goal (this slice)
 
 1. A generic `HostResourceApprovalRequest` shape (`resourceType`,
-   `workspaceId`, `uri`, `displayName`, `clientId?`, `reason?`) that can
+   `workspaceId`, `rootId`, `workspaceName`, `rootName`, `uri`,
+   `clientId?`, `reason?`) that binds approval to the specific,
+   already-resolved root — not a workspace id that could resolve to a
+   different root by the time the resource is actually read — and can
    describe more than just `workspace-instructions` in the future,
    without over-building for resource types that don't exist yet.
 2. The existing headless-approval transport carries both plugin-capability
@@ -88,6 +91,13 @@ audit sanitization) untouched and un-reused.
   `resourceType` field is a string union specifically to avoid a breaking
   change when a second resource type shows up, but this spec does not
   invent one speculatively.
+- **Cross-process cancellation propagation.** A headless-side abort after
+  the request has already reached the GUI does not dismiss an
+  already-showing dialog in this spec — see §3 for why this is a
+  pre-existing gap shared with plugin-capability approval today, not a
+  regression, and why fixing it belongs in its own follow-up covering
+  both domains symmetrically rather than being solved once for
+  host-resource alone.
 
 ## What was cut from the source proposals
 
@@ -115,18 +125,37 @@ verified line-by-line against real code, and adjusted:
   `promptCapableWindows`/focused/visible/broadcast fallback chain) behind
   a renamed, parameterized `deliverPrompt` rather than either duplicating
   it or hard-coding host-resource into a function still named
-  `createCapabilityPromptSender`; carrying `signal?: AbortSignal` on
-  `HostResourceApprover`'s input now (stripped before the payload crosses
-  the socket, exactly like `CapabilityRequest.signal` already is) even
-  though spec ③ doesn't have a caller that sets it yet, since adding it
-  later would mean changing a core interface after the fact; that the two
-  existing `capabilityService?.dispose()` call sites
-  (`index.ts:291` inside `bindCapabilityPromptLifecycle`, and
-  `index.ts:1289` inside the `will-quit` handler) needed a sibling
-  `hostResourceIpcService?.dispose()` call each, verified by reading both
-  call sites directly.
+  `createCapabilityPromptSender`; that the two existing
+  `capabilityService?.dispose()` call sites (`index.ts:291` inside
+  `bindCapabilityPromptLifecycle`, and `index.ts:1289` inside the
+  `will-quit` handler) needed a sibling `hostResourceIpcService?.dispose()`
+  call each, verified by reading both call sites directly.
+- **Corrected**: an early framing described `signal?: AbortSignal` as
+  cancellation support "stripped before the payload crosses the socket,
+  exactly like `CapabilityRequest.signal` already is" — worded as if that
+  meant cross-process cancellation already works today. Verified false:
+  `handleConnection` (`headless-approval-server.ts`) calls
+  `options.approve({identity, request})` with **no signal at all** —
+  today, a headless-side abort never reaches the GUI process, for
+  plugin-capability requests either. This spec keeps `signal` on
+  `HostResourceApprover` for **in-process** use only (see §3) and
+  explicitly does not build cross-process propagation, rather than
+  silently inheriting an existing gap under misleading wording. See §3's
+  non-goal note for the reasoning on why that gap isn't closed here.
 
 ## 1. Types
+
+**Reviewer-caught issue**: the first draft bound approval only to
+`workspaceId`, not to the specific root that had already been resolved.
+Spec ① allows `setPrimaryWorkspaceRoot` to change a workspace's primary
+root at any time (`workspace-root-store.ts`'s `setPrimary`/atomic-demote,
+merged in PR #40). If a prompt is shown for workspace X while its primary
+root is A, and the user changes the primary root to B while the dialog is
+still open, a naive "re-resolve primary root from workspaceId after
+approval" in spec ③ would read B's content under an approval the human
+actually granted for A — the approved object and the read object silently
+diverge. Fixed by binding the request to the already-resolved `rootId`,
+not re-deriving it after the fact:
 
 ```ts
 // src/main/mcp/host-resource-approval.ts (new file)
@@ -135,10 +164,17 @@ export interface HostResourceApprovalRequest {
    *  Only "workspace-instructions" exists today. */
   resourceType: "workspace-instructions"
   workspaceId: string
-  /** The resource's MCP URI, e.g. "workspace://<id>/instructions". */
+  /** The specific WorkspaceRootRecord.id already resolved (e.g. the
+   *  workspace's primary root) at the moment the request was built — not
+   *  re-derived from workspaceId after approval. See the binding
+   *  constraint below. */
+  rootId: string
+  workspaceName: string
+  rootName: string
+  /** The resource's MCP URI, e.g. "workspace://<id>/instructions".
+   *  Display only — never used as, or substituted for, an authorization
+   *  check. */
   uri: string
-  /** Human-readable label shown in the approval dialog. */
-  displayName: string
   /** Self-reported by the external MCP client, display/audit only — never
    *  a verified identity. Same caveat as CapabilityApprovalRequestEvent.clientId. */
   clientId?: string
@@ -147,17 +183,29 @@ export interface HostResourceApprovalRequest {
 
 export type HostResourceApprover = (input: {
   request: HostResourceApprovalRequest
-  /** Not consumed by any caller yet (spec ③ doesn't exist), but present
-   *  now so HostResourceIpcService's pending-map can clean up an aborted
-   *  request the same way CapabilityIpcService already does — adding it
-   *  later would mean changing this interface after callers exist. */
+  /** In-process only — see §3's note on why this does not propagate
+   *  cancellation across the headless↔GUI socket in this spec. */
   signal?: AbortSignal
 }) => Promise<boolean>
 ```
 
 No content — never file text, never directory listings — flows through
 this type or across the socket. Only metadata a GUI dialog needs to
-render and a human needs to make a yes/no decision.
+render and a human needs to make a yes/no decision. `workspaceName`,
+`rootName`, and `uri` are for display only; nothing in this type is an
+authorization credential — the authorization *is* "a human approved this
+exact `(workspaceId, rootId)` pair."
+
+**Binding constraint for spec ③** (recorded here so it doesn't need
+rediscovering when that spec is written): spec ③ must resolve `rootId`
+*before* calling `hostResourceApprover`, and after approval returns
+`true`, must re-check that `rootId` still exists and still belongs to
+`workspaceId` (via `WorkspaceRootStore.listForWorkspace`) immediately
+before reading — if the root was removed or reassigned in the window
+between approval and read, deny rather than silently reading whatever
+`workspaceId`'s *current* primary root happens to be. The approval is for
+the specific root the human saw named in the dialog, not for "workspace
+X's primary root, whatever that resolves to right now."
 
 ## 2. Shared transport layer
 
@@ -187,9 +235,11 @@ export interface HeadlessApprovalServerOptions {
 }
 ```
 
-`handleConnection` dispatches on `parsed.kind` to the matching callback
-and writes the matching audit trail (§5). `parsePayload` validates each
-kind's required fields separately instead of one hard-coded shape.
+`handleConnection` dispatches on `parsed.kind` to the matching callback.
+It does **not** write audit — see §5 for why that responsibility moved to
+`HostResourceIpcService` instead of the transport layer. `parsePayload`
+validates each kind's required fields separately instead of one
+hard-coded shape.
 
 **Client** (`GuiApprovalPort`): gains a second method, sharing the
 existing private connect/retry/spawn/timeout logic (currently inline in
@@ -201,6 +251,10 @@ export interface GuiApprovalPort {
   requestApproval: (input: GuiApprovalRequest) => Promise<boolean>
   requestHostResourceApproval: (input: {
     request: HostResourceApprovalRequest
+    /** Aborts this process's own connect/retry/wait loop early (returns
+     *  false without sending, or without waiting further on a response
+     *  not yet received). Does NOT reach the GUI process — see §3's
+     *  cross-process-cancellation non-goal. */
     signal?: AbortSignal
   }) => Promise<boolean>
 }
@@ -215,6 +269,29 @@ atomically together, not a public protocol.
 call site for it — spec ③ is the first caller. Test coverage (§6) proves
 the plumbing works without a real feature exercising it.
 
+**Reviewer-caught issue — no frame-size limit.** `readJsonLine`
+(`line-delimited-socket.ts:15-55`) accumulates `buffer += chunk.toString()`
+in its `onData` handler with no length cap, and the token is only checked
+*after* a complete line is parsed — so any local process (not just an
+authorized headless one) can open the port and stream unbounded data,
+growing `buffer` without limit before ever failing token validation. This
+is a real, pre-existing gap in the already-shipped plugin-capability path
+too, not something host-resource introduces — but this spec is already
+touching this exact function for the `kind` split, so it's the right
+moment to fix it for both:
+
+- `readJsonLine` gains a `maxBytes` parameter (default 64 KiB — generous
+  for any request/response shape either kind needs, small enough to make
+  a memory-exhaustion attempt pointless). Exceeding it closes the socket
+  and rejects immediately — fail-closed, same as a timeout — before token
+  validation even runs, so this check applies unconditionally to every
+  connection regardless of kind or authentication state.
+- Individual string fields (`clientId`, `reason`, `workspaceName`,
+  `rootName`, `uri`) get their own modest length caps (e.g. 500 chars) in
+  `parsePayload`, independent of the overall frame cap — bounds what can
+  reach the GUI dialog and the audit log even from a well-formed,
+  correctly-token-authenticated but abusive request.
+
 ## 3. IPC service and wiring
 
 New `src/main/ipc/host-resources.ts`, following the codebase's existing
@@ -225,11 +302,23 @@ identity concept with it and mixing them would blur
 `CapabilityIpcService`'s already-focused scope.
 
 ```ts
+interface PendingResult {
+  allow: boolean
+  /** Absent means a human answered (allow or deny) via resolve(). Set
+   *  means the promise settled some other way. */
+  outcomeReason?: "cancelled" | "gui-disposed"
+}
+
 export class HostResourceIpcService {
-  private readonly pending = new Map<string, { resolve: (allow: boolean) => void }>()
+  private readonly pending = new Map<string, { resolve: (result: PendingResult) => void }>()
   private counter = 0
 
-  constructor(private readonly options: { sendApprovalRequest: (event: HostResourceApprovalRequestEvent) => void }) {}
+  constructor(
+    private readonly options: {
+      sendApprovalRequest: (event: HostResourceApprovalRequestEvent) => void
+      audit: (entry: HostResourceAuditEntry) => void
+    }
+  ) {}
 
   readonly hostResourceApprover: HostResourceApprover = async ({ request, signal }) => {
     // promptId prefix "host_res_apr_" — deliberately distinct from
@@ -237,9 +326,26 @@ export class HostResourceIpcService {
     // stack traces are never ambiguous about which domain a prompt id
     // belongs to.
     const promptId = `host_res_apr_${++this.counter}`
-    const decision = this.registerPending(promptId, signal)
-    this.options.sendApprovalRequest({ promptId, ...request })
-    return decision
+    const decisionPromise = this.registerPending(promptId, signal)
+    try {
+      this.options.sendApprovalRequest({ promptId, ...request })
+    } catch (err) {
+      // Reviewer-caught issue: if send() throws (e.g. the target
+      // WebContents was destroyed between registerPending and this call),
+      // the pending entry must not be left dangling — resolve it deny
+      // and remove it synchronously, the same as any other failure mode.
+      this.pending.delete(promptId)
+      this.record(request, "deny", "send-failed")
+      return false
+    }
+    // Every path through registerPending's Promise — human resolve(),
+    // dispose(), or an abort — settles exactly once here, so recording
+    // the audit entry in this one place (rather than duplicated in each
+    // of resolve()/dispose()/the abort listener) guarantees exactly one
+    // entry per decision, matching §6's test requirement.
+    const result = await decisionPromise
+    this.record(request, result.allow ? "allow" : "deny", result.outcomeReason)
+    return result.allow
   }
 
   resolve(promptId: string, allow: boolean): void {
@@ -249,26 +355,42 @@ export class HostResourceIpcService {
     const entry = this.pending.get(promptId)
     if (!entry) return
     this.pending.delete(promptId)
-    entry.resolve(allow)
+    entry.resolve({ allow }) // no outcomeReason: a human answered
   }
 
   /** Deny-safe cleanup: window close, reload, crash, app quit. */
   dispose(): void {
-    for (const entry of [...this.pending.values()]) entry.resolve(false)
+    for (const entry of [...this.pending.values()]) {
+      entry.resolve({ allow: false, outcomeReason: "gui-disposed" })
+    }
     this.pending.clear()
   }
 
-  private registerPending(promptId: string, signal?: AbortSignal): Promise<boolean> {
+  private registerPending(promptId: string, signal?: AbortSignal): Promise<PendingResult> {
+    // Reviewer-caught bug: checking only `signal?.aborted` inside the
+    // listener misses a signal that was ALREADY aborted before this call
+    // — attaching a listener to an already-fired AbortSignal never fires
+    // again, so that request would hang forever instead of resolving
+    // immediately. Must check the current state first.
+    if (signal?.aborted) return Promise.resolve({ allow: false, outcomeReason: "cancelled" })
     return new Promise((resolve) => {
       this.pending.set(promptId, { resolve })
       signal?.addEventListener(
         "abort",
         () => {
-          if (this.pending.delete(promptId)) resolve(false)
+          if (this.pending.delete(promptId)) resolve({ allow: false, outcomeReason: "cancelled" })
         },
         { once: true }
       )
     })
+  }
+
+  private record(
+    request: HostResourceApprovalRequest,
+    decision: "allow" | "deny",
+    outcomeReason?: "cancelled" | "gui-disposed" | "send-failed"
+  ): void {
+    this.options.audit({ ...request, decision, outcomeReason, timestamp: Date.now() })
   }
 }
 
@@ -276,6 +398,38 @@ export interface HostResourceApprovalRequestEvent extends HostResourceApprovalRe
   promptId: string
 }
 ```
+
+The audit call happens here, in `hostResourceApprover` — **not** in the
+transport layer's `handleConnection` (§2's earlier draft said the
+opposite; corrected), and **not** scattered across `resolve()`/
+`dispose()`/the abort listener (an earlier draft of this section made
+that mistake too: `record()` was only actually wired into the
+`send-failed` catch block, so a human's own allow/deny, a disposed
+window, and a cancelled request would never have produced an audit entry
+at all, directly contradicting §6's "exactly one entry per decision"
+test requirement — caught in self-review before this went out for
+re-review). Recording once, after `decisionPromise` settles, from
+whichever of the four paths it settled through, is what actually
+guarantees exactly one entry per decision. `outcomeReason` distinguishes
+*why* a `deny` happened (the request was cancelled, the window was
+disposed mid-prompt, or the send itself failed) — information the
+transport layer doesn't have and shouldn't need to know how to produce.
+
+**Non-goal: cross-process cancellation propagation.** If the headless
+process's caller aborts *after* the request has already been sent and a
+dialog is already showing, that dialog does not auto-dismiss in this
+spec — the human still sees it and can still answer it (their answer
+simply won't matter to a caller that already gave up locally and got
+`false` from its own `signal`-aborted wait). Fully closing this requires:
+the server translating a dropped/closed socket into a local
+`AbortController` fed into `approveHostResource`, and a new
+`host-resources:approval-cancelled` event telling the renderer to drop an
+already-queued prompt. This is a real gap, but it is **also** a
+pre-existing gap for plugin-capability approval today (verified in "What
+was cut," above) — fixing it only for host-resource would leave the two
+domains behaviorally asymmetric despite sharing one transport. If this
+becomes worth solving, it should be solved once, for both approvers, as
+its own follow-up — not folded into this spec.
 
 **Wiring** (`src/main/index.ts`):
 
@@ -301,6 +455,9 @@ export interface HostResourceApprovalRequestEvent extends HostResourceApprovalRe
   `resolveCapabilityApproval` pair.
 - `renderer/src/lib/electron.ts`: thin wrapper functions, same pattern as
   every other IPC surface in this file.
+- `HostResourceIpcService`'s `audit` dependency (§5) is constructed from
+  `createHostResourceAudit(sink)` and passed in alongside
+  `sendApprovalRequest` at the same construction site.
 
 **Prompt-router generalization** (`src/main/ipc/capability-prompt-router.ts`):
 the window-selection logic inside `deliverCapabilityPrompt`
@@ -310,10 +467,22 @@ it only needs a channel string, a payload, and a broadcast callback.
 Extracted into a generic internal `deliverPrompt(channel, payload,
 broadcast)`, with `createCapabilityPromptSender` and a new
 `createHostResourcePromptSender` as thin domain-specific wrappers around
-it. `withCapabilityPromptTarget`'s target-stack mechanism is unchanged
-and shared by both — a host-resource approval request and a plugin
-capability request arriving during the same `withCapabilityPromptTarget`
-scope both correctly route to that scope's target renderer.
+it.
+
+**Reviewer-caught overclaim, removed**: an earlier draft said a
+host-resource request could arrive within an active
+`withCapabilityPromptTarget` scope and route to that scope's target
+renderer "just like" a capability request. Verified there is no scenario
+where that's actually true today — `withCapabilityPromptTarget` scopes
+are only pushed around synchronous IPC-handler-invoked work (e.g.
+`ai:chat`'s handler wraps the call in `withCapabilityPromptTarget(event.sender, ...)`),
+and `hostResourceApprover` is only ever invoked from
+`handleConnection`'s socket callback in the headless-approval server,
+which never runs inside such a scope. In practice, every host-resource
+prompt falls through to the focused-window / single-visible-window /
+broadcast chain, never the target-stack. The two prompt senders share
+`deliverPrompt`'s fallback chain as an implementation-reuse detail, not
+because host-resource prompts are ever actually target-scoped.
 
 ## 4. Renderer UI
 
@@ -342,64 +511,116 @@ const profile = useCapabilityProfile(pluginId)
 `profile` being present). The dialog body for `kind === "host-resource"`
 is new copy with no capability-tier or plugin-profile framing — states
 plainly that an external MCP client wants to read the workspace's
-instructions file, names the workspace, and shows the `clientId` with
-the same "self-reported, not verified" caveat already used for capability
-approval's `plugins.capabilities.reportedIdentity` string. The absolute
-local file path is not part of the approval payload (§1) and is not
-shown in the dialog — only the resource's logical `displayName`/`uri`.
+instructions file, names **both** the workspace (`workspaceName`) and the
+specific root (`rootName`) the request was bound to (§1's binding
+constraint only matters if the human can actually see which root they're
+approving), and shows the `clientId` with the same "self-reported, not
+verified" caveat already used for capability approval's
+`plugins.capabilities.reportedIdentity` string. The absolute local
+filesystem path is not part of the approval payload (§1) and is not
+shown in the dialog — only the resource's logical `rootName`/`uri`.
 
 ## 5. Audit
 
+**This is an *approval-decision* audit, not a *resource-access* audit —
+the two are different questions.** This spec's audit answers "was a read
+of this root approved or denied, and why." It cannot answer "did the
+external client actually read the content afterward" — approval can
+succeed and the subsequent read can still fail (root removed in the
+window §1's binding constraint covers, client disconnected, I/O error).
+**Spec ③ is responsible for its own resource-access audit entry once a
+read actually completes** — this spec does not attempt to answer that
+question and the two audit kinds must stay separate event kinds so a
+future security review of "what got approved" vs "what actually got
+read" doesn't require filtering one stream by shape.
+
 New `src/main/mcp/host-resource-audit.ts`, structurally parallel to
-`capability-audit.ts` but not reusing `CapabilityAuditEntry` or
-`sanitizeAuditEntry` — verified those are shaped around fields
+`capability-audit.ts` but not reusing `CapabilityAuditEntry` or its
+sanitization pipeline — verified those are shaped around fields
 (`capabilityId`, `requestedScope`, `declaredScope`, `grantScope`) that
-don't exist on a host-resource decision, which by construction (§1) is
-already just metadata with nothing to redact except free-text `reason`:
+don't exist on a host-resource decision:
 
 ```ts
 export interface HostResourceAuditEntry {
   resourceType: "workspace-instructions"
   workspaceId: string
+  rootId: string
+  workspaceName: string
+  rootName: string
   uri: string
-  displayName: string
   clientId?: string
   decision: "allow" | "deny"
+  /** Only set for "deny" — distinguishes an explicit human "no" from every
+   *  other way a request ends up denied. Absent means the human clicked
+   *  Deny. */
+  outcomeReason?: "cancelled" | "gui-disposed" | "send-failed"
   reason?: string
   timestamp: number
 }
 
 export function createHostResourceAudit(sink: LogSink): (entry: HostResourceAuditEntry) => void {
   // Own log scope ("host-resource"), own file in production — deliberately
-  // not mixed into capability audit's log stream, so a future security
-  // review of "what did plugins do" vs "what did external MCP clients
-  // read" doesn't require filtering one stream by event shape.
+  // not mixed into capability audit's log stream.
 }
 ```
 
-`reason` is passed through `capability-audit.ts`'s existing exported
-`scrubText` helper (secret-pattern redaction) — the one piece of
-sanitization logic actually worth reusing, since `reason` is free text a
-human could paste a token into regardless of domain.
+**Reviewer-caught issue — `scrubText` isn't actually exported.** The
+earlier draft called it "capability-audit.ts's existing exported
+`scrubText` helper"; verified it's a private, non-exported function
+(`capability-audit.ts:73`). Reusing it as-is would mean
+`host-resource-audit.ts` importing a private symbol from a plugin-
+governance module — the wrong dependency direction for something that's
+supposed to have zero shared state with the capability domain. Fixed by
+extracting `scrubText` (and only `scrubText` — the rest of
+`sanitizeAuditEntry`'s pipeline is genuinely capability-specific, per
+above) into a new `src/main/logging/audit-sanitize.ts`, exported from
+there. `capability-audit.ts` is updated to import it from the new shared
+location instead of defining its own copy; `host-resource-audit.ts`
+imports the same export. Neither module depends on the other.
+
+**Reviewer-caught issue — only `reason` was being sanitized.**
+`clientId`, `workspaceName`, `rootName`, and `uri` are all attacker-
+influenceable strings too (self-reported by an external process, or a
+user-chosen workspace/root name) and get the same `scrubText` treatment
+before being written to disk, not just `reason`.
 
 ## 6. Testing strategy
 
+- **`line-delimited-socket.test.ts`**: a connection that never sends a
+  newline and exceeds `maxBytes` is closed and rejected, not left
+  accumulating; an oversized single-line payload (valid JSON, too many
+  bytes) is rejected the same way; a normal-sized line under the cap is
+  unaffected — covers both kinds, since the cap applies before
+  `kind`-dispatch even happens.
 - **`headless-approval-server.test.ts`**: `host-resource`-kind requests
   route to `approveHostResource`, not `approveCapability`; malformed
   host-resource payloads are rejected the same way malformed
   plugin-capability ones already are; wrong token denies both kinds
-  identically.
+  identically; an individual field (e.g. `clientId`) exceeding its own
+  length cap is rejected even when the overall frame is under `maxBytes`.
 - **`gui-approval-client.test.ts`**: `requestHostResourceApproval` shares
   the connect/retry/spawn/timeout behavior already covered for
   `requestApproval` (same fail-closed-on-timeout, fail-closed-on-refused-
   connection assertions, parameterized over both methods rather than
-  duplicated).
+  duplicated); an already-aborted `signal` passed in returns `false`
+  immediately without attempting to connect.
 - **`host-resources.test.ts`** (new, for `HostResourceIpcService`):
   resolve is idempotent for unknown/already-resolved `promptId`s; a
   pending entry is removed from the map exactly once it resolves;
   `dispose()` resolves every pending entry `false` and empties the map;
   an aborted `signal` resolves that one pending entry `false` without
-  affecting others.
+  affecting others; a `signal` that is **already** aborted before
+  `hostResourceApprover` is even called resolves `false` immediately
+  without registering a pending entry at all (the bug the earlier draft's
+  `registerPending` had); `sendApprovalRequest` throwing resolves the call
+  `false`, records an audit entry with `outcomeReason: "send-failed"`,
+  and does not leave anything in the pending map afterward.
+- **Audit tests**: exactly one `HostResourceAuditEntry` is recorded per
+  decision, never zero and never duplicated; a `dispose()`-triggered deny
+  records `outcomeReason: "gui-disposed"`; a signal-abort-triggered deny
+  records `"cancelled"`; a human-clicked deny has no `outcomeReason` set;
+  `clientId`/`workspaceName`/`rootName`/`uri`/`reason` are all run through
+  `scrubText` before being handed to the sink (not just `reason`).
 - **`capability-prompt-router.test.ts`**: existing focused/visible/
   broadcast routing assertions re-run unchanged against the generalized
   `deliverPrompt`, proving the extraction didn't alter behavior;
