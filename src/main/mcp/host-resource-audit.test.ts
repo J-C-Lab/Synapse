@@ -1,7 +1,7 @@
 import type { LogSink } from "../logging"
-import type { HostResourceAuditEntry } from "./host-resource-audit"
+import type { HostResourceAccessAuditEntry, HostResourceAuditEntry } from "./host-resource-audit"
 import { describe, expect, it } from "vitest"
-import { createHostResourceAudit } from "./host-resource-audit"
+import { createHostResourceAccessAudit, createHostResourceAudit } from "./host-resource-audit"
 
 function memorySink(): LogSink & { lines: string[] } {
   const lines: string[] = []
@@ -21,6 +21,71 @@ function entry(overrides: Partial<HostResourceAuditEntry> = {}): HostResourceAud
   }
   return { ...base, ...overrides }
 }
+
+function accessEntry(
+  overrides: Partial<HostResourceAccessAuditEntry> = {}
+): HostResourceAccessAuditEntry {
+  const base: HostResourceAccessAuditEntry = {
+    event: "resource-access",
+    resourceType: "workspace-instructions",
+    workspaceId: "w1",
+    rootId: "r1",
+    fileName: "AGENTS.md",
+    uri: "synapse://workspace-instructions/w1/AGENTS.md",
+    charsReturned: 42,
+    timestamp: 1000,
+  }
+  return { ...base, ...overrides }
+}
+
+describe("createHostResourceAccessAudit", () => {
+  it("writes one JSON line carrying event/resourceType/workspaceId/rootId/fileName/charsReturned", () => {
+    const sink = memorySink()
+    createHostResourceAccessAudit(sink)(accessEntry())
+    expect(sink.lines).toHaveLength(1)
+    const record = JSON.parse(sink.lines[0])
+    expect(record).toMatchObject({
+      scope: "host-resource",
+      event: "resource-access",
+      resourceType: "workspace-instructions",
+      workspaceId: "w1",
+      rootId: "r1",
+      fileName: "AGENTS.md",
+      charsReturned: 42,
+    })
+  })
+
+  it("never includes file content — only the character count", () => {
+    const sink = memorySink()
+    createHostResourceAccessAudit(sink)(accessEntry({ charsReturned: 12345 }))
+    const line = sink.lines[0]
+    expect(line).toContain("12345")
+    const record = JSON.parse(line)
+    expect(Object.keys(record)).not.toContain("text")
+    expect(Object.keys(record)).not.toContain("content")
+  })
+
+  it("scrubs secret-looking text out of clientId, fileName, and uri", () => {
+    const sink = memorySink()
+    createHostResourceAccessAudit(sink)(
+      accessEntry({
+        clientId: "client token=leak-1",
+        uri: "synapse://workspace-instructions/w1/AGENTS.md?token=leak-2",
+      })
+    )
+    const line = sink.lines[0]
+    expect(line).not.toContain("leak-1")
+    expect(line).not.toContain("leak-2")
+    expect(line).toContain("[redacted]")
+  })
+
+  it("uses the same host-resource log scope as the approval-decision audit", () => {
+    const sink = memorySink()
+    createHostResourceAccessAudit(sink)(accessEntry())
+    const record = JSON.parse(sink.lines[0])
+    expect(record.scope).toBe("host-resource")
+  })
+})
 
 describe("createHostResourceAudit", () => {
   it("writes one JSON line carrying resourceType/workspaceId/rootId/decision", () => {
