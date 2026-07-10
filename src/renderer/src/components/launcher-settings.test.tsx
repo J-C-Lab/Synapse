@@ -132,6 +132,18 @@ function installElectronApi(settings: SynapseUserSettings): TestElectronApi {
     deleteAiConversation: vi.fn().mockResolvedValue(undefined),
     listAiWorkspaces: vi.fn().mockResolvedValue([{ id: "default", name: "Default", createdAt: 0 }]),
     createAiWorkspace: vi.fn().mockResolvedValue({ id: "work", name: "Work", createdAt: 1 }),
+    listWorkspaceRoots: vi.fn().mockResolvedValue([]),
+    createWorkspaceRoot: vi.fn().mockResolvedValue({
+      id: "r1",
+      workspaceId: "default",
+      name: "root",
+      root: "/root",
+      role: "primary",
+      createdAt: 1,
+    }),
+    removeWorkspaceRoot: vi.fn().mockResolvedValue(undefined),
+    setPrimaryWorkspaceRoot: vi.fn().mockResolvedValue(undefined),
+    pickWorkspaceRootDirectory: vi.fn().mockResolvedValue(null),
     createAiConversation: vi.fn().mockResolvedValue({ id: "c-new", workspaceId: "default" }),
     sendAiChat: vi.fn().mockResolvedValue({ stopReason: "end_turn", usage: {} }),
     cancelAiChat: vi.fn().mockResolvedValue(undefined),
@@ -183,7 +195,6 @@ describe("launcher settings", () => {
       lanEnabled: false,
       trustedSourcePolicy: "official-marketplace",
       allowAgentShell: false,
-      agentShellRoots: [],
     })
   })
 
@@ -351,7 +362,6 @@ describe("launcher settings", () => {
       lanEnabled: false,
       trustedSourcePolicy: "official-marketplace",
       allowAgentShell: false,
-      agentShellRoots: [],
     })
     const user = userEvent.setup()
     render(<LauncherSettings />)
@@ -375,7 +385,6 @@ describe("launcher settings", () => {
       lanEnabled: false,
       trustedSourcePolicy: "official-marketplace",
       allowAgentShell: false,
-      agentShellRoots: [],
     })
     const user = userEvent.setup()
     render(<LauncherSettings />)
@@ -397,7 +406,6 @@ describe("launcher settings", () => {
       lanEnabled: false,
       trustedSourcePolicy: "official-marketplace",
       allowAgentShell: false,
-      agentShellRoots: [],
     })
     const user = userEvent.setup()
     render(<LauncherSettings />)
@@ -419,7 +427,6 @@ describe("launcher settings", () => {
       lanEnabled: false,
       trustedSourcePolicy: "official-marketplace",
       allowAgentShell: false,
-      agentShellRoots: [],
     })
     const user = userEvent.setup()
     render(<LauncherSettings />)
@@ -442,7 +449,6 @@ describe("launcher settings", () => {
       lanEnabled: false,
       trustedSourcePolicy: "official-marketplace",
       allowAgentShell: false,
-      agentShellRoots: [],
     })
     vi.mocked(api.resumeHotkeyCapture).mockResolvedValue(false)
     const user = userEvent.setup()

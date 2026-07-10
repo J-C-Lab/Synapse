@@ -41,8 +41,6 @@ export interface UserSettings {
   trustedSourcePolicy: TrustedSourcePolicy
   /** Whether the assistant may use local execution tools (high-risk; off by default). */
   allowAgentShell: boolean
-  /** Absolute workspace directories the assistant may use. Empty = host falls back to home. */
-  agentShellRoots: string[]
   /** Per-app launch history keyed by `AppEntry.id`, used to surface "frequently used" apps on Home. */
   appUsage: Record<string, AppUsageEntry>
 }
@@ -56,7 +54,6 @@ export const defaultSettings: UserSettings = {
   lanEnabled: false,
   trustedSourcePolicy: "official-marketplace",
   allowAgentShell: false,
-  agentShellRoots: [],
   appUsage: {},
 }
 
@@ -97,9 +94,6 @@ export function normalizeSettings(raw: unknown): UserSettings {
     }
     if (typeof r.allowAgentShell === "boolean") {
       next.allowAgentShell = r.allowAgentShell
-    }
-    if (Array.isArray(r.agentShellRoots)) {
-      next.agentShellRoots = r.agentShellRoots.filter((p): p is string => typeof p === "string")
     }
     if (r.appUsage && typeof r.appUsage === "object" && !Array.isArray(r.appUsage)) {
       next.appUsage = normalizeAppUsage(r.appUsage as Record<string, unknown>)

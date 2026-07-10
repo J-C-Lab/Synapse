@@ -26,7 +26,7 @@ describe("workspacePolicy", () => {
     const root = await makeWorkspace({ "src/a.ts": "export const a = 1\n" })
     const policy = new WorkspacePolicy([{ id: "repo", root }])
     await expect(policy.resolvePath("repo", "src/a.ts")).resolves.toMatchObject({
-      workspaceId: "repo",
+      rootId: "repo",
       relativePath: "src/a.ts",
     })
   })
@@ -41,7 +41,7 @@ describe("workspacePolicy", () => {
     const root = await makeWorkspace({})
     const policy = new WorkspacePolicy([{ id: "repo", root }])
     await expect(policy.resolvePath("repo", "a/b/new-file.ts")).resolves.toMatchObject({
-      workspaceId: "repo",
+      rootId: "repo",
       relativePath: "a/b/new-file.ts",
     })
   })

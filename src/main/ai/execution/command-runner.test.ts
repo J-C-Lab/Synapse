@@ -22,7 +22,7 @@ describe("runCommand", () => {
     const root = await makeWorkspace()
     const policy = new WorkspacePolicy([{ id: "repo", root }])
     const command = process.platform === "win32" ? "Write-Output ok" : "echo ok"
-    const result = await runCommand(policy, { workspaceId: "repo", command })
+    const result = await runCommand(policy, { rootId: "repo", command })
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain("ok")
   })
@@ -31,7 +31,7 @@ describe("runCommand", () => {
     const root = await makeWorkspace()
     const policy = new WorkspacePolicy([{ id: "repo", root }])
     const command = process.platform === "win32" ? "exit 3" : "exit 3"
-    const result = await runCommand(policy, { workspaceId: "repo", command, timeoutMs: 5_000 })
+    const result = await runCommand(policy, { rootId: "repo", command, timeoutMs: 5_000 })
     expect(result.exitCode).not.toBe(0)
   })
 
@@ -40,7 +40,7 @@ describe("runCommand", () => {
     const policy = new WorkspacePolicy([{ id: "repo", root }])
     const command = process.platform === "win32" ? "Start-Sleep -Seconds 5" : "sleep 5"
     const result = await runCommand(policy, {
-      workspaceId: "repo",
+      rootId: "repo",
       command,
       timeoutMs: 200,
     })
@@ -54,7 +54,7 @@ describe("runCommand", () => {
     const command = process.platform === "win32" ? "ping -n 60 127.0.0.1 >nul" : "sleep 60"
     const pending = runCommand(
       policy,
-      { workspaceId: "repo", command, timeoutMs: 60_000 },
+      { rootId: "repo", command, timeoutMs: 60_000 },
       controller.signal
     )
     controller.abort()

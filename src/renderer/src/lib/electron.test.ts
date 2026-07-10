@@ -1,6 +1,7 @@
 import type { ElectronIpcError } from "./electron"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
+  createWorkspaceRoot,
   disconnectLanDevice,
   disposePluginCommand,
   getLanStatus,
@@ -17,6 +18,7 @@ import {
   listLanDevices,
   listMarketplacePlugins,
   listPlugins,
+  listWorkspaceRoots,
   moveFloatingBallBy,
   notifyLauncherReady,
   onFloatingBallFeatures,
@@ -30,14 +32,17 @@ import {
   openExternalUrl,
   openFloatingBallFeature,
   pairLanDevice,
+  pickWorkspaceRootDirectory,
   refreshApps,
   reloadPlugin,
   removeLanTransferHistory,
+  removeWorkspaceRoot,
   searchApps,
   searchPluginCommands,
   sendLanFile,
   setPluginEnabled,
   setPluginPreference,
+  setPrimaryWorkspaceRoot,
   toggleFloatingBallMenu,
   uninstallPlugin,
   updateSettings,
@@ -92,7 +97,6 @@ function mockApi() {
       lanEnabled: false,
       trustedSourcePolicy: "official-marketplace",
       allowAgentShell: false,
-      agentShellRoots: [],
     }),
     updateSettings: vi.fn().mockResolvedValue({
       hotkey: "CommandOrControl+Space",
@@ -103,7 +107,6 @@ function mockApi() {
       lanEnabled: false,
       trustedSourcePolicy: "official-marketplace",
       allowAgentShell: false,
-      agentShellRoots: [],
     }),
     onLauncherFocus: vi.fn().mockReturnValue(() => {}),
     onFloatingBallMenuState: vi.fn().mockReturnValue(() => {}),
@@ -135,6 +138,11 @@ function mockApi() {
     onLanStatusChanged: vi.fn().mockReturnValue(() => {}),
     onLanPairingsChanged: vi.fn().mockReturnValue(() => {}),
     onLanTransfersChanged: vi.fn().mockReturnValue(() => {}),
+    listWorkspaceRoots: vi.fn().mockResolvedValue([]),
+    createWorkspaceRoot: vi.fn(),
+    removeWorkspaceRoot: vi.fn().mockResolvedValue(undefined),
+    setPrimaryWorkspaceRoot: vi.fn().mockResolvedValue(undefined),
+    pickWorkspaceRootDirectory: vi.fn().mockResolvedValue(null),
   }
   ;(window as unknown as { electronAPI: object }).electronAPI = api
   return api
@@ -432,6 +440,56 @@ describe("lib/electron", () => {
       const handler = vi.fn()
       onLanTransfersChanged(handler)
       expect(api.onLanTransfersChanged).toHaveBeenCalledWith(handler)
+    })
+
+    it("listWorkspaceRoots forwards to the preload API", async () => {
+      const api = mockApi()
+      const roots = [
+        {
+          id: "r1",
+          workspaceId: "w1",
+          name: "R",
+          root: "/r",
+          role: "primary" as const,
+          createdAt: 1,
+        },
+      ]
+      api.listWorkspaceRoots.mockResolvedValue(roots)
+      await expect(listWorkspaceRoots("w1")).resolves.toEqual(roots)
+      expect(api.listWorkspaceRoots).toHaveBeenCalledWith("w1")
+    })
+
+    it("createWorkspaceRoot forwards to the preload API", async () => {
+      const api = mockApi()
+      const record = {
+        id: "r1",
+        workspaceId: "w1",
+        name: "R",
+        root: "/r",
+        role: "primary" as const,
+        createdAt: 1,
+      }
+      api.createWorkspaceRoot.mockResolvedValue(record)
+      await expect(createWorkspaceRoot("w1", "R", "/r", "primary")).resolves.toEqual(record)
+      expect(api.createWorkspaceRoot).toHaveBeenCalledWith("w1", "R", "/r", "primary")
+    })
+
+    it("removeWorkspaceRoot forwards to the preload API", async () => {
+      const api = mockApi()
+      await removeWorkspaceRoot("r1")
+      expect(api.removeWorkspaceRoot).toHaveBeenCalledWith("r1")
+    })
+
+    it("setPrimaryWorkspaceRoot forwards to the preload API", async () => {
+      const api = mockApi()
+      await setPrimaryWorkspaceRoot("r1")
+      expect(api.setPrimaryWorkspaceRoot).toHaveBeenCalledWith("r1")
+    })
+
+    it("pickWorkspaceRootDirectory forwards to the preload API", async () => {
+      const api = mockApi()
+      api.pickWorkspaceRootDirectory.mockResolvedValue("/picked")
+      await expect(pickWorkspaceRootDirectory()).resolves.toBe("/picked")
     })
   })
 })

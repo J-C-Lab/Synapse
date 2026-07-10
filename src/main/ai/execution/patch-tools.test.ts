@@ -30,7 +30,7 @@ describe("applyPatch", () => {
 *** Add File: src/new.ts
 +export const value = 1
 *** End Patch`
-    const result = await applyPatch(policy, { workspaceId: "repo", patch })
+    const result = await applyPatch(policy, { rootId: "repo", patch })
     expect(result.isError).not.toBe(true)
     await expect(fs.readFile(path.join(root, "src/new.ts"), "utf8")).resolves.toBe(
       "export const value = 1"
@@ -46,7 +46,7 @@ describe("applyPatch", () => {
 -beta
 +gamma
 *** End Patch`
-    await applyPatch(policy, { workspaceId: "repo", patch })
+    await applyPatch(policy, { rootId: "repo", patch })
     await expect(fs.readFile(path.join(root, "src/a.ts"), "utf8")).resolves.toBe("alpha\ngamma\n")
   })
 
@@ -60,7 +60,7 @@ describe("applyPatch", () => {
 -l3
 +l3-updated
 *** End Patch`
-    await applyPatch(policy, { workspaceId: "repo", patch })
+    await applyPatch(policy, { rootId: "repo", patch })
     await expect(fs.readFile(path.join(root, "src/a.ts"), "utf8")).resolves.toBe(
       "l1\nl2\nl3-updated\nl4\n"
     )
@@ -73,8 +73,6 @@ describe("applyPatch", () => {
 *** Add File: ../escape.ts
 +bad
 *** End Patch`
-    await expect(applyPatch(policy, { workspaceId: "repo", patch })).rejects.toThrow(
-      /outside workspace/
-    )
+    await expect(applyPatch(policy, { rootId: "repo", patch })).rejects.toThrow(/outside workspace/)
   })
 })

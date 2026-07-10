@@ -30,8 +30,8 @@ export interface McpServerConfig {
   headers?: Record<string, string>
   /** Disabled servers are persisted but not connected. Defaults to true. */
   enabled?: boolean
-  /** Execution root ids (WorkspaceRoot.id, from the agentShellRoots setting —
-   *  NOT WorkspaceStore ids) to advertise as MCP roots to this server.
+  /** Execution root ids (WorkspaceRoot.id from WorkspaceRootStore, not
+   *  WorkspaceStore ids) to advertise as MCP roots to this server.
    *  Omitted/empty = no roots capability advertised (the default). */
   exposedExecutionRootIds?: string[]
 }

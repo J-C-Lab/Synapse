@@ -5,6 +5,7 @@ import {
   coerceChat,
   coerceCreateConversation,
   coerceCreateWorkspace,
+  coerceCreateWorkspaceRoot,
   coerceMcpServer,
 } from "./ai"
 
@@ -120,5 +121,26 @@ describe("coerceCreateConversation", () => {
   it("requires a workspaceId string", () => {
     expect(coerceCreateConversation({ workspaceId: "work" })).toEqual({ workspaceId: "work" })
     expect(() => coerceCreateConversation({})).toThrow(/workspaceId/)
+  })
+})
+
+describe("coerceCreateWorkspaceRoot", () => {
+  it("accepts a well-formed payload and defaults role to additional", () => {
+    expect(coerceCreateWorkspaceRoot({ workspaceId: "w1", name: "Proj", root: "/p" })).toEqual({
+      workspaceId: "w1",
+      name: "Proj",
+      root: "/p",
+      role: "additional",
+    })
+  })
+
+  it("accepts an explicit primary role", () => {
+    expect(
+      coerceCreateWorkspaceRoot({ workspaceId: "w1", name: "Proj", root: "/p", role: "primary" })
+    ).toMatchObject({ role: "primary" })
+  })
+
+  it("rejects missing required fields", () => {
+    expect(() => coerceCreateWorkspaceRoot({ workspaceId: "w1" })).toThrow(/name must be a string/)
   })
 })

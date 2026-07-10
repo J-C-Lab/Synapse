@@ -88,16 +88,19 @@ describe("normalizeSettings", () => {
     expect(normalizeSettings({ floatingBallFeatures: ["floatingBall"] })).toEqual(defaultSettings)
   })
 
-  it("defaults local execution to disabled with no roots", () => {
+  it("defaults local execution to disabled", () => {
     const s = normalizeSettings({})
     expect(s.allowAgentShell).toBe(false)
-    expect(s.agentShellRoots).toEqual([])
   })
 
-  it("accepts allowAgentShell and string roots, ignoring non-strings", () => {
-    const s = normalizeSettings({ allowAgentShell: true, agentShellRoots: ["/work", 5, "/data"] })
+  it("accepts allowAgentShell", () => {
+    const s = normalizeSettings({ allowAgentShell: true })
     expect(s.allowAgentShell).toBe(true)
-    expect(s.agentShellRoots).toEqual(["/work", "/data"])
+  })
+
+  it("no longer recognizes agentShellRoots — it's silently dropped like any unknown field", () => {
+    const s = normalizeSettings({ agentShellRoots: ["/work"] } as never)
+    expect(s).not.toHaveProperty("agentShellRoots")
   })
 
   it("defaults appUsage to an empty object", () => {

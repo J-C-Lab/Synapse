@@ -2,6 +2,11 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WorkspaceSwitcher } from "./workspace-switcher"
 
+vi.mock("./workspace-root-manager", () => ({
+  WorkspaceRootManager: ({ open, workspaceId }: { open: boolean; workspaceId: string }) =>
+    open ? <div data-testid="root-manager">{workspaceId}</div> : null,
+}))
+
 vi.mock("@/lib/electron", () => ({
   listAiWorkspaces: vi.fn(async () => [
     { id: "default", name: "Default", createdAt: 0 },
@@ -51,5 +56,19 @@ describe("workspaceSwitcher", () => {
     fireEvent.click(await screen.findByRole("option", { name: /New workspace/ }))
 
     expect(await screen.findByLabelText("New workspace name")).toBeInTheDocument()
+  })
+
+  it("clicking the manage-roots button opens WorkspaceRootManager for the current workspace", async () => {
+    render(<WorkspaceSwitcher value="work" onChange={() => {}} />)
+    fireEvent.click(await screen.findByLabelText("Manage roots"))
+    expect(await screen.findByTestId("root-manager")).toHaveTextContent("work")
+  })
+
+  it("disables the manage-roots button while creating a new workspace", async () => {
+    render(<WorkspaceSwitcher value="default" onChange={() => {}} />)
+    const trigger = await screen.findByRole("combobox", { name: "Workspace" })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole("option", { name: /New workspace/ }))
+    expect(await screen.findByLabelText("Manage roots")).toBeDisabled()
   })
 })

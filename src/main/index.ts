@@ -1,7 +1,6 @@
 import type { ClipboardContent } from "@synapse/plugin-sdk"
 import type { IpcMainInvokeEvent, WebContents } from "electron"
 import type { ToolResilienceSettings } from "./ai/ai-settings-store"
-import type { WorkspaceRoot } from "./ai/execution/types"
 import type { ChatProvider } from "./ai/providers/types"
 import type { RunTrace } from "./ai/run-trace-store"
 import type { SecretProtector } from "./lan/credential-store"
@@ -11,7 +10,6 @@ import type { SearchWindowDeps } from "./search-window"
 import type { AutoUpdaterPort } from "./updates/update-service"
 import { Buffer } from "node:buffer"
 import { spawn } from "node:child_process"
-import * as os from "node:os"
 import * as path from "node:path"
 import process from "node:process"
 import { pathToFileURL } from "node:url"
@@ -65,6 +63,8 @@ import { getLatestPlan, recordRun as persistRunTrace } from "./ai/run-trace-stor
 import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
+import { migrateAgentShellRoots } from "./ai/workspace/workspace-migration"
+import { WorkspaceRootStore } from "./ai/workspace/workspace-root-store"
 import { WorkspaceStore } from "./ai/workspace/workspace-store"
 import { ensureDevAppUserModelShortcut } from "./dev-app-shortcut"
 import {
@@ -87,6 +87,7 @@ import { registerMemoryIpc } from "./ipc/memory"
 import { registerPluginIpc } from "./ipc/plugins"
 import { registerTriggersIpc, TriggerIpcService } from "./ipc/triggers"
 import { registerUpdatesIpc } from "./ipc/updates"
+import { readJsonFile } from "./lan/atomic-json-store"
 import { BonjourLanDiscoveryAdapter } from "./lan/bonjour-discovery-adapter"
 import { LanCredentialLoadError } from "./lan/credential-store"
 import {
@@ -116,6 +117,7 @@ import {
   showSearchWindow,
   toggleSearchWindow,
 } from "./search-window"
+import { settingsFilePath } from "./settings/settings"
 import {
   bindGlobalShortcut,
   resumeGlobalShortcut,
@@ -393,17 +395,15 @@ function registerIpc(): void {
     if (next.themeMode !== previous.themeMode && mainWindow) {
       applyTitleBarScheme(mainWindow, next.themeMode)
     }
-    if (
-      (next.agentShellRoots !== previous.agentShellRoots ||
-        next.allowAgentShell !== previous.allowAgentShell) &&
-      mcpClients
-    ) {
+    if (next.allowAgentShell !== previous.allowAgentShell && mcpClients) {
       void mcpClients.notifyAllRootsChanged()
     }
     return next
   })
 
-  ipcMain.handle("ai:list-execution-workspaces", () => executionWorkspaces())
+  ipcMain.handle("ai:list-execution-workspaces", (_event, workspaceId: unknown) =>
+    agent.listWorkspaceRoots(typeof workspaceId === "string" ? workspaceId : "default")
+  )
 
   registerPluginIpc(ipcMain, plugins, {
     isTrustedSender: isTrustedIpcSender,
@@ -452,6 +452,20 @@ async function pickSynapsePackageFile(): Promise<string | null> {
     title: "Import Synapse Plugin",
     properties: ["openFile"],
     filters: [{ name: "Synapse Plugin", extensions: ["syn"] }],
+  }
+  const parent = BrowserWindow.getFocusedWindow() ?? mainWindow
+  const result =
+    parent && !parent.isDestroyed()
+      ? await dialog.showOpenDialog(parent, options)
+      : await dialog.showOpenDialog(options)
+  if (result.canceled) return null
+  return result.filePaths[0] ?? null
+}
+
+async function pickWorkspaceRootDirectory(): Promise<string | null> {
+  const options: Electron.OpenDialogOptions = {
+    title: "Choose a workspace root folder",
+    properties: ["openDirectory"],
   }
   const parent = BrowserWindow.getFocusedWindow() ?? mainWindow
   const result =
@@ -649,7 +663,6 @@ function coercePatch(value: unknown): Partial<{
   lanEnabled: boolean
   trustedSourcePolicy: "official-marketplace" | "any-url" | "local-syn"
   allowAgentShell?: boolean
-  agentShellRoots?: string[]
 }> {
   if (!value || typeof value !== "object") return {}
   const v = value as Record<string, unknown>
@@ -682,9 +695,6 @@ function coercePatch(value: unknown): Partial<{
     out.trustedSourcePolicy = v.trustedSourcePolicy
   }
   if (typeof v.allowAgentShell === "boolean") out.allowAgentShell = v.allowAgentShell
-  if (Array.isArray(v.agentShellRoots)) {
-    out.agentShellRoots = v.agentShellRoots.filter((p): p is string => typeof p === "string")
-  }
   return out
 }
 
@@ -776,24 +786,42 @@ function pluginResourcesDir(): string {
   return path.join(app.getAppPath(), "resources")
 }
 
-function effectiveShellRoots(): string[] {
-  const roots = launcher.getSettings().agentShellRoots
-  return roots.length > 0 ? roots : [os.homedir()]
-}
-
-/** Local execution workspaces derived from agentShellRoots settings. */
-function executionWorkspaces(): WorkspaceRoot[] {
-  if (!launcher.getSettings().allowAgentShell) return []
-  return deriveExecutionWorkspaces(effectiveShellRoots())
-}
-
-function createAgentService(): AgentService {
+async function createAgentService(): Promise<AgentService> {
   const userDataDir = app.getPath("userData")
   const credentials = new AiCredentialStore({
     filePath: aiCredentialFilePath(userDataDir),
     protector: osSecretProtector(),
   })
-  const manager = new McpClientManager(createMcpClient, executionWorkspaces)
+  const workspaceRootStore = new WorkspaceRootStore(path.join(userDataDir, "ai"))
+  const existingDefaultRoots = await workspaceRootStore.listForWorkspace("default")
+  const legacySettingsRaw = (await readJsonFile(settingsFilePath(userDataDir))) as {
+    agentShellRoots?: unknown
+  } | null
+  const legacyRoots = Array.isArray(legacySettingsRaw?.agentShellRoots)
+    ? legacySettingsRaw.agentShellRoots.filter((root): root is string => typeof root === "string")
+    : []
+  const allowAgentShell = launcher.getSettings().allowAgentShell
+  await migrateAgentShellRoots(workspaceRootStore, legacyRoots, allowAgentShell)
+  const migratedLegacyRoots =
+    allowAgentShell && legacyRoots.length > 0 && existingDefaultRoots.length === 0
+
+  const mcpConfigStore = new McpServerConfigStore(
+    aiMcpServersFilePath(userDataDir),
+    osSecretProtector()
+  )
+  if (migratedLegacyRoots) {
+    try {
+      const configs = await mcpConfigStore.list()
+      for (const config of configs) {
+        if (!config.exposedExecutionRootIds || config.exposedExecutionRootIds.length === 0) continue
+        await mcpConfigStore.save({ ...config, exposedExecutionRootIds: undefined })
+      }
+    } catch (err) {
+      logger.child("synapse").warn("failed to clear MCP exposed roots after migration", { err })
+    }
+  }
+
+  const manager = new McpClientManager(createMcpClient, () => workspaceRootStore.listAll())
   mcpClients = manager
 
   // Built-in long-term memory: embeds with the user's OpenAI key (falls back to
@@ -820,9 +848,11 @@ function createAgentService(): AgentService {
 
   const executionLog = new ExecutionLogStore(executionLogFilePath(userDataDir))
   const executionSource = new ExecutionToolHostSource({
-    workspaces: { listWorkspaces: executionWorkspaces },
+    workspaceRoots: workspaceRootStore,
     log: executionLog,
+    isAllowed: () => launcher.getSettings().allowAgentShell,
   })
+  await executionSource.refresh()
   const executionApprovalResolver = new ExecutionApprovalResolver({ log: executionLog })
 
   const runsDir = path.join(userDataDir, "logs", "runs")
@@ -908,7 +938,13 @@ function createAgentService(): AgentService {
       toolResilience = cfg
       resilientToolHost.resetBreakers()
     },
-    getExecutionWorkspaces: executionWorkspaces,
+    getExecutionWorkspaces: (workspaceId) => workspaceRootStore.listForWorkspace(workspaceId),
+    workspaceRoots: workspaceRootStore,
+    onWorkspaceRootsChanged: () => {
+      void executionSource.refresh()
+    },
+    pickWorkspaceRootDirectory: () => pickWorkspaceRootDirectory(),
+    isAgentShellAllowed: () => launcher.getSettings().allowAgentShell,
     approvalResolver: (ctx) =>
       executionApprovalResolver.decide({
         conversationId: ctx.conversationId,
@@ -932,7 +968,7 @@ function createAgentService(): AgentService {
     },
     mcp: {
       // Encrypt env/header secrets at rest with the OS keychain.
-      configs: new McpServerConfigStore(aiMcpServersFilePath(userDataDir), osSecretProtector()),
+      configs: mcpConfigStore,
       manager,
     },
   })
@@ -941,20 +977,6 @@ function createAgentService(): AgentService {
   makeSubagentProvider = () => agentService.createBackgroundAgentProvider()
 
   return agentService
-}
-
-/**
- * Turn authorized sandbox roots into named execution workspaces. The id is the
- * folder name, suffixed on collision so every workspace is addressable.
- */
-function deriveExecutionWorkspaces(roots: readonly string[]): WorkspaceRoot[] {
-  const seen = new Map<string, number>()
-  return roots.map((root) => {
-    const base = path.basename(root) || root
-    const count = seen.get(base) ?? 0
-    seen.set(base, count + 1)
-    return { id: count === 0 ? base : `${base}-${count + 1}`, root }
-  })
 }
 
 function floatingBallDeps() {
@@ -1186,7 +1208,7 @@ if (isMcpStdioMode) {
             safeStorage.decryptString(Buffer.from(encryptedText, "base64")),
         },
       })
-      agent = createAgentService()
+      agent = await createAgentService()
       accountService = createMarketplaceAccountService()
       registerIpc()
 

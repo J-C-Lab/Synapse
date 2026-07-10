@@ -14,7 +14,6 @@ interface SettingsPatch {
   lanEnabled?: boolean
   trustedSourcePolicy?: "official-marketplace" | "any-url" | "local-syn"
   allowAgentShell?: boolean
-  agentShellRoots?: string[]
 }
 type Settings = Required<SettingsPatch>
 
@@ -176,6 +175,17 @@ const electronAPI = {
   deleteAiConversation: (id: string) => ipcRenderer.invoke("ai:delete-conversation", id),
   listAiWorkspaces: () => ipcRenderer.invoke("ai:list-workspaces"),
   createAiWorkspace: (name: string) => ipcRenderer.invoke("ai:create-workspace", { name }),
+  listWorkspaceRoots: (workspaceId: string) =>
+    ipcRenderer.invoke("ai:list-workspace-roots", workspaceId),
+  createWorkspaceRoot: (
+    workspaceId: string,
+    name: string,
+    root: string,
+    role: "primary" | "additional"
+  ) => ipcRenderer.invoke("ai:create-workspace-root", { workspaceId, name, root, role }),
+  removeWorkspaceRoot: (id: string) => ipcRenderer.invoke("ai:remove-workspace-root", id),
+  setPrimaryWorkspaceRoot: (id: string) => ipcRenderer.invoke("ai:set-primary-workspace-root", id),
+  pickWorkspaceRootDirectory: () => ipcRenderer.invoke("ai:pick-workspace-root-directory"),
   createAiConversation: (workspaceId: string) =>
     ipcRenderer.invoke("ai:create-conversation", { workspaceId }),
   sendAiChat: (conversationId: string, text: string) =>
@@ -186,7 +196,8 @@ const electronAPI = {
   listAiAllowedTools: () => ipcRenderer.invoke("ai:list-allowed-tools"),
   revokeAiTool: (fqName: string) => ipcRenderer.invoke("ai:revoke-tool", fqName),
   listAiMcpServers: () => ipcRenderer.invoke("ai:mcp:list"),
-  listExecutionWorkspaces: () => ipcRenderer.invoke("ai:list-execution-workspaces"),
+  listExecutionWorkspaces: (workspaceId?: string) =>
+    ipcRenderer.invoke("ai:list-execution-workspaces", workspaceId),
   getAiMcpServerStatus: () => ipcRenderer.invoke("ai:mcp:status"),
   saveAiMcpServer: (config: unknown) => ipcRenderer.invoke("ai:mcp:save", config),
   deleteAiMcpServer: (id: string) => ipcRenderer.invoke("ai:mcp:delete", id),

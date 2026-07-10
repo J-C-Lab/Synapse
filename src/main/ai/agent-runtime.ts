@@ -1,6 +1,6 @@
 import type { ToolCaller } from "@synapse/plugin-sdk"
 import type { WorkspaceInstruction } from "./context/workspace-instructions"
-import type { WorkspaceRoot } from "./execution/types"
+import type { WorkspaceRootRecord } from "./execution/types"
 import type { EnvelopeTier } from "./guardrails/untrusted-content"
 import type { PlanStep } from "./plan/plan-types"
 import type { ChatContentBlock, ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
@@ -58,14 +58,14 @@ function envelopeTierForToolResult(toolFqName: string): EnvelopeTier {
   return toolFqName.startsWith("memory:") ? "legacy" : "strong"
 }
 
-function executionGuidance(workspaces: readonly WorkspaceRoot[]): string {
+function executionGuidance(workspaces: readonly WorkspaceRootRecord[]): string {
   const list = workspaces.map((ws) => `\n  - ${ws.id} → ${ws.root}`).join("")
   return ROUTING_GUIDANCE_EXECUTION_INTRO + list
 }
 
 export function buildSystemPrompt(
   base: string,
-  opts: { executionWorkspaces?: readonly WorkspaceRoot[] }
+  opts: { executionWorkspaces?: readonly WorkspaceRootRecord[] }
 ): string {
   const workspaces = opts.executionWorkspaces ?? []
   const guidance =
@@ -84,7 +84,7 @@ export interface AgentRuntimeOptions {
   budgetTokens?: number
   defaultSystem?: string
   /** Authorized execution workspaces, enumerated into the system prompt. */
-  executionWorkspaces?: () => readonly WorkspaceRoot[]
+  executionWorkspaces?: () => readonly WorkspaceRootRecord[]
   /** Max characters from a tool result to return to the model before truncation. */
   maxToolResultChars?: number
   recordRun?: (trace: RunTrace) => void
@@ -336,8 +336,11 @@ export class AgentRuntime {
     return this.options.tools.describe(safeName)?.fqName ?? safeName
   }
 
-  private async workspaceInstructionContext(workspaces: readonly WorkspaceRoot[]): Promise<string> {
-    const instructions = await loadWorkspaceInstructions([...workspaces])
+  private async workspaceInstructionContext(
+    workspaces: readonly WorkspaceRootRecord[]
+  ): Promise<string> {
+    const primaryOnly = workspaces.filter((workspace) => workspace.role === "primary")
+    const instructions = await loadWorkspaceInstructions([...primaryOnly])
     if (instructions.length === 0) return ""
     return instructions.map((instruction) => renderWorkspaceInstruction(instruction)).join("\n\n")
   }

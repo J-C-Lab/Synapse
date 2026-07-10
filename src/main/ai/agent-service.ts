@@ -8,7 +8,7 @@ import type {
   StoredConversation,
 } from "./conversation-store"
 import type { AiCredentialStore } from "./credential-store"
-import type { WorkspaceRoot } from "./execution/types"
+import type { WorkspaceRootRecord } from "./execution/types"
 import type { McpClientManager, McpServerStatus } from "./mcp-client-manager"
 import type { McpServerConfig, McpServerConfigStore } from "./mcp-server-config-store"
 import type { PlanStep } from "./plan/plan-types"
@@ -18,6 +18,7 @@ import type { ChatMessage, ChatProvider, ProviderToolSchema, TokenUsage } from "
 import type { RunTrace } from "./run-trace-store"
 import type { ToolStatSnapshot } from "./tool-circuit-breaker"
 import type { AiToolRegistry } from "./tool-registry"
+import type { WorkspaceRootStore } from "./workspace/workspace-root-store"
 import type { Workspace, WorkspaceStore } from "./workspace/workspace-store"
 import { randomUUID } from "node:crypto"
 import { logger } from "../logging"
@@ -82,8 +83,24 @@ export interface AgentServiceOptions {
     configs: McpServerConfigStore
     manager: McpClientManager
   }
-  /** Authorized execution workspaces (drives routing guidance + tool availability). */
-  getExecutionWorkspaces?: () => readonly WorkspaceRoot[]
+  /** Authorized execution roots for a given workspace (drives routing
+   *  guidance + tool availability). Caller-scoped — the conversation's own
+   *  bound workspace, not a global list. */
+  getExecutionWorkspaces?: (workspaceId: string) => Promise<readonly WorkspaceRootRecord[]>
+  /** Per-workspace execution root management. Optional in tests that don't
+   *  exercise root CRUD. */
+  workspaceRoots?: Partial<
+    Pick<WorkspaceRootStore, "listAll" | "listForWorkspace" | "create" | "remove" | "setPrimary">
+  >
+  /** Fired after a root is created or removed, so the execution tool host's
+   *  cached "any root exists" visibility gate can be refreshed. */
+  onWorkspaceRootsChanged?: () => void
+  /** Opens a native folder picker, resolving to the chosen absolute path or
+   *  null if cancelled. Electron-main-only — injected rather than
+   *  implemented here, since `AgentService` itself has no `dialog` access. */
+  pickWorkspaceRootDirectory?: () => Promise<string | null>
+  /** Global master switch for local execution. Root CRUD is blocked when false. */
+  isAgentShellAllowed?: () => boolean
   /** Sink for per-run summary traces. Omitted in tests that don't assert tracing. */
   recordRun?: (trace: RunTrace) => void
   /** Reads back the most recent plan recorded for a conversation, so reselecting it can restore the Progress card. */
@@ -334,6 +351,44 @@ export class AgentService {
     return this.options.workspaces.create(name)
   }
 
+  async listWorkspaceRoots(workspaceId: string): Promise<WorkspaceRootRecord[]> {
+    if (!this.options.workspaceRoots?.listForWorkspace) return []
+    return this.options.workspaceRoots.listForWorkspace(workspaceId)
+  }
+
+  async createWorkspaceRoot(
+    workspaceId: string,
+    name: string,
+    root: string,
+    role: "primary" | "additional"
+  ): Promise<WorkspaceRootRecord> {
+    if (this.options.isAgentShellAllowed && !this.options.isAgentShellAllowed()) {
+      throw new Error("agent shell is disabled")
+    }
+    if (!this.options.workspaceRoots?.create) throw new Error("Workspace root store not configured")
+    const record = await this.options.workspaceRoots.create(workspaceId, name, root, role)
+    this.options.onWorkspaceRootsChanged?.()
+    return record
+  }
+
+  async removeWorkspaceRoot(id: string): Promise<void> {
+    if (!this.options.workspaceRoots?.remove) throw new Error("Workspace root store not configured")
+    await this.options.workspaceRoots.remove(id)
+    this.options.onWorkspaceRootsChanged?.()
+  }
+
+  async setPrimaryWorkspaceRoot(id: string): Promise<void> {
+    if (!this.options.workspaceRoots?.setPrimary) {
+      throw new Error("Workspace root store not configured")
+    }
+    await this.options.workspaceRoots.setPrimary(id)
+  }
+
+  async pickWorkspaceRootDirectory(): Promise<string | null> {
+    if (!this.options.pickWorkspaceRootDirectory) return null
+    return this.options.pickWorkspaceRootDirectory()
+  }
+
   async createConversation(workspaceId: string): Promise<{ id: string; workspaceId: string }> {
     const ok = (await this.options.workspaces?.exists(workspaceId)) ?? workspaceId === "default"
     if (!ok) throw new Error(`Unknown workspace: ${workspaceId}`)
@@ -383,19 +438,20 @@ export class AgentService {
           })
         : undefined
 
+    const existing = await this.options.conversations.get(conversationId)
+    const workspaceId = existing?.workspaceId ?? "default"
+    const resolvedExecutionRoots = (await this.options.getExecutionWorkspaces?.(workspaceId)) ?? []
+
     const runtime = new AgentRuntime({
       provider: this.createProviderFor(providerId, apiKey),
       tools: this.options.tools,
       model,
       budgetTokens: resolvedBudget,
-      executionWorkspaces: this.options.getExecutionWorkspaces,
+      executionWorkspaces: () => resolvedExecutionRoots,
       recordRun: this.options.recordRun,
       getPlan: (id) => this.getPlan(id),
       compress: compressor ? compressor.compress.bind(compressor) : undefined,
     })
-
-    const existing = await this.options.conversations.get(conversationId)
-    const workspaceId = existing?.workspaceId ?? "default"
     const messages: ChatMessage[] = existing?.messages ? [...existing.messages] : []
     messages.push({ role: "user", content: [{ type: "text", text }] })
 
