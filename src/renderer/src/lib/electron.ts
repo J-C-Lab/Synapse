@@ -236,6 +236,14 @@ export async function revokePluginCapability(pluginId: string, capability: strin
   unwrapIpcResult(await api().revokePluginCapability(pluginId, capability))
 }
 
+export async function setExternalMcpPreauthorized(
+  pluginId: string,
+  capability: string,
+  value: boolean
+): Promise<void> {
+  unwrapIpcResult(await api().setExternalMcpPreauthorized(pluginId, capability, value))
+}
+
 export async function listPluginCredentials(pluginId: string): Promise<PluginCredentialRow[]> {
   return unwrapIpcResult(await api().listPluginCredentials(pluginId))
 }
@@ -508,6 +516,7 @@ export type AiChatEvent = SynapseAiChatEvent
 export type AiTokenUsage = SynapseAiTokenUsage
 export type AiRememberScope = SynapseAiRememberScope
 export type McpServerConfig = SynapseMcpServerConfig
+export type ExecutionWorkspace = SynapseExecutionWorkspace
 export type McpServerStatus = SynapseMcpServerStatus
 export type ToolHealth = SynapseToolHealth
 export type ToolResilience = SynapseToolResilience
@@ -619,6 +628,10 @@ export async function revokeAiTool(fqName: string): Promise<void> {
 
 export async function listAiMcpServers(): Promise<McpServerConfig[]> {
   return api().listAiMcpServers()
+}
+
+export async function listExecutionWorkspaces(): Promise<ExecutionWorkspace[]> {
+  return api().listExecutionWorkspaces()
 }
 
 export async function getAiMcpServerStatus(): Promise<McpServerStatus[]> {

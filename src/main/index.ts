@@ -6,6 +6,7 @@ import type { ChatProvider } from "./ai/providers/types"
 import type { RunTrace } from "./ai/run-trace-store"
 import type { SecretProtector } from "./lan/credential-store"
 import type { LanDevice, LanPairing, LanStatus, LanTransfer } from "./lan/types"
+import type { HeadlessApprovalServerHandle } from "./mcp/headless-approval-server"
 import type { SearchWindowDeps } from "./search-window"
 import type { AutoUpdaterPort } from "./updates/update-service"
 import { Buffer } from "node:buffer"
@@ -98,6 +99,7 @@ import { configureRootLogger, logger } from "./logging"
 import { createFileSink } from "./logging/file-sink"
 import { MarketplaceAccountService } from "./marketplace/account-service"
 import { marketplaceTokenFilePath, MarketplaceTokenStore } from "./marketplace/token-store"
+import { startHeadlessApprovalServer } from "./mcp/headless-approval-server"
 import { defaultNotificationIcon, showStartupNotification } from "./notifications"
 import { createCapabilityAudit } from "./plugins/capability-audit"
 import { createElectronSecretPrompt, CredentialBroker } from "./plugins/credential-broker"
@@ -254,6 +256,7 @@ let marketplaceTokens: MarketplaceTokenStore | undefined
 // External MCP servers feeding tools to the built-in agent (P5). Held at module
 // scope so shutdown can disconnect the child processes.
 let mcpClients: McpClientManager | null = null
+let headlessApprovalServer: HeadlessApprovalServerHandle | null = null
 // Long-term memory service, held at module scope so the memory IPC can reach the
 // same instance the agent's memory tools use.
 let memoryService: MemoryService | null = null
@@ -390,8 +393,17 @@ function registerIpc(): void {
     if (next.themeMode !== previous.themeMode && mainWindow) {
       applyTitleBarScheme(mainWindow, next.themeMode)
     }
+    if (
+      (next.agentShellRoots !== previous.agentShellRoots ||
+        next.allowAgentShell !== previous.allowAgentShell) &&
+      mcpClients
+    ) {
+      void mcpClients.notifyAllRootsChanged()
+    }
     return next
   })
+
+  ipcMain.handle("ai:list-execution-workspaces", () => executionWorkspaces())
 
   registerPluginIpc(ipcMain, plugins, {
     isTrustedSender: isTrustedIpcSender,
@@ -764,13 +776,24 @@ function pluginResourcesDir(): string {
   return path.join(app.getAppPath(), "resources")
 }
 
+function effectiveShellRoots(): string[] {
+  const roots = launcher.getSettings().agentShellRoots
+  return roots.length > 0 ? roots : [os.homedir()]
+}
+
+/** Local execution workspaces derived from agentShellRoots settings. */
+function executionWorkspaces(): WorkspaceRoot[] {
+  if (!launcher.getSettings().allowAgentShell) return []
+  return deriveExecutionWorkspaces(effectiveShellRoots())
+}
+
 function createAgentService(): AgentService {
   const userDataDir = app.getPath("userData")
   const credentials = new AiCredentialStore({
     filePath: aiCredentialFilePath(userDataDir),
     protector: osSecretProtector(),
   })
-  const manager = new McpClientManager(createMcpClient)
+  const manager = new McpClientManager(createMcpClient, executionWorkspaces)
   mcpClients = manager
 
   // Built-in long-term memory: embeds with the user's OpenAI key (falls back to
@@ -794,19 +817,6 @@ function createAgentService(): AgentService {
       () => undefined
     )
   )
-
-  function effectiveShellRoots(): string[] {
-    const roots = launcher.getSettings().agentShellRoots
-    return roots.length > 0 ? roots : [os.homedir()]
-  }
-
-  // Local execution is authorized via the same settings as the legacy shell:
-  // `allowAgentShell` is the master switch and `agentShellRoots` are the
-  // sandbox roots, each surfaced to the agent as a named execution workspace.
-  function executionWorkspaces(): WorkspaceRoot[] {
-    if (!launcher.getSettings().allowAgentShell) return []
-    return deriveExecutionWorkspaces(effectiveShellRoots())
-  }
 
   const executionLog = new ExecutionLogStore(executionLogFilePath(userDataDir))
   const executionSource = new ExecutionToolHostSource({
@@ -1180,6 +1190,11 @@ if (isMcpStdioMode) {
       accountService = createMarketplaceAccountService()
       registerIpc()
 
+      headlessApprovalServer = await startHeadlessApprovalServer({
+        approve: capabilityService.capabilityApprover,
+        portFilePath: path.join(app.getPath("userData"), "mcp-approval.json"),
+      })
+
       // Remove the default File/Edit/View… menu bar — the app uses a tray icon
       // and sidebar navigation instead.
       Menu.setApplicationMenu(null)
@@ -1259,6 +1274,9 @@ if (isMcpStdioMode) {
     // before-quit once, run flushAll, then quit again. The `pluginsFlushed`
     // flag ensures the second quit goes through normally instead of looping.
     let pluginsFlushed = false
+    app.on("before-quit", () => {
+      void headlessApprovalServer?.close()
+    })
     app.on("before-quit", (event) => {
       quitRequested = true
       setSearchWindowQuitting(true)

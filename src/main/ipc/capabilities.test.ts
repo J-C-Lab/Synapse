@@ -39,9 +39,69 @@ describe("capabilityIpcService", () => {
     const rows = await service.listPluginCapabilities(entry.pluginId)
 
     expect(rows).toEqual([
-      { id: "storage:plugin", tier: "auto", granted: false, scopeEnforced: false },
-      { id: "clipboard:read", tier: "consent", granted: true, scopeEnforced: false },
-      { id: "notification", tier: "auto", granted: false, scopeEnforced: false },
+      {
+        id: "storage:plugin",
+        tier: "auto",
+        granted: false,
+        scopeEnforced: false,
+        externalMcpPreauthorized: false,
+      },
+      {
+        id: "clipboard:read",
+        tier: "consent",
+        granted: true,
+        scopeEnforced: false,
+        externalMcpPreauthorized: false,
+      },
+      {
+        id: "notification",
+        tier: "auto",
+        granted: false,
+        scopeEnforced: false,
+        externalMcpPreauthorized: false,
+      },
+    ])
+  })
+
+  it("setExternalMcpPreauthorized delegates to the host's GrantStore with the built identity", async () => {
+    const manifest = testManifest({ permissions: ["clipboard:watch"] })
+    const entry = activeEntry(manifest)
+    const identity = buildGrantIdentity(entry.pluginId, manifest, entry.source.kind)
+    await grants.grant(identity, "clipboard:watch", "user")
+    const service = createService(entry)
+
+    await service.setExternalMcpPreauthorized(entry.pluginId, "clipboard:watch", true)
+
+    expect(await grants.isExternalMcpPreauthorized(identity, "clipboard:watch")).toBe(true)
+  })
+
+  it("setExternalMcpPreauthorized throws for a capability that isn't granted", async () => {
+    const entry = activeEntry(testManifest({ permissions: ["clipboard:watch"] }))
+    const service = createService(entry)
+
+    await expect(
+      service.setExternalMcpPreauthorized(entry.pluginId, "clipboard:watch", true)
+    ).rejects.toThrow(/not granted/)
+  })
+
+  it("listPluginCapabilities includes externalMcpPreauthorized per row", async () => {
+    const manifest = testManifest({ permissions: ["clipboard:watch"] })
+    const entry = activeEntry(manifest)
+    const identity = buildGrantIdentity(entry.pluginId, manifest, entry.source.kind)
+    await grants.grant(identity, "clipboard:watch", "user")
+    await grants.setExternalMcpPreauthorized(identity, "clipboard:watch", true)
+    const service = createService(entry)
+
+    const rows = await service.listPluginCapabilities(entry.pluginId)
+
+    expect(rows).toEqual([
+      {
+        id: "clipboard:watch",
+        tier: "elevated",
+        granted: true,
+        scopeEnforced: false,
+        externalMcpPreauthorized: true,
+      },
     ])
   })
 
@@ -153,6 +213,51 @@ describe("capabilityIpcService", () => {
       reason: "screenshot",
     })
 
+    service.resolveApprovalPrompt(events[0]!.promptId, true)
+    await expect(decision).resolves.toBe(true)
+  })
+
+  it("includes clientId in the approval event when the request came from an external MCP caller", async () => {
+    const events: CapabilityApprovalRequestEvent[] = []
+    const service = createService(activeEntry(testManifest()), {
+      sendApprovalRequest: (event) => events.push(event),
+    })
+    const identity = buildGrantIdentity("com.synapse.test", testManifest(), "user")
+
+    const decision = service.capabilityApprover({
+      identity,
+      request: {
+        capability: "clipboard:watch",
+        actor: "external-mcp",
+        trigger: "mcp:call",
+        operation: "watch",
+        principal: { kind: "external-mcp", clientId: "Claude Desktop" },
+      },
+    })
+
+    expect(events[0]).toMatchObject({ clientId: "Claude Desktop" })
+    service.resolveApprovalPrompt(events[0]!.promptId, true)
+    await expect(decision).resolves.toBe(true)
+  })
+
+  it("omits clientId when the request has no external-mcp principal", async () => {
+    const events: CapabilityApprovalRequestEvent[] = []
+    const service = createService(activeEntry(testManifest()), {
+      sendApprovalRequest: (event) => events.push(event),
+    })
+    const identity = buildGrantIdentity("com.synapse.test", testManifest(), "user")
+
+    const decision = service.capabilityApprover({
+      identity,
+      request: {
+        capability: "clipboard:watch",
+        actor: "agent",
+        trigger: "tool:x",
+        operation: "watch",
+      },
+    })
+
+    expect(events[0]!.clientId).toBeUndefined()
     service.resolveApprovalPrompt(events[0]!.promptId, true)
     await expect(decision).resolves.toBe(true)
   })

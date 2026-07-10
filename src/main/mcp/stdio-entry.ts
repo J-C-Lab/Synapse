@@ -1,4 +1,6 @@
+import type { CapabilityApprover, CapabilityRequest } from "../plugins/capability-gate"
 import type { PluginBridgeAdapters } from "../plugins/plugin-bridge"
+import { spawn } from "node:child_process"
 import * as os from "node:os"
 import * as path from "node:path"
 import process from "node:process"
@@ -6,6 +8,7 @@ import { asFallbackSource, CompositeToolHost } from "../ai/composite-tool-host"
 import { MEMORY_FQ_PREFIX, MemoryToolSource } from "../ai/memory/memory-tools"
 import { recordRun } from "../ai/run-trace-store"
 import { PluginHost } from "../plugins/plugin-host"
+import { createGuiApprovalPort } from "./gui-approval-client"
 import { createHeadlessMemoryService } from "./headless-memory"
 import { resolveStdioUserDataDir } from "./stdio-paths"
 import { runSynapseMcpStdioServer } from "./synapse-mcp-server"
@@ -37,6 +40,23 @@ function headlessAdapters(): PluginBridgeAdapters {
   }
 }
 
+function stripSignal(request: CapabilityRequest): Omit<CapabilityRequest, "signal"> {
+  const { signal: _signal, ...rest } = request
+  return rest
+}
+
+/** Relaunches the packaged app WITHOUT ELECTRON_RUN_AS_NODE, so it comes up
+ *  as the normal GUI. If a GUI instance is already running, Electron's own
+ *  requestSingleInstanceLock() handling (see createMainWindow's caller in
+ *  src/main/index.ts) makes this spawn immediately hand off to the existing
+ *  instance and exit — the net effect is "focus the existing window" for
+ *  free, no separate focus-vs-launch branch needed here. */
+function spawnGuiProcess(): void {
+  const env = { ...process.env }
+  delete env.ELECTRON_RUN_AS_NODE
+  spawn(process.execPath, [], { env, detached: true, stdio: "ignore" }).unref()
+}
+
 async function main(): Promise<void> {
   const userDataDir = resolveStdioUserDataDir(process.env, process.platform, os.homedir())
   // In the built bundle this file is out/main/mcp-stdio.js, so ../../resources
@@ -44,12 +64,21 @@ async function main(): Promise<void> {
   const resourcesDir =
     process.env.SYNAPSE_RESOURCES_DIR?.trim() || path.join(__dirname, "..", "..", "resources")
 
+  const approvalPortFilePath = path.join(userDataDir, "mcp-approval.json")
+  const guiApprovalPort = createGuiApprovalPort({
+    portFilePath: approvalPortFilePath,
+    spawnGui: spawnGuiProcess,
+  })
+  const approve: CapabilityApprover = ({ identity, request }) =>
+    guiApprovalPort.requestApproval({ identity, request: stripSignal(request) })
+
   const pluginHost = new PluginHost({
     userDataDir,
     resourcesDir,
     adapters: headlessAdapters(),
     fetch: (url, init) => globalThis.fetch(url, init),
     runtime: () => ({ locale: "en", theme: { mode: "light", accent: "neutral" } }),
+    capabilityGovernance: { userDataDir, approve },
   })
 
   await pluginHost.init()
