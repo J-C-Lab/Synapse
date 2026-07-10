@@ -119,12 +119,10 @@ export class TriggerRegistry {
             accelerator: decl.scope.accelerator,
           })
         } else {
-          logger
-            .child(`plugin:${pluginId}`)
-            .info("trigger type not registered in v1 spine", {
-              triggerId: decl.id,
-              type: decl.type,
-            })
+          logger.child(`plugin:${pluginId}`).info("trigger type not registered in v1 spine", {
+            triggerId: decl.id,
+            type: decl.type,
+          })
         }
         continue
       }
