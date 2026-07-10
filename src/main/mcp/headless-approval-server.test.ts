@@ -1,5 +1,6 @@
 import type { CapabilityRequest } from "../plugins/capability-gate"
 import type { GrantIdentity } from "../plugins/grant-store"
+import type { HostResourceApprovalRequest } from "./host-resource-approval"
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { connect } from "node:net"
 import { tmpdir } from "node:os"
@@ -25,7 +26,7 @@ function identity(): GrantIdentity {
   }
 }
 
-function request(): CapabilityRequest {
+function capabilityRequest(): CapabilityRequest {
   return {
     capability: "clipboard:watch",
     actor: "external-mcp",
@@ -34,59 +35,197 @@ function request(): CapabilityRequest {
   }
 }
 
+function hostResourceRequest(): HostResourceApprovalRequest {
+  return {
+    resourceType: "workspace-instructions",
+    workspaceId: "w1",
+    rootId: "r1",
+    workspaceName: "My Workspace",
+    rootName: "repo",
+    uri: "workspace://w1/instructions",
+  }
+}
+
 async function readEndpoint(): Promise<{ port: number; token: string }> {
   return JSON.parse(readFileSync(portFilePath, "utf-8"))
 }
 
+async function connectSocket(port: number) {
+  const socket = connect(port, "127.0.0.1")
+  await new Promise<void>((resolve, reject) => {
+    socket.once("connect", resolve)
+    socket.once("error", reject)
+  })
+  return socket
+}
+
 describe("startHeadlessApprovalServer", () => {
-  it("forwards a well-formed, correctly-tokened request to approve() and returns its answer", async () => {
-    const approve = vi.fn(async () => true)
-    const handle = await startHeadlessApprovalServer({ approve, portFilePath })
+  it("forwards a plugin-capability request to approveCapability and returns its answer", async () => {
+    const approveCapability = vi.fn(async () => true)
+    const approveHostResource = vi.fn(async () => true)
+    const handle = await startHeadlessApprovalServer({
+      approveCapability,
+      approveHostResource,
+      portFilePath,
+    })
     try {
       const { port, token } = await readEndpoint()
-      const socket = connect(port, "127.0.0.1")
-      await new Promise<void>((resolve, reject) => {
-        socket.once("connect", resolve)
-        socket.once("error", reject)
+      const socket = await connectSocket(port)
+      writeJsonLine(socket, {
+        token,
+        kind: "plugin-capability",
+        identity: identity(),
+        request: capabilityRequest(),
       })
-      writeJsonLine(socket, { token, identity: identity(), request: request() })
       const response = await readJsonLine(socket, 2000)
       expect(response).toEqual({ allow: true })
-      expect(approve).toHaveBeenCalledWith({ identity: identity(), request: request() })
+      expect(approveCapability).toHaveBeenCalledWith({
+        identity: identity(),
+        request: capabilityRequest(),
+      })
+      expect(approveHostResource).not.toHaveBeenCalled()
       socket.end()
     } finally {
       await handle.close()
     }
   })
 
-  it("responds allow:false and never calls approve() when the token is wrong", async () => {
-    const approve = vi.fn(async () => true)
-    const handle = await startHeadlessApprovalServer({ approve, portFilePath })
-    try {
-      const { port } = await readEndpoint()
-      const socket = connect(port, "127.0.0.1")
-      await new Promise<void>((resolve) => socket.once("connect", resolve))
-      writeJsonLine(socket, { token: "wrong-token", identity: identity(), request: request() })
-      const response = (await readJsonLine(socket, 2000)) as { allow: boolean }
-      expect(response.allow).toBe(false)
-      expect(approve).not.toHaveBeenCalled()
-      socket.end()
-    } finally {
-      await handle.close()
-    }
-  })
-
-  it("responds allow:false and never calls approve() for a malformed payload", async () => {
-    const approve = vi.fn(async () => true)
-    const handle = await startHeadlessApprovalServer({ approve, portFilePath })
+  it("forwards a host-resource request to approveHostResource and returns its answer", async () => {
+    const approveCapability = vi.fn(async () => true)
+    const approveHostResource = vi.fn(async () => true)
+    const handle = await startHeadlessApprovalServer({
+      approveCapability,
+      approveHostResource,
+      portFilePath,
+    })
     try {
       const { port, token } = await readEndpoint()
-      const socket = connect(port, "127.0.0.1")
-      await new Promise<void>((resolve) => socket.once("connect", resolve))
-      writeJsonLine(socket, { token, identity: identity() /* missing request */ })
+      const socket = await connectSocket(port)
+      writeJsonLine(socket, { token, kind: "host-resource", request: hostResourceRequest() })
+      const response = await readJsonLine(socket, 2000)
+      expect(response).toEqual({ allow: true })
+      expect(approveHostResource).toHaveBeenCalledWith({ request: hostResourceRequest() })
+      expect(approveCapability).not.toHaveBeenCalled()
+      socket.end()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it("responds allow:false and calls neither approver when the token is wrong", async () => {
+    const approveCapability = vi.fn(async () => true)
+    const approveHostResource = vi.fn(async () => true)
+    const handle = await startHeadlessApprovalServer({
+      approveCapability,
+      approveHostResource,
+      portFilePath,
+    })
+    try {
+      const { port } = await readEndpoint()
+      const socket = await connectSocket(port)
+      writeJsonLine(socket, {
+        token: "wrong-token",
+        kind: "plugin-capability",
+        identity: identity(),
+        request: capabilityRequest(),
+      })
       const response = (await readJsonLine(socket, 2000)) as { allow: boolean }
       expect(response.allow).toBe(false)
-      expect(approve).not.toHaveBeenCalled()
+      expect(approveCapability).not.toHaveBeenCalled()
+      expect(approveHostResource).not.toHaveBeenCalled()
+      socket.end()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it("responds allow:false for a malformed plugin-capability payload", async () => {
+    const approveCapability = vi.fn(async () => true)
+    const handle = await startHeadlessApprovalServer({
+      approveCapability,
+      approveHostResource: vi.fn(async () => true),
+      portFilePath,
+    })
+    try {
+      const { port, token } = await readEndpoint()
+      const socket = await connectSocket(port)
+      writeJsonLine(socket, {
+        token,
+        kind: "plugin-capability",
+        identity: identity() /* missing request */,
+      })
+      const response = (await readJsonLine(socket, 2000)) as { allow: boolean }
+      expect(response.allow).toBe(false)
+      expect(approveCapability).not.toHaveBeenCalled()
+      socket.end()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it("responds allow:false for a malformed host-resource payload", async () => {
+    const approveHostResource = vi.fn(async () => true)
+    const handle = await startHeadlessApprovalServer({
+      approveCapability: vi.fn(async () => true),
+      approveHostResource,
+      portFilePath,
+    })
+    try {
+      const { port, token } = await readEndpoint()
+      const socket = await connectSocket(port)
+      writeJsonLine(socket, {
+        token,
+        kind: "host-resource",
+        request: {
+          resourceType: "workspace-instructions",
+          workspaceId: "w1" /* missing rootId etc. */,
+        },
+      })
+      const response = (await readJsonLine(socket, 2000)) as { allow: boolean }
+      expect(response.allow).toBe(false)
+      expect(approveHostResource).not.toHaveBeenCalled()
+      socket.end()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it("responds allow:false for an unrecognized kind", async () => {
+    const handle = await startHeadlessApprovalServer({
+      approveCapability: vi.fn(async () => true),
+      approveHostResource: vi.fn(async () => true),
+      portFilePath,
+    })
+    try {
+      const { port, token } = await readEndpoint()
+      const socket = await connectSocket(port)
+      writeJsonLine(socket, { token, kind: "something-else", request: {} })
+      const response = (await readJsonLine(socket, 2000)) as { allow: boolean }
+      expect(response.allow).toBe(false)
+      socket.end()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it("rejects a host-resource request with an oversized field", async () => {
+    const approveHostResource = vi.fn(async () => true)
+    const handle = await startHeadlessApprovalServer({
+      approveCapability: vi.fn(async () => true),
+      approveHostResource,
+      portFilePath,
+    })
+    try {
+      const { port, token } = await readEndpoint()
+      const socket = await connectSocket(port)
+      writeJsonLine(socket, {
+        token,
+        kind: "host-resource",
+        request: { ...hostResourceRequest(), clientId: "x".repeat(1000) },
+      })
+      const response = (await readJsonLine(socket, 2000)) as { allow: boolean }
+      expect(response.allow).toBe(false)
+      expect(approveHostResource).not.toHaveBeenCalled()
       socket.end()
     } finally {
       await handle.close()
@@ -94,7 +233,11 @@ describe("startHeadlessApprovalServer", () => {
   })
 
   it("stops accepting connections after close()", async () => {
-    const handle = await startHeadlessApprovalServer({ approve: async () => true, portFilePath })
+    const handle = await startHeadlessApprovalServer({
+      approveCapability: async () => true,
+      approveHostResource: async () => true,
+      portFilePath,
+    })
     const { port } = await readEndpoint()
     await handle.close()
 

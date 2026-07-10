@@ -1,6 +1,7 @@
 import type { Socket } from "node:net"
 import type { CapabilityRequest } from "../plugins/capability-gate"
 import type { GrantIdentity } from "../plugins/grant-store"
+import type { HostResourceApprovalRequest } from "./host-resource-approval"
 import { promises as fs } from "node:fs"
 import { connect } from "node:net"
 import { readJsonLine, writeJsonLine } from "./line-delimited-socket"
@@ -12,13 +13,20 @@ export interface GuiApprovalRequest {
 
 export interface GuiApprovalPort {
   requestApproval: (input: GuiApprovalRequest) => Promise<boolean>
+  requestHostResourceApproval: (input: {
+    request: HostResourceApprovalRequest
+    /** Aborts this process's own connect/retry/wait loop early. Does NOT
+     *  reach the GUI process — a request already sent and already showing
+     *  a dialog is unaffected. */
+    signal?: AbortSignal
+  }) => Promise<boolean>
 }
 
 export interface GuiApprovalClientOptions {
   portFilePath: string
   /** Launches (or, if a second instance, causes Electron's existing
    *  single-instance handling to focus) the GUI process. Called at most
-   *  once per requestApproval call — only when the first connection attempt
+   *  once per request call — only when the first connection attempt
    *  fails. */
   spawnGui: () => void
   /** Total time budget for getting a TCP connection established (spawning
@@ -36,12 +44,31 @@ const DEFAULT_RESPONSE_TIMEOUT_MS = 120_000
 const DEFAULT_RETRY_INTERVAL_MS = 300
 
 export function createGuiApprovalPort(options: GuiApprovalClientOptions): GuiApprovalPort {
-  return { requestApproval: (input) => requestApproval(input, options) }
+  return {
+    requestApproval: (input) =>
+      sendPayload(
+        { kind: "plugin-capability", identity: input.identity, request: input.request },
+        options
+      ),
+    requestHostResourceApproval: (input) => {
+      if (input.signal?.aborted) return Promise.resolve(false)
+      return sendPayload({ kind: "host-resource", request: input.request }, options, input.signal)
+    },
+  }
 }
 
-async function requestApproval(
-  input: GuiApprovalRequest,
-  options: GuiApprovalClientOptions
+type OutgoingPayload =
+  | {
+      kind: "plugin-capability"
+      identity: GrantIdentity
+      request: Omit<CapabilityRequest, "signal">
+    }
+  | { kind: "host-resource"; request: HostResourceApprovalRequest }
+
+async function sendPayload(
+  payload: OutgoingPayload,
+  options: GuiApprovalClientOptions,
+  signal?: AbortSignal
 ): Promise<boolean> {
   const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
   const responseTimeoutMs = options.responseTimeoutMs ?? DEFAULT_RESPONSE_TIMEOUT_MS
@@ -51,6 +78,7 @@ async function requestApproval(
   let spawned = false
   let connected: { socket: Socket; token: string } | undefined
   for (;;) {
+    if (signal?.aborted) return false
     const endpoint = await readEndpoint(options.portFilePath)
     if (endpoint) {
       try {
@@ -73,11 +101,7 @@ async function requestApproval(
   // fail-closed directly — never loop back into spawn/retry, which would
   // either double-prompt the user or hang further.
   try {
-    writeJsonLine(connected.socket, {
-      token: connected.token,
-      identity: input.identity,
-      request: input.request,
-    })
+    writeJsonLine(connected.socket, { token: connected.token, ...payload })
     const response = (await readJsonLine(connected.socket, responseTimeoutMs)) as {
       allow?: unknown
     }
