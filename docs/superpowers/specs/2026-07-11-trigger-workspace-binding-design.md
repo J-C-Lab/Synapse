@@ -1,6 +1,6 @@
 # Trigger → Workspace Binding
 
-> Date: 2026-07-11 · Status: draft, revised after one review round, pending
+> Date: 2026-07-11 · Status: draft, revised after two review rounds, pending
 > re-review
 > Fourth and final part of the four-part workspace-unification decomposition
 > (① workspace-root-unification, merged [PR #40](https://github.com/J-C-Lab/Synapse/pull/40);
@@ -9,12 +9,17 @@
 > Explicitly independent of ①–③ — flagged in ①'s spec as needing "a
 > per-trigger settings layer/store from scratch," verified at the time to
 > exist nowhere (manifest, `TriggerRuntime`, `InvocationRecord`, or
-> renderer). Decided by interactive user Q&A on 2026-07-11; revised after a
-> detailed 7-finding review (3 P1 blocking, 4 P2) that caught a real
-> event-vs-instance dispatch ambiguity, a claimed capability (`memory`
-> scope) this spec cannot actually deliver, a missing identity-pinning
-> mechanism, and three narrower implementation gaps — all verified against
-> the real code before being fixed here, same discipline as ①–③.
+> renderer). Decided by interactive user Q&A on 2026-07-11; revised after
+> two review rounds. Round 1 (3 P1 blocking, 4 P2): a real event-vs-instance
+> dispatch ambiguity, a claimed capability (`memory` scope) this spec
+> cannot actually deliver, a missing identity-pinning mechanism, and four
+> narrower implementation gaps. Round 2 (3 P1 blocking, 2 P2): the store API
+> didn't actually accept the `GrantIdentity` its own record type required,
+> the async adapter-registration/pause-resume control flow didn't close the
+> loop back to the registry, and `instanceId`/`workspaceId` were promised on
+> `RunTrace`/audit but the plumbing to get them there was never specified.
+> All findings verified against the real code before being fixed here, same
+> discipline as ①–③.
 
 ## Why this is needed
 
@@ -132,24 +137,47 @@ export interface TriggerInstanceRecord {
 export class TriggerInstanceStore {
   async listAll(): Promise<TriggerInstanceRecord[]>
   async listForTrigger(pluginId: string, triggerId: string): Promise<TriggerInstanceRecord[]>
-  /** Throws if an instance already exists for this exact
-   *  (pluginId, triggerId, workspaceId) triple — at most one instance per
-   *  (template, workspace) pair, matching the product model: rebinding the
-   *  same automation to the same workspace a second time is not a new
-   *  parallel state, it's a no-op the UI should just not offer. Mutations
+  /** Throws if a *non-stale* instance already exists for this exact
+   *  (pluginId, triggerId, workspaceId) triple — at most one live instance
+   *  per (template, workspace) pair, matching the product model: rebinding
+   *  the same automation to the same workspace a second time is not a new
+   *  parallel state, it's a no-op the UI should just not offer. Takes the
+   *  full `GrantIdentity`, not a bare `pluginId` — the store cannot
+   *  construct one itself (it has no access to the plugin's manifest or
+   *  source kind), so the caller (the IPC handler, §6) resolves it first
+   *  via the same `identityForPlugin` callback `TriggerRegistry` uses
+   *  (§2). If a *stale* instance already occupies the triple (its stored
+   *  `identity` doesn't match `identity` via `sameIdentity()`), `create()`
+   *  still throws — staleness is resolved only through `reactivate()`
+   *  below, never silently through `create()`, so there is exactly one
+   *  code path that can turn a stale record current again. Mutations
    *  serialize through an internal `runExclusive()` queue, the same
    *  pattern `McpExposureStore` already uses — a plain read-check-write
    *  would let two concurrent `create()` calls both pass the duplicate
    *  check before either writes. */
-  async create(pluginId: string, triggerId: string, workspaceId: string): Promise<TriggerInstanceRecord>
+  async create(identity: GrantIdentity, triggerId: string, workspaceId: string): Promise<TriggerInstanceRecord>
+  /** Updates a stale instance's stored `identity` to `currentIdentity`,
+   *  clearing its stale state. Throws if `id` doesn't exist. Deliberately
+   *  narrow — this is the *only* way an instance's `identity` field
+   *  changes after creation, so "was this instance ever silently
+   *  re-pinned to a different plugin identity" always has one obvious
+   *  answer: no, `reactivate()` always sets it to whatever the plugin's
+   *  manifest currently says, never to an arbitrary caller-supplied value. */
+  async reactivate(id: string, currentIdentity: GrantIdentity): Promise<TriggerInstanceRecord>
   async setPaused(id: string, paused: boolean): Promise<void>
   /** Deletes the record and returns it (or `undefined` if `id` didn't
    *  exist). Returns the removed record, not `void`, specifically so
    *  `TriggerRegistry.onInstanceRemoved()` (§2) — which needs the
-   *  record's `pluginId`/`triggerId` to know which trigger's adapter to
-   *  possibly deregister — doesn't need a separate lookup before the
-   *  delete. */
+   *  record's `identity.pluginId`/`triggerId` to know which trigger's
+   *  adapter to possibly deregister — doesn't need a separate lookup
+   *  before the delete. */
   async remove(id: string): Promise<TriggerInstanceRecord | undefined>
+  /** Deletes every record for a plugin, regardless of trigger or
+   *  workspace. Used only by uninstall (§6) — disable does NOT call this,
+   *  see the disable-vs-uninstall note below. Returns the removed records
+   *  so the caller can deregister each affected trigger's adapter if it
+   *  just lost its last instance. */
+  async removeForPlugin(pluginId: string): Promise<TriggerInstanceRecord[]>
 }
 ```
 
@@ -178,23 +206,47 @@ mechanism verbatim rather than inventing a parallel
 `GrantStore`/`McpExposureStore` already use, so this introduces no new
 inconsistency in how coarsely staleness is detected.
 
-At registration time and at every fire, `TriggerRegistry` compares an
-instance's stored `identity` against `buildGrantIdentity()` computed from
-the plugin's *current* manifest via `sameIdentity()`. A mismatch means the
-plugin was updated since this instance was created — the instance is
-**stale**: excluded from fan-out (§2), surfaced in the Active Background
-panel with a `needs-review` status, and does **not** auto-resume. The user
-must explicitly re-confirm it (a "review & re-activate" action, re-running
-the same `create()` path with the current identity replacing the stale
-one) — this mirrors the existing standing-grant-invalidation behavior for
+**How `TriggerRegistry` gets a `GrantIdentity` to compare against
+(reviewer-caught gap, round 2): it cannot compute one itself.**
+`buildGrantIdentity()` needs the plugin's manifest and source kind, which
+`TriggerRegistry` — a small, focused component that only ever sees trigger
+declarations, not full manifests — has no access to. `TriggerRegistryDeps`
+therefore gains one more dependency:
+
+```ts
+export interface TriggerRegistryDeps {
+  // ...existing fields (admission, invoker, adapters, dispatch, dispatchAgent)...
+  /** Resolves a plugin's current GrantIdentity, or undefined if it isn't
+   *  active. Constructed by PluginHost from its own registry — this is the
+   *  exact same shape already used by stdio-entry.ts's `identityForPlugin`
+   *  callback for MCP tool identity, reused here rather than inventing a
+   *  parallel resolver. */
+  identityForPlugin: (pluginId: string) => GrantIdentity | undefined
+}
+```
+
+At registration time and at every fire, `TriggerRegistry` calls
+`this.deps.identityForPlugin(pluginId)` and compares the result against
+each instance's stored `identity` via `sameIdentity()`. A mismatch (or an
+`undefined` current identity, meaning the plugin is no longer active) means
+the instance is **stale**: excluded from fan-out (§2), surfaced in the
+Active Background panel with a `needs-review` status, and does **not**
+auto-resume. The user must explicitly re-confirm it via the new
+`triggers:reactivate-instance` IPC (§6), which calls
+`TriggerInstanceStore.reactivate(id, currentIdentity)` — **not**
+`create()` (reviewer-caught contradiction, round 2: the original draft
+said "re-run `create()` with the current identity," but `create()` throws
+on a triple that's already occupied, stale or not — reactivation needed
+its own method precisely so it isn't fighting `create()`'s own duplicate
+guard). This mirrors the existing standing-grant-invalidation behavior for
 capabilities, applied to instances.
 
-`TriggerInstanceStore.create()`'s IPC caller (§6) additionally validates,
-beyond `workspaceId`: the plugin is currently active, the trigger id
-exists in its current manifest, and that trigger actually declares
-`agent` — not just that the `workspaceId` is valid. Binding an instance to
-a non-agent trigger, or a trigger that no longer exists, is rejected the
-same way an unknown `workspaceId` already would be.
+`triggers:create-instance` (§6) additionally validates, beyond
+`workspaceId`: the plugin is currently active, the trigger id exists in
+its current manifest, and that trigger actually declares `agent` — not
+just that the `workspaceId` is valid. Binding an instance to a non-agent
+trigger, or a trigger that no longer exists, is rejected the same way an
+unknown `workspaceId` already would be.
 
 **No migration is needed for the data itself** — pre-upgrade, every
 enabled agent-trigger ran as an implicit, un-tracked, workspaceless
@@ -279,23 +331,66 @@ from an instance-level `InvocationRecord`, so there is no "unbound" case
 to make these optional for).
 
 **OS-level adapter registration follows instance count, not plugin-enable
-state.** Today, `register()` calls the adapter's `register(scope) →
-Disposable` unconditionally when a plugin with that trigger is enabled.
-Going forward, for an agent-trigger, `register()` records the declaration
-and admission-breaker config, then queries
+state — and both `register()` itself and its incremental counterparts must
+be async (reviewer-caught, round 2).** Today, `register(pluginId, triggers):
+void` is synchronous and calls the adapter's `register(scope) → Disposable`
+unconditionally when a plugin with that trigger is enabled. Querying
+`TriggerInstanceStore` (an async store) from inside it means `register()`
+itself has to become `async register(...): Promise<void>`, and every
+caller — `PluginHost.syncTriggerRegistrations()`, `setEnabled()`, and the
+new IPC handlers below — must `await` it; the original draft never said
+this explicitly, which would have left the query silently racing ahead of
+its result. Going forward, for an agent-trigger, `register()` records the
+declaration and admission-breaker config, then queries
 `instanceStore.listForTrigger(pluginId, triggerId)` **once, at
 registration time** — if any current-identity instance already exists
 (e.g. on app restart or plugin re-enable), it calls `adapter.register()`
 immediately, exactly as if the first instance had just been added; if
 none exist (or all existing ones are stale, per §1), it does not. This
 makes restart/re-enable rehydration and live instance creation follow the
-same single rule instead of needing separate bootstrap logic. From then
-on, `TriggerRegistry.onInstanceAdded(pluginId, triggerId)` /
-`onInstanceRemoved(pluginId, triggerId)` (called by the IPC layer around
-`TriggerInstanceStore.create()`/`remove()`) transition the adapter
-registration incrementally: 0→1 *current-identity, unpaused* instances
+same single rule instead of needing separate bootstrap logic.
+
+**The registration criterion is "any current-identity instance exists,"
+deliberately ignoring `paused` (reviewer-caught closed-loop gap, round
+2).** The original draft said the adapter registers/deregisters on
+*unpaused*, current-identity instance count — but `triggers:pause-instance`
+/`triggers:resume-instance` (§6) only ever call `TriggerInstanceStore
+.setPaused()`, with no corresponding registry notification. Under the
+original rule, pausing a trigger's last unpaused instance would leave the
+adapter registered forever (nothing ever told the registry the count hit
+zero), and resuming a trigger's only instance after all were paused would
+never re-register it either — a real dead end. Fixing this by adding
+`onInstancePaused`/`onInstanceResumed` registry hooks was one option; the
+simpler one, adopted here, is to change the *criterion* instead: adapter
+presence tracks "does at least one current-identity instance exist,"
+full stop, regardless of pause state. §2's existing fan-out step already
+filters to unpaused instances at fire time, so a trigger with every
+instance paused still has a registered-but-idle adapter — harmless (an
+`fs.watch`/timer firing into an empty fan-out is a no-op), and it avoids
+tearing down and rebuilding OS-level resources (file watchers especially)
+every time a user toggles a single instance's pause state. `pause`/`resume`
+therefore need **no** new registry hooks at all — only `create`/`remove`
+do:
+
+```ts
+// TriggerRegistry, both async
+async onInstanceAdded(pluginId: string, triggerId: string): Promise<void>
+async onInstanceRemoved(record: TriggerInstanceRecord): Promise<void>
+```
+
+Both hooks are **idempotent** — they re-derive "should the adapter be
+registered right now" from `instanceStore.listForTrigger()`'s current
+count rather than assuming the caller only invokes them on an actual 0→1
+or 1→0 transition. This matters because §6's `create-instance` and
+`reactivate-instance` both call `onInstanceAdded` unconditionally after
+their own store mutation succeeds, without first checking whether the
+trigger already had another current-identity instance — relying on
+`onInstanceAdded` itself to no-op safely (not register a second,
+leaked `Disposable`) when the adapter is already registered. Same for
+`onInstanceRemoved` and `remove-instance`. 0→1 current-identity instances
 calls `adapter.register(scope)` and stores the `Disposable`; 1→0 disposes
-it. Non-agent triggers keep registering immediately at enable, as today.
+it; anything else (still ≥1, or already 0) is a no-op. Non-agent triggers
+keep registering immediately at enable, as today.
 
 **Per-instance cancellation (reviewer-caught, P1).** The signal hierarchy
 gains a level: `pluginController → triggerController → instanceController
@@ -305,15 +400,51 @@ instance's `AbortController` is created when its runtime is instantiated
 fire — implementation detail for the plan) and chained under the trigger's
 controller, same pattern §2's existing `controller.signal.addEventListener
 ("abort", ...)` chaining already uses one level up.
-`TriggerRegistry.onInstanceRemoved()` aborts that instance's controller
-**before** removing the store record — this cancels any in-flight run for
-that instance (its `invocationController`, chained underneath, aborts
-too), not just future fan-out. `pause` (`setPaused(id, true)`) does **not**
-abort the current run — it only excludes the instance from **future**
-fan-out; an in-flight run is allowed to finish. This asymmetry is
-deliberate: pause is "stop starting new work," remove is "stop existing
-work too," matching how `revoke` vs `disable` already differ for
-capabilities in the 2026-06-27 trigger spec.
+
+**Ordering: persist first, then abort (reviewer-caught inconsistency,
+round 2 — the round-1 draft said "abort before removing" here but showed
+"remove, then notify" in §6's IPC description; these need to agree, and
+persisting first is the correct order).** `triggers:remove-instance`
+calls `TriggerInstanceStore.remove(id)`, which deletes the record and
+returns it. Only if a record was actually returned does the IPC handler
+call `TriggerRegistry.onInstanceRemoved(record)`, which (a) aborts that
+instance's controller — cancelling any in-flight run, since the
+`invocationController` chained underneath aborts too, not just future
+fan-out — and (b) re-queries `instanceStore.listForTrigger()` to check
+whether any current-identity instance remains; if none do, disposes the
+adapter. Persisting the deletion before acting on it means a crash between
+the two steps leaves the store as the source of truth (no orphaned record
+pointing at a controller that no longer exists) rather than the reverse.
+`pause` (`setPaused(id, true)`) does **not** abort the current run — it
+only excludes the instance from **future** fan-out; an in-flight run is
+allowed to finish. This asymmetry is deliberate: pause is "stop starting
+new work," remove is "stop existing work too," matching how `revoke` vs
+`disable` already differ for capabilities in the 2026-06-27 trigger spec.
+
+**In-memory instance runtime state, for the panel (reviewer-caught gap,
+round 2 — "surfaced in its panel row" had no data source).** A
+`TriggerInstanceRecord` only has `paused`; it has no notion of "currently
+running," "last outcome," or "last finished at," and the Admission Breaker
+deliberately does not track per-instance failures (§ above). `TriggerRegistry`
+holds one more piece of purely in-memory, non-persisted state, mirroring
+the existing `AdmissionBreaker.status(pluginId, triggerId)` pattern one
+level deeper:
+
+```ts
+interface TriggerInstanceRuntimeState {
+  status: "idle" | "running" | "failed"
+  inflight: number
+  lastOutcome?: "success" | "failed" | "aborted"
+  lastFinishedAt?: number
+}
+```
+
+Updated by the fan-out step (§2 above): `inflight`/`status: "running"` on
+dispatch start, `lastOutcome`/`lastFinishedAt`/`status` on each
+`Promise.allSettled()` settlement. Reset (not persisted) on app restart —
+this is observability, not durable state, same as `AdmissionBreaker`'s
+existing status tracking. `triggers:list-instances` (§6) joins this state
+into each row.
 
 **The Admission Breaker stays at the (pluginId, triggerId) level, not
 per-instance, and per-instance failures do not feed into it.** Event-storm
@@ -330,27 +461,55 @@ registration itself.
 ## 3. `BackgroundAgentRunner` / `AgentRuntime` wiring
 
 `BackgroundAgentRunInput` gains required `instanceId: string` and
-`workspaceId: string` (§2). `run()`'s `caller` becomes:
+`workspaceId: string` (§2).
+
+**Two separate places need these values, not one (reviewer-caught gap,
+round 2 — the round-1 draft only showed the `caller` object, which is not
+where `RunTrace.workspaceId` actually comes from).** Verified against
+`agent-runtime.ts:257`: `trace.workspaceId` is populated from the
+**top-level** `AgentRunOptions.workspaceId`, not from `options.caller
+.workspaceId` — these are two different fields that happen to usually
+carry the same value on the interactive path, because
+`AgentService.chat()` sets both. `BackgroundAgentRunner.run()`'s existing
+call to `runtime.run({...})` sets neither today. So `run()`'s call becomes:
 
 ```ts
-caller: {
-  kind: "background-agent",
-  invocationId: input.invocationId,
+const result = await runtime.run({
+  conversationId: input.invocationId,
+  messages: [backgroundUserMessage(input)],
+  signal: controller.signal,
   runId: start.runId,
-  workspaceId: input.workspaceId,
-}
+  origin: "background-agent",
+  workspaceId: input.workspaceId,        // ← drives RunTrace.workspaceId
+  triggerInstanceId: input.instanceId,   // ← drives RunTrace.triggerInstanceId, new field, see below
+  caller: {
+    kind: "background-agent",
+    invocationId: input.invocationId,
+    runId: start.runId,
+    workspaceId: input.workspaceId,        // ← drives capability-call audit, via PluginBridge
+    triggerInstanceId: input.instanceId,   // ← ditto, see §5
+  },
+  approve: () => ({ allowed: this.ledger.tryDebitToolCall(start.runId, input.agent) }),
+})
 ```
 
-This is the entire extent of what this spec wires up — `caller.workspaceId`
-flows into `RunTrace` and, via `callerToActor`/the capability gate, into
-audit entries (§5). It does **not** flow into memory scoping in any
-user-visible way this spec delivers, because — as established in
-Non-goals — the tool that would consume it (`memory_save`/recall) is not
-in this run's tool registry at all. `scopeForCaller()` would compute the
-right scope *if* a memory tool call happened, but no such call can happen
-today, so this spec does not claim the memory-scoping behavior as a
-delivered outcome, only as a mechanically-true-but-currently-unreachable
-fact worth noting for whoever builds the follow-up.
+`AgentRunOptions` and `RunTrace` (`run-trace-store.ts`) both gain
+`triggerInstanceId?: string`, mirroring the existing `workspaceId?: string`
+field on each exactly — `recordTrace()` gains one more line,
+`if (args.options.triggerInstanceId !== undefined) trace.triggerInstanceId
+= args.options.triggerInstanceId`, next to the existing `workspaceId` one
+at `agent-runtime.ts:257`.
+
+This is the entire extent of what this spec wires up for trace/audit
+attribution. `caller.workspaceId`/`caller.triggerInstanceId` do **not**
+flow into memory scoping in any user-visible way this spec delivers,
+because — as established in Non-goals — the tool that would consume them
+(`memory_save`/recall) is not in this run's tool registry at all.
+`scopeForCaller()` would compute the right scope *if* a memory tool call
+happened, but no such call can happen today, so this spec does not claim
+the memory-scoping behavior as a delivered outcome, only as a
+mechanically-true-but-currently-unreachable fact worth noting for whoever
+builds the follow-up.
 
 `BackgroundAgentRunnerOptions` gains
 `workspaceRoots: Pick<WorkspaceRootStore, "listForWorkspace">`, used to
@@ -471,6 +630,33 @@ that specific instance, not conflate with the second one's. Additive,
 optional-on-read, same discipline used for `runId` and spec ③'s
 resource-access audit — no rewrite of historical entries.
 
+**Getting `triggerInstanceId` from `caller` to the audit entry requires
+mirroring `workspaceId`'s existing threading at every stop along the way
+(reviewer-caught gap, round 2 — round 1 only described the destination
+field, not the path there).** Verified concretely: `workspaceId` is
+already threaded through `ToolCaller.workspaceId`
+(`@synapse/plugin-sdk`'s `tools.ts:33`) → `PluginBridge`'s per-call
+`invocation` context object (`plugin-bridge.ts:99,102`, built from
+`options.caller.workspaceId` at line 238) → every capability adapter's
+`ensure()` wrapper (`plugin-bridge.ts:296,307` and the storage/network
+adapters at 324/334/676) → `gate.ensure()`'s `CapabilityRequest.workspaceId`
+→ `CapabilityAuditEntry.workspaceId`. This is the exact path an agent's
+own tool call takes when it invokes a plugin capability during its
+reasoning loop (via `AiToolRegistry` → `PluginToolBridge` →
+`PluginRegistry.invokeTool` → this same `PluginBridge` machinery) — the
+same path an instance-level background-agent run's tool calls take, since
+`BackgroundAgentRunner`'s limited tool host is built from the same
+`PluginToolBridge`. `triggerInstanceId` needs the identical treatment at
+every one of those sites: `ToolCaller.triggerInstanceId?: string` (new,
+next to `workspaceId`), threaded into `PluginBridge`'s `invocation` object,
+into `CapabilityRequest.triggerInstanceId?: string` (new), into
+`CapabilityAuditEntry.triggerInstanceId?: string` (new, as above). This
+does **not** touch the separate sandbox ctx-facade path
+(`BackgroundInvoker.contextOptions()`, used when a plugin's *own* manifest
+handler code calls `ctx.foo()` directly) — that path is exclusively used
+by event-level (`actor: "background"`) invocations, which never have an
+`instanceId` by construction (§2), so it needs no change.
+
 ## 6. IPC & renderer
 
 **Legacy template-level mutation IPC now rejects agent-triggers
@@ -499,8 +685,9 @@ the adapter and aborts in-flight runs (§2) but leaves
 `TriggerInstanceRecord`s on disk — re-enabling the same, unchanged plugin
 build rehydrates them exactly as before (§2's registration-time query),
 so a user toggling a plugin off and back on doesn't lose their bindings.
-Uninstalling deletes the plugin's `TriggerInstanceRecord`s outright — a
-fresh install later is a new plugin from the user's perspective, and
+Uninstalling calls `TriggerInstanceStore.removeForPlugin(pluginId)`
+(§1) and, for each returned record, `TriggerRegistry.onInstanceRemoved()`
+— a fresh install later is a new plugin from the user's perspective, and
 there is nothing to rehydrate into (this parallels `GrantStore` clearing a
 plugin's grants on uninstall).
 
@@ -508,24 +695,46 @@ New instance-level IPC surface:
 
 - `triggers:list-instances` (payload `{ pluginId, triggerId }`) →
   `TriggerInstanceRow[]`, each `{ id, workspaceId, workspaceName, paused,
-  stale: boolean, budgets: TriggerBudgetRow[] }` — `stale` reflects the
-  identity mismatch check from §1; `budgets` computed the same way
+  stale: boolean, status: "idle" | "running" | "failed", budgets:
+  TriggerBudgetRow[] }` — `stale` reflects the identity mismatch check
+  from §1, `status` is joined from the in-memory
+  `TriggerInstanceRuntimeState` (§2); `budgets` computed the same way
   `listTriggers()` computes them today, keyed with the instance's
   `workspaceId` added (§4), `workspaceName` joined from `WorkspaceStore`
   for display.
 - `triggers:create-instance` (payload `{ pluginId, triggerId, workspaceId
-  }`) → validates, in order: the plugin is currently active, the trigger
-  exists in its current manifest and declares `agent`, and `workspaceId`
+  }`) → validates, in order: `identityForPlugin(pluginId)` resolves to a
+  `GrantIdentity` (i.e. the plugin is currently active — an `undefined`
+  result is the failure case, not a separate check), the trigger exists in
+  the plugin's current manifest and declares `agent`, and `workspaceId`
   exists (`WorkspaceStore.exists()`) — fail closed on any miss, same
   precedent as the P4 slice's conversation-creation validation. Calls
-  `TriggerInstanceStore.create()`, then `TriggerRegistry.onInstanceAdded()`.
+  `TriggerInstanceStore.create(identity, triggerId, workspaceId)` — the
+  resolved `identity`, not a bare `pluginId` (§1) — then
+  `await TriggerRegistry.onInstanceAdded(pluginId, triggerId)`.
+- `triggers:reactivate-instance` (payload `{ instanceId }`) → re-resolves
+  `identityForPlugin(pluginId)` for the stale instance's plugin (fails
+  closed the same way if the plugin is no longer active), calls
+  `TriggerInstanceStore.reactivate(instanceId, identity)`. Does not touch
+  adapter registration — a stale instance being reactivated doesn't change
+  whether *some* current-identity instance already existed for the trigger
+  (if this was the only instance, it was already excluded from the
+  registration-time count while stale, so reactivating brings the count
+  from 0→1 — meaning this endpoint calls `onInstanceAdded` too, same as
+  `create-instance`, whenever the reactivated instance is the trigger's
+  only current-identity one).
 - `triggers:pause-instance` / `triggers:resume-instance` (payload `{
-  instanceId }`) → `TriggerInstanceStore.setPaused()`.
+  instanceId }`) → `TriggerInstanceStore.setPaused()` only — no registry
+  call, per §2's "registration ignores `paused`" rule.
 - `triggers:remove-instance` (payload `{ instanceId }`) →
   `TriggerInstanceStore.remove()` (returns the removed record, §1), then —
-  if a record was actually removed — `TriggerRegistry.onInstanceRemoved(
-  record.pluginId, record.triggerId)`, which aborts that instance's
-  controller (§2) before checking whether the adapter should deregister.
+  if a record was actually removed — `await TriggerRegistry
+  .onInstanceRemoved(record)`, which aborts that instance's controller
+  and checks whether the adapter should deregister (§2's ordering note:
+  persist the deletion first, act on it second). Note `record.identity
+  .pluginId`, not `record.pluginId` — `pluginId` lives under the nested
+  `identity` object (§1's `TriggerInstanceRecord` shape), a mismatch the
+  round-1 draft had in this exact spot.
 
 Standard 4-touchpoint pattern (pure handler → `index.ts` registration →
 preload → `lib/electron.ts` wrapper), tests on the pure handlers.
@@ -544,60 +753,131 @@ rendering as today's flat single row, untouched.
 agent-triggers noting that after enabling, this automation must be
 individually activated per workspace from the Active Background panel.
 
-**Migration notice (reviewer-caught, P2 — this replaces §1's earlier,
-incorrect "the empty panel is visible enough" claim).** Both of Synapse's
+**Migration notice (P2, revised again in round 2).** Both of Synapse's
 built-in plugins declare an agent-trigger today — `github-inbox`'s
 `poll-inbox` (timer) and `downloads-organizer`'s `downloads` (fs.watch),
 confirmed in `resources/builtin-plugins/*/synapse.json`. Upgrading a real
 existing install therefore silently stops two automations most users
 likely have running, not a hypothetical edge case. The Active Background
-panel's zero-instance state (§ above) is where a user *discovers* this if
+panel's zero-instance state alone is where a user *discovers* this if
 they go looking, but that is not the same as being *told* — most users
 won't open that panel unprompted. This spec adds a one-time, dismissible
-notice (shown once per upgrade, e.g. gated on a "seen" flag in
-`userDataDir`) that: names the specific agent-triggers that stopped
-firing, explains why (workspace binding is now required), and links
-directly into the Active Background panel to re-bind them. Test
-descriptions for the no-migration behavior (§7) should be written as "no
-data migration, paired with a one-time visible notice" — not "silent
-stop," which is the framing this review round correctly flagged as
-self-contradictory against the product intent.
+notice that names the specific agent-triggers that stopped firing,
+explains why (workspace binding is now required), and links directly into
+the Active Background panel to re-bind them.
+
+**The trigger condition must distinguish a real upgrade from a fresh
+install (reviewer-caught, round 2 — "instance store is empty" alone can't
+tell them apart).** "Plugin enabled + declares an agent-trigger + zero
+`TriggerInstanceStore` records" is satisfied by two completely different
+situations: (a) a pre-existing install where the plugin was already
+running under the old, un-versioned trigger behavior, or (b) a brand new
+install where the user just enabled the plugin for the first time under
+*this* version's rules and simply hasn't clicked "add to workspace" yet —
+showing "your automation has stopped" in case (b) would be actively false
+(nothing was ever running). There is no existing app-wide
+"first run"/schema-version marker in this codebase to key off (checked —
+`plugin-version.ts` and `plugin-host.ts`'s version tracking are
+per-plugin update-detection, not an app-wide fresh-install signal), so
+this spec doesn't invent one. Instead it reuses a signal that's already
+precisely scoped to the right question: **does this plugin already have
+capability grants recorded** (`GrantStore.list(identity)` — non-empty
+means the user went through this plugin's consent flow at some point
+before right now, which can only be true for a pre-existing install,
+since case (b)'s "just enabled it" moment necessarily also *just* created
+those grants during the same session). Concretely: the very first time
+`TriggerInstanceStore`'s backing JSON file is initialized (i.e. it does
+not exist on disk yet — the same one-shot "file absent" check every other
+store in this codebase already uses to detect first-ever use), the
+initialization step checks every currently-enabled plugin that declares
+an agent-trigger; any with a non-empty `GrantStore.list(identity)` is
+recorded as "affected" in a small notice-state file:
+
+```ts
+// src/main/plugins/trigger-migration-notice.ts
+interface TriggerMigrationNoticeState {
+  affectedTriggers: Array<{ pluginId: string; triggerId: string }>
+  dismissedAt?: number
+}
+```
+
+Computed exactly once (gated on `TriggerInstanceStore`'s own file not yet
+existing, not a separate version counter — there is only ever one thing to
+migrate away from, so a dedicated versioning scheme would be
+over-engineering for this single case), never recomputed afterward. An
+empty `affectedTriggers` array (the fresh-install case) means the panel
+shows no notice at all — only a non-empty list renders it, with a
+"dismiss" action writing `dismissedAt`. Test descriptions for the
+no-data-migration behavior (§7) should be written as "no data migration,
+paired with a one-time visible notice computed only for pre-existing
+installs" — not "silent stop," which round 1's review correctly flagged
+as self-contradictory against the product intent, and not an unconditional
+notice either, which would be a fresh-install false positive.
 
 ## 7. Testing strategy
 
 - **`trigger-instance-store.test.ts`** (new): create/list/remove
-  round-trip; `remove()` returns the deleted record, `undefined` for an
-  unknown id; `listForTrigger` scopes correctly; `create()` throws on a
-  duplicate `(pluginId, triggerId, workspaceId)` triple, including under
-  concurrent calls (two `create()` calls racing for the same triple — only
-  one succeeds, verifying `runExclusive()` serialization actually
-  prevents the race, not just the duplicate check in isolation);
-  `setPaused()` toggles without deleting the record.
-- **`trigger-registry.test.ts`** (extend): an agent-trigger with zero
-  current-identity instances never calls `adapter.register()`; creating
-  the first instance registers it; removing the last instance disposes
-  it; **a fire event with two unpaused instances in different workspaces
-  runs the manifest handler exactly once (not twice) and dispatches the
-  agent exactly twice, once per instance, with distinct `workspaceId`s and
-  `instanceId`s**; a handler that throws prevents any agent dispatch (fault
-  recorded, matching today's existing sequencing); **one instance's agent
-  dispatch rejecting does not prevent a sibling instance's dispatch from
-  completing** (asserts `Promise.allSettled` semantics, not `Promise.all`);
-  a paused instance is excluded from fan-out but not deleted; a
-  stale-identity instance (manifest changed since the instance was
-  created) is excluded from fan-out and reported as `needs-review`, not
+  round-trip; `create()` takes a `GrantIdentity` (not a bare `pluginId`)
+  and persists it on the record; `remove()` returns the deleted record,
+  `undefined` for an unknown id; `removeForPlugin()` removes every record
+  for that plugin across all triggers/workspaces and returns them, leaving
+  other plugins' records untouched; `listForTrigger` scopes correctly;
+  `create()` throws on a duplicate `(pluginId, triggerId, workspaceId)`
+  triple **regardless of whether the existing record is stale or current**
+  (staleness is only ever resolved through `reactivate()`, never
+  `create()`), including under concurrent calls (two `create()` calls
+  racing for the same triple — only one succeeds, verifying
+  `runExclusive()` serialization actually prevents the race, not just the
+  duplicate check in isolation); `reactivate()` updates `identity` on an
+  existing record and throws for an unknown id; `setPaused()` toggles
+  without deleting the record.
+- **`trigger-registry.test.ts`** (extend): `register()`,
+  `onInstanceAdded()`, and `onInstanceRemoved()` are all `async` and every
+  production call site (`syncTriggerRegistrations()`, `setEnabled()`, the
+  IPC handlers) awaits them — a test using a `TriggerRegistryDeps.invoker`
+  with a deliberately slow-resolving `instanceStore` mock catches a
+  missing `await` by observing the adapter register/deregister call
+  happening *after* the assertion point, not before; an agent-trigger with
+  zero current-identity instances never calls `adapter.register()`;
+  creating the first instance registers it; removing the last instance
+  disposes it; **pausing every instance of a trigger does NOT deregister
+  the adapter, and resuming one does NOT re-register it** (registration
+  tracks current-identity instance *existence*, not pause state — this is
+  the fixed rule from the closed-loop gap, and the fan-out step separately
+  still excludes paused instances at fire time, verified by a paused
+  instance's OS event landing on a registered-but-idle adapter producing
+  zero dispatches); **a fire event with two unpaused instances in
+  different workspaces runs the manifest handler exactly once (not twice)
+  and dispatches the agent exactly twice, once per instance, with
+  distinct `workspaceId`s and `instanceId`s**; a handler that throws
+  prevents any agent dispatch (fault recorded, matching today's existing
+  sequencing); **one instance's agent dispatch rejecting does not prevent
+  a sibling instance's dispatch from completing** (asserts
+  `Promise.allSettled` semantics, not `Promise.all`); a paused instance is
+  excluded from fan-out but not deleted; a stale-identity instance
+  (`identityForPlugin()`'s current result no longer matches the stored
+  `identity`) is excluded from fan-out and reported as `needs-review`, not
   silently resumed; removing an instance aborts its in-flight run;
-  pausing an instance does **not** abort its in-flight run; non-agent
-  trigger register/fire behavior is byte-for-byte unchanged (explicit
-  regression coverage, not just "no test broke").
+  pausing an instance does **not** abort its in-flight run; a plugin with
+  no current `identityForPlugin()` result (disabled/uninstalled) treats
+  every one of its instances as stale; `TriggerInstanceRuntimeState` per
+  instance transitions `idle → running → (success|failed)` around a fired
+  dispatch and is exposed via a query the panel IPC (§6) can read;
+  non-agent trigger register/fire behavior is byte-for-byte unchanged
+  (explicit regression coverage, not just "no test broke").
 - **`trigger-budget.test.ts` / `agent-budget.test.ts`** (extend): two
   instances of the same trigger in different workspaces have fully
   independent counters; event-level (non-instance) debits use the
   pre-existing key shape with no `workspaceId` segment and are unaffected
   by any instance's budget state; repeated fires of the same instance
   share one counter, as today.
-- **`background-agent-runner.test.ts`** (extend): `caller.workspaceId` and
-  the run's `instanceId` equal `input.workspaceId`/`input.instanceId`;
+- **`background-agent-runner.test.ts`** (extend): the `runtime.run()` call
+  is asserted to include **both** the top-level `workspaceId`/
+  `triggerInstanceId` options **and** `caller.workspaceId`/
+  `caller.triggerInstanceId` (a test that only checked `caller` would have
+  passed against the round-1 draft's bug — `RunTrace.workspaceId` reads
+  the top-level field, not `caller`'s, per `agent-runtime.ts:257`, so this
+  needs its own explicit assertion, not just an assertion on `caller`);
   `AgentRuntime` is constructed with `workspaceInstructionRoots` set and
   `executionWorkspaces` **not** set — assert on the constructed options
   object directly, not just end-to-end behavior, so a future accidental
@@ -608,25 +888,51 @@ self-contradictory against the product intent.
   guidance text; a run with only `executionWorkspaces` set (today's
   interactive-path shape) is unaffected — both instruction-folding and
   guidance text still appear, proving the split didn't regress the
-  existing path.
-- **`ipc/triggers.test.ts`** (extend): `triggers:create-instance` rejects
-  an unknown `workspaceId`, an inactive plugin, an unknown trigger id, and
-  a trigger without `agent`; rejects a duplicate instance;
-  `triggers:pause`/`resume`/`kill` reject when the target trigger declares
-  `agent`, with non-agent triggers unaffected; the four new handlers
-  validate payload shape the same way the existing four do.
+  existing path; a run with `options.workspaceId`/`options.triggerInstanceId`
+  set produces a `RunTrace` carrying both.
+- **`plugin-bridge.test.ts`** (extend — new test, closing the §5 threading
+  gap): a capability call made with `caller.triggerInstanceId` set
+  produces a `CapabilityAuditEntry.triggerInstanceId` equal to it, via the
+  exact same `invocation`-object threading `workspaceId` already uses
+  (`plugin-bridge.ts:99,102,238` and each adapter's `ensure()` call) — not
+  a new, parallel mechanism.
+- **`ipc/triggers.test.ts`** (extend): `triggers:create-instance` resolves
+  `identityForPlugin(pluginId)` and passes the resulting `GrantIdentity`
+  (not a bare `pluginId`) into `TriggerInstanceStore.create()`; rejects an
+  inactive plugin (`identityForPlugin` returns `undefined`), an unknown
+  `workspaceId`, an unknown trigger id, and a trigger without `agent`;
+  rejects a duplicate instance; `triggers:reactivate-instance` updates a
+  stale instance's identity and, when it was the trigger's only instance,
+  triggers the same `onInstanceAdded` adapter-registration path
+  `create-instance` does; `triggers:pause`/`resume`/`kill` reject when the
+  target trigger declares `agent`, with non-agent triggers unaffected; the
+  new handlers validate payload shape the same way the existing four do.
 - **Regression / upgrade scenario**: a plugin manifest declares an
   agent-trigger, the plugin is "enabled" (capability grants present) but
   `TriggerInstanceStore` is empty — assert the adapter's `register()` is
   never called and `triggers:list-instances` reports zero active
-  instances; assert the one-time migration notice condition is satisfied
-  (not asserting UI rendering itself here, just the underlying "should
-  show notice" state the panel reads).
+  instances.
+- **Migration notice — upgrade vs. fresh install (reviewer-caught, round
+  2, replacing round 1's under-specified version of this test)**: (a) a
+  plugin with an agent-trigger and an existing, non-empty `GrantStore`
+  grant, `TriggerInstanceStore`'s file not yet created — the notice-state
+  computation includes that trigger in `affectedTriggers`; (b) the same
+  setup but with an empty `GrantStore` for that plugin (simulating a fresh
+  install where the plugin was just enabled this session) —
+  `affectedTriggers` is empty and no notice condition is satisfied; (c)
+  the computation runs exactly once — a second app start with
+  `TriggerInstanceStore`'s file now present does not recompute or
+  re-populate `affectedTriggers` even if the plugin is later disabled and
+  re-enabled.
 - **Identity staleness**: an instance created against manifest version A,
   then the plugin updates to manifest version B (different
-  `capabilityDeclarationHash`) — the instance is excluded from fan-out and
-  reported `needs-review`; re-running `create()` with the current identity
-  clears the stale state.
+  `capabilityDeclarationHash`, reflected in a new `identityForPlugin()`
+  result) — the instance is excluded from fan-out and reported
+  `needs-review`; `reactivate()` with the current identity clears the
+  stale state and, if it was the trigger's only instance, re-triggers
+  adapter registration; a plugin that becomes inactive
+  (`identityForPlugin()` returns `undefined`) makes every one of its
+  instances stale too, not just ones with a hash mismatch.
 
 ## 8. Parked questions (surfaced, not solved)
 
