@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto"
 export interface AgentBudgetKey {
   pluginId: string
   triggerId: string
+  workspaceId: string
 }
 
 export type AgentRunStart = { ok: true; runId: string } | { ok: false; why: "runs-exhausted" }
@@ -67,7 +68,7 @@ export class AgentBudgetLedger {
   }
 
   private currentWindow(key: AgentBudgetKey, budget: AgentTriggerBudget): RunWindow {
-    const id = `${key.pluginId}\0${key.triggerId}`
+    const id = `${key.pluginId}\0${key.triggerId}\0${key.workspaceId}`
     const ms = PERIOD_MS[budget.period]
     const time = this.now()
     let window = this.windows.get(id)

@@ -35,6 +35,7 @@ export function createBudgetBreakerPort(deps: {
         {
           pluginId: rec.pluginId,
           triggerId: rec.triggerId,
+          workspaceId: rec.actor === "background-agent" ? rec.workspaceId : undefined,
           capabilityId: request.capability,
           scopeKey: scopeKeyForUse(use),
         },

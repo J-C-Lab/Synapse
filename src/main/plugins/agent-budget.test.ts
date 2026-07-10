@@ -12,10 +12,15 @@ const budget = {
 describe("agentBudgetLedger", () => {
   it("limits background-agent runs per plugin and trigger window", () => {
     const ledger = new AgentBudgetLedger(() => 0)
-    const first = ledger.tryStart({ pluginId: "p", triggerId: "downloads" }, budget)
+    const first = ledger.tryStart(
+      { pluginId: "p", triggerId: "downloads", workspaceId: "work" },
+      budget
+    )
     expect(first).toMatchObject({ ok: true, runId: expect.any(String) })
 
-    expect(ledger.tryStart({ pluginId: "p", triggerId: "downloads" }, budget)).toEqual({
+    expect(
+      ledger.tryStart({ pluginId: "p", triggerId: "downloads", workspaceId: "work" }, budget)
+    ).toEqual({
       ok: false,
       why: "runs-exhausted",
     })
@@ -23,7 +28,10 @@ describe("agentBudgetLedger", () => {
 
   it("tracks tool calls and tokens per run", () => {
     const ledger = new AgentBudgetLedger(() => 0)
-    const started = ledger.tryStart({ pluginId: "p", triggerId: "downloads" }, budget)
+    const started = ledger.tryStart(
+      { pluginId: "p", triggerId: "downloads", workspaceId: "work" },
+      budget
+    )
     if (!started.ok) throw new Error("expected run to start")
 
     expect(ledger.tryDebitToolCall(started.runId, budget)).toBe(true)
@@ -37,8 +45,37 @@ describe("agentBudgetLedger", () => {
   it("resets the run window after the configured period", () => {
     let now = 0
     const ledger = new AgentBudgetLedger(() => now)
-    expect(ledger.tryStart({ pluginId: "p", triggerId: "downloads" }, budget).ok).toBe(true)
+    expect(
+      ledger.tryStart({ pluginId: "p", triggerId: "downloads", workspaceId: "work" }, budget).ok
+    ).toBe(true)
     now = 86_400_000
-    expect(ledger.tryStart({ pluginId: "p", triggerId: "downloads" }, budget).ok).toBe(true)
+    expect(
+      ledger.tryStart({ pluginId: "p", triggerId: "downloads", workspaceId: "work" }, budget).ok
+    ).toBe(true)
+  })
+
+  it("two workspaces of the same trigger have independent run budgets", () => {
+    const ledger = new AgentBudgetLedger()
+    const budget = {
+      maxRuns: 1,
+      period: "1h" as const,
+      maxToolCallsPerRun: 5,
+      maxTokensPerRun: 1000,
+      timeoutMs: 5000,
+    }
+
+    const work = ledger.tryStart({ pluginId: "p", triggerId: "t", workspaceId: "work" }, budget)
+    expect(work.ok).toBe(true)
+    const workAgain = ledger.tryStart(
+      { pluginId: "p", triggerId: "t", workspaceId: "work" },
+      budget
+    )
+    expect(workAgain.ok).toBe(false)
+
+    const personal = ledger.tryStart(
+      { pluginId: "p", triggerId: "t", workspaceId: "personal" },
+      budget
+    )
+    expect(personal.ok).toBe(true)
   })
 })
