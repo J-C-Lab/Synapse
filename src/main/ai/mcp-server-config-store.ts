@@ -30,6 +30,10 @@ export interface McpServerConfig {
   headers?: Record<string, string>
   /** Disabled servers are persisted but not connected. Defaults to true. */
   enabled?: boolean
+  /** Execution root ids (WorkspaceRoot.id, from the agentShellRoots setting —
+   *  NOT WorkspaceStore ids) to advertise as MCP roots to this server.
+   *  Omitted/empty = no roots capability advertised (the default). */
+  exposedExecutionRootIds?: string[]
 }
 
 export function aiMcpServersFilePath(userDataDir: string): string {
@@ -140,6 +144,9 @@ function normalizeConfig(config: McpServerConfig): McpServerConfig {
   if (typeof config.name === "string" && config.name.trim().length > 0)
     out.name = config.name.trim()
 
+  const exposedExecutionRootIds = stringArray(config.exposedExecutionRootIds)
+  if (exposedExecutionRootIds) out.exposedExecutionRootIds = exposedExecutionRootIds
+
   if (transport === "http") {
     if (typeof config.url !== "string" || !isHttpUrl(config.url.trim())) {
       throw new McpServerConfigError(`MCP server "${config.id}" requires an http(s) url.`)
@@ -168,6 +175,14 @@ function isHttpUrl(value: string): boolean {
   } catch {
     return false
   }
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const out = value.filter(
+    (entry): entry is string => typeof entry === "string" && entry.length > 0
+  )
+  return out.length > 0 ? out : undefined
 }
 
 function stringRecord(value: unknown): Record<string, string> | undefined {

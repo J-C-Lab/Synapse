@@ -1,4 +1,9 @@
-import type { McpServerConfig, McpServerStatus, ToolHealth } from "@/lib/electron"
+import type {
+  ExecutionWorkspace,
+  McpServerConfig,
+  McpServerStatus,
+  ToolHealth,
+} from "@/lib/electron"
 import { Loader2, Plus, Server, Trash2 } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
@@ -32,6 +37,7 @@ import {
   getAiToolHealth,
   isElectron,
   listAiMcpServers,
+  listExecutionWorkspaces,
   saveAiMcpServer,
 } from "@/lib/electron"
 import { cn } from "@/lib/utils"
@@ -46,6 +52,7 @@ interface DraftServer {
   url: string
   headersText: string
   enabled: boolean
+  exposedExecutionRootIds: string[]
 }
 
 const emptyDraft: DraftServer = {
@@ -58,6 +65,7 @@ const emptyDraft: DraftServer = {
   url: "",
   headersText: "",
   enabled: true,
+  exposedExecutionRootIds: [],
 }
 
 function draftIsValid(draft: DraftServer): boolean {
@@ -79,17 +87,20 @@ export function McpServersDialog({
   const [draft, setDraft] = useState<DraftServer | null>(null)
   const [saving, setSaving] = useState(false)
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  const [executionWorkspaces, setExecutionWorkspaces] = useState<ExecutionWorkspace[]>([])
 
   async function refresh() {
     if (!isElectron()) return
-    const [list, status, toolHealth] = await Promise.all([
+    const [list, status, toolHealth, workspaces] = await Promise.all([
       listAiMcpServers(),
       getAiMcpServerStatus(),
       getAiToolHealth(),
+      listExecutionWorkspaces(),
     ])
     setServers(list)
     setStatuses(status)
     setHealth(toolHealth)
+    setExecutionWorkspaces(workspaces)
   }
 
   useEffect(() => {
@@ -105,6 +116,8 @@ export function McpServersDialog({
         name: draft.name.trim() || undefined,
         transport: draft.transport,
         enabled: draft.enabled,
+        exposedExecutionRootIds:
+          draft.exposedExecutionRootIds.length > 0 ? draft.exposedExecutionRootIds : undefined,
       }
       const config: McpServerConfig =
         draft.transport === "http"
@@ -171,6 +184,7 @@ export function McpServersDialog({
                     url: server.url ?? "",
                     headersText: envToText(server.headers),
                     enabled: server.enabled !== false,
+                    exposedExecutionRootIds: server.exposedExecutionRootIds ?? [],
                   })
                 }
                 onDelete={() => setPendingDeleteId(server.id)}
@@ -183,6 +197,7 @@ export function McpServersDialog({
               draft={draft}
               saving={saving}
               isNew={!servers.some((server) => server.id === draft.id)}
+              executionWorkspaces={executionWorkspaces}
               onChange={setDraft}
               onCancel={() => setDraft(null)}
               onSave={() => void save()}
@@ -280,6 +295,7 @@ function ServerForm({
   draft,
   saving,
   isNew,
+  executionWorkspaces,
   onChange,
   onCancel,
   onSave,
@@ -287,6 +303,7 @@ function ServerForm({
   draft: DraftServer
   saving: boolean
   isNew: boolean
+  executionWorkspaces: ExecutionWorkspace[]
   onChange: (draft: DraftServer) => void
   onCancel: () => void
   onSave: () => void
@@ -373,6 +390,31 @@ function ServerForm({
         />
         <Label htmlFor="mcp-enabled">{t("mcp.enabled")}</Label>
       </div>
+      {executionWorkspaces.length > 0 && (
+        <div className="space-y-1.5">
+          <Label className="text-xs">{t("mcp.roots.label")}</Label>
+          <p className="text-[11px] text-muted-foreground">{t("mcp.roots.hint")}</p>
+          <div className="space-y-1">
+            {executionWorkspaces.map((workspace) => (
+              <label key={workspace.id} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={draft.exposedExecutionRootIds.includes(workspace.id)}
+                  onChange={(event) =>
+                    set({
+                      exposedExecutionRootIds: event.target.checked
+                        ? [...draft.exposedExecutionRootIds, workspace.id]
+                        : draft.exposedExecutionRootIds.filter((id) => id !== workspace.id),
+                    })
+                  }
+                />
+                <span className="font-mono text-xs">{workspace.id}</span>
+                <span className="truncate text-[11px] text-muted-foreground">{workspace.root}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onClick={onCancel}>
           {t("mcp.cancel")}
