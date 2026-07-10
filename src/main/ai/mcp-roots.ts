@@ -13,20 +13,20 @@ import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
  * Registers the `roots` capability and a `roots/list` handler on `client` if
  * `config.exposedExecutionRootIds` is non-empty. The handler resolves ids
  * against `getExecutionWorkspaces()` live, at request time — not a snapshot
- * taken here — so it reflects the current agentShellRoots setting even if it
+ * taken here — so it reflects the current workspace-root store even if it
  * changes after this connection was established.
  */
 export function attachRootsCapability(
   client: Client,
   config: McpServerConfig,
-  getExecutionWorkspaces: () => WorkspaceRoot[]
+  getExecutionWorkspaces: () => Promise<WorkspaceRoot[]>
 ): void {
   const ids = config.exposedExecutionRootIds
   if (!ids || ids.length === 0) return
 
   client.registerCapabilities({ roots: { listChanged: true } })
-  client.setRequestHandler(ListRootsRequestSchema, () => ({
-    roots: getExecutionWorkspaces()
+  client.setRequestHandler(ListRootsRequestSchema, async () => ({
+    roots: (await getExecutionWorkspaces())
       .filter((workspace) => ids.includes(workspace.id))
       .map((workspace) => ({ uri: `file://${workspace.root}`, name: workspace.id })),
   }))

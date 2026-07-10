@@ -16,7 +16,7 @@ describe("attachRootsCapability", () => {
     const c = client()
     const registerSpy = vi.spyOn(c, "registerCapabilities")
     const setHandlerSpy = vi.spyOn(c, "setRequestHandler")
-    attachRootsCapability(c, config(), () => [{ id: "proj", root: "/home/proj" }])
+    attachRootsCapability(c, config(), async () => [{ id: "proj", root: "/home/proj" }])
     expect(registerSpy).not.toHaveBeenCalled()
     expect(setHandlerSpy).not.toHaveBeenCalled()
   })
@@ -24,7 +24,7 @@ describe("attachRootsCapability", () => {
   it("registers the roots capability and a request handler when configured", () => {
     const c = client()
     const registerSpy = vi.spyOn(c, "registerCapabilities")
-    attachRootsCapability(c, config({ exposedExecutionRootIds: ["proj"] }), () => [
+    attachRootsCapability(c, config({ exposedExecutionRootIds: ["proj"] }), async () => [
       { id: "proj", root: "/home/proj" },
     ])
     expect(registerSpy).toHaveBeenCalledWith({ roots: { listChanged: true } })
@@ -33,7 +33,7 @@ describe("attachRootsCapability", () => {
   it("roots/list handler returns only the configured ids, resolved live", async () => {
     const c = client()
     let live: { id: string; root: string }[] = [{ id: "proj", root: "/home/proj" }]
-    attachRootsCapability(c, config({ exposedExecutionRootIds: ["proj"] }), () => live)
+    attachRootsCapability(c, config({ exposedExecutionRootIds: ["proj"] }), async () => live)
 
     const handlers = (c as unknown as { _requestHandlers: Map<string, unknown> })._requestHandlers
     const handler = handlers.get("roots/list") as (req: { method: string }) => Promise<{

@@ -1,5 +1,5 @@
 import type { RegisteredToolDescriptor } from "../plugins/types"
-import type { AiChatEvent } from "./agent-service"
+import type { AgentServiceOptions, AiChatEvent } from "./agent-service"
 import type { AiSettingsStore } from "./ai-settings-store"
 import type { ApprovalStore } from "./approval-store"
 import type { ConversationStore, StoredConversation } from "./conversation-store"
@@ -150,6 +150,9 @@ function service(options: {
   workspaces?: { exists: (id: string) => Promise<boolean> }
   getToolHealth?: () => import("./tool-circuit-breaker").ToolStatSnapshot[]
   getLatestPlan?: (conversationId: string) => import("./plan/plan-types").PlanStep[] | undefined
+  getExecutionWorkspaces?: (
+    workspaceId: string
+  ) => Promise<readonly import("./execution/types").WorkspaceRootRecord[]>
 }): {
   service: AgentService
   events: AiChatEvent[]
@@ -167,9 +170,20 @@ function service(options: {
     recordRun: options.recordRun,
     getToolHealth: options.getToolHealth,
     getLatestPlan: options.getLatestPlan,
+    getExecutionWorkspaces: options.getExecutionWorkspaces,
     now: () => 1000,
   })
   return { service: svc, events, saved: convo.saved }
+}
+
+function minimalService(overrides: Partial<AgentServiceOptions>): AgentService {
+  return new AgentService({
+    credentials: credentials("sk-test"),
+    tools: new AiToolRegistry(fakeHost()),
+    conversations: conversations().store,
+    sendEvent: () => {},
+    ...overrides,
+  })
 }
 
 describe("agentService", () => {
@@ -555,6 +569,34 @@ describe("agentService", () => {
     expect(traces.at(-1)?.workspaceId).toBe("work")
   })
 
+  it("chat() scopes executionWorkspaces to the conversation's own workspace", async () => {
+    const seen: string[] = []
+    const { service: svc, saved } = service({
+      host: fakeHost({ readOnlyHint: true }),
+      provider: fakeProvider([{ text: "done" }]),
+      getExecutionWorkspaces: async (workspaceId) => {
+        seen.push(workspaceId)
+        return workspaceId === "work"
+          ? [
+              {
+                id: "root-a",
+                workspaceId,
+                name: "a",
+                root: "/a",
+                role: "primary" as const,
+                createdAt: 1,
+              },
+            ]
+          : []
+      },
+    })
+    saved.push({ id: "c-work", workspaceId: "work", messages: [], createdAt: 1, updatedAt: 1 })
+
+    await svc.chat("c-work", "hello")
+
+    expect(seen).toEqual(["work"])
+  })
+
   it("defaults a legacy conversation to workspaceId default in the trace", async () => {
     const traces: import("./run-trace-store").RunTrace[] = []
     const { service: svc, saved } = service({
@@ -585,6 +627,105 @@ describe("agentService", () => {
     expect(created.workspaceId).toBe("work")
     expect((await svc.getConversation(created.id))?.workspaceId).toBe("work")
     await expect(svc.createConversation("ghost")).rejects.toThrow(/Unknown workspace/)
+  })
+
+  describe("workspace root management", () => {
+    it("listWorkspaceRoots delegates to the store", async () => {
+      const calls: string[] = []
+      const svc = minimalService({
+        workspaceRoots: {
+          listForWorkspace: async (id: string) => {
+            calls.push(id)
+            return [
+              {
+                id: "r1",
+                workspaceId: id,
+                name: "R",
+                root: "/r",
+                role: "primary" as const,
+                createdAt: 1,
+              },
+            ]
+          },
+        },
+      })
+      const roots = await svc.listWorkspaceRoots("w1")
+      expect(calls).toEqual(["w1"])
+      expect(roots).toHaveLength(1)
+    })
+
+    it("createWorkspaceRoot delegates to the store and refreshes execution tool visibility", async () => {
+      let refreshed = false
+      const svc = minimalService({
+        workspaceRoots: {
+          create: async (workspaceId, name, root, role) => ({
+            id: "new",
+            workspaceId,
+            name,
+            root,
+            role,
+            createdAt: 1,
+          }),
+        },
+        onWorkspaceRootsChanged: () => {
+          refreshed = true
+        },
+        isAgentShellAllowed: () => true,
+      })
+      const record = await svc.createWorkspaceRoot("w1", "Root", "/root", "primary")
+      expect(record.id).toBe("new")
+      expect(refreshed).toBe(true)
+    })
+
+    it("createWorkspaceRoot rejects when agent shell is disabled", async () => {
+      const svc = minimalService({
+        workspaceRoots: {
+          create: async () => ({
+            id: "new",
+            workspaceId: "w1",
+            name: "R",
+            root: "/r",
+            role: "primary" as const,
+            createdAt: 1,
+          }),
+        },
+        isAgentShellAllowed: () => false,
+      })
+      await expect(svc.createWorkspaceRoot("w1", "Root", "/root", "primary")).rejects.toThrow(
+        /agent shell is disabled/
+      )
+    })
+
+    it("removeWorkspaceRoot delegates to the store and refreshes execution tool visibility", async () => {
+      let refreshed = false
+      let removedId: string | undefined
+      const svc = minimalService({
+        workspaceRoots: {
+          remove: async (id: string) => {
+            removedId = id
+          },
+        },
+        onWorkspaceRootsChanged: () => {
+          refreshed = true
+        },
+      })
+      await svc.removeWorkspaceRoot("r1")
+      expect(removedId).toBe("r1")
+      expect(refreshed).toBe(true)
+    })
+
+    it("setPrimaryWorkspaceRoot delegates to the store", async () => {
+      let promotedId: string | undefined
+      const svc = minimalService({
+        workspaceRoots: {
+          setPrimary: async (id: string) => {
+            promotedId = id
+          },
+        },
+      })
+      await svc.setPrimaryWorkspaceRoot("r1")
+      expect(promotedId).toBe("r1")
+    })
   })
 
   it("getConversation attaches the latest recorded plan for that conversation", async () => {

@@ -98,7 +98,16 @@ describe("buildSystemPrompt", () => {
 
   it("enumerates execution workspaces only when some are authorized", () => {
     const prompt = buildSystemPrompt("BASE", {
-      executionWorkspaces: [{ id: "repo", root: "/home/me/repo" }],
+      executionWorkspaces: [
+        {
+          id: "repo",
+          workspaceId: "w1",
+          name: "repo",
+          root: "/home/me/repo",
+          role: "primary",
+          createdAt: 1,
+        },
+      ],
     })
     expect(prompt).toContain("run_command")
     expect(prompt).toContain("repo → /home/me/repo")
@@ -536,7 +545,16 @@ describe("agentRuntime", () => {
     const runtime = new AgentRuntime({
       provider,
       tools: new AiToolRegistry(host),
-      executionWorkspaces: () => [{ id: "repo", root }],
+      executionWorkspaces: () => [
+        {
+          id: "repo",
+          workspaceId: "w1",
+          name: "repo",
+          root,
+          role: "primary",
+          createdAt: 1,
+        },
+      ],
     })
 
     const result = await runtime.run({ conversationId: "c1", messages: [userMessage("hello")] })
@@ -550,6 +568,62 @@ describe("agentRuntime", () => {
     expect(outgoingText).toContain("Run tests before committing.")
     expect(outgoingText).toContain("&lt;/untrusted>")
     expect(result.messages[0]).toEqual(userMessage("hello"))
+  })
+
+  it("only scans the primary root for workspace instructions, never additional roots", async () => {
+    const primaryRoot = await tempWorkspace()
+    await fs.writeFile(path.join(primaryRoot, "AGENTS.md"), "Primary root instructions.\n", "utf-8")
+    const additionalRoot = await tempWorkspace()
+    await fs.writeFile(
+      path.join(additionalRoot, "AGENTS.md"),
+      "Additional root instructions.\n",
+      "utf-8"
+    )
+
+    const host = fakeHost()
+    const seen: { messages: ChatMessage[] }[] = []
+    const provider: ChatProvider = {
+      id: "fake",
+      async *stream(req) {
+        seen.push({ messages: req.messages })
+        yield {
+          type: "message",
+          message: { role: "assistant", content: [{ type: "text", text: "ok" }] },
+          usage: emptyUsage(),
+          stopReason: "end_turn",
+        }
+      },
+    }
+    const runtime = new AgentRuntime({
+      provider,
+      tools: new AiToolRegistry(host),
+      executionWorkspaces: () => [
+        {
+          id: "p",
+          workspaceId: "w1",
+          name: "p",
+          root: primaryRoot,
+          role: "primary" as const,
+          createdAt: 1,
+        },
+        {
+          id: "a",
+          workspaceId: "w1",
+          name: "a",
+          root: additionalRoot,
+          role: "additional" as const,
+          createdAt: 1,
+        },
+      ],
+    })
+
+    await runtime.run({ conversationId: "c1", messages: [userMessage("hello")] })
+
+    const outgoingText = seen[0]!.messages[0]!.content.map((block) =>
+      block.type === "text" ? block.text : ""
+    ).join("\n")
+    expect(outgoingText).toContain("Primary root instructions.")
+    expect(outgoingText).not.toContain("Additional root instructions.")
   })
 
   it("includes the untrusted-context notice even when there are no workspace instructions", async () => {

@@ -141,16 +141,16 @@ describe("mcpClientManager", () => {
 
   it("passes getExecutionWorkspaces through to the client factory", async () => {
     const roots = [{ id: "proj", root: "/home/proj" }]
-    let received: (() => typeof roots) | undefined
+    let received: (() => Promise<typeof roots>) | undefined
     const manager = new McpClientManager(
       (_config, getExecutionWorkspaces) => {
         received = getExecutionWorkspaces
         return fakeClient()
       },
-      () => roots
+      async () => roots
     )
     await manager.start([config()])
-    expect(received?.()).toEqual(roots)
+    expect(await received?.()).toEqual(roots)
   })
 
   it("notifyAllRootsChanged only notifies connected connections with a roots handler", async () => {

@@ -64,7 +64,7 @@ export interface McpClientPort {
 
 export type McpClientFactory = (
   config: McpServerConfig,
-  getExecutionWorkspaces: () => WorkspaceRoot[]
+  getExecutionWorkspaces: () => Promise<WorkspaceRoot[]>
 ) => McpClientPort
 
 export type McpConnectionState = "connecting" | "connected" | "disconnected" | "error"
@@ -91,7 +91,7 @@ export class McpClientManager implements ToolHostSource {
 
   constructor(
     private readonly createClient: McpClientFactory,
-    private readonly getExecutionWorkspaces: () => WorkspaceRoot[] = () => []
+    private readonly getExecutionWorkspaces: () => Promise<WorkspaceRoot[]> = async () => []
   ) {}
 
   ownsTool(fqName: string): boolean {
@@ -145,8 +145,7 @@ export class McpClientManager implements ToolHostSource {
     await Promise.all(conns.map((conn) => safeClose(conn.client)))
   }
 
-  /** Pushes roots/list_changed to every connected, roots-enabled server —
-   *  call whenever agentShellRoots/allowAgentShell changes. */
+  /** Pushes roots/list_changed to every connected, roots-enabled server. */
   async notifyAllRootsChanged(): Promise<void> {
     await Promise.all(
       [...this.connections.values()]
