@@ -140,6 +140,42 @@ describe("grantStore", () => {
     expect(await fresh.isGranted(id, "notification")).toBe(true)
   })
 
+  it("is not externally preauthorized by default", async () => {
+    const store = new GrantStore(file)
+    await store.grant(identity(), "clipboard:watch", "user")
+    expect(await store.isExternalMcpPreauthorized(identity(), "clipboard:watch")).toBe(false)
+  })
+
+  it("sets and reports externalMcpPreauthorized on an existing grant", async () => {
+    const store = new GrantStore(file)
+    await store.grant(identity(), "clipboard:watch", "user")
+    await store.setExternalMcpPreauthorized(identity(), "clipboard:watch", true)
+    expect(await store.isExternalMcpPreauthorized(identity(), "clipboard:watch")).toBe(true)
+  })
+
+  it("can unset externalMcpPreauthorized", async () => {
+    const store = new GrantStore(file)
+    await store.grant(identity(), "clipboard:watch", "user")
+    await store.setExternalMcpPreauthorized(identity(), "clipboard:watch", true)
+    await store.setExternalMcpPreauthorized(identity(), "clipboard:watch", false)
+    expect(await store.isExternalMcpPreauthorized(identity(), "clipboard:watch")).toBe(false)
+  })
+
+  it("refuses to preauthorize a capability that isn't granted", async () => {
+    const store = new GrantStore(file)
+    await expect(
+      store.setExternalMcpPreauthorized(identity(), "clipboard:watch", true)
+    ).rejects.toThrow(/not granted/)
+  })
+
+  it("clears externalMcpPreauthorized when the identity's declaration hash rotates", async () => {
+    const store = new GrantStore(file)
+    await store.grant(identity(), "clipboard:watch", "user")
+    await store.setExternalMcpPreauthorized(identity(), "clipboard:watch", true)
+    const rotated = identity({ capabilityDeclarationHash: "rotated" })
+    expect(await store.isExternalMcpPreauthorized(rotated, "clipboard:watch")).toBe(false)
+  })
+
   it("skips malformed rows in a legacy array without throwing", async () => {
     const fs = await import("node:fs/promises")
     await fs.writeFile(

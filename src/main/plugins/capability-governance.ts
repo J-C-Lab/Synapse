@@ -19,7 +19,7 @@ import { createCapabilityAudit } from "./capability-audit"
 import { GrantStore, grantStoreFilePath } from "./grant-store"
 
 export interface CapabilityGovernance {
-  grants: Pick<GrantStore, "isGranted" | "grant">
+  grants: Pick<GrantStore, "isGranted" | "grant" | "isExternalMcpPreauthorized">
   prompt: GrantPromptPort
   approve: CapabilityApprover
   audit: (entry: CapabilityAuditEntry) => void
