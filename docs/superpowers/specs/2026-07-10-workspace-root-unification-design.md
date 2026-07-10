@@ -1,7 +1,7 @@
 # Workspace/WorkspaceRoot Data Model Unification
 
 > Date: 2026-07-10 · Status: draft, pending review
-> First of a three-part decomposition (spec ①) of the "two workspace axes
+> First of a four-part decomposition (spec ①) of the "two workspace axes
 > need unifying" follow-up flagged since the 2026-07-07 P4 Slice 1 work
 > (*"两个 workspace 轴仍分离(执行沙箱根 vs 会话 context workspace),统一留
 > 后续"*), and the direct prerequisite the `workspace-instructions`
@@ -95,16 +95,20 @@ affect the workspace's identity, its bound conversations, or its memory.
 
 ## 1. Data model
 
-```ts
-// src/main/ai/workspace/workspace-store.ts
-export interface Workspace {
-  id: string
-  name: string
-  createdAt: number
-  /** The default cwd / project-instructions discovery root, if any. */
-  primaryRootId?: string
-}
-```
+`Workspace` itself gains **no new field**. Reviewer-caught issue: an
+earlier draft of this spec added `Workspace.primaryRootId?: string`, but
+`WorkspaceStore` (`workspace-store.ts`) has no `update()`/`save()` method
+for *any* workspace — and `default` is additionally a hardcoded exported
+constant (`DEFAULT_WORKSPACE`) whose `list()` always re-prepends it fresh,
+while `readStored()` explicitly filters out any persisted record with
+`id === "default"`. There is currently no mechanism, for any workspace,
+to persist a field onto it after creation. Rather than build one just to
+hold a single redundant pointer, "primary" is represented **only** on the
+root record — `WorkspaceRootRecord.role`. A workspace's primary root (if
+any) is always `listForWorkspace(id).find(r => r.role === "primary")`.
+This is simpler than it sounds: it removes a whole class of "did the two
+copies of primary-ness drift apart" bugs, at the cost of one `.find()`
+instead of a field read.
 
 ```ts
 // src/main/ai/execution/types.ts
@@ -126,22 +130,30 @@ export interface WorkspaceRootRecord {
 New `WorkspaceRootStore` (`src/main/ai/workspace/workspace-root-store.ts`),
 structurally similar to `WorkspaceStore` (own JSON file under
 `userDataDir/ai/`), replacing `deriveExecutionWorkspaces()`'s on-the-fly
-derivation entirely. Two query shapes, matching the two real consumer
-patterns identified in §4:
+derivation entirely. Query shapes matching the real consumer patterns
+identified in §4 and §5, plus the one mutation needed to keep "at most one
+primary per workspace" an enforced invariant rather than a convention:
 
 ```ts
 async listAll(): Promise<WorkspaceRootRecord[]>
 async listForWorkspace(workspaceId: string): Promise<WorkspaceRootRecord[]>
 async create(workspaceId: string, name: string, root: string, role: "primary" | "additional"): Promise<WorkspaceRootRecord>
 async remove(id: string): Promise<void>
+/** Sets this root's role to "primary" and, atomically, demotes whatever
+ *  other root in the same workspace currently holds it (no-op if none
+ *  did). Throws if `id` isn't found. */
+async setPrimary(id: string): Promise<void>
 ```
+
+`create()` with `role: "primary"` follows the same atomic demote-the-old-
+one rule as `setPrimary()` — a workspace never ends up with two roots
+both marked `primary` through any code path.
 
 `remove()` only deletes the root record — it never touches the owning
 `Workspace`, its conversations, or its memory (independent lifecycles,
-per the Guiding Principle). If the removed root was the workspace's
-`primaryRootId`, that field is cleared (workspace becomes rootless or
-falls back to having only `additional` roots — no automatic promotion of
-another root to primary; the user picks explicitly if they want one).
+per the Guiding Principle). Removing a workspace's primary root simply
+leaves that workspace with no primary — no automatic promotion of another
+root; the user calls `setPrimary()` explicitly if they want one.
 
 ## 2. Migration
 
@@ -171,10 +183,21 @@ real-world impact, and safer than guessing a mapping.
 
 The current global "allowed workspace roots" text list
 (`settings.agentShell.rootsLabel`/`rootsEmpty` in the Settings page) is
-retired. Root management moves to a new section within each workspace's
-own management UI (wherever `WorkspaceStore` entries are currently
-edited/created — the workspace-switcher's "manage" flow) — add/remove
-roots, mark one `primary`.
+retired. **Reviewer-caught issue**: an earlier draft said root management
+"moves to" the workspace-switcher's existing "manage" flow — verified
+against `workspace-switcher.tsx` and no such flow exists. The component
+today has exactly two states: a `Select` dropdown to pick among existing
+workspaces, and an inline create-new text input. There is no edit/manage
+surface at all, for any workspace field.
+
+This spec therefore **adds** a minimal new surface rather than relocating
+into one: a small "Manage roots" action next to the workspace switcher
+(e.g. an icon button, visible whenever a workspace is selected) opening a
+dialog that lists that workspace's `WorkspaceRootRecord`s, lets the user
+add/remove roots and call `setPrimary()` on one. Exact placement/visual
+treatment of that entry point is left to the implementation plan (§7) —
+what's fixed here is only that it must be *new*, not a retrofit of
+something that already exists.
 
 Adding a root uses Electron's native folder picker
 (`dialog.showOpenDialog({ properties: ["openDirectory"] })`) instead of
@@ -182,39 +205,73 @@ free-text path entry — there's no reason to make a user hand-type a
 filesystem path when picking a folder is the native, error-proof
 interaction.
 
-## 4. Tool API — `run_command`
+## 4. Tool API — all five execution tools
 
-`execution-tool-host.ts`'s `run_command` input schema: `workspaceId` →
-`rootId` (same type, `{type: "string"}`, required alongside `command`).
-This is a breaking rename to the tool's own input contract — the model's
-tool-calling convention changes, not a wire-compatible extension.
+**Reviewer-caught issue**: an earlier draft scoped this section to
+`run_command` alone. Verified against `execution-tool-host.ts`: all five
+`TOOL_DESCRIPTORS` (`list_files`, `read_file`, `search_files`,
+`apply_patch`, `run_command`) require `workspaceId` in their input schema
+today, and all five ultimately call `WorkspacePolicy.resolvePath(...)` —
+the same unscoped-root-list gap applies to every one of them, not just
+the one this spec originally called out.
 
-New enforcement in the tool handler, before `WorkspacePolicy.resolvePath`
-runs:
+**Schema rename** (all five tools, same type, `{type: "string"}`,
+required): `workspaceId` → `rootId`. Breaking rename to the tools' own
+input contract — the model's tool-calling convention changes, not a
+wire-compatible extension.
+
+**Enforcement moves to a single shared point** rather than being
+duplicated five times. `ExecutionToolHostSource.invokeTool()`
+(`execution-tool-host.ts:128-133`) already calls `const policy = await this.policy()`
+exactly once per invocation, before dispatching to whichever of the five
+handlers — that one call site is where the caller-scoped root list is
+fetched and where the "no `rootId` → default to primary" resolution
+happens, so both fixes land in one place instead of five:
 
 ```ts
-const allowedRoots = await workspaceRoots.listForWorkspace(caller.workspaceId ?? "")
-const root = allowedRoots.find((r) => r.id === (args.rootId ?? findPrimary(allowedRoots)?.id))
-if (!root) deny("root not available to this workspace")
+private async policy(
+  caller: ToolCaller,
+  requestedRootId: string | undefined
+): Promise<{ policy: WorkspacePolicy; rootId: string }> {
+  const roots = await this.options.workspaceRoots.listForWorkspace(caller.workspaceId ?? "")
+  const rootId = requestedRootId ?? roots.find((r) => r.role === "primary")?.id
+  const root = roots.find((r) => r.id === rootId)
+  if (!root) throw new Error("root not available to this workspace")
+  return { policy: new WorkspacePolicy(roots), rootId: root.id }
+}
 ```
+
+`invokeTool()` calls this once per invocation with `args.rootId` from the
+input, then passes the resolved `{ policy, rootId }` into whichever of
+the five handlers is dispatched — each handler already receives `policy`
+today, it now also receives the already-resolved `rootId` instead of
+reading `workspaceId` out of its own `input` a second time.
+
+`WorkspacePolicy.resolvePath` (`workspace-policy.ts:8`) keeps its existing
+`fs.realpath`-based canonicalization logic untouched, but its first
+parameter — currently also named `workspaceId`, despite matching against
+a root id — is renamed `rootId` too. Leaving it as `workspaceId` while
+every call site above moves to `rootId` would preserve exactly the
+naming confusion this spec exists to close.
 
 - `caller.workspaceId` **missing** (today: every `background-agent`
   invocation) → `listForWorkspace("")` resolves to an empty list by
-  construction (no record has `workspaceId === ""`) → `run_command`
-  becomes universally unusable for that caller. This isn't a new
-  restriction in practice — `run_command` isn't reachable from a
-  background-agent run today regardless (verified: `BackgroundAgentRunner`
-  is constructed with `tools: this`, the plain `PluginHost`/
-  `PluginRegistry`, which only ever contains manifest-declared plugin
-  tools; `ExecutionToolHostSource` is composed only into the separate
-  `CompositeToolHost` built in `index.ts` that feeds the interactive-agent
-  path — a wiring separation today, not an enforced boundary). **This is
-  exactly why the invariant matters going forward, not just today**: if a
-  future change ever gives background-agent runs the full
-  `CompositeToolHost` (e.g. to let triggers use read-only file tools),
-  `run_command` would become reachable with **zero enforcement** as the
-  code stands otherwise — neither `WorkspacePolicy` (doesn't check
-  `caller.workspaceId`) nor `BackgroundAgentRunner`'s own capability filter
+  construction (no record has `workspaceId === ""`) → **all five**
+  execution tools become universally unusable for that caller, not just
+  `run_command`. This isn't a new restriction in practice for any of
+  them — none of the five are reachable from a background-agent run
+  today regardless (verified: `BackgroundAgentRunner` is constructed with
+  `tools: this`, the plain `PluginHost`/`PluginRegistry`, which only ever
+  contains manifest-declared plugin tools; `ExecutionToolHostSource` is
+  composed only into the separate `CompositeToolHost` built in `index.ts`
+  that feeds the interactive-agent path — a wiring separation today, not
+  an enforced boundary). **This is exactly why the invariant matters
+  going forward, not just today**: if a future change ever gives
+  background-agent runs the full `CompositeToolHost` (e.g. to let
+  triggers use read-only file tools), all five execution tools would
+  become reachable with **zero enforcement** as the code stands otherwise
+  — neither `WorkspacePolicy` (didn't check `caller.workspaceId` before
+  this spec) nor `BackgroundAgentRunner`'s own capability filter
   (execution tool descriptors declare no `capabilities`, so the filter
   vacuously passes) would catch it. This spec's fail-closed-on-missing-
   `workspaceId` check is what would actually stand in the way at that
@@ -222,26 +279,21 @@ if (!root) deny("root not available to this workspace")
   Trigger→workspace binding (spec ④) is the only sanctioned way a
   background-agent caller ever gets a real `workspaceId` in the future.
 - `rootId` omitted, `caller.workspaceId` present → defaults to that
-  workspace's `primaryRootId`, if set; if the workspace is rootless, same
+  workspace's primary root (`WorkspaceRootRecord.role === "primary"`), if
+  one exists; if the workspace is rootless or has no primary, same
   "not available" denial.
 - `rootId` present but not in `caller.workspaceId`'s owned roots → denied
   and audited, regardless of whether that root id is valid for some *other*
   workspace.
 
-`WorkspacePolicy`/`resolvePath` (`workspace-policy.ts`) changes from
-resolving against the full global root list to resolving against the
-already-caller-scoped `allowedRoots` passed in above — no change to its
-existing `fs.realpath`-based canonicalization logic, which was already
-correct and is untouched by this spec.
-
 ## 5. Consumer updates
 
-Two real, distinct consumers of "the root list" exist today
-(`src/main/index.ts`), and they need different query shapes going forward
-— this was a genuine point of confusion worth calling out explicitly:
+Three real, distinct consumers of "the root list" exist today, and they
+need different query shapes going forward — this was a genuine point of
+confusion worth calling out explicitly:
 
-- **`ExecutionToolHostSource`** (the agent's own tool call, §4 above) needs
-  the **caller-scoped** view: `workspaceRoots.listForWorkspace(caller.workspaceId)`.
+- **`ExecutionToolHostSource`** (the agent's own tool calls, §4 above)
+  needs the **caller-scoped** view: `workspaceRoots.listForWorkspace(caller.workspaceId)`.
 - **`McpClientManager`** (the `mcp-client-roots` feature from PR #38 —
   Synapse-as-client advertising roots *outward* to external servers it
   connects to) is deliberately **not** conversation-scoped — a user picks
@@ -251,44 +303,89 @@ Two real, distinct consumers of "the root list" exist today
   its existing per-server `exposedExecutionRootIds` selection UI changes
   in shape, only the underlying id source (now stable, host-generated,
   instead of basename-derived).
+- **`AgentRuntime`/`AgentService`** — **reviewer-caught omission**, missing
+  entirely from the earlier draft. `AgentService.chat()`
+  (`agent-service.ts:386-398`) constructs a fresh `AgentRuntime` per turn
+  and today passes it `executionWorkspaces: this.options.getExecutionWorkspaces`
+  — the same global, unscoped function the other two consumers used to
+  rely on. Inside `AgentRuntime`, that list feeds two things
+  (`agent-runtime.ts:154-163,339`): (a) `buildSystemPrompt`'s execution-
+  root guidance, which lists every `id → root` pair so the model knows
+  which `rootId`s it may pass to the execution tools, and (b)
+  `workspaceInstructionContext` → `loadWorkspaceInstructions`, which scans
+  root directories for project-instructions files to fold into the system
+  prompt.
+
+  Fix: `AgentService.chat()` already looks up the conversation's bound
+  `workspaceId` (`existing?.workspaceId ?? "default"`, currently on line
+  398) — the fix simply moves that lookup *before* constructing
+  `AgentRuntime` (line 386) instead of after, resolves
+  `await workspaceRoots.listForWorkspace(workspaceId)` there, and passes
+  the already-resolved array in via a synchronous closure
+  (`executionWorkspaces: () => resolvedRoots`) — no change needed to
+  `AgentRuntime`'s existing synchronous-call contract at
+  `agent-runtime.ts:154`. `AgentServiceOptions.getExecutionWorkspaces`'s
+  signature changes from `() => readonly WorkspaceRoot[]` to
+  `(workspaceId: string) => Promise<readonly WorkspaceRootRecord[]>`.
+
+  Consistent with the earlier decision that workspace-instructions
+  scanning only ever reads the **primary** root (not `additional` ones):
+  `workspaceInstructionContext` filters its input to
+  `roots.filter(r => r.role === "primary")` before calling
+  `loadWorkspaceInstructions`. `buildSystemPrompt`'s execution-root
+  guidance is not filtered — the model needs to see every root it can
+  address via `rootId` for the five execution tools, not just the
+  primary one.
 
 `index.ts`'s current single global `executionWorkspaces()` function is
-replaced by these two explicit, differently-scoped calls at their
+replaced by these three explicit, differently-scoped calls at their
 respective call sites — not a single shared function anymore, since they
 were never really the same query to begin with.
 
 ## 6. Testing strategy
 
 - **`workspace-root-store.test.ts`**: create/list/remove round-trip;
-  `listForWorkspace` returns only that workspace's records;
-  `listAll` returns everything regardless of owner; removing the
-  `primaryRootId` root clears the workspace's `primaryRootId` (no
-  auto-promotion); ids are stable across repeated `listAll()` calls even
-  when two roots share a folder basename (the bug this spec fixes).
+  `listForWorkspace` returns only that workspace's records; `listAll`
+  returns everything regardless of owner; `setPrimary()` demotes whatever
+  root previously held `role: "primary"` in the same workspace, is a
+  no-op-on-others across different workspaces, and throws for an unknown
+  id; `create()` with `role: "primary"` also demotes an existing primary;
+  removing the primary root leaves the workspace with no primary and does
+  *not* auto-promote another; ids are stable across repeated `listAll()`
+  calls even when two roots share a folder basename (the bug this spec
+  fixes).
 - **Migration test**: given a legacy `agentShellRoots: [a, b, c]`, the
   `default` workspace ends up with `a` as `primary` and `b`/`c` as
   `additional`, each with a distinct generated id; `allowAgentShell`'s
   value is unchanged by the migration; a fixture with `exposedExecutionRootIds`
   set on an `McpServerConfig` ends up with that field cleared, not remapped.
-- **`execution-tool-host.test.ts`**: extend for the `rootId` rename
-  (existing `workspaceId`-named test cases update); new cases — a caller
-  with no `workspaceId` is denied regardless of `allowAgentShell`/root
-  state; a `rootId` belonging to a *different* workspace than
+- **`execution-tool-host.test.ts`**: extend for the `rootId` rename across
+  **all five** tools (existing `workspaceId`-named test cases update, not
+  just `run_command`'s); new cases, run against each of the five — a
+  caller with no `workspaceId` is denied regardless of `allowAgentShell`/
+  root state; a `rootId` belonging to a *different* workspace than
   `caller.workspaceId` is denied even though the id is valid globally; a
-  request with no `rootId` resolves to the caller's workspace's
-  `primaryRootId`; a rootless workspace's caller is denied with a clear
-  "no root available" message, not a generic failure.
+  request with no `rootId` resolves to the caller's workspace's primary
+  root; a rootless (or primary-less) workspace's caller is denied with a
+  clear "no root available" message, not a generic failure.
 - **`mcp-client-manager.test.ts` / roots**: confirm `McpClientManager`'s
   roots-advertisement path is unaffected by the caller-scoping change
   (still sees the full `listAll()` set), since this is the one consumer
   that must *not* be scoped.
+- **`agent-runtime.test.ts` / `agent-service.test.ts`**: a conversation
+  bound to workspace A only sees workspace A's roots in its system-prompt
+  execution guidance, never workspace B's, even when both have roots
+  configured; `workspaceInstructionContext` only scans a workspace's
+  `primary` root, never its `additional` ones, even when `additional`
+  roots contain their own instructions files.
 
 ## 7. Parked questions (surfaced, not solved)
 
-- **Exact settings-UI placement for per-workspace root management** — this
-  spec fixes the data model and retires the old global page; the precise
-  new UI location (which existing "manage workspace" surface it attaches
-  to) is an implementation-plan-level UI decision, not re-litigated here.
+- **Exact visual placement of the new "Manage roots" entry point** — §3
+  fixes what must exist (a new surface, since none exists today) and what
+  it must let the user do (add/remove/set-primary); exactly where it sits
+  relative to the workspace switcher and its dialog layout is an
+  implementation-plan-level UI decision, not re-litigated here.
 - **Whether a moved/renamed root's `name` should ever re-sync from the
   filesystem** — decided to snapshot `name` at creation time and never
   auto-update it; revisit only if this proves confusing in practice.
