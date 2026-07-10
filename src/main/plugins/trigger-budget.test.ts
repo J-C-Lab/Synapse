@@ -43,4 +43,31 @@ describe("budgetLedger", () => {
     ledger.tryDebit(key, budget)
     expect(ledger.usage(key, budget)).toEqual({ used: 1, max: 5 })
   })
+
+  it("two instances of the same trigger in different workspaces have independent counters", () => {
+    const ledger = new BudgetLedger()
+    const budget = { maxCalls: 1, period: "1h" as const }
+    const workKey = {
+      pluginId: "p",
+      triggerId: "t",
+      workspaceId: "work",
+      capabilityId: "notification",
+      scopeKey: "",
+    }
+    const personalKey = { ...workKey, workspaceId: "personal" }
+
+    expect(ledger.tryDebit(workKey, budget)).toBe(true)
+    expect(ledger.tryDebit(workKey, budget)).toBe(false)
+    expect(ledger.tryDebit(personalKey, budget)).toBe(true)
+  })
+
+  it("event-level debits (no workspaceId) use their own bucket, unaffected by any instance", () => {
+    const ledger = new BudgetLedger()
+    const budget = { maxCalls: 1, period: "1h" as const }
+    const eventKey = { pluginId: "p", triggerId: "t", capabilityId: "notification", scopeKey: "" }
+    const instanceKey = { ...eventKey, workspaceId: "work" }
+
+    expect(ledger.tryDebit(eventKey, budget)).toBe(true)
+    expect(ledger.tryDebit(instanceKey, budget)).toBe(true)
+  })
 })

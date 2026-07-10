@@ -1,27 +1,32 @@
 import type { TriggerUse } from "@synapse/plugin-manifest"
-import type { CapabilityActor } from "./capability-gate"
 import { randomUUID } from "node:crypto"
 
-export interface MintInput {
+interface MintInputBase {
   pluginId: string
   triggerId: string
-  actor: CapabilityActor
   trigger: string
   signal: AbortSignal
   /** Host-owned trigger uses allowed for this invocation; never exposed to sandbox ctx. */
   allowedUses?: TriggerUse[]
 }
 
-export interface InvocationRecord extends MintInput {
+export type MintInput =
+  | (MintInputBase & { actor: "background" })
+  | (MintInputBase & { actor: "background-agent"; instanceId: string; workspaceId: string })
+
+interface InvocationRecordExtra {
   invocationId: string
-  /** Runtime-private proof this call originated from an admitted trigger fire. */
   triggerOrigin: symbol
   createdAt: number
 }
 
+export type InvocationRecord =
+  | (Extract<MintInput, { actor: "background" }> & InvocationRecordExtra)
+  | (Extract<MintInput, { actor: "background-agent" }> & InvocationRecordExtra)
+
 /** Options handed to the bridge to build the sandbox ctx — NO triggerOrigin. */
 export interface BackgroundContextOptions {
-  actor: CapabilityActor
+  actor: MintInput["actor"]
   trigger: string
   signal: AbortSignal
   invocationId: string
@@ -38,12 +43,12 @@ export class BackgroundInvoker {
 
   mint(input: MintInput): InvocationRecord {
     const invocationId = randomUUID()
-    const record: InvocationRecord = {
+    const record = {
       ...input,
       invocationId,
       triggerOrigin: Symbol("triggerOrigin"),
       createdAt: this.now(),
-    }
+    } as InvocationRecord
     this.records.set(invocationId, record)
     return record
   }

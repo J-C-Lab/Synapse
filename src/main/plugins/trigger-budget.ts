@@ -1,6 +1,8 @@
 export interface BudgetKey {
   pluginId: string
   triggerId: string
+  /** Present only for instance-level (background-agent) debits. */
+  workspaceId?: string
   capabilityId: string
   /** Stable string for the normalized scope (e.g. adapter.summarize or stableStringify). */
   scopeKey: string
@@ -23,7 +25,7 @@ interface Window {
 }
 
 function keyOf(k: BudgetKey): string {
-  return `${k.pluginId}\0${k.triggerId}\0${k.capabilityId}\0${k.scopeKey}`
+  return `${k.pluginId}\0${k.triggerId}\0${k.workspaceId ?? ""}\0${k.capabilityId}\0${k.scopeKey}`
 }
 
 /** Pure fixed-window counter keyed by (plugin, trigger, capability, scope). */

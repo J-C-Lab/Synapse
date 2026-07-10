@@ -31,6 +31,10 @@ export interface ToolCaller {
   principal?: ToolPrincipal
   /** The workspace this call is bound to. Absent ⇒ global scope. */
   workspaceId?: string
+  /** The trigger instance this call belongs to, when trigger-driven and
+   *  workspace-bound. Absent for every caller kind except a
+   *  workspace-bound background-agent run. */
+  triggerInstanceId?: string
 }
 
 /**

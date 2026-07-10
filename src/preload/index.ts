@@ -120,6 +120,20 @@ const electronAPI = {
     ipcRenderer.invoke("triggers:resume", { pluginId, triggerId }),
   killTrigger: (pluginId: string, triggerId: string) =>
     ipcRenderer.invoke("triggers:kill", { pluginId, triggerId }),
+  listTriggerInstances: (pluginId: string, triggerId: string) =>
+    ipcRenderer.invoke("triggers:list-instances", { pluginId, triggerId }),
+  createTriggerInstance: (pluginId: string, triggerId: string, workspaceId: string) =>
+    ipcRenderer.invoke("triggers:create-instance", { pluginId, triggerId, workspaceId }),
+  reactivateTriggerInstance: (instanceId: string) =>
+    ipcRenderer.invoke("triggers:reactivate-instance", { instanceId }),
+  pauseTriggerInstance: (instanceId: string) =>
+    ipcRenderer.invoke("triggers:pause-instance", { instanceId }),
+  resumeTriggerInstance: (instanceId: string) =>
+    ipcRenderer.invoke("triggers:resume-instance", { instanceId }),
+  removeTriggerInstance: (instanceId: string) =>
+    ipcRenderer.invoke("triggers:remove-instance", { instanceId }),
+  getTriggerMigrationNotice: () => ipcRenderer.invoke("triggers:migration-notice"),
+  dismissTriggerMigrationNotice: () => ipcRenderer.invoke("triggers:dismiss-migration-notice"),
   listMarketplacePlugins: () => ipcRenderer.invoke("marketplace:list"),
   installMarketplacePlugin: (id: string, version?: string) =>
     ipcRenderer.invoke("marketplace:install", { id, version }),

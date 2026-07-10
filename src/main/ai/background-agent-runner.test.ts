@@ -3,6 +3,7 @@ import type { RegisteredToolDescriptor } from "../plugins/types"
 import type { ChatContentBlock, ChatProvider, TokenUsage } from "./providers/types"
 import { describe, expect, it, vi } from "vitest"
 import { AgentBudgetLedger } from "../plugins/agent-budget"
+import { AgentRuntime } from "./agent-runtime"
 import { BackgroundAgentRunner } from "./background-agent-runner"
 import { emptyUsage } from "./providers/types"
 
@@ -63,27 +64,45 @@ const agentBudget = {
   timeoutMs: 1000,
 }
 
+const defaultRunInput = {
+  instanceId: "instance-1",
+  workspaceId: "work",
+}
+
+function runnerOptions(
+  overrides: Partial<ConstructorParameters<typeof BackgroundAgentRunner>[0]> &
+    Pick<ConstructorParameters<typeof BackgroundAgentRunner>[0], "provider" | "tools">
+): ConstructorParameters<typeof BackgroundAgentRunner>[0] {
+  return {
+    workspaceRoots: { listForWorkspace: async () => [] },
+    ...overrides,
+  }
+}
+
 describe("backgroundAgentRunner", () => {
   it("exposes only tools whose capabilities are contained by allowedUses", async () => {
     const invoked = vi.fn(async () => ({ content: [{ type: "text" as const, text: "ok" }] }))
-    const runner = new BackgroundAgentRunner({
-      provider: fakeProvider([
-        { toolUses: [{ id: "t1", name: "com_example_organizer_read", input: {} }] },
-        { text: "done" },
-      ]),
-      tools: {
-        listTools: () => [
-          descriptor("read", [{ id: "fs:read", scope: { paths: ["~/Downloads/**"] } }]),
-          descriptor("write", [{ id: "fs:write", scope: { paths: ["~/Downloads/**"] } }]),
-        ],
-        invokeTool: invoked,
-      },
-      ledger: new AgentBudgetLedger(() => 0),
-    })
+    const runner = new BackgroundAgentRunner(
+      runnerOptions({
+        provider: fakeProvider([
+          { toolUses: [{ id: "t1", name: "com_example_organizer_read", input: {} }] },
+          { text: "done" },
+        ]),
+        tools: {
+          listTools: () => [
+            descriptor("read", [{ id: "fs:read", scope: { paths: ["~/Downloads/**"] } }]),
+            descriptor("write", [{ id: "fs:write", scope: { paths: ["~/Downloads/**"] } }]),
+          ],
+          invokeTool: invoked,
+        },
+        ledger: new AgentBudgetLedger(() => 0),
+      })
+    )
 
     await runner.run({
       pluginId: "com.example.organizer",
       triggerId: "downloads",
+      ...defaultRunInput,
       invocationId: "inv-1",
       event: { relativePath: "report.pdf" },
       allowedUses: [fsReadUse],
@@ -102,28 +121,31 @@ describe("backgroundAgentRunner", () => {
 
   it("denies tool calls after maxToolCallsPerRun is spent", async () => {
     const invoked = vi.fn(async () => ({ content: [{ type: "text" as const, text: "ok" }] }))
-    const runner = new BackgroundAgentRunner({
-      provider: fakeProvider([
-        {
-          toolUses: [
-            { id: "t1", name: "com_example_organizer_read", input: { n: 1 } },
-            { id: "t2", name: "com_example_organizer_read", input: { n: 2 } },
+    const runner = new BackgroundAgentRunner(
+      runnerOptions({
+        provider: fakeProvider([
+          {
+            toolUses: [
+              { id: "t1", name: "com_example_organizer_read", input: { n: 1 } },
+              { id: "t2", name: "com_example_organizer_read", input: { n: 2 } },
+            ],
+          },
+          { text: "done" },
+        ]),
+        tools: {
+          listTools: () => [
+            descriptor("read", [{ id: "fs:read", scope: { paths: ["~/Downloads/**"] } }]),
           ],
+          invokeTool: invoked,
         },
-        { text: "done" },
-      ]),
-      tools: {
-        listTools: () => [
-          descriptor("read", [{ id: "fs:read", scope: { paths: ["~/Downloads/**"] } }]),
-        ],
-        invokeTool: invoked,
-      },
-      ledger: new AgentBudgetLedger(() => 0),
-    })
+        ledger: new AgentBudgetLedger(() => 0),
+      })
+    )
 
     const result = await runner.run({
       pluginId: "com.example.organizer",
       triggerId: "downloads",
+      ...defaultRunInput,
       invocationId: "inv-1",
       event: {},
       allowedUses: [fsReadUse],
@@ -137,14 +159,17 @@ describe("backgroundAgentRunner", () => {
 
   it("returns budget_exceeded when the run window is exhausted", async () => {
     const ledger = new AgentBudgetLedger(() => 0)
-    const runner = new BackgroundAgentRunner({
-      provider: fakeProvider([{ text: "done" }]),
-      tools: { listTools: () => [], invokeTool: vi.fn() },
-      ledger,
-    })
+    const runner = new BackgroundAgentRunner(
+      runnerOptions({
+        provider: fakeProvider([{ text: "done" }]),
+        tools: { listTools: () => [], invokeTool: vi.fn() },
+        ledger,
+      })
+    )
     const input = {
       pluginId: "com.example.organizer",
       triggerId: "downloads",
+      ...defaultRunInput,
       invocationId: "inv-1",
       event: {},
       allowedUses: [fsReadUse],
@@ -160,15 +185,18 @@ describe("backgroundAgentRunner", () => {
 
   it("records a trace whose runId matches the ledger run and origin is background-agent", async () => {
     const recorded: import("./run-trace-store").RunTrace[] = []
-    const runner = new BackgroundAgentRunner({
-      provider: fakeProvider([{ text: "done" }]),
-      tools: { listTools: () => [], invokeTool: vi.fn() },
-      recordRun: (trace) => recorded.push(trace),
-    })
+    const runner = new BackgroundAgentRunner(
+      runnerOptions({
+        provider: fakeProvider([{ text: "done" }]),
+        tools: { listTools: () => [], invokeTool: vi.fn() },
+        recordRun: (trace) => recorded.push(trace),
+      })
+    )
 
     await runner.run({
       pluginId: "com.example.organizer",
       triggerId: "downloads",
+      ...defaultRunInput,
       invocationId: "inv-1",
       event: {},
       allowedUses: [fsReadUse],
@@ -184,26 +212,29 @@ describe("backgroundAgentRunner", () => {
 
   it("records outcome 'budget_exceeded' (not 'aborted') when the token budget is hit", async () => {
     const recorded: import("./run-trace-store").RunTrace[] = []
-    const runner = new BackgroundAgentRunner({
-      provider: fakeProvider([
-        {
-          toolUses: [{ id: "t1", name: "com_example_organizer_read", input: {} }],
-          usage: { outputTokens: 9999 },
+    const runner = new BackgroundAgentRunner(
+      runnerOptions({
+        provider: fakeProvider([
+          {
+            toolUses: [{ id: "t1", name: "com_example_organizer_read", input: {} }],
+            usage: { outputTokens: 9999 },
+          },
+          { text: "should not reach" },
+        ]),
+        tools: {
+          listTools: () => [
+            descriptor("read", [{ id: "fs:read", scope: { paths: ["~/Downloads/**"] } }]),
+          ],
+          invokeTool: vi.fn(async () => ({ content: [{ type: "text" as const, text: "ok" }] })),
         },
-        { text: "should not reach" },
-      ]),
-      tools: {
-        listTools: () => [
-          descriptor("read", [{ id: "fs:read", scope: { paths: ["~/Downloads/**"] } }]),
-        ],
-        invokeTool: vi.fn(async () => ({ content: [{ type: "text" as const, text: "ok" }] })),
-      },
-      recordRun: (trace) => recorded.push(trace),
-    })
+        recordRun: (trace) => recorded.push(trace),
+      })
+    )
 
     const result = await runner.run({
       pluginId: "com.example.organizer",
       triggerId: "downloads",
+      ...defaultRunInput,
       invocationId: "inv-1",
       event: {},
       allowedUses: [fsReadUse],
@@ -214,5 +245,94 @@ describe("backgroundAgentRunner", () => {
     expect(result.stopReason).toBe("budget_exceeded")
     expect(recorded).toHaveLength(1)
     expect(recorded[0].outcome).toBe("budget_exceeded")
+  })
+
+  it("caller.workspaceId and the run's instanceId equal the input's", async () => {
+    let capturedOptions: Parameters<AgentRuntime["run"]>[0] | undefined
+    const runner = new BackgroundAgentRunner(
+      runnerOptions({
+        provider: fakeProvider([{ text: "done" }]),
+        tools: { listTools: () => [], invokeTool: vi.fn() },
+        createAgentRuntime: (options) => {
+          const runtime = new AgentRuntime(options)
+          const originalRun = runtime.run.bind(runtime)
+          runtime.run = async (opts) => {
+            capturedOptions = opts
+            return originalRun(opts)
+          }
+          return runtime
+        },
+      })
+    )
+    await runner.run({
+      pluginId: "com.synapse.github-inbox",
+      triggerId: "poll-inbox",
+      instanceId: "instance-1",
+      workspaceId: "work",
+      invocationId: "inv-1",
+      event: {},
+      allowedUses: [],
+      agent: {
+        maxRuns: 10,
+        period: "1h",
+        maxToolCallsPerRun: 5,
+        maxTokensPerRun: 1000,
+        timeoutMs: 5000,
+      },
+      instruction: "do the thing",
+    })
+
+    expect(capturedOptions?.workspaceId).toBe("work")
+    expect(capturedOptions?.triggerInstanceId).toBe("instance-1")
+    expect(capturedOptions?.caller).toMatchObject({
+      kind: "background-agent",
+      workspaceId: "work",
+      triggerInstanceId: "instance-1",
+    })
+  })
+
+  it("constructs AgentRuntime with workspaceInstructionRoots set and executionWorkspaces NOT set", async () => {
+    let capturedRuntimeOptions: import("./agent-runtime").AgentRuntimeOptions | undefined
+    const runner = new BackgroundAgentRunner(
+      runnerOptions({
+        provider: fakeProvider([{ text: "done" }]),
+        tools: { listTools: () => [], invokeTool: vi.fn() },
+        workspaceRoots: {
+          listForWorkspace: async () => [
+            {
+              id: "root-1",
+              workspaceId: "work",
+              name: "Work",
+              root: "/work",
+              role: "primary" as const,
+              createdAt: 0,
+            },
+          ],
+        },
+        createAgentRuntime: (options) => {
+          capturedRuntimeOptions = options
+          return new AgentRuntime(options)
+        },
+      })
+    )
+    await runner.run({
+      pluginId: "p",
+      triggerId: "t",
+      instanceId: "i",
+      workspaceId: "work",
+      invocationId: "inv",
+      event: {},
+      allowedUses: [],
+      agent: {
+        maxRuns: 10,
+        period: "1h",
+        maxToolCallsPerRun: 5,
+        maxTokensPerRun: 1000,
+        timeoutMs: 5000,
+      },
+      instruction: "x",
+    })
+    expect(capturedRuntimeOptions?.executionWorkspaces).toBeUndefined()
+    expect(capturedRuntimeOptions?.workspaceInstructionRoots?.()).toHaveLength(1)
   })
 })

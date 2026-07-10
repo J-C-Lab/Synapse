@@ -100,6 +100,7 @@ export interface InvocationContext {
   runId?: string
   principal?: ToolPrincipal
   workspaceId?: string
+  triggerInstanceId?: string
 }
 
 export interface PluginBridgeOptions {
@@ -236,6 +237,7 @@ export class PluginBridge {
       runId: options.caller.runId,
       principal: options.caller.principal,
       workspaceId: options.caller.workspaceId,
+      triggerInstanceId: options.caller.triggerInstanceId,
     }
 
     return {
@@ -293,7 +295,14 @@ export class PluginBridge {
     const ensure = (
       request: Omit<
         CapabilityRequest,
-        "actor" | "trigger" | "signal" | "invocationId" | "runId" | "principal" | "workspaceId"
+        | "actor"
+        | "trigger"
+        | "signal"
+        | "invocationId"
+        | "runId"
+        | "principal"
+        | "workspaceId"
+        | "triggerInstanceId"
       >
     ) =>
       gate.ensure({
@@ -305,6 +314,7 @@ export class PluginBridge {
         runId: invocation.runId,
         principal: invocation.principal,
         workspaceId: invocation.workspaceId,
+        triggerInstanceId: invocation.triggerInstanceId,
       })
 
     // The fetcher runs its own gate.ensure inside fetch(), so network needs no
@@ -322,6 +332,7 @@ export class PluginBridge {
       runId: invocation.runId,
       principal: invocation.principal,
       workspaceId: invocation.workspaceId,
+      triggerInstanceId: invocation.triggerInstanceId,
     })
     const fetcher = createNetworkFetcher({
       gate,
@@ -332,6 +343,7 @@ export class PluginBridge {
       runId: invocation.runId,
       principal: invocation.principal,
       workspaceId: invocation.workspaceId,
+      triggerInstanceId: invocation.triggerInstanceId,
       injectCredential,
     })
     this.registerFetcher(pluginId, fetcher)
@@ -674,6 +686,7 @@ export class PluginBridge {
         runId: invocation.runId,
         principal: invocation.principal,
         workspaceId: invocation.workspaceId,
+        triggerInstanceId: invocation.triggerInstanceId,
       })
 
     return {

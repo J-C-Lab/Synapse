@@ -1,8 +1,9 @@
 import type { AgentTriggerBudget, NormalizedCapability, TriggerUse } from "@synapse/plugin-manifest"
-import type { AgentRunResult } from "./agent-runtime"
+import type { AgentRunResult, AgentRuntimeOptions } from "./agent-runtime"
 import type { ChatMessage, ChatProvider, ProviderStreamEvent } from "./providers/types"
 import type { RunTrace } from "./run-trace-store"
 import type { ToolHostPort } from "./tool-registry"
+import type { WorkspaceRootStore } from "./workspace/workspace-root-store"
 import {
   declaredCredentialBrokerScopeContains,
   declaredNetworkScopeContains,
@@ -17,6 +18,8 @@ import { AiToolRegistry } from "./tool-registry"
 export interface BackgroundAgentRunInput {
   pluginId: string
   triggerId: string
+  instanceId: string
+  workspaceId: string
   invocationId: string
   event: unknown
   allowedUses: TriggerUse[]
@@ -24,6 +27,8 @@ export interface BackgroundAgentRunInput {
   instruction: string
   signal?: AbortSignal
 }
+
+export type CreateAgentRuntime = (options: AgentRuntimeOptions) => AgentRuntime
 
 export interface BackgroundAgentRunnerOptions {
   provider: ChatProvider
@@ -37,23 +42,30 @@ export interface BackgroundAgentRunnerOptions {
     set: (runId: string, budgetTokens: number | undefined) => void
     clear: (runId: string) => void
   }
+  workspaceRoots: Pick<WorkspaceRootStore, "listForWorkspace">
+  /** Test seam: substitute AgentRuntime construction. */
+  createAgentRuntime?: CreateAgentRuntime
 }
 
 export class BackgroundAgentRunner {
   private readonly ledger: AgentBudgetLedger
+  private readonly createAgentRuntime: CreateAgentRuntime
 
   constructor(private readonly options: BackgroundAgentRunnerOptions) {
     this.ledger = options.ledger ?? new AgentBudgetLedger()
+    this.createAgentRuntime = options.createAgentRuntime ?? ((opts) => new AgentRuntime(opts))
   }
 
   async run(input: BackgroundAgentRunInput): Promise<AgentRunResult> {
     const start = this.ledger.tryStart(
-      { pluginId: input.pluginId, triggerId: input.triggerId },
+      { pluginId: input.pluginId, triggerId: input.triggerId, workspaceId: input.workspaceId },
       input.agent
     )
     if (!start.ok) {
       return { messages: [], stopReason: "budget_exceeded", usage: emptyUsage() }
     }
+
+    const resolvedRoots = await this.options.workspaceRoots.listForWorkspace(input.workspaceId)
 
     const runBudget = input.agent.maxTokensPerRun > 0 ? input.agent.maxTokensPerRun : undefined
     this.options.runBudgetRegistry?.set(start.runId, runBudget)
@@ -69,12 +81,13 @@ export class BackgroundAgentRunner {
       controller.abort()
     })
     const recordRun = this.options.recordRun
-    const runtime = new AgentRuntime({
+    const runtime = this.createAgentRuntime({
       provider,
       tools: new AiToolRegistry(this.limitedTools(input.allowedUses)),
       model: this.options.model,
       maxSteps: input.agent.maxToolCallsPerRun + 1,
       budgetTokens: input.agent.maxTokensPerRun,
+      workspaceInstructionRoots: () => resolvedRoots,
       recordRun: recordRun
         ? (trace) =>
             recordRun({
@@ -91,10 +104,14 @@ export class BackgroundAgentRunner {
         signal: controller.signal,
         runId: start.runId,
         origin: "background-agent",
+        workspaceId: input.workspaceId,
+        triggerInstanceId: input.instanceId,
         caller: {
           kind: "background-agent",
           invocationId: input.invocationId,
           runId: start.runId,
+          workspaceId: input.workspaceId,
+          triggerInstanceId: input.instanceId,
         },
         approve: () => ({ allowed: this.ledger.tryDebitToolCall(start.runId, input.agent) }),
       })

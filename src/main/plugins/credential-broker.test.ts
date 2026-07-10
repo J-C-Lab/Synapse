@@ -137,6 +137,29 @@ describe("credentialBroker", () => {
     expect(injectionEntry?.workspaceId).toBe("ws-external")
   })
 
+  it("tags the injection audit event with triggerInstanceId", async () => {
+    const audited: import("./capability-gate").CapabilityAuditEntry[] = []
+    const broker = new CredentialBroker({
+      userDataDir: dir,
+      safeStorage: fakeSafeStorage,
+      secretPrompt: createFixedSecretPrompt("ghp_test"),
+      audit: (entry) => audited.push(entry),
+    })
+    await broker.connectStatic("com.example.x", manifest, "user", "gh")
+    const inject = broker.createInjectCredential({
+      pluginId: "com.example.x",
+      manifest,
+      sourceKind: "user",
+      isTriggerOrigin: false,
+      triggerInstanceId: "instance-1",
+    })
+    await inject({ host: "api.github.com", method: "GET", path: "/repos/foo" }, {})
+
+    const injectionEntry = audited.find((e) => e.trigger === "network:fetch")
+    expect(injectionEntry).toBeDefined()
+    expect(injectionEntry?.triggerInstanceId).toBe("instance-1")
+  })
+
   it("connects oauth credentials via injected flow ports", async () => {
     const broker = new CredentialBroker({
       userDataDir: dir,

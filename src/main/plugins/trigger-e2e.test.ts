@@ -137,10 +137,12 @@ async function makeHarness() {
         }
       }
     },
+    instanceStore: { listForTrigger: async () => [] },
+    identityForPlugin: () => undefined,
   })
 
   registryRef.current = registry
-  registry.register(PLUGIN_ID, [TRIGGER_DECL])
+  void registry.register(PLUGIN_ID, [TRIGGER_DECL])
 
   return { registry, fires, dispatchCalls, auditLog }
 }

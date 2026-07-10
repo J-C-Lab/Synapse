@@ -56,8 +56,10 @@ describe("createBudgetBreakerPort", () => {
       fsWatchAdapter: { register: () => () => {} },
       hotkeyAdapter: { register: () => () => {} },
       dispatch: async () => {},
+      instanceStore: { listForTrigger: async () => [] },
+      identityForPlugin: () => undefined,
     })
-    registry.register("com.example.x", manifest.triggers!)
+    void registry.register("com.example.x", manifest.triggers!)
 
     const { invocationId } = invoker.mint({
       pluginId: "com.example.x",
@@ -152,6 +154,8 @@ describe("createBudgetBreakerPort", () => {
       pluginId: "p",
       triggerId: "downloads",
       actor: "background-agent",
+      instanceId: "instance-1",
+      workspaceId: "work",
       trigger: "fs.watch:downloads",
       signal: new AbortController().signal,
       allowedUses: [{ capability: "fs:read", budget: { maxCalls: 1, period: "1h" } }],

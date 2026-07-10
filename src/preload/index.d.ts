@@ -229,7 +229,23 @@ declare global {
     triggerId: string
     type: string
     status: string
+    isAgentTrigger: boolean
     budgets: SynapsePluginTriggerBudgetRow[]
+  }
+
+  interface SynapseTriggerInstanceRow {
+    id: string
+    workspaceId: string
+    workspaceName: string
+    paused: boolean
+    stale: boolean
+    status: "idle" | "running" | "failed"
+    budgets: SynapsePluginTriggerBudgetRow[]
+  }
+
+  interface SynapseTriggerMigrationNoticeState {
+    affectedTriggers: Array<{ pluginId: string; triggerId: string }>
+    dismissedAt?: number
   }
 
   interface SynapseCapabilityGrantRequestEvent {
@@ -613,6 +629,25 @@ declare global {
       pauseTrigger: (pluginId: string, triggerId: string) => Promise<SynapsePluginIpcResult<void>>
       resumeTrigger: (pluginId: string, triggerId: string) => Promise<SynapsePluginIpcResult<void>>
       killTrigger: (pluginId: string, triggerId: string) => Promise<SynapsePluginIpcResult<void>>
+      listTriggerInstances: (
+        pluginId: string,
+        triggerId: string
+      ) => Promise<SynapsePluginIpcResult<SynapseTriggerInstanceRow[]>>
+      createTriggerInstance: (
+        pluginId: string,
+        triggerId: string,
+        workspaceId: string
+      ) => Promise<SynapsePluginIpcResult<SynapseTriggerInstanceRow>>
+      reactivateTriggerInstance: (
+        instanceId: string
+      ) => Promise<SynapsePluginIpcResult<SynapseTriggerInstanceRow>>
+      pauseTriggerInstance: (instanceId: string) => Promise<SynapsePluginIpcResult<void>>
+      resumeTriggerInstance: (instanceId: string) => Promise<SynapsePluginIpcResult<void>>
+      removeTriggerInstance: (instanceId: string) => Promise<SynapsePluginIpcResult<void>>
+      getTriggerMigrationNotice: () => Promise<
+        SynapsePluginIpcResult<SynapseTriggerMigrationNoticeState>
+      >
+      dismissTriggerMigrationNotice: () => Promise<SynapsePluginIpcResult<void>>
       listMarketplacePlugins: () => Promise<SynapsePluginIpcResult<SynapseMarketplaceEntry[]>>
       installMarketplacePlugin: (
         id: string,

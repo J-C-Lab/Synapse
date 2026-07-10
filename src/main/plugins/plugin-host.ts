@@ -9,7 +9,9 @@ import type {
 } from "@synapse/marketplace-types"
 import type { ClipboardContent, ToolResult } from "@synapse/plugin-sdk"
 import type { ChatProvider } from "../ai/providers/types"
-import type { PluginTriggerRow } from "../ipc/triggers"
+import type { WorkspaceRootStore } from "../ai/workspace/workspace-root-store"
+import type { WorkspaceStore } from "../ai/workspace/workspace-store"
+import type { PluginTriggerRow, TriggerInstanceRow } from "../ipc/triggers"
 import type {
   CapabilityGovernance,
   CreateCapabilityGovernanceOptions,
@@ -22,6 +24,8 @@ import type { MarketplaceApi } from "./marketplace-api"
 import type { MarketplaceEntry } from "./marketplace-registry"
 import type { PluginBridgeAdapters, PluginRuntimeSnapshot } from "./plugin-bridge"
 import type { TimerAdapter } from "./timer-adapter"
+import type { TriggerInstanceRecord } from "./trigger-instance-store"
+import type { TriggerMigrationNoticeState } from "./trigger-migration-notice"
 import type {
   PluginAgentTriggerDispatchRequest,
   PluginCommandResult,
@@ -47,7 +51,7 @@ import { createFixedSecretPrompt, CredentialBroker } from "./credential-broker"
 import { createElectronPluginAdapters } from "./electron-adapters"
 import { createFsWatchAdapter } from "./fs-watch-adapter"
 import { createMigrationMarker, migrateGrants } from "./grant-migration"
-import { GrantStore, grantStoreFilePath } from "./grant-store"
+import { GrantStore, grantStoreFilePath, sameIdentity } from "./grant-store"
 import { createHotkeyAdapter } from "./hotkey-adapter"
 import { extractSynapsePackage } from "./install-from-package"
 import { loadPluginManifest } from "./manifest-loader"
@@ -69,6 +73,11 @@ import { AdmissionBreaker } from "./trigger-admission"
 import { BudgetLedger } from "./trigger-budget"
 import { createBudgetBreakerPort, scopeKeyForUse } from "./trigger-budget-breaker"
 import { grantTriggerUses, revokeTriggerUses } from "./trigger-grants"
+import { TriggerInstanceStore } from "./trigger-instance-store"
+import {
+  dismissTriggerMigrationNotice,
+  loadTriggerMigrationNotice,
+} from "./trigger-migration-notice"
 import { TriggerRegistry } from "./trigger-registry"
 
 export interface PluginHostOptions {
@@ -110,6 +119,8 @@ export interface PluginHostOptions {
     set: (runId: string, budgetTokens: number | undefined) => void
     clear: (runId: string) => void
   }
+  workspaceRoots: Pick<WorkspaceRootStore, "listForWorkspace">
+  workspaces?: Pick<WorkspaceStore, "get" | "exists">
   safeStorage?: SafeStoragePort
   secretPrompt?: SecretPromptPort
   credentialBroker?: CredentialBroker
@@ -177,7 +188,9 @@ export class PluginHost {
   private readonly budgetLedger = new BudgetLedger()
   private readonly agentBudgetLedger = new AgentBudgetLedger()
   private readonly invoker = new BackgroundInvoker()
+  private readonly triggerInstances: TriggerInstanceStore
   private readonly triggerRegistry: TriggerRegistry
+  private triggerMigrationNotice: TriggerMigrationNoticeState | undefined
   private readonly handleRegistryChanged = (): void => {
     void this.syncClipboardWatcher()
   }
@@ -235,6 +248,9 @@ export class PluginHost {
             .catch((err) => logger.child("plugin-host").warn("notification action failed", { err }))
         },
       })
+    this.triggerInstances = new TriggerInstanceStore(
+      path.join(options.userDataDir, "plugins", "trigger-instances.json")
+    )
     this.triggerRegistry = new TriggerRegistry({
       admission: this.admission,
       invoker: this.invoker,
@@ -244,6 +260,8 @@ export class PluginHost {
       hotkeyAdapter,
       dispatch: (req) => this.sandbox.dispatchTrigger(req),
       dispatchAgent: (req) => this.dispatchBackgroundAgent(req),
+      instanceStore: this.triggerInstances,
+      identityForPlugin: (pluginId) => this.identityForPlugin(pluginId),
     })
     this.bridge = new PluginBridge({
       userDataDir: options.userDataDir,
@@ -282,6 +300,27 @@ export class PluginHost {
         devFilePath: this.devFilePath,
       })
       await this.registry.load(discovered)
+      this.triggerMigrationNotice = await loadTriggerMigrationNotice({
+        noticeFilePath: path.join(
+          this.options.userDataDir,
+          "plugins",
+          "trigger-migration-notice.json"
+        ),
+        instanceStoreFileExists: () => this.triggerInstances.fileExists(),
+        grants: this.grants,
+        pluginsWithAgentTriggers: () =>
+          this.registry
+            .list()
+            .filter((e) => e.manifest?.triggers?.some((t) => t.agent))
+            .flatMap((e) =>
+              (e.manifest?.triggers ?? [])
+                .filter((t) => t.agent)
+                .map((t) => ({
+                  identity: buildGrantIdentity(e.pluginId, e.manifest!, e.source.kind),
+                  triggerId: t.id,
+                }))
+            ),
+      })
       await migrateGrants(this.registry.list(), this.grants, this.migrationMarker)
       await this.syncTriggerRegistrations()
       for (const entry of this.registry.list()) {
@@ -303,7 +342,7 @@ export class PluginHost {
     for (const entry of this.registry.list()) {
       if (entry.status === "active" && entry.manifest?.triggers?.length) {
         await this.ensureTriggerUseGrants(entry)
-        this.triggerRegistry.register(entry.pluginId, entry.manifest.triggers)
+        await this.triggerRegistry.register(entry.pluginId, entry.manifest.triggers)
       }
     }
   }
@@ -335,7 +374,7 @@ export class PluginHost {
     if (enabled) {
       await this.ensureTriggerUseGrants(entry)
       if (entry.manifest?.triggers?.length) {
-        this.triggerRegistry.register(pluginId, entry.manifest.triggers)
+        await this.triggerRegistry.register(pluginId, entry.manifest.triggers)
       }
     } else {
       await this.revokeTriggerUseGrants(entry)
@@ -357,6 +396,7 @@ export class PluginHost {
         triggerId: snap.triggerId,
         type: decl.type,
         status: snap.status,
+        isAgentTrigger: decl.agent !== undefined,
         budgets: decl.uses.map((use) => ({
           capabilityId: use.capability,
           ...this.budgetLedger.usage(
@@ -422,10 +462,13 @@ export class PluginHost {
       ledger: this.agentBudgetLedger,
       recordRun: this.options.recordRun,
       runBudgetRegistry: this.options.runBudgetRegistry,
+      workspaceRoots: this.options.workspaceRoots,
     })
     await runner.run({
       pluginId: request.pluginId,
       triggerId: request.triggerId,
+      instanceId: request.instanceId,
+      workspaceId: request.workspaceId,
       invocationId: request.invocationId,
       event: request.event,
       allowedUses: request.allowedUses,
@@ -433,6 +476,115 @@ export class PluginHost {
       signal: request.signal,
       instruction: backgroundAgentInstruction(request),
     })
+  }
+
+  identityForPlugin(pluginId: string): ReturnType<typeof buildGrantIdentity> | undefined {
+    const entry = this.registry.get(pluginId)
+    return entry?.manifest
+      ? buildGrantIdentity(pluginId, entry.manifest, entry.source.kind)
+      : undefined
+  }
+
+  isPluginActive(pluginId: string): boolean {
+    return this.registry.get(pluginId)?.status === "active"
+  }
+
+  getTriggerDeclaration(pluginId: string, triggerId: string) {
+    return this.triggerRegistry.getDeclaration(pluginId, triggerId)
+  }
+
+  async createTriggerInstance(
+    pluginId: string,
+    triggerId: string,
+    workspaceId: string
+  ): Promise<TriggerInstanceRecord> {
+    const record = await this.triggerInstances.create(
+      this.identityForPluginOrThrow(pluginId),
+      triggerId,
+      workspaceId
+    )
+    await this.triggerRegistry.onInstanceAdded(pluginId, triggerId)
+    return record
+  }
+
+  async reactivateTriggerInstance(
+    instanceId: string,
+    pluginId: string
+  ): Promise<TriggerInstanceRecord> {
+    const record = await this.triggerInstances.reactivate(
+      instanceId,
+      this.identityForPluginOrThrow(pluginId)
+    )
+    await this.triggerRegistry.onInstanceAdded(pluginId, record.triggerId)
+    return record
+  }
+
+  async setTriggerInstancePaused(instanceId: string, paused: boolean): Promise<void> {
+    await this.triggerInstances.setPaused(instanceId, paused)
+  }
+
+  async removeTriggerInstance(instanceId: string): Promise<void> {
+    const record = await this.triggerInstances.remove(instanceId)
+    if (record) await this.triggerRegistry.onInstanceRemoved(record)
+  }
+
+  async listTriggerInstances(pluginId: string, triggerId: string): Promise<TriggerInstanceRow[]> {
+    const records = await this.triggerInstances.listForTrigger(pluginId, triggerId)
+    const decl = this.triggerRegistry.getDeclaration(pluginId, triggerId)
+    const currentIdentity = this.identityForPlugin(pluginId)
+    const rows: TriggerInstanceRow[] = []
+    for (const record of records) {
+      const workspace = await this.options.workspaces?.get(record.workspaceId)
+      const runtimeState = this.triggerRegistry.instanceRuntimeStateFor(record.id)
+      rows.push({
+        id: record.id,
+        workspaceId: record.workspaceId,
+        workspaceName: workspace?.name ?? record.workspaceId,
+        paused: record.paused,
+        stale: !currentIdentity || !sameIdentity(record.identity, currentIdentity),
+        status: runtimeState.status,
+        budgets: (decl?.uses ?? []).map((use) => ({
+          capabilityId: use.capability,
+          ...this.budgetLedger.usage(
+            {
+              pluginId,
+              triggerId,
+              workspaceId: record.workspaceId,
+              capabilityId: use.capability,
+              scopeKey: scopeKeyForUse(use),
+            },
+            use.budget
+          ),
+        })),
+      })
+    }
+    return rows
+  }
+
+  async workspaceExists(workspaceId: string): Promise<boolean> {
+    return (await this.options.workspaces?.exists(workspaceId)) ?? false
+  }
+
+  async pluginIdForInstance(instanceId: string): Promise<string | undefined> {
+    const record = (await this.triggerInstances.listAll()).find((r) => r.id === instanceId)
+    return record?.identity.pluginId
+  }
+
+  getTriggerMigrationNotice(): TriggerMigrationNoticeState | undefined {
+    return this.triggerMigrationNotice
+  }
+
+  async dismissTriggerMigrationNotice(): Promise<void> {
+    await dismissTriggerMigrationNotice(
+      path.join(this.options.userDataDir, "plugins", "trigger-migration-notice.json")
+    )
+    if (this.triggerMigrationNotice) this.triggerMigrationNotice.dismissedAt = Date.now()
+  }
+
+  private identityForPluginOrThrow(pluginId: string): ReturnType<typeof buildGrantIdentity> {
+    const identity = this.identityForPlugin(pluginId)
+    if (!identity) throw new Error(`Plugin not active: ${pluginId}`)
+    return identity
   }
 
   disposeCommand(pluginId: string, commandId: string): Promise<void> {
@@ -591,6 +743,12 @@ export class PluginHost {
 
     if (entry.source.kind !== "user") {
       throw new PluginHostNotImplementedError("Only user-installed plugins can be uninstalled")
+    }
+
+    this.triggerRegistry.deregisterPlugin(pluginId)
+    const removedInstances = await this.triggerInstances.removeForPlugin(pluginId)
+    for (const record of removedInstances) {
+      await this.triggerRegistry.onInstanceRemoved(record)
     }
 
     if (entry.status === "active") {

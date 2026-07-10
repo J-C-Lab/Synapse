@@ -9,6 +9,7 @@ import { DeclaredTriggersPanel } from "@/components/plugins/declared-triggers-pa
 import { PluginCapabilityList } from "@/components/plugins/plugin-capability-list"
 import { PluginCapabilityProfileCard } from "@/components/plugins/plugin-capability-profile"
 import { PluginCredentialsPanel } from "@/components/plugins/plugin-credentials-panel"
+import { TriggerMigrationNoticeBanner } from "@/components/plugins/trigger-migration-notice-banner"
 import { localize } from "@/components/plugins/view-utils"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
@@ -336,6 +337,7 @@ export function PluginsPage() {
           </div>
         }
       >
+        <TriggerMigrationNoticeBanner />
         {!loading && plugins.length > 0 && (
           <>
             <div className="flex flex-col gap-3 rounded-lg border bg-card p-3">

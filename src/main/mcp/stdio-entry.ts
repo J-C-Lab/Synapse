@@ -96,6 +96,7 @@ async function main(): Promise<void> {
     fetch: (url, init) => globalThis.fetch(url, init),
     runtime: () => ({ locale: "en", theme: { mode: "light", accent: "neutral" } }),
     capabilityGovernance: { userDataDir, approve },
+    workspaceRoots: workspaceRootStore,
   })
 
   await pluginHost.init()

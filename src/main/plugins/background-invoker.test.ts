@@ -54,6 +54,8 @@ describe("backgroundInvoker", () => {
       pluginId: "p",
       triggerId: "downloads",
       actor: "background-agent",
+      instanceId: "instance-1",
+      workspaceId: "work",
       trigger: "fs.watch:downloads",
       signal: new AbortController().signal,
       allowedUses,
@@ -61,5 +63,39 @@ describe("backgroundInvoker", () => {
 
     expect(inv.get(invocationId)?.allowedUses).toBe(allowedUses)
     expect(inv.contextOptions(invocationId)).not.toHaveProperty("allowedUses")
+  })
+})
+
+describe("backgroundInvoker — background-agent instances", () => {
+  it("mints a background-agent record with instanceId and workspaceId", () => {
+    const invoker = new BackgroundInvoker()
+    const record = invoker.mint({
+      pluginId: "com.synapse.github-inbox",
+      triggerId: "poll-inbox",
+      actor: "background-agent",
+      instanceId: "instance-1",
+      workspaceId: "work",
+      trigger: "timer:poll-inbox",
+      signal: new AbortController().signal,
+    })
+    expect(record.actor).toBe("background-agent")
+    if (record.actor === "background-agent") {
+      expect(record.instanceId).toBe("instance-1")
+      expect(record.workspaceId).toBe("work")
+    }
+  })
+
+  it("a background (event-level) record has no instanceId/workspaceId", () => {
+    const invoker = new BackgroundInvoker()
+    const record = invoker.mint({
+      pluginId: "com.synapse.github-inbox",
+      triggerId: "poll-inbox",
+      actor: "background",
+      trigger: "timer:poll-inbox",
+      signal: new AbortController().signal,
+    })
+    expect(record.actor).toBe("background")
+    expect("instanceId" in record).toBe(false)
+    expect("workspaceId" in record).toBe(false)
   })
 })
