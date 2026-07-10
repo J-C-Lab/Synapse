@@ -48,7 +48,7 @@ function host(descriptors: RegisteredToolDescriptor[]): ToolHostPort {
 }
 
 describe("synapseMcpToolService", () => {
-  it("lists only read-only tools by default", () => {
+  it("lists only read-only tools by default", async () => {
     const service = new SynapseMcpToolService(
       host([
         descriptor("com.example.safe/greet", { readOnlyHint: true }),
@@ -57,8 +57,10 @@ describe("synapseMcpToolService", () => {
       ])
     )
 
-    expect(service.listTools().tools.map((tool) => tool.name)).toEqual(["com_example_safe_greet"])
-    expect(service.listTools().tools[0]).toMatchObject({
+    expect((await service.listTools()).tools.map((tool) => tool.name)).toEqual([
+      "com_example_safe_greet",
+    ])
+    expect((await service.listTools()).tools[0]).toMatchObject({
       title: "Title com.example.safe/greet",
       description: "Tool com.example.safe/greet",
       annotations: { readOnlyHint: true },
@@ -100,7 +102,9 @@ describe("synapseMcpToolService", () => {
     const h = host([descriptor("com.example.risky/delete", { destructiveHint: true })])
     const service = new SynapseMcpToolService(h, { exposurePolicy: "all" })
 
-    expect(service.listTools().tools.map((tool) => tool.name)).toEqual(["com_example_risky_delete"])
+    expect((await service.listTools()).tools.map((tool) => tool.name)).toEqual([
+      "com_example_risky_delete",
+    ])
 
     await service.callTool("com_example_risky_delete", {})
     expect(h.invokeTool).toHaveBeenCalledWith(
@@ -108,6 +112,41 @@ describe("synapseMcpToolService", () => {
       {},
       expect.objectContaining({ caller: expect.objectContaining({ kind: "mcp" }) })
     )
+  })
+
+  it("excludes a non-read-only tool when exposure/identityForPlugin are omitted", async () => {
+    const h = host([descriptor("com.example.a/write", { destructiveHint: true })])
+    const service = new SynapseMcpToolService(h)
+
+    expect((await service.listTools()).tools).toEqual([])
+  })
+
+  it("includes a non-read-only tool when the plugin's identity resolves to an exposed record", async () => {
+    const h = host([descriptor("com.example.a/write", { destructiveHint: true })])
+    const identity = {
+      pluginId: "com.example.a",
+      publisherId: "unsigned",
+      signingKeyFingerprint: "local:user",
+      capabilityDeclarationHash: "h",
+    }
+    const service = new SynapseMcpToolService(h, {
+      exposure: { isNonReadOnlyExposed: vi.fn(async () => true) },
+      identityForPlugin: (pluginId) => (pluginId === "com.example.a" ? identity : undefined),
+    })
+
+    expect((await service.listTools()).tools.map((tool) => tool.name)).toEqual([
+      "com_example_a_write",
+    ])
+  })
+
+  it("excludes a non-read-only tool when identityForPlugin resolves nothing (unknown plugin)", async () => {
+    const h = host([descriptor("com.example.unknown/write", { destructiveHint: true })])
+    const service = new SynapseMcpToolService(h, {
+      exposure: { isNonReadOnlyExposed: vi.fn(async () => true) },
+      identityForPlugin: () => undefined,
+    })
+
+    expect((await service.listTools()).tools).toEqual([])
   })
 
   it("serves list and call requests through the MCP protocol", async () => {

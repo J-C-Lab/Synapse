@@ -71,6 +71,8 @@ function installElectronApi(settings: SynapseUserSettings): TestElectronApi {
     previewPluginCapabilityProfile: vi.fn().mockResolvedValue(ok(null)),
     revokePluginCapability: vi.fn().mockResolvedValue(ok(undefined)),
     setExternalMcpPreauthorized: vi.fn().mockResolvedValue(ok(undefined)),
+    getMcpNonReadOnlyExposed: vi.fn().mockResolvedValue(ok(false)),
+    setMcpNonReadOnlyExposed: vi.fn().mockResolvedValue(ok(undefined)),
     listPluginCredentials: vi.fn().mockResolvedValue(ok([])),
     connectPluginCredential: vi.fn().mockResolvedValue(ok(undefined)),
     disconnectPluginCredential: vi.fn().mockResolvedValue(ok(undefined)),

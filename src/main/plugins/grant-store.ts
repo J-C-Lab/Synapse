@@ -48,7 +48,7 @@ export function grantStoreFilePath(userDataDir: string): string {
   return path.join(userDataDir, "plugins", "capability-grants.json")
 }
 
-function sameIdentity(a: GrantIdentity, b: GrantIdentity): boolean {
+export function sameIdentity(a: GrantIdentity, b: GrantIdentity): boolean {
   return (
     a.pluginId === b.pluginId &&
     a.publisherId === b.publisherId &&

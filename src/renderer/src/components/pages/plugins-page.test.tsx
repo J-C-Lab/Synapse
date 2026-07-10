@@ -2,6 +2,15 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { PluginsPage } from "@/components/pages/plugins-page"
+import { TooltipProvider } from "@/components/ui/tooltip"
+
+function renderPage() {
+  return render(
+    <TooltipProvider>
+      <PluginsPage />
+    </TooltipProvider>
+  )
+}
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -20,6 +29,8 @@ const mocks = vi.hoisted(() => ({
   installPluginPackage: vi.fn(),
   isElectron: vi.fn(() => true),
   listPluginCapabilities: vi.fn(),
+  getMcpNonReadOnlyExposed: vi.fn().mockResolvedValue(false),
+  setMcpNonReadOnlyExposed: vi.fn(),
   getPluginCapabilityProfile: vi.fn().mockResolvedValue(null),
   listPluginCredentials: vi.fn().mockResolvedValue([]),
   connectPluginCredential: vi.fn(),
@@ -109,7 +120,7 @@ afterEach(() => {
 describe("pluginsPage", () => {
   it("lists plugin capabilities and revokes through the wrapper", async () => {
     const user = userEvent.setup()
-    render(<PluginsPage />)
+    renderPage()
 
     // Details (incl. capabilities) now live in a dialog opened from the row.
     await user.click(await screen.findByText("Clipboard Helper"))
@@ -146,7 +157,7 @@ describe("pluginsPage", () => {
         : []
     )
 
-    render(<PluginsPage />)
+    renderPage()
 
     await user.click(await screen.findByText("Storage"))
     expect(await screen.findByText("plugins.capabilities.alwaysAllowed")).toBeInTheDocument()
@@ -157,7 +168,7 @@ describe("pluginsPage", () => {
 
   it("filters by permission search text", async () => {
     const user = userEvent.setup()
-    render(<PluginsPage />)
+    renderPage()
 
     expect(await screen.findByText("Clipboard Helper")).toBeInTheDocument()
 
@@ -169,7 +180,7 @@ describe("pluginsPage", () => {
 
   it("shows a filtered empty state when source filters hide all plugins", async () => {
     const user = userEvent.setup()
-    render(<PluginsPage />)
+    renderPage()
 
     await screen.findByText("Clipboard Helper")
     await user.click(screen.getByRole("button", { name: "plugins.source.builtin" }))
@@ -181,7 +192,7 @@ describe("pluginsPage", () => {
 describe("plugins page trusted source policy", () => {
   it("disables local .syn import when only the official marketplace is trusted", async () => {
     mocks.listPlugins.mockResolvedValueOnce([])
-    render(<PluginsPage />)
+    renderPage()
 
     expect(await screen.findByRole("button", { name: "plugins.actions.import" })).toBeDisabled()
   })

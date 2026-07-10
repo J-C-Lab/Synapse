@@ -356,8 +356,12 @@
       },
       "preauthorizeToggle": "Preauthorize for external MCP clients",
       "preauthorizeLabel": "Skip the approval prompt for external MCP calls",
-      "preauthorizeWarning": "This allows any external MCP client able to launch Synapse's local MCP connection — not just the one you're currently using — to call this capability without a per-call prompt. It is not scoped to a specific client.",
+      "preauthorizeWarning": "Allows any external MCP client able to launch Synapse's local MCP connection to call this capability without a per-call prompt.",
       "reportedIdentity": "Reported identity: {{clientId}} (self-reported by the client, not verified)"
+    },
+    "mcpExposure": {
+      "toggleLabel": "Expose non-read-only tools to external MCP clients",
+      "warning": "Turns on external visibility for every non-read-only tool this plugin has (including ones marked destructive). Whether a call still needs per-call confirmation depends on the capability it uses — a tool that uses no managed capability at all would be callable with no prompt."
     },
     "triggers": {
       "declaredTitle": "What this plugin does automatically",

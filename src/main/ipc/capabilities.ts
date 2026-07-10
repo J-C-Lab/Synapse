@@ -51,6 +51,8 @@ export interface CapabilityIpcHandlers {
   previewFromManifest: (manifest: unknown) => PluginCapabilityProfile
   revoke: (payload: unknown) => Promise<void>
   setExternalMcpPreauthorized: (payload: unknown) => Promise<void>
+  getNonReadOnlyExposed: (pluginId: unknown) => Promise<boolean>
+  setNonReadOnlyExposed: (payload: unknown) => Promise<void>
   resolveGrantPrompt: (payload: unknown) => void
   resolveApprovalPrompt: (payload: unknown) => void
 }
@@ -205,6 +207,20 @@ export class CapabilityIpcService {
     await this.getHost().grants.setExternalMcpPreauthorized(identity, capability, value)
   }
 
+  async isNonReadOnlyExposed(pluginId: string): Promise<boolean> {
+    const entry = this.getHost().get(pluginId)
+    if (!entry?.manifest) throw new Error(`Plugin not found: ${pluginId}`)
+    const identity = buildGrantIdentity(pluginId, entry.manifest, entry.source.kind)
+    return this.getHost().mcpExposure.isNonReadOnlyExposed(identity)
+  }
+
+  async setNonReadOnlyExposed(pluginId: string, value: boolean): Promise<void> {
+    const entry = this.getHost().get(pluginId)
+    if (!entry?.manifest) throw new Error(`Plugin not found: ${pluginId}`)
+    const identity = buildGrantIdentity(pluginId, entry.manifest, entry.source.kind)
+    await this.getHost().mcpExposure.setNonReadOnlyExposed(identity, value)
+  }
+
   resolveGrantPrompt(promptId: string, allow: boolean): void {
     this.pendingGrants.get(promptId)?.resolve(allow)
   }
@@ -255,6 +271,15 @@ export function createCapabilityIpcHandlers(service: CapabilityIpcService): Capa
       await service.setExternalMcpPreauthorized(
         requireString(value.pluginId, "pluginId"),
         requireString(value.capability, "capability"),
+        requireBoolean(value.value, "value")
+      )
+    },
+    getNonReadOnlyExposed: (pluginId) =>
+      service.isNonReadOnlyExposed(requireString(pluginId, "pluginId")),
+    setNonReadOnlyExposed: async (payload) => {
+      const value = requireRecord(payload, "capabilities:set-mcp-nonreadonly-exposed payload")
+      await service.setNonReadOnlyExposed(
+        requireString(value.pluginId, "pluginId"),
         requireBoolean(value.value, "value")
       )
     },
@@ -323,6 +348,22 @@ export function registerCapabilitiesIpc(
       "capabilities:set-external-mcp-preauthorized",
       event,
       () => handlers.setExternalMcpPreauthorized(payload),
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("capabilities:get-mcp-exposure", (event, pluginId: unknown) =>
+    invokePluginIpcHandler(
+      "capabilities:get-mcp-exposure",
+      event,
+      () => handlers.getNonReadOnlyExposed(pluginId),
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("capabilities:set-mcp-nonreadonly-exposed", (event, payload: unknown) =>
+    invokePluginIpcHandler(
+      "capabilities:set-mcp-nonreadonly-exposed",
+      event,
+      () => handlers.setNonReadOnlyExposed(payload),
       options.isTrustedSender
     )
   )

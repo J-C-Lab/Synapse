@@ -411,6 +411,19 @@ describe("pluginHost package installation", () => {
       expect.objectContaining({ capabilityId: "storage:plugin", grantedBy: "install" }),
     ])
   })
+
+  it("exposes an mcpExposure store backed by userDataDir", async () => {
+    const host = makeHost()
+    const identity = {
+      pluginId: "x",
+      publisherId: "unsigned",
+      signingKeyFingerprint: "local:user",
+      capabilityDeclarationHash: "h",
+    }
+    expect(await host.mcpExposure.isNonReadOnlyExposed(identity)).toBe(false)
+    await host.mcpExposure.setNonReadOnlyExposed(identity, true)
+    expect(await host.mcpExposure.isNonReadOnlyExposed(identity)).toBe(true)
+  })
 })
 
 describe("pluginHost facade forwards to registry", () => {

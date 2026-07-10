@@ -7,6 +7,7 @@ import process from "node:process"
 import { asFallbackSource, CompositeToolHost } from "../ai/composite-tool-host"
 import { MEMORY_FQ_PREFIX, MemoryToolSource } from "../ai/memory/memory-tools"
 import { recordRun } from "../ai/run-trace-store"
+import { buildGrantIdentity } from "../plugins/capability-governance"
 import { PluginHost } from "../plugins/plugin-host"
 import { createGuiApprovalPort } from "./gui-approval-client"
 import { createHeadlessMemoryService } from "./headless-memory"
@@ -96,6 +97,13 @@ async function main(): Promise<void> {
     memory: {
       list: (limit, scope) => memory.list(limit, scope),
       get: (id, scope) => memory.get(id, scope),
+    },
+    exposure: pluginHost.mcpExposure,
+    identityForPlugin: (pluginId) => {
+      const entry = pluginHost.get(pluginId)
+      return entry?.manifest
+        ? buildGrantIdentity(pluginId, entry.manifest, entry.source.kind)
+        : undefined
     },
   })
 

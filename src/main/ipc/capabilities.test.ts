@@ -13,15 +13,18 @@ import { parseManifest } from "@synapse/plugin-manifest"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { buildGrantIdentity } from "../plugins/capability-governance"
 import { GrantStore } from "../plugins/grant-store"
+import { McpExposureStore } from "../plugins/mcp-exposure-store"
 import { CapabilityIpcService, createCapabilityIpcHandlers } from "./capabilities"
 import { invokePluginIpcHandler } from "./plugins"
 
 let dir: string
 let grants: GrantStore
+let mcpExposure: McpExposureStore
 
 beforeEach(() => {
   dir = mkdtempSync(path.join(tmpdir(), "synapse-cap-ipc-"))
   grants = new GrantStore(path.join(dir, "grants.json"), () => 1000)
+  mcpExposure = new McpExposureStore(path.join(dir, "mcp-exposure.json"))
 })
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
@@ -82,6 +85,22 @@ describe("capabilityIpcService", () => {
     await expect(
       service.setExternalMcpPreauthorized(entry.pluginId, "clipboard:watch", true)
     ).rejects.toThrow(/not granted/)
+  })
+
+  it("isNonReadOnlyExposed reports false by default and true after setNonReadOnlyExposed", async () => {
+    const entry = activeEntry(testManifest())
+    const service = createService(entry)
+
+    expect(await service.isNonReadOnlyExposed(entry.pluginId)).toBe(false)
+    await service.setNonReadOnlyExposed(entry.pluginId, true)
+    expect(await service.isNonReadOnlyExposed(entry.pluginId)).toBe(true)
+  })
+
+  it("setNonReadOnlyExposed throws for an unknown plugin", async () => {
+    const service = createService(undefined)
+    await expect(service.setNonReadOnlyExposed("com.example.missing", true)).rejects.toThrow(
+      /not found/
+    )
   })
 
   it("listPluginCapabilities includes externalMcpPreauthorized per row", async () => {
@@ -484,6 +503,7 @@ function fakeHost(entry: PluginRegistryEntry | undefined): PluginHost {
   return {
     get: vi.fn((pluginId: string) => (entry?.pluginId === pluginId ? entry : undefined)),
     grants,
+    mcpExposure,
     revokeCapability: vi.fn(async () => {}),
   } as unknown as PluginHost
 }
