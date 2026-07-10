@@ -66,8 +66,9 @@ affect the workspace's identity, its bound conversations, or its memory.
 1. `WorkspaceRoot` becomes a persisted, host-generated-stable-id'd entity
    owned by a `Workspace` (`primary` or `additional`), replacing today's
    basename-derived, recomputed-every-call, globally-flat list.
-2. `run_command`'s tool input is renamed `workspaceId` → `rootId`
-   (eliminates a real naming collision with the conversation-bound
+2. All five execution tools' (`list_files`, `read_file`, `search_files`,
+   `apply_patch`, `run_command`) tool input is renamed `workspaceId` →
+   `rootId` (eliminates a real naming collision with the conversation-bound
    `Workspace.id`), and the host enforces that the requested root actually
    belongs to the calling conversation's `Workspace` — closing the gap
    above.
@@ -286,14 +287,84 @@ naming confusion this spec exists to close.
   and audited, regardless of whether that root id is valid for some *other*
   workspace.
 
+**Audit event fields** — **reviewer-caught issue**: `ExecutionToolHostSource.audit()`
+(`execution-tool-host.ts:264-272`) currently reads `args.workspaceId`
+straight out of the raw tool input and writes it into
+`ExecutionAuditEvent.workspaceId` (`types.ts:17`). Once the tool input
+field is renamed to `rootId`, this line would silently read `undefined`
+forever — every audit entry going forward would lose the root
+information entirely, not just have it misnamed.
+
+Fix: `ExecutionAuditEvent` gets **two** fields instead of one, matching
+the two distinct ids this spec now tracks throughout — a rename alone
+would lose information that's already sitting right there in `options.caller`
+at every `audit()` call site:
+
+```ts
+// src/main/ai/execution/types.ts
+export interface ExecutionAuditEvent {
+  id: string
+  conversationId?: string
+  toolName: string
+  /** The conversation's bound product-level Workspace, from caller.workspaceId. */
+  workspaceId?: string
+  /** Which WorkspaceRootRecord the tool actually resolved to (after
+   *  primary-defaulting) — replaces the old workspaceId-as-root-id field. */
+  rootId?: string
+  cwd?: string
+  normalizedPaths?: string[]
+  decision: "allow" | "ask" | "deny" | "approved"
+  startedAt: number
+  endedAt: number
+  inputPreview: string
+  outputPreview: string
+  errorPreview: string
+}
+```
+
+`audit()`'s params gain `workspaceId?: string` and `rootId?: string`,
+populated by each `invokeTool()` call site from `options.caller.workspaceId`
+and the already-resolved `rootId` returned by `policy()` (§4 above) — not
+re-read from raw `args`, since a caller who omitted `rootId` and got
+defaulted to primary should still show the *actual* root touched, not a
+blank field.
+
+**No migration/rewrite of historical log entries.** `ExecutionLogStore`
+is an append-only audit trail, not identity data — pre-migration entries
+keep whatever they already have under the old `workspaceId` key (which,
+before this spec, meant "root id"); new entries use both fields with
+their new meanings. Anyone querying across the boundary needs to know the
+field's meaning changed at the migration point, same as this spec already
+accepts for `exposedExecutionRootIds` in §2 — worth a one-line note in the
+log viewer if one exists, not a data rewrite.
+
 ## 5. Consumer updates
 
 Three real, distinct consumers of "the root list" exist today, and they
 need different query shapes going forward — this was a genuine point of
 confusion worth calling out explicitly:
 
-- **`ExecutionToolHostSource`** (the agent's own tool calls, §4 above)
-  needs the **caller-scoped** view: `workspaceRoots.listForWorkspace(caller.workspaceId)`.
+- **`ExecutionToolHostSource`** — two different methods, two different
+  scopes; **reviewer-caught imprecision**: an earlier draft said this
+  consumer simply "needs the caller-scoped view", but `listTools()`
+  (`execution-tool-host.ts:123-126`) takes **no caller parameter** —
+  it's part of `ToolHostSource`, called once while building the tool
+  registry, before any per-call caller context exists. Splitting it out:
+  - **`invokeTool()`** (§4 above) *is* caller-scoped:
+    `workspaceRoots.listForWorkspace(caller.workspaceId)`, enforced inside
+    the new `policy()`.
+  - **`listTools()`** stays **globally gated**, unchanged in kind: today
+    it hides the five tools entirely when `listWorkspaces()` returns
+    empty; going forward it hides them when `workspaceRoots.listAll()`
+    returns empty. It does **not** become per-conversation — a workspace
+    with zero roots still sees the tools *advertised* (they'll simply be
+    denied at invoke time via §4's enforcement) as long as *some* other
+    workspace has roots configured. Making tool *visibility* itself
+    conversation-scoped would require threading a caller into
+    `ToolHostSource.listTools()`/`ToolHostPort`/`AiToolRegistry` — a
+    real interface change, explicitly out of scope for this spec. Worth
+    flagging as a possible spec ⑤ if per-conversation tool visibility
+    ever becomes a product requirement, not solved here.
 - **`McpClientManager`** (the `mcp-client-roots` feature from PR #38 —
   Synapse-as-client advertising roots *outward* to external servers it
   connects to) is deliberately **not** conversation-scoped — a user picks
@@ -367,7 +438,14 @@ were never really the same query to begin with.
   `caller.workspaceId` is denied even though the id is valid globally; a
   request with no `rootId` resolves to the caller's workspace's primary
   root; a rootless (or primary-less) workspace's caller is denied with a
-  clear "no root available" message, not a generic failure.
+  clear "no root available" message, not a generic failure; a successful
+  call's audit entry has both `workspaceId` (from `caller.workspaceId`)
+  and `rootId` (the resolved root, including when defaulted from a
+  request that omitted it) populated — not the old single `workspaceId`
+  field holding a root id; `listTools()` still returns all five
+  descriptors when *any* workspace has roots configured, even if the
+  calling conversation's own workspace has none (visibility stays
+  globally gated, only invocation is caller-scoped).
 - **`mcp-client-manager.test.ts` / roots**: confirm `McpClientManager`'s
   roots-advertisement path is unaffected by the caller-scoping change
   (still sees the full `listAll()` set), since this is the one consumer
