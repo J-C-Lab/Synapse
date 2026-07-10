@@ -2,6 +2,7 @@ import type { JsonSchema, ManifestTool, ToolAnnotations } from "@synapse/plugin-
 import type { ToolContentBlock, ToolResult } from "@synapse/plugin-sdk"
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../plugins/types"
 import type { ToolHostSource } from "./composite-tool-host"
+import type { WorkspaceRoot } from "./execution/types"
 import type { McpServerConfig } from "./mcp-server-config-store"
 
 // MCP client side (P5, inbound): connect to external MCP servers over stdio and
@@ -57,9 +58,14 @@ export interface McpClientPort {
     options?: { signal?: AbortSignal }
   ) => Promise<McpCallResult>
   close: () => Promise<void>
+  /** Present only for a connection that advertised the roots capability. */
+  notifyRootsChanged?: () => Promise<void>
 }
 
-export type McpClientFactory = (config: McpServerConfig) => McpClientPort
+export type McpClientFactory = (
+  config: McpServerConfig,
+  getExecutionWorkspaces: () => WorkspaceRoot[]
+) => McpClientPort
 
 export type McpConnectionState = "connecting" | "connected" | "disconnected" | "error"
 
@@ -83,7 +89,10 @@ interface Connection {
 export class McpClientManager implements ToolHostSource {
   private readonly connections = new Map<string, Connection>()
 
-  constructor(private readonly createClient: McpClientFactory) {}
+  constructor(
+    private readonly createClient: McpClientFactory,
+    private readonly getExecutionWorkspaces: () => WorkspaceRoot[] = () => []
+  ) {}
 
   ownsTool(fqName: string): boolean {
     return fqName.startsWith(MCP_FQ_PREFIX)
@@ -136,6 +145,16 @@ export class McpClientManager implements ToolHostSource {
     await Promise.all(conns.map((conn) => safeClose(conn.client)))
   }
 
+  /** Pushes roots/list_changed to every connected, roots-enabled server —
+   *  call whenever agentShellRoots/allowAgentShell changes. */
+  async notifyAllRootsChanged(): Promise<void> {
+    await Promise.all(
+      [...this.connections.values()]
+        .filter((conn) => conn.state === "connected" && conn.client?.notifyRootsChanged)
+        .map((conn) => conn.client!.notifyRootsChanged!())
+    )
+  }
+
   async invokeTool(
     fqName: string,
     input: unknown,
@@ -164,7 +183,7 @@ export class McpClientManager implements ToolHostSource {
     }
 
     try {
-      const client = this.createClient(config)
+      const client = this.createClient(config, this.getExecutionWorkspaces)
       await client.connect()
       const { tools } = await client.listTools()
       conn.client = client

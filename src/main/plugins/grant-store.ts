@@ -25,6 +25,11 @@ export interface GrantRecord {
   /** Reserved; never trusted as a restriction (see spec §"Scope honesty"). */
   grantScope?: unknown
   identity: GrantIdentity
+  /** When true, external-mcp callers skip the per-call elevated approve() for
+   *  this (identity, capabilityId) pair — except reversible:false calls,
+   *  which always prompt (see capability-gate.ts). Settable only through
+   *  GrantStore.setExternalMcpPreauthorized, never auto-set. */
+  externalMcpPreauthorized?: boolean
 }
 
 export interface RevocationTombstone {
@@ -90,6 +95,40 @@ export class GrantStore {
     private readonly filePath: string,
     private readonly now: () => number = Date.now
   ) {}
+
+  async isExternalMcpPreauthorized(
+    identity: GrantIdentity,
+    capabilityId: string
+  ): Promise<boolean> {
+    const state = await this.load()
+    const record = state.grants.find(
+      (r) => r.capabilityId === capabilityId && sameIdentity(r.identity, identity)
+    )
+    return record?.externalMcpPreauthorized === true
+  }
+
+  /** Can only be set on a capability that is already granted — this flag
+   *  augments an existing grant, it does not itself grant the base
+   *  capability. Throws if there is no matching grant. */
+  async setExternalMcpPreauthorized(
+    identity: GrantIdentity,
+    capabilityId: string,
+    value: boolean
+  ): Promise<void> {
+    return this.runExclusive(async () => {
+      const state = await this.load()
+      const record = state.grants.find(
+        (r) => r.capabilityId === capabilityId && sameIdentity(r.identity, identity)
+      )
+      if (!record) {
+        throw new Error(
+          `Cannot set externalMcpPreauthorized: "${capabilityId}" is not granted for this identity`
+        )
+      }
+      record.externalMcpPreauthorized = value
+      await this.persist(state)
+    })
+  }
 
   async isGranted(
     identity: GrantIdentity,

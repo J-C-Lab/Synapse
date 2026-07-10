@@ -158,6 +158,10 @@
       "open": "Circuit open",
       "half_open": "Recovering",
       "detail": "{{fails}} consecutive failures · avg {{avg}}ms"
+    },
+    "roots": {
+      "label": "Expose execution roots",
+      "hint": "Off by default. Directories checked here are reported to this server as MCP roots — only pick ones you're comfortable this server knowing the path to."
     }
   },
   "home": {
@@ -349,7 +353,11 @@
         "auto": "Auto",
         "consent": "Consent",
         "elevated": "Elevated"
-      }
+      },
+      "preauthorizeToggle": "Preauthorize for external MCP clients",
+      "preauthorizeLabel": "Skip the approval prompt for external MCP calls",
+      "preauthorizeWarning": "This allows any external MCP client able to launch Synapse's local MCP connection — not just the one you're currently using — to call this capability without a per-call prompt. It is not scoped to a specific client.",
+      "reportedIdentity": "Reported identity: {{clientId}} (self-reported by the client, not verified)"
     },
     "triggers": {
       "declaredTitle": "What this plugin does automatically",

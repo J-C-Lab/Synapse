@@ -96,6 +96,22 @@ describe("mcpServerConfigStore", () => {
     expect(await s.list()).toHaveLength(0)
   })
 
+  it("persists exposedExecutionRootIds and normalizes garbage entries", async () => {
+    const s = store()
+    await s.save({
+      id: "fs",
+      command: "npx",
+      exposedExecutionRootIds: ["proj", 42, "", "docs"] as unknown as string[],
+    })
+    expect((await s.list())[0]).toMatchObject({ exposedExecutionRootIds: ["proj", "docs"] })
+  })
+
+  it("omits exposedExecutionRootIds entirely when not provided", async () => {
+    const s = store()
+    await s.save({ id: "fs", command: "npx" })
+    expect((await s.list())[0].exposedExecutionRootIds).toBeUndefined()
+  })
+
   it("encrypts env and header values at rest but returns them decrypted", async () => {
     const file = path.join(dir, "mcp-servers.json")
     const s = new McpServerConfigStore(file, fakeProtector)

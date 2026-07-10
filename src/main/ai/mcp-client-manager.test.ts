@@ -13,6 +13,7 @@ function fakeClient(options: FakeOptions = {}): McpClientPort & {
   connect: ReturnType<typeof vi.fn>
   callTool: ReturnType<typeof vi.fn>
   close: ReturnType<typeof vi.fn>
+  notifyRootsChanged?: ReturnType<typeof vi.fn>
 } {
   return {
     connect: vi.fn(async () => {
@@ -136,5 +137,33 @@ describe("mcpClientManager", () => {
     await manager.stop("srv")
     expect(client.close).toHaveBeenCalledTimes(1)
     expect(manager.listTools()).toHaveLength(0)
+  })
+
+  it("passes getExecutionWorkspaces through to the client factory", async () => {
+    const roots = [{ id: "proj", root: "/home/proj" }]
+    let received: (() => typeof roots) | undefined
+    const manager = new McpClientManager(
+      (_config, getExecutionWorkspaces) => {
+        received = getExecutionWorkspaces
+        return fakeClient()
+      },
+      () => roots
+    )
+    await manager.start([config()])
+    expect(received?.()).toEqual(roots)
+  })
+
+  it("notifyAllRootsChanged only notifies connected connections with a roots handler", async () => {
+    const notifying = fakeClient()
+    ;(notifying as McpClientPort).notifyRootsChanged = vi.fn(async () => {})
+    const noRootsHandler = fakeClient()
+    const manager = new McpClientManager((cfg) =>
+      cfg.id === "with-roots" ? notifying : noRootsHandler
+    )
+    await manager.start([config({ id: "with-roots" }), config({ id: "no-roots" })])
+
+    await manager.notifyAllRootsChanged()
+
+    expect(notifying.notifyRootsChanged).toHaveBeenCalledOnce()
   })
 })

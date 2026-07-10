@@ -21,15 +21,20 @@ function makeGate(opts: {
   /** Pre-shaped declared entries with scopes, for scope-enforced capabilities. */
   declaredEntries?: { id: string; scope?: unknown }[]
   granted?: string[]
+  preauthorizedExternalMcp?: string[]
   prompt?: () => Promise<boolean>
   approve?: () => Promise<boolean>
 }) {
   const granted = new Set(opts.granted ?? [])
+  const preauthorized = new Set(opts.preauthorizedExternalMcp ?? [])
   const grants = {
     isGranted: vi.fn(async (_id: GrantIdentity, cap: string) => granted.has(cap)),
     grant: vi.fn(async (_id: GrantIdentity, cap: string) => {
       granted.add(cap)
     }),
+    isExternalMcpPreauthorized: vi.fn(async (_id: GrantIdentity, cap: string) =>
+      preauthorized.has(cap)
+    ),
   }
   const prompt = vi.fn(opts.prompt ?? (async () => true))
   const approve = vi.fn(opts.approve ?? (async () => true))
@@ -120,6 +125,50 @@ describe("capabilityGate.ensure", () => {
     })
     await gate.ensure(req({ capability: "clipboard:watch", actor: "user" }))
     expect(approve).not.toHaveBeenCalled()
+  })
+
+  it("skips per-call approval for a preauthorized reversible external-mcp elevated call", async () => {
+    const { gate, approve } = makeGate({
+      declared: ["clipboard:watch"],
+      granted: ["clipboard:watch"],
+      preauthorizedExternalMcp: ["clipboard:watch"],
+    })
+    await gate.ensure(
+      req({ capability: "clipboard:watch", actor: "external-mcp", reversible: true })
+    )
+    expect(approve).not.toHaveBeenCalled()
+  })
+
+  it("still per-call approves a preauthorized but irreversible external-mcp elevated call", async () => {
+    const { gate, approve } = makeGate({
+      declared: ["clipboard:watch"],
+      granted: ["clipboard:watch"],
+      preauthorizedExternalMcp: ["clipboard:watch"],
+      approve: async () => false,
+    })
+    await expect(
+      gate.ensure(req({ capability: "clipboard:watch", actor: "external-mcp", reversible: false }))
+    ).rejects.toBeInstanceOf(CapabilityDenied)
+    expect(approve).toHaveBeenCalledOnce()
+  })
+
+  it("per-call approves a non-preauthorized external-mcp elevated call", async () => {
+    const { gate, approve } = makeGate({
+      declared: ["clipboard:watch"],
+      granted: ["clipboard:watch"],
+    })
+    await gate.ensure(req({ capability: "clipboard:watch", actor: "external-mcp" }))
+    expect(approve).toHaveBeenCalledOnce()
+  })
+
+  it("does not consult external-mcp preauthorization for a non-external-mcp actor", async () => {
+    const { gate, approve } = makeGate({
+      declared: ["clipboard:watch"],
+      granted: ["clipboard:watch"],
+      preauthorizedExternalMcp: ["clipboard:watch"],
+    })
+    await gate.ensure(req({ capability: "clipboard:watch", actor: "agent" }))
+    expect(approve).toHaveBeenCalledOnce()
   })
 
   it("per-call approves an already-granted elevated capability for an external MCP client", async () => {
@@ -226,7 +275,11 @@ describe("capabilityGate.ensure", () => {
         capabilityDeclarationHash: "hash",
       },
       declared: [{ id: "storage:plugin" }],
-      grants: { isGranted: async () => true, grant: async () => {} },
+      grants: {
+        isGranted: async () => true,
+        grant: async () => {},
+        isExternalMcpPreauthorized: async () => false,
+      },
       prompt: async () => true,
       approve: async () => true,
       audit: (entry) => audited.push(entry),
@@ -276,7 +329,11 @@ function gateWithBudget(
         scope: { hosts: ["api.example.com"], methods: ["GET"], paths: ["/**"] },
       },
     ],
-    grants: { isGranted: async () => opts.granted ?? true, grant: async () => {} },
+    grants: {
+      isGranted: async () => opts.granted ?? true,
+      grant: async () => {},
+      isExternalMcpPreauthorized: async () => false,
+    },
     prompt: opts.prompt ?? (async () => true),
     approve:
       opts.approve ??
@@ -462,7 +519,11 @@ describe("capabilityGate budget breaker", () => {
     const gate = new CapabilityGate({
       identity: identity(),
       declared: [{ id: "clipboard:read" }],
-      grants: { isGranted: async () => true, grant: async () => {} },
+      grants: {
+        isGranted: async () => true,
+        grant: async () => {},
+        isExternalMcpPreauthorized: async () => false,
+      },
       prompt: async () => {
         throw new Error("prompt must not run")
       },

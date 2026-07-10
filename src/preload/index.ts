@@ -93,6 +93,12 @@ const electronAPI = {
     ipcRenderer.invoke("capabilities:preview-manifest", manifest),
   revokePluginCapability: (pluginId: string, capability: string) =>
     ipcRenderer.invoke("capabilities:revoke", { pluginId, capability }),
+  setExternalMcpPreauthorized: (pluginId: string, capability: string, value: boolean) =>
+    ipcRenderer.invoke("capabilities:set-external-mcp-preauthorized", {
+      pluginId,
+      capability,
+      value,
+    }),
   resolveCapabilityGrant: (promptId: string, allow: boolean) =>
     ipcRenderer.invoke("capabilities:grant-resolve", { promptId, allow }),
   resolveCapabilityApproval: (promptId: string, allow: boolean) =>
@@ -176,6 +182,7 @@ const electronAPI = {
   listAiAllowedTools: () => ipcRenderer.invoke("ai:list-allowed-tools"),
   revokeAiTool: (fqName: string) => ipcRenderer.invoke("ai:revoke-tool", fqName),
   listAiMcpServers: () => ipcRenderer.invoke("ai:mcp:list"),
+  listExecutionWorkspaces: () => ipcRenderer.invoke("ai:list-execution-workspaces"),
   getAiMcpServerStatus: () => ipcRenderer.invoke("ai:mcp:status"),
   saveAiMcpServer: (config: unknown) => ipcRenderer.invoke("ai:mcp:save", config),
   deleteAiMcpServer: (id: string) => ipcRenderer.invoke("ai:mcp:delete", id),

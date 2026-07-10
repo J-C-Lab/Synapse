@@ -94,7 +94,7 @@ export interface BudgetBreakerPort {
 export interface CapabilityGateOptions {
   identity: GrantIdentity
   declared: readonly NormalizedCapability[]
-  grants: Pick<GrantStore, "isGranted" | "grant">
+  grants: Pick<GrantStore, "isGranted" | "grant" | "isExternalMcpPreauthorized">
   prompt: GrantPromptPort
   approve: CapabilityApprover
   audit: (entry: CapabilityAuditEntry) => void
@@ -206,9 +206,24 @@ export class CapabilityGate implements CapabilityGatePort {
     // non-user actors) so a future CapabilityActor addition is scrutinized by
     // default instead of silently skipping approval until someone remembers
     // to add it here.
+    // external-mcp callers can be pre-authorized (Settings) to skip the
+    // per-call prompt — but an irreversible call always re-prompts
+    // regardless, mirroring the trigger-origin branch's own
+    // reversible-escalation rule above. Every other non-user actor
+    // (agent/background/background-agent/subagent) is unaffected — this
+    // flag has no meaning for them.
     if (cap.tier === "elevated" && request.actor !== "user") {
-      const ok = await this.options.approve({ identity: this.options.identity, request })
-      if (!ok) deny("per-call approval refused", grantedNow)
+      const preauthorized =
+        request.actor === "external-mcp" &&
+        request.reversible !== false &&
+        (await this.options.grants.isExternalMcpPreauthorized(
+          this.options.identity,
+          request.capability
+        ))
+      if (!preauthorized) {
+        const ok = await this.options.approve({ identity: this.options.identity, request })
+        if (!ok) deny("per-call approval refused", grantedNow)
+      }
     }
 
     this.emit(request, "allow", grantedNow, "permitted", cap.tier)

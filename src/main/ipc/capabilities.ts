@@ -15,6 +15,7 @@ export interface PluginCapabilityRow {
   tier: CapabilityTier
   granted: boolean
   scopeEnforced: boolean
+  externalMcpPreauthorized: boolean
 }
 
 /** Broadcast to the renderer when a JIT grant decision is needed. */
@@ -37,6 +38,11 @@ export interface CapabilityApprovalRequestEvent {
   trigger: string
   operation: string
   reason?: string
+  /** Self-reported by the external MCP client over its `initialize` handshake
+   *  (see synapse-mcp-server.ts) — a display/audit label only, never a
+   *  verified identity. Present only when request.principal.kind is
+   *  "external-mcp" and the client reported one. */
+  clientId?: string
 }
 
 export interface CapabilityIpcHandlers {
@@ -44,6 +50,7 @@ export interface CapabilityIpcHandlers {
   getProfile: (pluginId: unknown) => Promise<PluginCapabilityProfile>
   previewFromManifest: (manifest: unknown) => PluginCapabilityProfile
   revoke: (payload: unknown) => Promise<void>
+  setExternalMcpPreauthorized: (payload: unknown) => Promise<void>
   resolveGrantPrompt: (payload: unknown) => void
   resolveApprovalPrompt: (payload: unknown) => void
 }
@@ -107,6 +114,7 @@ export class CapabilityIpcService {
       trigger: request.trigger,
       operation: request.operation,
       reason: request.reason,
+      clientId: request.principal?.kind === "external-mcp" ? request.principal.clientId : undefined,
     })
     return decision
   }
@@ -154,6 +162,10 @@ export class CapabilityIpcService {
         tier: descriptor.tier,
         granted: await this.getHost().grants.isGranted(identity, id),
         scopeEnforced: descriptor.scopeEnforced,
+        externalMcpPreauthorized: await this.getHost().grants.isExternalMcpPreauthorized(
+          identity,
+          id
+        ),
       })
     }
     return rows
@@ -180,6 +192,17 @@ export class CapabilityIpcService {
 
   async revoke(pluginId: string, capability: string): Promise<void> {
     await this.getHost().revokeCapability(pluginId, capability)
+  }
+
+  async setExternalMcpPreauthorized(
+    pluginId: string,
+    capability: string,
+    value: boolean
+  ): Promise<void> {
+    const entry = this.getHost().get(pluginId)
+    if (!entry?.manifest) throw new Error(`Plugin not found: ${pluginId}`)
+    const identity = buildGrantIdentity(pluginId, entry.manifest, entry.source.kind)
+    await this.getHost().grants.setExternalMcpPreauthorized(identity, capability, value)
   }
 
   resolveGrantPrompt(promptId: string, allow: boolean): void {
@@ -225,6 +248,14 @@ export function createCapabilityIpcHandlers(service: CapabilityIpcService): Capa
       await service.revoke(
         requireString(value.pluginId, "pluginId"),
         requireString(value.capability, "capability")
+      )
+    },
+    setExternalMcpPreauthorized: async (payload) => {
+      const value = requireRecord(payload, "capabilities:set-external-mcp-preauthorized payload")
+      await service.setExternalMcpPreauthorized(
+        requireString(value.pluginId, "pluginId"),
+        requireString(value.capability, "capability"),
+        requireBoolean(value.value, "value")
       )
     },
     resolveGrantPrompt: (payload) => {
@@ -284,6 +315,14 @@ export function registerCapabilitiesIpc(
       "capabilities:revoke",
       event,
       () => handlers.revoke(payload),
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("capabilities:set-external-mcp-preauthorized", (event, payload: unknown) =>
+    invokePluginIpcHandler(
+      "capabilities:set-external-mcp-preauthorized",
+      event,
+      () => handlers.setExternalMcpPreauthorized(payload),
       options.isTrustedSender
     )
   )

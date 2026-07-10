@@ -207,6 +207,7 @@ declare global {
     tier: "auto" | "consent" | "elevated"
     granted: boolean
     scopeEnforced: boolean
+    externalMcpPreauthorized: boolean
   }
 
   interface SynapsePluginCredentialRow {
@@ -250,6 +251,9 @@ declare global {
     trigger: string
     operation: string
     reason?: string
+    /** Self-reported by the external MCP client, display/audit label only —
+     *  not a verified identity. Present only for external-mcp callers. */
+    clientId?: string
   }
 
   interface SynapseMarketplaceEntry {
@@ -428,6 +432,12 @@ declare global {
     url?: string
     headers?: Record<string, string>
     enabled?: boolean
+    exposedExecutionRootIds?: string[]
+  }
+
+  interface SynapseExecutionWorkspace {
+    id: string
+    root: string
   }
 
   type SynapseMcpConnectionState = "connecting" | "connected" | "disconnected" | "error"
@@ -545,6 +555,11 @@ declare global {
       revokePluginCapability: (
         pluginId: string,
         capability: string
+      ) => Promise<SynapsePluginIpcResult<void>>
+      setExternalMcpPreauthorized: (
+        pluginId: string,
+        capability: string,
+        value: boolean
       ) => Promise<SynapsePluginIpcResult<void>>
       resolveCapabilityGrant: (
         promptId: string,
@@ -689,6 +704,7 @@ declare global {
       listAiAllowedTools: () => Promise<string[]>
       revokeAiTool: (fqName: string) => Promise<void>
       listAiMcpServers: () => Promise<SynapseMcpServerConfig[]>
+      listExecutionWorkspaces: () => Promise<SynapseExecutionWorkspace[]>
       getAiMcpServerStatus: () => Promise<SynapseMcpServerStatus[]>
       saveAiMcpServer: (config: SynapseMcpServerConfig) => Promise<SynapseMcpServerStatus[]>
       deleteAiMcpServer: (id: string) => Promise<void>
