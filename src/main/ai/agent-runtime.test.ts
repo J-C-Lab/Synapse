@@ -9,7 +9,7 @@ import process from "node:process"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AgentRuntime, buildSystemPrompt } from "./agent-runtime"
 import { emptyUsage } from "./providers/types"
-import { AiToolRegistry } from "./tool-registry"
+import { AiToolRegistry, modelToolName } from "./tool-registry"
 
 interface ScriptedTurn {
   text?: string
@@ -54,6 +54,11 @@ function descriptor(): RegisteredToolDescriptor {
     },
   }
 }
+
+const GREET_TOOL_NAME = modelToolName({
+  fqName: "com.x.demo/greet",
+  provenance: "plugin",
+})
 
 function fakeHost(): ToolHostPort {
   return {
@@ -125,7 +130,7 @@ describe("agentRuntime", () => {
     const host = fakeHost()
     const runtime = new AgentRuntime({
       provider: fakeProvider([
-        { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: { name: "Ada" } }] },
+        { toolUses: [{ id: "t1", name: GREET_TOOL_NAME, input: { name: "Ada" } }] },
         { text: "Hello Ada" },
       ]),
       tools: new AiToolRegistry(host),
@@ -166,9 +171,9 @@ describe("agentRuntime", () => {
     const host = fakeHost()
     const runtime = new AgentRuntime({
       provider: fakeProvider([
-        { toolUses: [{ id: "a", name: "com_x_demo_greet", input: {} }] },
-        { toolUses: [{ id: "b", name: "com_x_demo_greet", input: {} }] },
-        { toolUses: [{ id: "c", name: "com_x_demo_greet", input: {} }] },
+        { toolUses: [{ id: "a", name: GREET_TOOL_NAME, input: {} }] },
+        { toolUses: [{ id: "b", name: GREET_TOOL_NAME, input: {} }] },
+        { toolUses: [{ id: "c", name: GREET_TOOL_NAME, input: {} }] },
       ]),
       tools: new AiToolRegistry(host),
       maxSteps: 2,
@@ -184,10 +189,10 @@ describe("agentRuntime", () => {
     const runtime = new AgentRuntime({
       provider: fakeProvider([
         {
-          toolUses: [{ id: "a", name: "com_x_demo_greet", input: {} }],
+          toolUses: [{ id: "a", name: GREET_TOOL_NAME, input: {} }],
           usage: { outputTokens: 80 },
         },
-        { toolUses: [{ id: "b", name: "com_x_demo_greet", input: {} }] },
+        { toolUses: [{ id: "b", name: GREET_TOOL_NAME, input: {} }] },
         { text: "should not reach" },
       ]),
       tools: new AiToolRegistry(host),
@@ -206,7 +211,7 @@ describe("agentRuntime", () => {
     const runtime = new AgentRuntime({
       provider: fakeProvider([
         {
-          toolUses: [{ id: "a", name: "com_x_demo_greet", input: {} }],
+          toolUses: [{ id: "a", name: GREET_TOOL_NAME, input: {} }],
           usage: { outputTokens: 10 },
         },
         { text: "done", usage: { outputTokens: 10 } },
@@ -243,7 +248,7 @@ describe("agentRuntime", () => {
     const host = fakeHost()
     const runtime = new AgentRuntime({
       provider: fakeProvider([
-        { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: {} }] },
+        { toolUses: [{ id: "t1", name: GREET_TOOL_NAME, input: {} }] },
         { text: "ok" },
       ]),
       tools: new AiToolRegistry(host),
@@ -264,7 +269,7 @@ describe("agentRuntime", () => {
     const recorded: RunTrace[] = []
     const runtime = new AgentRuntime({
       provider: fakeProvider([
-        { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: { name: "Ada" } }] },
+        { toolUses: [{ id: "t1", name: GREET_TOOL_NAME, input: { name: "Ada" } }] },
         { text: "Hello Ada" },
       ]),
       tools: new AiToolRegistry(host),
@@ -350,7 +355,7 @@ describe("agentRuntime", () => {
     const host = fakeHost()
     const runtime = new AgentRuntime({
       provider: fakeProvider([
-        { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: {} }] },
+        { toolUses: [{ id: "t1", name: GREET_TOOL_NAME, input: {} }] },
         { text: "done" },
       ]),
       tools: new AiToolRegistry(host),
@@ -395,7 +400,7 @@ describe("agentRuntime", () => {
     const host = fakeHost()
     const runtime = new AgentRuntime({
       provider: fakeProvider([
-        { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: {} }] },
+        { toolUses: [{ id: "t1", name: GREET_TOOL_NAME, input: {} }] },
         { text: "done" },
       ]),
       tools: new AiToolRegistry(host),
@@ -424,7 +429,7 @@ describe("agentRuntime", () => {
     const host = fakeHost()
     const runtime = new AgentRuntime({
       provider: fakeProvider([
-        { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: {} }] },
+        { toolUses: [{ id: "t1", name: GREET_TOOL_NAME, input: {} }] },
         { text: "child done" },
       ]),
       tools: new AiToolRegistry(host),
@@ -646,7 +651,7 @@ describe("agentRuntime", () => {
             role: "assistant",
             content:
               seenSystems.length === 1
-                ? [{ type: "tool_use", id: "t1", name: "com_x_demo_greet", input: {} }]
+                ? [{ type: "tool_use", id: "t1", name: GREET_TOOL_NAME, input: {} }]
                 : [{ type: "text", text: "ok" }],
           },
           usage: emptyUsage(),
@@ -681,7 +686,7 @@ describe("agentRuntime", () => {
       const host = fakeHostWithTextResult("actual output")
       const runtime = new AgentRuntime({
         provider: fakeProvider([
-          { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: {} }] },
+          { toolUses: [{ id: "t1", name: GREET_TOOL_NAME, input: {} }] },
           { text: "ok" },
         ]),
         tools: new AiToolRegistry(host),
@@ -702,7 +707,7 @@ describe("agentRuntime", () => {
       const host = fakeHostWithTextResult("actual output")
       const runtime = new AgentRuntime({
         provider: fakeProvider([
-          { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: {} }] },
+          { toolUses: [{ id: "t1", name: GREET_TOOL_NAME, input: {} }] },
           { text: "ok" },
         ]),
         tools: new AiToolRegistry(host),
@@ -723,7 +728,7 @@ describe("agentRuntime", () => {
       const host = fakeHostWithTextResult("actual output")
       const runtime = new AgentRuntime({
         provider: fakeProvider([
-          { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: {} }] },
+          { toolUses: [{ id: "t1", name: GREET_TOOL_NAME, input: {} }] },
           { text: "ok" },
         ]),
         tools: new AiToolRegistry(host),
@@ -744,7 +749,7 @@ describe("agentRuntime", () => {
     const host = fakeHostWithTextResult("x".repeat(60))
     const runtime = new AgentRuntime({
       provider: fakeProvider([
-        { toolUses: [{ id: "t1", name: "com_x_demo_greet", input: {} }] },
+        { toolUses: [{ id: "t1", name: GREET_TOOL_NAME, input: {} }] },
         { text: "ok" },
       ]),
       tools: new AiToolRegistry(host),

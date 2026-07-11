@@ -11,9 +11,19 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { emptyUsage } from "../ai/providers/types"
+import { modelToolName } from "../ai/tool-registry"
 import { PluginHost } from "./plugin-host"
 
 let dir: string
+
+const GET_INBOX_SNAPSHOT_TOOL_NAME = modelToolName({
+  fqName: "com.synapse.github-inbox/getInboxSnapshot",
+  provenance: "plugin",
+})
+const EXECUTE_GITHUB_ACTION_TOOL_NAME = modelToolName({
+  fqName: "com.synapse.github-inbox/executeGitHubAction",
+  provenance: "plugin",
+})
 
 const noopFsWatchAdapter: FsWatchAdapter = {
   register: () => () => {},
@@ -80,12 +90,8 @@ describe("github inbox plugin", () => {
       })
     )
     await vi.waitFor(() => expect(seenTools.length).toBeGreaterThan(0))
-    expect(seenTools[0].map((tool) => tool.name)).toContain(
-      "com_synapse_github-inbox_getInboxSnapshot"
-    )
-    expect(seenTools[0].map((tool) => tool.name)).not.toContain(
-      "com_synapse_github-inbox_executeGitHubAction"
-    )
+    expect(seenTools[0].map((tool) => tool.name)).toContain(GET_INBOX_SNAPSHOT_TOOL_NAME)
+    expect(seenTools[0].map((tool) => tool.name)).not.toContain(EXECUTE_GITHUB_ACTION_TOOL_NAME)
   })
 })
 

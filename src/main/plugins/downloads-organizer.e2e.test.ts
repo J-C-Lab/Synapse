@@ -12,11 +12,17 @@ import * as path from "node:path"
 import { rootIdForPattern } from "@synapse/plugin-manifest"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { emptyUsage } from "../ai/providers/types"
+import { modelToolName } from "../ai/tool-registry"
 import { PluginHost } from "./plugin-host"
 
 let dir: string
 let home: string
 let previousHome: string | undefined
+
+const CLASSIFY_AND_MOVE_TOOL_NAME = modelToolName({
+  fqName: "com.synapse.downloads-organizer/classifyAndMove",
+  provenance: "plugin",
+})
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-downloads-organizer-"))
@@ -113,7 +119,7 @@ describe("downloadsOrganizer", () => {
     expect(notifications[0]?.actions?.[0]?.title).toBe("Undo")
 
     const firstToolList = seenTools[0]?.map((tool) => tool.name) ?? []
-    expect(firstToolList).toContain("com_synapse_downloads-organizer_classifyAndMove")
+    expect(firstToolList).toContain(CLASSIFY_AND_MOVE_TOOL_NAME)
     expect(firstToolList.some((tool) => tool.includes("fs_write"))).toBe(false)
 
     await host.bridge.handleNotificationAction(
@@ -145,7 +151,7 @@ function fakeProvider(
               {
                 type: "tool_use",
                 id: "tool-1",
-                name: "com_synapse_downloads-organizer_classifyAndMove",
+                name: CLASSIFY_AND_MOVE_TOOL_NAME,
                 input,
               },
             ]

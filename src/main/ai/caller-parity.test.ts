@@ -5,10 +5,10 @@ import { describe, expect, it } from "vitest"
 import { SynapseMcpToolService } from "../mcp/synapse-mcp-server"
 import { AgentRuntime } from "./agent-runtime"
 import { emptyUsage } from "./providers/types"
-import { AiToolRegistry } from "./tool-registry"
+import { AiToolRegistry, modelToolName } from "./tool-registry"
 
 const FQ = "com.probe/read_probe"
-const SAFE = "com_probe_read_probe"
+const SAFE = modelToolName({ fqName: FQ, provenance: "plugin" })
 
 function stubHost(): ToolHostPort {
   return {

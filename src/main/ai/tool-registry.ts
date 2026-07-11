@@ -1,15 +1,16 @@
 import type { ToolResult } from "@synapse/plugin-sdk"
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../plugins/types"
 import type { ProviderToolSchema } from "./providers/types"
+import { createHash } from "node:crypto"
 import { logger } from "../logging"
 import { projectModelVisibleTool, warnOnce } from "./guardrails/tool-metadata"
 
 // Bridges the plugin tool surface to what a model can call. Plugin fqNames look
 // like `com.example.hello-world/greet`, which contain `.` and `/` and so fail
-// the Anthropic/OpenAI tool-name charset (`^[a-zA-Z0-9_-]{1,128}$`). We sanitize
-// to a model-safe name and keep a reverse map so invocations route back to the
-// real fqName (decision §11.3 — sanitize at the provider layer, no alias table
-// in the manifest).
+// the Anthropic/OpenAI tool-name charset (`^[a-zA-Z0-9_-]{1,128}$`). Host tools
+// keep sanitized readable names; third-party tools receive opaque aliases. The
+// reverse map routes all model calls back to the real fqName without putting an
+// alias table in plugin manifests.
 
 /** The slice of PluginHost the AI tool registry depends on. */
 export interface ToolHostPort {
@@ -74,7 +75,7 @@ export class AiToolRegistry {
     return this.host
       .listTools()
       .map((descriptor) => {
-        const safeName = uniqueName(sanitizeToolName(descriptor.fqName), used)
+        const safeName = uniqueName(modelToolName(descriptor), used)
         used.add(safeName)
         this.safeToDescriptor.set(safeName, descriptor)
 
@@ -118,6 +119,21 @@ export function renderToolResultText(result: ToolResult): string {
 export function sanitizeToolName(fqName: string): string {
   const cleaned = fqName.replace(/[^\w-]/g, "_")
   return cleaned.length > 128 ? cleaned.slice(0, 128) : cleaned
+}
+
+/**
+ * Provider tool names are model-visible metadata. Host tools may use their
+ * readable, host-authored names; names supplied by plugins and external MCP
+ * servers must not become an unframed prompt-injection channel. The reverse
+ * map retains the descriptor's real fqName for routing and audit.
+ */
+export function modelToolName(
+  descriptor: Pick<RegisteredToolDescriptor, "fqName" | "provenance">
+): string {
+  if (descriptor.provenance === "host") return sanitizeToolName(descriptor.fqName)
+  const source = descriptor.provenance === "mcp-client" ? "mcp" : "plugin"
+  const digest = createHash("sha256").update(descriptor.fqName).digest("hex").slice(0, 20)
+  return `external_${source}_${digest}`
 }
 
 export function uniqueName(base: string, used: Set<string>): string {

@@ -25,7 +25,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js"
 import { decideApproval } from "../ai/approval-gate"
 import { projectModelVisibleTool, sanitizeTitle, warnOnce } from "../ai/guardrails/tool-metadata"
-import { sanitizeToolName, uniqueName } from "../ai/tool-registry"
+import { modelToolName, uniqueName } from "../ai/tool-registry"
 import { logger } from "../logging"
 import { WORKSPACE_INSTRUCTIONS_PREFIX } from "./workspace-instructions-resource"
 
@@ -309,7 +309,7 @@ export class SynapseMcpToolService {
     this.safeToEntry.clear()
     const used = new Set<string>()
     return this.host.listTools().map((descriptor) => {
-      const safeName = uniqueName(sanitizeToolName(descriptor.fqName), used)
+      const safeName = uniqueName(modelToolName(descriptor), used)
       used.add(safeName)
       const entry = { safeName, descriptor }
       this.safeToEntry.set(safeName, entry)
