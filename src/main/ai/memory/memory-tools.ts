@@ -22,6 +22,7 @@ const TOOLS: RegisteredToolDescriptor[] = [
   {
     fqName: `${MEMORY_PLUGIN_ID}/memory_save`,
     pluginId: MEMORY_PLUGIN_ID,
+    provenance: "host",
     manifestTool: {
       name: "memory_save",
       title: "Save memory",
@@ -40,6 +41,7 @@ const TOOLS: RegisteredToolDescriptor[] = [
   {
     fqName: `${MEMORY_PLUGIN_ID}/memory_ingest`,
     pluginId: MEMORY_PLUGIN_ID,
+    provenance: "host",
     manifestTool: {
       name: "memory_ingest",
       title: "Ingest document",
@@ -59,6 +61,7 @@ const TOOLS: RegisteredToolDescriptor[] = [
   {
     fqName: `${MEMORY_PLUGIN_ID}/memory_search`,
     pluginId: MEMORY_PLUGIN_ID,
+    provenance: "host",
     manifestTool: {
       name: "memory_search",
       title: "Search memory",
@@ -77,6 +80,7 @@ const TOOLS: RegisteredToolDescriptor[] = [
   {
     fqName: `${MEMORY_PLUGIN_ID}/memory_list`,
     pluginId: MEMORY_PLUGIN_ID,
+    provenance: "host",
     manifestTool: {
       name: "memory_list",
       title: "List memory",
@@ -90,6 +94,7 @@ const TOOLS: RegisteredToolDescriptor[] = [
   {
     fqName: `${MEMORY_PLUGIN_ID}/memory_delete`,
     pluginId: MEMORY_PLUGIN_ID,
+    provenance: "host",
     manifestTool: {
       name: "memory_delete",
       title: "Delete memory",

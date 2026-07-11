@@ -60,3 +60,30 @@ describe("scorecard", () => {
     expect(readFileSync(join(dir, "demo.junit.xml"), "utf8")).toBe(`${toJUnit(card)}\n`)
   })
 })
+
+describe("toJUnit gated/passed contract", () => {
+  it("a gated:true, passed:false result renders as a JUnit <failure>, not <skipped>", () => {
+    const card = buildScorecard("example", [
+      {
+        id: "example-fixture",
+        tier: "T2",
+        tags: ["example"],
+        passed: false,
+        gated: true,
+        detail: "regressed",
+      },
+    ])
+    const xml = toJUnit(card)
+    expect(xml).toContain("<failure")
+    expect(xml).not.toContain("<skipped")
+  })
+
+  it("an ungated:false, passed:false result renders as <skipped>, not <failure>", () => {
+    const card = buildScorecard("example", [
+      { id: "example-fixture", tier: "T2", tags: ["example"], passed: false, gated: false },
+    ])
+    const xml = toJUnit(card)
+    expect(xml).toContain("<skipped")
+    expect(xml).not.toContain("<failure")
+  })
+})

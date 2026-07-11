@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from "vitest"
 import { AgentMissingKeyError, AgentService } from "./agent-service"
 import { DEFAULT_TOOL_RESILIENCE } from "./ai-settings-store"
 import { emptyUsage } from "./providers/types"
-import { AiToolRegistry } from "./tool-registry"
+import { AiToolRegistry, modelToolName } from "./tool-registry"
 
 function descriptorFor(id: string): ProviderDescriptor {
   return {
@@ -94,6 +94,7 @@ function descriptor(annotations?: RegisteredToolDescriptor["manifestTool"]["anno
   return {
     fqName: "com.x.demo/act",
     pluginId: "com.x.demo",
+    provenance: "plugin",
     manifestTool: {
       name: "act",
       description: "Act",
@@ -102,6 +103,8 @@ function descriptor(annotations?: RegisteredToolDescriptor["manifestTool"]["anno
     },
   } satisfies RegisteredToolDescriptor
 }
+
+const ACT_TOOL_NAME = modelToolName({ fqName: "com.x.demo/act", provenance: "plugin" })
 
 function fakeHost(
   annotations?: RegisteredToolDescriptor["manifestTool"]["annotations"]
@@ -196,7 +199,7 @@ describe("agentService", () => {
     } = service({
       host,
       provider: fakeProvider([
-        { toolUses: [{ id: "t1", name: "com_x_demo_act", input: { a: 1 } }] },
+        { toolUses: [{ id: "t1", name: ACT_TOOL_NAME, input: { a: 1 } }] },
         { text: "all done" },
       ]),
     })
@@ -216,7 +219,7 @@ describe("agentService", () => {
     const { service: svc, events } = service({
       host,
       provider: fakeProvider([
-        { toolUses: [{ id: "t1", name: "com_x_demo_act", input: {} }] },
+        { toolUses: [{ id: "t1", name: ACT_TOOL_NAME, input: {} }] },
         { text: "done" },
       ]),
     })
@@ -240,7 +243,7 @@ describe("agentService", () => {
     const { service: svc, events } = service({
       host,
       provider: fakeProvider([
-        { toolUses: [{ id: "t1", name: "com_x_demo_act", input: {} }] },
+        { toolUses: [{ id: "t1", name: ACT_TOOL_NAME, input: {} }] },
         { text: "ok" },
       ]),
     })
@@ -321,7 +324,7 @@ describe("agentService", () => {
       createProvider: () =>
         fakeProvider([
           {
-            toolUses: [{ id: "a", name: "com_x_demo_act", input: {} }],
+            toolUses: [{ id: "a", name: ACT_TOOL_NAME, input: {} }],
             usage: { outputTokens: 80 },
           },
           { text: "should not reach" },
@@ -370,7 +373,7 @@ describe("agentService", () => {
       conversations: convo.store,
       createProvider: () =>
         fakeProvider([
-          { toolUses: [{ id: "t1", name: "com_x_demo_act", input: {} }] },
+          { toolUses: [{ id: "t1", name: ACT_TOOL_NAME, input: {} }] },
           { text: "done" },
         ]),
       approvals,
@@ -417,8 +420,8 @@ describe("agentService", () => {
     const { service: svc, events } = service({
       host,
       provider: fakeProvider([
-        { toolUses: [{ id: "t1", name: "com_x_demo_act", input: {} }] },
-        { toolUses: [{ id: "t2", name: "com_x_demo_act", input: {} }] },
+        { toolUses: [{ id: "t1", name: ACT_TOOL_NAME, input: {} }] },
+        { toolUses: [{ id: "t2", name: ACT_TOOL_NAME, input: {} }] },
         { text: "done" },
       ]),
     })
@@ -471,7 +474,7 @@ describe("agentService", () => {
       provider: streamingProvider([
         {
           deltas: ["I will ", "check."],
-          toolUses: [{ id: "t1", name: "com_x_demo_act", input: {} }],
+          toolUses: [{ id: "t1", name: ACT_TOOL_NAME, input: {} }],
         },
         { deltas: ["Done."], text: "Done." },
       ]),

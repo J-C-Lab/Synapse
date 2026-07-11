@@ -14,6 +14,7 @@ function descriptor(fqName: string): RegisteredToolDescriptor {
   return {
     fqName,
     pluginId: fqName.split("/")[0] ?? fqName,
+    provenance: "plugin",
     manifestTool: { name: fqName, description: fqName, inputSchema: { type: "object" } },
   }
 }

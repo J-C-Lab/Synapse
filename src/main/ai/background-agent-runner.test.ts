@@ -6,6 +6,7 @@ import { AgentBudgetLedger } from "../plugins/agent-budget"
 import { AgentRuntime } from "./agent-runtime"
 import { BackgroundAgentRunner } from "./background-agent-runner"
 import { emptyUsage } from "./providers/types"
+import { modelToolName } from "./tool-registry"
 
 interface ScriptedTurn {
   text?: string
@@ -41,6 +42,7 @@ function descriptor(
   return {
     fqName: `com.example.organizer/${name}`,
     pluginId: "com.example.organizer",
+    provenance: "plugin",
     manifestTool: {
       name,
       description: name,
@@ -55,6 +57,11 @@ const fsReadUse: TriggerUse = {
   scope: { paths: ["~/Downloads/**"] },
   budget: { maxCalls: 5, period: "1h" },
 }
+
+const READ_TOOL_NAME = modelToolName({
+  fqName: "com.example.organizer/read",
+  provenance: "plugin",
+})
 
 const agentBudget = {
   maxRuns: 1,
@@ -85,7 +92,7 @@ describe("backgroundAgentRunner", () => {
     const runner = new BackgroundAgentRunner(
       runnerOptions({
         provider: fakeProvider([
-          { toolUses: [{ id: "t1", name: "com_example_organizer_read", input: {} }] },
+          { toolUses: [{ id: "t1", name: READ_TOOL_NAME, input: {} }] },
           { text: "done" },
         ]),
         tools: {
@@ -126,8 +133,8 @@ describe("backgroundAgentRunner", () => {
         provider: fakeProvider([
           {
             toolUses: [
-              { id: "t1", name: "com_example_organizer_read", input: { n: 1 } },
-              { id: "t2", name: "com_example_organizer_read", input: { n: 2 } },
+              { id: "t1", name: READ_TOOL_NAME, input: { n: 1 } },
+              { id: "t2", name: READ_TOOL_NAME, input: { n: 2 } },
             ],
           },
           { text: "done" },
@@ -216,7 +223,7 @@ describe("backgroundAgentRunner", () => {
       runnerOptions({
         provider: fakeProvider([
           {
-            toolUses: [{ id: "t1", name: "com_example_organizer_read", input: {} }],
+            toolUses: [{ id: "t1", name: READ_TOOL_NAME, input: {} }],
             usage: { outputTokens: 9999 },
           },
           { text: "should not reach" },

@@ -1,6 +1,7 @@
 import type { McpCallResult, McpClientPort, McpToolDefinition } from "./mcp-client-manager"
 import type { McpServerConfig } from "./mcp-server-config-store"
 import { describe, expect, it, vi } from "vitest"
+import { logger } from "../logging"
 import { McpClientManager } from "./mcp-client-manager"
 
 interface FakeOptions {
@@ -165,5 +166,28 @@ describe("mcpClientManager", () => {
     await manager.notifyAllRootsChanged()
 
     expect(notifying.notifyRootsChanged).toHaveBeenCalledOnce()
+  })
+
+  it("logs a diagnostic when a connected server's tool schema exceeds a structural budget", async () => {
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {})
+    const oversizedTool: McpToolDefinition = {
+      name: "bad",
+      description: "Bad tool",
+      inputSchema: {
+        type: "object",
+        properties: { x: { const: "a".repeat(10_000) } },
+      },
+    }
+    const manager = new McpClientManager(() => fakeClient({ tools: [oversizedTool] }))
+    await manager.start([config()])
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("excluded from model exposure"))
+    warnSpy.mockRestore()
+  })
+
+  it("stamps provenance: mcp-client on every descriptor it produces", async () => {
+    const manager = new McpClientManager(() => fakeClient({ tools: [readTool] }))
+    await manager.start([config()])
+    const [descriptor] = manager.listTools()
+    expect(descriptor?.provenance).toBe("mcp-client")
   })
 })

@@ -19,6 +19,7 @@ import type {
   ToolInvocationOptions,
 } from "./types"
 import { EventEmitter } from "node:events"
+import { projectModelVisibleTool } from "../ai/guardrails/tool-metadata"
 import { fuzzyMatch } from "../launcher/search"
 import { logger } from "../logging"
 import { CapabilityDenied } from "./capability-gate"
@@ -91,6 +92,20 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
 
     for (const plugin of discovered) {
       await this.addDiscoveredPlugin(plugin)
+    }
+
+    for (const [fqName, { pluginId, tool }] of this.toolIndex.entries()) {
+      const projected = projectModelVisibleTool({
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        outputSchema: tool.outputSchema,
+        provenance: "plugin",
+      })
+      if (!projected.ok) {
+        logger.warn(`tool ${fqName} excluded from model exposure: ${projected.reason}`, {
+          pluginId,
+        })
+      }
     }
 
     this.emitChanged()
@@ -195,6 +210,7 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
       fqName,
       pluginId,
       manifestTool: tool,
+      provenance: "plugin" as const,
     }))
   }
 

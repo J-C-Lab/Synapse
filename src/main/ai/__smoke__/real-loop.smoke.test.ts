@@ -51,6 +51,7 @@ class GreetToolHost implements ToolHostPort {
       {
         fqName: GREET_FQ_NAME,
         pluginId: "com.example.hello-world",
+        provenance: "plugin",
         manifestTool: {
           name: "greet",
           description:

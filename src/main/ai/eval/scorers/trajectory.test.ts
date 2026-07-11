@@ -1,11 +1,13 @@
 import type { RegisteredToolDescriptor } from "../../../plugins/types"
 import type { TrajectoryFixture } from "./trajectory"
 import { describe, expect, it } from "vitest"
+import { modelToolName } from "../../tool-registry"
 import { scoreTrajectory } from "./trajectory"
 
 const greetTool: RegisteredToolDescriptor = {
   fqName: "com.probe/greet",
   pluginId: "com.probe",
+  provenance: "plugin",
   manifestTool: {
     name: "greet",
     description: "greet",
@@ -14,13 +16,15 @@ const greetTool: RegisteredToolDescriptor = {
   },
 }
 
+const GREET_TOOL_NAME = modelToolName({ fqName: greetTool.fqName, provenance: "plugin" })
+
 const base: TrajectoryFixture = {
   id: "happy",
   title: "happy path",
   tier: "T0",
   tags: [],
   tools: [greetTool],
-  script: [{ toolUses: [{ id: "t1", name: "com_probe_greet", input: {} }] }, { text: "Hello Ada" }],
+  script: [{ toolUses: [{ id: "t1", name: GREET_TOOL_NAME, input: {} }] }, { text: "Hello Ada" }],
   workspaceId: "default",
   expect: {
     toolCalls: [{ name: "com.probe/greet", ok: true }],

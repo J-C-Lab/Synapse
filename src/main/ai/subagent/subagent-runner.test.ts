@@ -25,6 +25,7 @@ function fakeHost(): ToolHostPort {
       {
         fqName: "com.x/read",
         pluginId: "com.x",
+        provenance: "plugin",
         manifestTool: { name: "read", description: "", inputSchema: { type: "object" } },
       },
     ],

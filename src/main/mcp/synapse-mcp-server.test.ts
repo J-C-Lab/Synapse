@@ -7,11 +7,13 @@ import type { WorkspaceInstructionsResourcePort } from "./workspace-instructions
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { describe, expect, it, vi } from "vitest"
+import { modelToolName } from "../ai/tool-registry"
 import { createSynapseMcpServer, SynapseMcpToolService } from "./synapse-mcp-server"
 
 function descriptor(
   fqName: string,
-  annotations?: RegisteredToolDescriptor["manifestTool"]["annotations"]
+  annotations?: RegisteredToolDescriptor["manifestTool"]["annotations"],
+  provenance: RegisteredToolDescriptor["provenance"] = "plugin"
 ): RegisteredToolDescriptor {
   return {
     fqName,
@@ -32,6 +34,7 @@ function descriptor(
       },
       annotations,
     },
+    provenance,
   }
 }
 
@@ -48,6 +51,15 @@ function host(descriptors: RegisteredToolDescriptor[]): ToolHostPort {
   }
 }
 
+const SAFE_GREET_NAME = modelToolName({ fqName: "com.example.safe/greet", provenance: "plugin" })
+const SAFE_OK_NAME = modelToolName({ fqName: "com.example.safe/ok", provenance: "plugin" })
+const SAFE_BAD_NAME = modelToolName({ fqName: "com.example.safe/bad", provenance: "plugin" })
+const RISKY_DELETE_NAME = modelToolName({
+  fqName: "com.example.risky/delete",
+  provenance: "plugin",
+})
+const WRITE_NAME = modelToolName({ fqName: "com.example.a/write", provenance: "plugin" })
+
 describe("synapseMcpToolService", () => {
   it("lists only read-only tools by default", async () => {
     const service = new SynapseMcpToolService(
@@ -58,21 +70,61 @@ describe("synapseMcpToolService", () => {
       ])
     )
 
-    expect((await service.listTools()).tools.map((tool) => tool.name)).toEqual([
-      "com_example_safe_greet",
-    ])
+    expect((await service.listTools()).tools.map((tool) => tool.name)).toEqual([SAFE_GREET_NAME])
     expect((await service.listTools()).tools[0]).toMatchObject({
-      title: "Title com.example.safe/greet",
-      description: "Tool com.example.safe/greet",
+      title: undefined,
+      description: expect.stringContaining("[Third-party tool metadata"),
       annotations: { readOnlyHint: true },
     })
+  })
+
+  it("forwards title only for host-provenance tools", async () => {
+    const service = new SynapseMcpToolService(
+      host([descriptor("execution:host/run", { readOnlyHint: true }, "host")])
+    )
+    const [tool] = (await service.listTools()).tools
+    expect(tool?.title).toBe("Title execution:host/run")
+  })
+
+  it("frames a plugin-provenance description with the trust header", async () => {
+    const service = new SynapseMcpToolService(
+      host([descriptor("com.example.safe/greet", { readOnlyHint: true })])
+    )
+    const [tool] = (await service.listTools()).tools
+    expect(tool?.description).toContain("[Third-party tool metadata")
+  })
+
+  it("excludes a structural-overflow tool from tools/list", async () => {
+    const bad = descriptor("com.example.safe/bad", { readOnlyHint: true })
+    bad.manifestTool.inputSchema = {
+      type: "object",
+      properties: { x: { const: "a".repeat(10_000) } },
+    }
+    const service = new SynapseMcpToolService(
+      host([descriptor("com.example.safe/ok", { readOnlyHint: true }), bad])
+    )
+    const names = (await service.listTools()).tools.map((tool) => tool.name)
+    expect(names).toEqual([SAFE_OK_NAME])
+  })
+
+  it("returns an error result from callTool() for a tool that would fail projection, without invoking", async () => {
+    const bad = descriptor("com.example.safe/bad", { readOnlyHint: true })
+    bad.manifestTool.inputSchema = {
+      type: "object",
+      properties: { x: { const: "a".repeat(10_000) } },
+    }
+    const h = host([bad])
+    const service = new SynapseMcpToolService(h)
+    const result = await service.callTool(SAFE_BAD_NAME, {})
+    expect(result.isError).toBe(true)
+    expect(h.invokeTool).not.toHaveBeenCalled()
   })
 
   it("routes a read-only tool call through the plugin host as an mcp caller", async () => {
     const h = host([descriptor("com.example.safe/greet", { readOnlyHint: true })])
     const service = new SynapseMcpToolService(h)
 
-    const result = await service.callTool("com_example_safe_greet", { name: "Ada" })
+    const result = await service.callTool(SAFE_GREET_NAME, { name: "Ada" })
 
     expect(h.invokeTool).toHaveBeenCalledWith(
       "com.example.safe/greet",
@@ -92,7 +144,7 @@ describe("synapseMcpToolService", () => {
     const h = host([descriptor("com.example.risky/delete", { destructiveHint: true })])
     const service = new SynapseMcpToolService(h)
 
-    const result = await service.callTool("com_example_risky_delete", {})
+    const result = await service.callTool(RISKY_DELETE_NAME, {})
 
     expect(h.invokeTool).not.toHaveBeenCalled()
     expect(result).toMatchObject({ isError: true })
@@ -103,11 +155,9 @@ describe("synapseMcpToolService", () => {
     const h = host([descriptor("com.example.risky/delete", { destructiveHint: true })])
     const service = new SynapseMcpToolService(h, { exposurePolicy: "all" })
 
-    expect((await service.listTools()).tools.map((tool) => tool.name)).toEqual([
-      "com_example_risky_delete",
-    ])
+    expect((await service.listTools()).tools.map((tool) => tool.name)).toEqual([RISKY_DELETE_NAME])
 
-    await service.callTool("com_example_risky_delete", {})
+    await service.callTool(RISKY_DELETE_NAME, {})
     expect(h.invokeTool).toHaveBeenCalledWith(
       "com.example.risky/delete",
       {},
@@ -135,9 +185,7 @@ describe("synapseMcpToolService", () => {
       identityForPlugin: (pluginId) => (pluginId === "com.example.a" ? identity : undefined),
     })
 
-    expect((await service.listTools()).tools.map((tool) => tool.name)).toEqual([
-      "com_example_a_write",
-    ])
+    expect((await service.listTools()).tools.map((tool) => tool.name)).toEqual([WRITE_NAME])
   })
 
   it("excludes a non-read-only tool when identityForPlugin resolves nothing (unknown plugin)", async () => {
@@ -159,12 +207,10 @@ describe("synapseMcpToolService", () => {
     await server.connect(serverTransport)
     await client.connect(clientTransport)
     try {
-      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
-        "com_example_safe_greet",
-      ])
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([SAFE_GREET_NAME])
 
       const result = await client.callTool({
-        name: "com_example_safe_greet",
+        name: SAFE_GREET_NAME,
         arguments: { name: "Ada" },
       })
 
@@ -235,7 +281,7 @@ describe("synapseMcpToolService", () => {
       clientId: "claude-desktop",
     })
 
-    await service.callTool("com_example_safe_greet", { name: "Ada" })
+    await service.callTool(SAFE_GREET_NAME, { name: "Ada" })
 
     expect(traces).toHaveLength(1)
     expect(traces[0]).toMatchObject({

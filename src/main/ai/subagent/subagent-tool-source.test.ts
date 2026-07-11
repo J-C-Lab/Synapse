@@ -1,7 +1,7 @@
 import type { SubagentRunInput, SubagentRunResult } from "./subagent-runner"
 import { describe, expect, it, vi } from "vitest"
 import { UPDATE_PLAN_FQ } from "../plan/plan-tool-source"
-import { AiToolRegistry } from "../tool-registry"
+import { AiToolRegistry, modelToolName } from "../tool-registry"
 import {
   SPAWN_SUBAGENT_FQ,
   SpawnSubagentToolSource,
@@ -14,6 +14,7 @@ function parentRegistry() {
       {
         fqName: "com.x/read",
         pluginId: "com.x",
+        provenance: "plugin",
         manifestTool: {
           name: "read",
           description: "",
@@ -24,6 +25,7 @@ function parentRegistry() {
       {
         fqName: UPDATE_PLAN_FQ,
         pluginId: "plan:core",
+        provenance: "host",
         manifestTool: {
           name: "update_plan",
           description: "",
@@ -34,6 +36,7 @@ function parentRegistry() {
       {
         fqName: "com.x/write",
         pluginId: "com.x",
+        provenance: "plugin",
         manifestTool: { name: "write", description: "", inputSchema: { type: "object" } },
       },
     ],
@@ -47,6 +50,8 @@ function agentCaller(extra: Record<string, unknown> = {}) {
     signal: new AbortController().signal,
   }
 }
+
+const READ_TOOL_NAME = modelToolName({ fqName: "com.x/read", provenance: "plugin" })
 
 describe("spawnSubagentToolSource", () => {
   it("advertises a confirmation-required descriptor", () => {
@@ -92,7 +97,7 @@ describe("spawnSubagentToolSource", () => {
     const src = new SpawnSubagentToolSource({ runSubagent, parentTools: parentRegistry })
     const result = await src.invokeTool(
       SPAWN_SUBAGENT_FQ,
-      { instruction: "count items", allowedTools: ["com_x_read"] },
+      { instruction: "count items", allowedTools: [READ_TOOL_NAME] },
       agentCaller()
     )
     expect(result.isError ?? false).toBe(false)
@@ -100,7 +105,7 @@ describe("spawnSubagentToolSource", () => {
     const arg = runSubagent.mock.calls[0]![0]
     expect(arg.parentRunId).toBe("parent-1")
     expect(arg.instruction).toBe("count items")
-    expect(arg.tools.list().map((s) => s.name)).toEqual(["com_x_read"])
+    expect(arg.tools.list().map((s) => s.name)).toEqual([READ_TOOL_NAME])
     expect(result.content[0]).toMatchObject({
       type: "text",
       text: expect.stringContaining("child summary"),
@@ -118,7 +123,7 @@ describe("spawnSubagentToolSource", () => {
     const src = new SpawnSubagentToolSource({ runSubagent, parentTools: parentRegistry })
     await src.invokeTool(SPAWN_SUBAGENT_FQ, { instruction: "x" }, agentCaller())
     const arg = runSubagent.mock.calls[0]![0]
-    expect(arg.tools.list().map((s) => s.name)).toEqual(["com_x_read"])
+    expect(arg.tools.list().map((s) => s.name)).toEqual([READ_TOOL_NAME])
   })
 
   it("excludes orchestration tools (update_plan, spawn_subagent) from the default read-only subset", async () => {
@@ -132,7 +137,7 @@ describe("spawnSubagentToolSource", () => {
     const src = new SpawnSubagentToolSource({ runSubagent, parentTools: parentRegistry })
     await src.invokeTool(SPAWN_SUBAGENT_FQ, { instruction: "x" }, agentCaller())
     const names = runSubagent.mock.calls[0]![0].tools.list().map((s) => s.name)
-    expect(names).toEqual(["com_x_read"])
+    expect(names).toEqual([READ_TOOL_NAME])
     expect(names).not.toContain("plan_core_update_plan")
     expect(names).not.toContain("agent_core_spawn_subagent")
   })
@@ -151,13 +156,13 @@ describe("spawnSubagentToolSource", () => {
       SPAWN_SUBAGENT_FQ,
       {
         instruction: "x",
-        allowedTools: ["com_x_read", "plan_core_update_plan", "agent_core_spawn_subagent"],
+        allowedTools: [READ_TOOL_NAME, "plan_core_update_plan", "agent_core_spawn_subagent"],
       },
       agentCaller()
     )
     expect(result.isError ?? false).toBe(false)
     const names = runSubagent.mock.calls[0]![0].tools.list().map((s) => s.name)
-    expect(names).toEqual(["com_x_read"])
+    expect(names).toEqual([READ_TOOL_NAME])
   })
 
   it("passes the parent turn budget cap to the subagent runner", async () => {

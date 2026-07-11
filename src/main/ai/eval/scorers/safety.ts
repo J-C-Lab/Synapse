@@ -33,6 +33,7 @@ export async function scoreSafety(fixture: SafetyFixture): Promise<ScoreResult> 
       const tool: RegisteredToolDescriptor = {
         fqName: "com.probe/act",
         pluginId: "com.probe",
+        provenance: "plugin",
         manifestTool: {
           name: "act",
           description: "act",
