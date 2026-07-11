@@ -392,45 +392,132 @@ actually did (nothing), not a conclusion about the binary itself.
 different guarantee from "this binary is signed by an OS-recognized
 identity," and the two must never be collapsed into one status.
 
-## §7 GitHub build provenance attestation
+## §7 GitHub artifact attestation
 
-`actions/attest-build-provenance`, run once against every file in the
-already-assembled `release-approved-bundle` (§8) — after the merge and
-manifest checks, so what gets attested is exactly what gets published,
-not an intermediate or raw state. No secrets required (uses GitHub's
-OIDC-based signing). No separate attestation file needs to be uploaded
-as a release asset — a user who downloads a released binary verifies it
-directly with `gh attestation verify <file> --owner sunzrnobug`, since
-GitHub's attestation store is keyed by the artifact's digest and
-repository owner, not by the release itself.
+**`actions/attest@v4`, not `attest-build-provenance`.** Confirmed by
+fetching the real, current READMEs of both
+(`gh api repos/actions/attest-build-provenance/readme` and
+`repos/actions/attest/readme`): *"As of version 4,
+`actions/attest-build-provenance` is simply a wrapper on top of
+`actions/attest`. Existing applications may continue to use the
+`attest-build-provenance` action, but new implementations should use
+`actions/attest` instead."* This spec targets `actions/attest` directly.
+
+`actions/attest`'s own README states its required permissions
+explicitly:
+
+```yaml
+permissions:
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+```
+
+The `release-admission-gate` job's full permissions block combines these
+with what the gate's other steps need (§2's `gh run`/`gh issue` calls,
+checkout):
+
+```yaml
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+```
+
+`subject-path` accepts a glob or a list of paths in one call (confirmed:
+*"May contain a glob pattern or list of paths (total subject count
+cannot exceed 1024)"*) — the bundle's file count is nowhere close to that
+limit, so one `actions/attest` step covers every file in `assets/` (§8)
+at once. Its `attestation-url` output ("URL for the attestation summary")
+gets captured and written into `release-body.md` (§8) — this is the
+concrete mechanism that makes §6's "verbatim in the release notes" claim
+actually true, rather than an assertion with no corresponding
+implementation step.
+
+No secrets required (OIDC-based Sigstore signing). No separate
+attestation file needs to be uploaded as a release asset — a user who
+downloads a released binary verifies it directly with
+`gh attestation verify <file> --owner sunzrnobug`, since GitHub's
+attestation store is keyed by the artifact's digest and repository
+owner, not by the release itself.
 
 ## §8 The approved bundle and `create-release` changes
 
-The gate's final steps, after §2-§6's checks all pass:
+**Bundle layout** — split so `create-release` never has to guess which
+files are publishable release assets and which are gate-internal
+bookkeeping:
 
-1. Copy every binary from the raw per-container artifact directories
-   into one flat `release-approved-bundle/` directory.
-2. Write the merged `latest-mac.yml` (§5) into it, alongside the
-   untouched `latest.yml`/`latest-linux.yml`.
-3. Write `signing-status.json` (§6).
-4. Write a `manifest.json` listing every file in the bundle with its
-   sha512, recomputed from the actual bundled bytes rather than copied
-   from the feed files — and **assert** each recomputed hash equals what
-   the corresponding `latest*.yml` entry claims for that file, failing
-   the gate if any disagree. This is an independent check that the
-   feed's claimed hash matches the real file, not merely a restatement
-   of it.
-5. Upload `release-approved-bundle` as a new named artifact.
-6. Run attestation (§7) against every file in it.
+```
+release-approved-bundle/
+├─ assets/                 # the ONLY directory create-release uploads
+│  ├─ Synapse-Setup-<version>.exe
+│  ├─ Synapse-<version>.msi
+│  ├─ *.blockmap
+│  ├─ latest.yml / latest-linux.yml / latest-mac.yml (merged)
+│  ├─ *.AppImage / *.deb / *.dmg / *.zip
+│  ├─ manifest.json         # excludes its own hash — see step 3
+│  └─ signing-status.json   # §6
+└─ release-body.md          # used as body_path — never uploaded as an asset
+```
 
-`create-release` changes from downloading *all* artifacts
-(`actions/download-artifact@v8` with no `name:` filter) to downloading
-only `release-approved-bundle`, and its `softprops/action-gh-release`
-`files:` glob narrows from the current
-`artifacts/**/*.{AppImage,deb,msi,exe,dmg,zip,blockmap}` /
-`artifacts/**/latest*.yml` to `release-approved-bundle/**/*` — it can no
-longer accidentally re-encounter the raw per-leg mac feed collision,
-because it never sees the raw per-leg artifacts at all.
+**The gate's steps, after §2-§6's checks all pass** (real execution
+order — attestation runs against local runner-filesystem files *before*
+`release-approved-bundle` is uploaded as its own artifact, not after;
+`actions/attest`'s `subject-path` reads local files, it has no notion of
+an already-uploaded GitHub Actions artifact):
+
+1. Copy every binary from the raw per-container artifact directories,
+   plus the merged `latest-mac.yml` (§5) and the untouched
+   `latest.yml`/`latest-linux.yml`, into `release-approved-bundle/assets/`.
+2. Write `assets/signing-status.json` (§6).
+3. Write `assets/manifest.json`: every *other* file in `assets/` listed
+   with its sha512, recomputed from the actual bytes rather than copied
+   from the feed files — `manifest.json` excludes its own hash (hashing
+   a file that contains its own hash is circular) — and **assert** each
+   recomputed hash equals what the corresponding `latest*.yml` entry
+   claims for that file, failing the gate if any disagree. This is an
+   independent check that the feed's claimed hash matches the real file,
+   not merely a restatement of it.
+4. Run `actions/attest@v4` with `subject-path: release-approved-bundle/assets/*`
+   against the finished `assets/` directory. Confirm the step succeeds
+   before proceeding — an attestation failure here is a gate failure,
+   same as any other check.
+5. Write `release-body.md`: the platform signing declaration (§6, the
+   verbatim `unsigned-unverified`/`signed-and-verified` sentence per
+   platform), the attestation URL (step 4's `attestation-url` output),
+   the exact `gh attestation verify <file> --owner sunzrnobug` command a
+   user should run, and a one-line pointer to `manifest.json` for
+   offline hash verification.
+6. Upload `release-approved-bundle` (both `assets/` and `release-body.md`)
+   as a single new named GitHub Actions artifact.
+
+**`create-release` changes:**
+
+- Downloads *only* the `release-approved-bundle` artifact (not the raw
+  per-leg artifacts `actions/download-artifact@v8` currently pulls with
+  no `name:` filter).
+- Re-runs the same manifest-hash verification function from step 3
+  (imported from `release-admission-gate.mjs`, not reimplemented) against
+  the freshly-downloaded `assets/`, before publishing anything — defense
+  in depth against corruption or tampering in the artifact upload/download
+  round-trip. A mismatch here fails the job with no release created,
+  exactly like a gate failure.
+- `softprops/action-gh-release`'s `files:` glob narrows from the current
+  `artifacts/**/*.{AppImage,deb,msi,exe,dmg,zip,blockmap}` /
+  `artifacts/**/latest*.yml` to `release-approved-bundle/assets/*` —
+  it can no longer accidentally re-encounter the raw per-leg mac feed
+  collision, because it never sees the raw per-leg artifacts at all —
+  and gains `body_path: release-approved-bundle/release-body.md` (step
+  5's content; confirmed via the real README that when
+  `generate_release_notes: true` is also set, "the body will be
+  pre-pended to the automatically generated notes," not overwritten by
+  them) plus `fail_on_unmatched_files: true` (confirmed real input:
+  "Indicator of whether to fail if any of the `files` globs match
+  nothing" — the corresponding gap in `if-no-files-found: warn`'s
+  original per-glob looseness, §9, applied here too).
 
 ## §9 CI fixes bundled into this spec
 
