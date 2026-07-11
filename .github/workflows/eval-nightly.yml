@@ -5,6 +5,14 @@ on:
     - cron: "0 7 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: eval-nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   judged:
     runs-on: ubuntu-latest
@@ -19,7 +27,18 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:packages
+      - name: Check judge key configuration
+        id: key-check
+        env:
+          CHECK_JUDGE_KEY: ${{ secrets.EVAL_JUDGE_KEY }}
+        run: |
+          if [ -n "$CHECK_JUDGE_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Run keyed eval
+        id: eval
         continue-on-error: true
         env:
           EVAL_JUDGE_PROVIDER: ${{ secrets.EVAL_JUDGE_PROVIDER }}
@@ -33,3 +52,11 @@ jobs:
           name: eval-judged-scorecard
           path: coverage/eval/
           retention-days: 30
+      - name: Report nightly status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JUDGE_CONFIGURED: ${{ steps.key-check.outputs.configured }}
+          EVAL_STEP_OUTCOME: ${{ steps.eval.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node scripts/eval-nightly-report.mjs

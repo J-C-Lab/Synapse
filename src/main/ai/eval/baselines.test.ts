@@ -1,8 +1,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { describe, expect, it } from "vitest"
-import { checkAgainstBaseline, loadBaseline } from "./baselines"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { checkAgainstBaseline, loadBaseline, loadRequiredBaseline } from "./baselines"
 
 describe("checkAgainstBaseline", () => {
   it("passes when metrics meet or beat the baseline", () => {
@@ -46,5 +46,28 @@ describe("loadBaseline", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("loadRequiredBaseline", () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "baselines-required-"))
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it("throws when the baseline file does not exist", () => {
+    const file = join(dir, "missing.json")
+    expect(() => loadRequiredBaseline(file)).toThrow(/does not exist/)
+  })
+
+  it("returns the parsed baseline when the file exists", () => {
+    const file = join(dir, "present.json")
+    writeFileSync(file, JSON.stringify({ "recall-basic": 1 }))
+    expect(loadRequiredBaseline(file)).toEqual({ "recall-basic": 1 })
   })
 })

@@ -14,6 +14,22 @@ export function loadBaseline(file: string): Baseline {
   }
 }
 
+/**
+ * Like loadBaseline(), but throws instead of silently returning `{}` when
+ * the file is missing. A gate whose baseline file doesn't exist would
+ * otherwise pass vacuously (checkAgainstBaseline against an empty object
+ * has nothing to fail against) — exactly the "gate that never gates" bug
+ * this baseline exists to prevent, just moved one file over. Use this for
+ * any baseline a real assertion depends on; loadBaseline() stays as-is
+ * for genuinely optional lookups.
+ */
+export function loadRequiredBaseline(file: string): Baseline {
+  if (!existsSync(file)) {
+    throw new Error(`Required baseline file does not exist: ${file}`)
+  }
+  return loadBaseline(file)
+}
+
 export function checkAgainstBaseline(
   metrics: Record<string, number>,
   baseline: Baseline
