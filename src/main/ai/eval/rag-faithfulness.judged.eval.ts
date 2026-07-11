@@ -85,7 +85,7 @@ async function runRagFaithfulness(dir: string): Promise<void> {
   await credentials.set(PROVIDER, KEY)
 
   const descriptor = defaultProviderCatalog().find((p) => p.id === PROVIDER)
-  const model = MODEL ?? descriptor?.defaultModel
+  const model = MODEL?.trim() || descriptor?.defaultModel
   if (!model) throw new Error(`No model for provider ${PROVIDER}`)
   const provider = descriptor!.create(KEY)
 

@@ -92,7 +92,28 @@ function main() {
   syncIssue(body, state)
 }
 
+function ensureIssueLabel() {
+  try {
+    execFileSync(
+      "gh",
+      [
+        "label",
+        "create",
+        ISSUE_LABEL,
+        "--description",
+        "Eval nightly workflow status",
+        "--color",
+        "0E8A16",
+      ],
+      { stdio: "ignore" }
+    )
+  } catch {
+    // label already exists
+  }
+}
+
 function syncIssue(body, state) {
+  ensureIssueLabel()
   const existing = execFileSync(
     "gh",
     [
