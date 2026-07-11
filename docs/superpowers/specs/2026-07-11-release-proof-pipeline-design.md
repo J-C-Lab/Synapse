@@ -1,0 +1,550 @@
+# S03 — Release Proof Pipeline
+
+> Date: 2026-07-11 · Status: draft, pending review
+> Third of a four-phase, ten-spec roadmap (S01-S10), last item in Phase 1.
+> Independent of S01/S02's own subject matter, but reaches back into S01's
+> `eval-nightly.yml`/`eval-nightly-report.mjs` to add a machine-readable
+> status artifact the release gate consumes.
+
+## Why this is needed
+
+Verified against the real repo, not assumed:
+
+- **`create-release` publishes a draft from unverified inputs.** Reading
+  `.github/workflows/release.yml`: `quality`/`test`/`build-electron` all
+  have to pass, but nothing checks the *contents* of what
+  `build-electron` produced before `create-release` globs
+  `artifacts/**/*.{AppImage,deb,msi,exe,dmg,zip,blockmap}` and
+  `artifacts/**/latest*.yml` straight into a draft GitHub Release. A
+  draft still requires a human to click publish, but nothing today tells
+  that human whether the draft is actually complete or correct.
+- **The Linux leg of the build matrix has never run.** `build-electron.yml`'s
+  matrix only lists `windows-latest` and `macos-latest` (twice, for
+  x64/arm64) — confirmed by `grep -n "platform:"` against the file,
+  three matches, none `ubuntu-latest`. The file's own "Smoke-test built
+  app (Linux)" and "Upload Linux artifacts" steps are gated on
+  `if: matrix.platform == 'ubuntu-latest'`, which is dead code: that
+  value never appears in the matrix, so those steps have never executed
+  even once. `package.json`'s `build.linux` target (AppImage + deb) is
+  fully configured and `release.yml`'s file glob already expects
+  `*.AppImage`/`*.deb` — the pipeline has been silently missing an
+  entire platform's release artifacts.
+- **`if-no-files-found: warn` lets a silent build failure through.**
+  Every "Upload ... artifacts" step in `build-electron.yml` uses `warn`,
+  not `error` — a matrix leg whose pack step produces zero matching
+  files doesn't fail the job, it just logs a warning and `create-release`
+  proceeds with whatever partial artifact set actually got uploaded.
+- **Building macOS x64 and arm64 as two separate matrix jobs produces two
+  colliding `latest-mac.yml` files, and this has never been exercised.**
+  Confirmed against the actually-locked `electron-updater@6.8.9` source
+  (`node_modules/.pnpm/.../electron-updater/out/providers/Provider.js:104-123`,
+  `.../MacUpdater.js:27-34`): `getFileList()` prefers `UpdateInfo.files`
+  whenever it's non-empty (falling back to the legacy top-level
+  `path`/`sha512` only when `files` is absent), and `MacUpdater
+  .filterFilesForArch()` picks an architecture's file by checking
+  whether the URL's pathname `.includes("arm64")`. electron-builder's
+  default artifact name template (no override exists for mac zip/dmg in
+  this repo's config) is `"${productName}-${version}-${arch}.${ext}"`
+  (`app-builder-lib/out/platformPackager.js:475`), so the x64 leg's
+  `latest-mac.yml` names its file `Synapse-<version>-x64-mac.zip` and the
+  arm64 leg's names its `Synapse-<version>-arm64-mac.zip` — but each leg
+  writes its OWN single-arch `latest-mac.yml` under the same filename,
+  and `release.yml`'s `artifacts/**/latest*.yml` glob would try to
+  publish both to the same GitHub Release, which cannot hold two assets
+  with the same name. **This has zero live user impact today**: `grep`
+  for `updateService.check()` across `src/main` finds exactly one call
+  site (`src/main/index.ts:1280-1284`), gated by
+  `shouldAutoCheckOnStartup()`, which returns `false` for `darwin`
+  specifically because macOS ships unsigned and Squirrel.Mac rejects
+  unsigned updates — and no IPC/menu path calls `.download()`/`.install()`
+  at all. Fixing the merge is about making the pipeline's *output*
+  correct (a "proof pipeline" that publishes a broken feed file isn't
+  proving anything) and about not leaving a landmine for whenever macOS
+  signing + auto-update eventually ship, not about a bug affecting users
+  today.
+- **Nothing connects a release to S01's eval health signal.** A tag can
+  be pushed and released regardless of whether the most recent nightly
+  eval run was clean, regressed, or never configured at all — the two
+  pipelines are entirely disconnected today.
+- **No verifiable integrity for anything downloaded.** The only hashes
+  that exist anywhere are electron-builder's own `latest*.yml` sha512
+  entries, which `electron-updater` uses internally for delta-update
+  integrity — nothing is published for a human who downloads an
+  installer directly (not through the updater) to verify it's genuine.
+- **Signing status is an unstated fact, not a declared one.** Both
+  Windows and macOS code signing are fully wired in `build-electron.yml`
+  but commented out — the pipeline ships unsigned binaries today with no
+  release-time statement saying so.
+
+## Guiding principle
+
+**Don't publish what hasn't been proven.** A new `release-admission-gate`
+job sits between `build-electron` and `create-release`. It is the *only*
+thing standing between "artifacts exist somewhere in CI" and "a draft
+release exists" — if any check fails, the job fails hard and **no draft
+is created**, matching the same philosophy S01 already established for
+the eval signal: an unhealthy state doesn't get to pass through silently.
+
+**The gate produces what gets published; it doesn't just approve what
+already exists.** Earlier drafts of this design had the gate validate
+raw build artifacts and let `create-release` re-glob them directly — this
+was scrapped because the raw artifacts *themselves* contain the
+publish-breaking mac feed collision. Instead the gate assembles a single
+new artifact, `release-approved-bundle`, containing the canonical
+(merged, validated) feed files, the actual binaries, a signing-status
+declaration, and a manifest — and `create-release` downloads and
+publishes *only* that bundle. Attestation runs against the bundle's
+final contents, so what gets attested is exactly what gets published,
+not an intermediate/raw state.
+
+**Fail-closed on signing status, not just informational.** "We ship
+unsigned today" is an accepted, non-blocking state. "A signing
+credential is configured but nothing verified the resulting binary is
+actually signed" is not — that gap is exactly the kind of thing that lets
+a broken signing setup ship silently. The gate's signing-status logic is
+a real state machine with real failure modes, built now, even though the
+credentials it reacts to don't exist yet.
+
+## Non-goals (explicitly deferred)
+
+- **Acquiring real code-signing certificates** (Apple Developer Program
+  enrollment + notarization, a Windows Authenticode certificate) — an
+  independent account/budget decision, not something this spec does.
+  S03 only makes the *current* unsigned state an explicit, verified
+  declaration instead of a silent fact, and builds the failure mode that
+  activates automatically the day real credentials show up (§6).
+- **Implementing `codesign --verify`/Windows Authenticode signature
+  validation tooling.** No certificates exist to test this logic
+  against, and the right tool/runner split (macOS needs a `macos-latest`
+  runner for `codesign`; Windows needs either a `windows-latest` runner
+  or `osslsigncode` cross-platform) depends on decisions that can't be
+  made responsibly without real credentials in hand. §6 builds the
+  fail-closed *state machine* around this now; the actual verification
+  step is explicitly parked (§12) with a concrete trigger condition, not
+  silently deferred.
+- **A real `electron-updater` integration test** (spin up a built app
+  against a local feed server, drive an actual check→download→install
+  cycle). §9's testing section validates the feed *files* structurally —
+  field completeness, version/tag/package.json agreement, sha512 actually
+  matching the real artifact bytes, the mac merge's arch-filtering
+  contract — which catches everything this spec's admission gate needs
+  to catch, without the cost/flakiness of booting a real Electron app in
+  CI for this purpose.
+- **Wiring reusable-workflow `secrets:` passthrough for
+  `build-electron.yml`.** `release.yml` calls `build-electron.yml` via
+  `uses:` (a `workflow_call` trigger) — GitHub Actions does not
+  auto-forward the caller's secrets to a called reusable workflow unless
+  the callee declares `on: workflow_call: secrets: ...` and the caller
+  either lists them explicitly or uses `secrets: inherit`. Neither exists
+  today. This has no effect right now (no signing secrets exist to
+  forward), but is a real, documented trap for whenever signing gets
+  enabled — parked in §12 with the exact fix required at that time.
+
+## §1 Architecture
+
+```
+quality ──┐
+test ─────┼─→ build-electron ─→ release-admission-gate ─→ create-release
+          │     (per-platform        (verify + assemble        (downloads +
+          └─────  matrix build)       release-approved-bundle    publishes ONLY
+                                       + attest)                  the bundle)
+```
+
+`release-admission-gate`'s `needs: [build-electron]`; `create-release`'s
+`needs` gains `release-admission-gate` alongside the existing
+`[quality, test, build-electron]`. The gate runs on `ubuntu-latest` (no
+platform-specific tooling is needed for any of its checks today — see
+§6/§12 for why real signature verification, if it existed, would change
+this).
+
+The gate is one job with several ordered steps, implemented as a single
+new script, `scripts/release-admission-gate.mjs`, following the same
+split S01 established in `eval-nightly-report.mjs`: pure, independently
+unit-tested decision functions (version matching, artifact-manifest
+matching, mac-feed merging, signing-state-machine transitions, eval-signal
+validation logic) plus a thin `main()` that does the actual `gh`/file
+I/O and calls those functions with already-fetched data. Same
+`if (process.argv[1] === fileURLToPath(import.meta.url)) main()` guard so
+the test file can import the pure functions without triggering real I/O.
+
+The sections below (§2-§6) are organized by *concern*, not by the gate's
+actual runtime order — §3 checks the canonical merged `latest-mac.yml`
+that §5 produces, so §5 has to run first. Real execution order inside
+`main()`: §4 (artifact identity — nothing downstream can proceed without
+knowing the raw files are the right ones) → §5 (mac merge, produces the
+canonical feed) → §3 (version consistency, now checking canonical feeds)
+→ §2 (eval-signal — independent of the artifacts, can run any time, but
+checked before assembly so a failure here doesn't waste time building a
+bundle that won't ship) → §6 (signing declaration — independent,
+computed last since it only needs the two boolean env values) → §8
+(bundle assembly, only once 2-6 all passed) → §7 (attestation, against
+the finished bundle).
+
+## §2 S01 eval-signal verification
+
+The `eval-nightly-status` GitHub issue is a human-facing projection —
+its body is emoji-and-prose, and its `updatedAt` can be changed by any
+edit (including a manual one), so neither is trustworthy as a release
+gate's evidence on its own. Two changes to S01's own files, plus new gate
+logic:
+
+**`eval-nightly.yml`** gains a step that uploads a new named artifact,
+`eval-nightly-status-json`, containing:
+
+```json
+{
+  "schemaVersion": 1,
+  "state": "clean",
+  "runId": "<github.run_id>",
+  "headSha": "<github.sha>",
+  "completedAt": "<ISO 8601 timestamp>"
+}
+```
+
+**`eval-nightly-report.mjs`**'s `main()` writes this file right after
+computing `renderStatus()`'s result — `state` is the same value already
+computed, not re-derived.
+
+**Gate verification, in order** (verified against real `gh` output —
+`gh run view <id> --json headSha,...` and `gh run list
+--workflow=eval-nightly.yml --json databaseId,headSha,status,createdAt`
+both confirmed working and exposing exactly these fields against this
+repo's real run history):
+
+1. `gh run list --workflow=eval-nightly.yml --json
+   databaseId,headSha,status,createdAt --limit 5`, take the most recent
+   entry with `status: "completed"`.
+2. `gh run download <that databaseId> -n eval-nightly-status-json -D
+   <tmpdir>` — pinned to a specific, immutable run, not "whatever the
+   latest artifact happens to be."
+3. `gh issue list --label eval-nightly-status --state open --json
+   number,title,body`: must return **exactly one** issue; its title must
+   be `"Eval Nightly Status"`; the run ID is extracted from its body via
+   `/\/actions\/runs\/(\d+)/` (matching the exact URL shape
+   `eval-nightly-report.mjs` already constructs:
+   `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{
+   github.run_id }}`) and must equal the run ID found in step 1. (Catches
+   the reporter script itself being broken — a newer clean run existing
+   that the issue never got updated to reflect is itself a signal
+   something is wrong with the pipeline, not something to silently work
+   around.)
+4. Parse the downloaded JSON. `state !== "clean"` → fail.
+5. `headSha !== github.sha` → fail. (`github.sha` in a tag-push-triggered
+   `release.yml` run is the commit the tag points at.) This is the
+   anti-TOCTOU check: a "clean" result within the staleness window could
+   otherwise be for a different, earlier commit than the one being
+   released — new code landed on `main` after the last nightly run,
+   immediately tagged, never actually evaluated.
+6. `completedAt` older than 48 hours (nightly runs daily at 07:00 UTC;
+   48h tolerates one missed day) → fail. Independent from check 5: a SHA
+   match only proves *that exact commit* was once evaluated, not
+   *recently* — an old commit resurrected via a late tag on a stale
+   branch would pass check 5 but should still fail here.
+7. On failure from 5 or 6, the gate's error message names the exact
+   fix: `gh workflow run eval-nightly.yml --ref <tag>`, then retry the
+   release once that run completes clean.
+
+## §3 Version consistency
+
+Every feed file the build produced — `latest.yml`, `latest-linux.yml`,
+and the canonical merged `latest-mac.yml` (§5) — gets parsed, and each
+one's `version` field must equal both the tag (stripped of a leading `v`)
+and `package.json`'s `version`. This does not rely on "electron-builder
+derives the feed version from package.json, so they must already agree"
+— that reasoning proves nothing about a matrix leg that silently built
+from the wrong commit (a stale checkout, a caching bug) while still
+producing a structurally complete, correctly-named output. Each
+installer's own filename (`Synapse-Setup-<version>.exe`, etc.) is also
+regex-checked against the expected version, since the check is already
+parsing these files and the extra assertion is free.
+
+## §4 Artifact identity and cardinality
+
+`download-artifact@v8`'s `path: artifacts/` downloads each named GitHub
+Actions artifact into its own subdirectory — the gate uses this directly
+rather than globbing extensions across the whole tree. A manifest maps
+each expected artifact container name to its exact expected file set:
+
+| Container | Expected files |
+| --- | --- |
+| `electron-windows-x64-nsis` | one `*.exe`, one `*.blockmap`, one `latest.yml` |
+| `electron-windows-x64-msi` | one `*.msi` |
+| `electron-macos-x64-zip` | one `*-x64-mac.zip`, one `*.blockmap`, one `latest-mac.yml` |
+| `electron-macos-arm64-zip` | one `*-arm64-mac.zip`, one `*.blockmap`, one `latest-mac.yml` |
+| `electron-macos-x64-dmg` | one `*.dmg` |
+| `electron-macos-arm64-dmg` | one `*.dmg` |
+| `electron-linux-x64-appimage` | one `*.AppImage`, one `latest-linux.yml` |
+| `electron-linux-x64-deb` | one `*.deb` |
+
+Any container missing, any container present with the wrong count, any
+file inside a container not matching its expected pattern, or any
+container appearing that isn't in this table at all → fail. This
+directly replaces "does at least one `.zip` exist somewhere" with "does
+exactly the right file exist in exactly the right named container,"
+closing the gap where a wrong-count, misnamed, or unexpected extra file
+could slip through a looser check.
+
+## §5 macOS feed merge
+
+Verified against the locked `electron-updater@6.8.9` source, not an
+arbitrary convention:
+
+- `getFileList()` (`providers/Provider.js:104-123`) uses `UpdateInfo
+  .files` whenever it's non-empty, and only falls back to the legacy
+  top-level `path`/`sha512` fields when `files` is absent. A merged
+  `files` array is authoritative; the legacy fields are inert as long as
+  `files` is present.
+- `MacUpdater.filterFilesForArch()` (`MacUpdater.js:27-34`) selects an
+  architecture's file by checking `file.url.pathname.includes("arm64")`
+  — arm64 Macs prefer arm64-tagged files when present, x64 Macs exclude
+  them.
+- electron-builder's default artifact name template (no override exists
+  for mac zip/dmg in `package.json`'s `build` config) is
+  `"${productName}-${version}-${arch}.${ext}"`
+  (`app-builder-lib/platformPackager.js:475`), so the two matrix legs'
+  real output filenames are `Synapse-<version>-x64-mac.zip` and
+  `Synapse-<version>-arm64-mac.zip` — the arm64 filename reliably
+  contains the substring `"arm64"` and the x64 filename reliably does
+  not.
+
+The merge step: read both legs' `latest-mac.yml`, assert their `version`
+fields match, merge their `files` arrays (asserting URLs are unique —
+a collision here means the naming assumption above broke, and the merge
+should fail loudly rather than silently drop an entry), assert the arm64
+entry's URL contains `"arm64"` and the x64 entry's does not (a locked
+contract test in §9 pins this assumption against the installed
+`electron-updater` version, so a future dependency bump that changes
+`filterFilesForArch`'s matching logic gets caught by CI rather than
+discovered live), and set the legacy top-level `path`/`sha512` fields to
+copy the x64 entry (arbitrary but consistent, and inert per the
+`getFileList()` behavior above — documented here as "verified against
+locked source, not yet validated via a packaged macOS updater E2E,"
+since no live macOS update path exists to test against today per the
+"Why this is needed" section).
+
+## §6 Signing status — a real, fail-closed state machine
+
+The gate reads two booleans, forwarded from the workflow's `env:` block
+the same way S01's `key-check` step forwards `EVAL_JUDGE_KEY`
+configuration:
+
+```yaml
+env:
+  APPLE_CERT_CONFIGURED: ${{ secrets.APPLE_CERTIFICATE != '' }}
+  WINDOWS_CERT_CONFIGURED: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+```
+
+For each platform, the gate computes a `verification` result. Today this
+is hardcoded to `"not-performed"` — no tool exists yet to produce
+`"verified"` or `"failed"` (§12 parks that tooling explicitly). The
+combination of `credentialsConfigured` and `verification` drives a strict
+table, decided now specifically so nothing about it needs to change when
+real verification tooling eventually lands:
+
+| `credentialsConfigured` | `verification` | Gate result |
+| --- | --- | --- |
+| `false` | `not-performed` | **pass** — declare `unsigned-unverified` |
+| `true` | `verified` | **pass** — declare `signed-and-verified` |
+| `true` | `not-performed` | **fail** |
+| `true` | `failed` | **fail** |
+| `false` | `verified` | **fail** (contradictory state — shouldn't be reachable, defensive check) |
+
+This closes the exact gap a looser "just report whatever the secret flag
+says" design would leave open: the day someone adds a real signing
+secret without also wiring up the verification step, the very next
+release attempt fails hard instead of silently shipping something that
+*looks* configured but was never actually checked.
+
+The declaration written into the approved bundle as `signing-status.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "platformCodeSigning": {
+    "windows": {
+      "credentialsConfigured": false,
+      "verification": "not-performed",
+      "releaseClaim": "unsigned-unverified"
+    },
+    "macos": {
+      "credentialsConfigured": false,
+      "verification": "not-performed",
+      "releaseClaim": "unsigned-unverified"
+    }
+  },
+  "githubArtifactAttestation": {
+    "status": "verified"
+  }
+}
+```
+
+`unsigned-unverified`'s precise meaning, stated in the release notes
+verbatim rather than left to interpretation: *"CI has neither a
+configured platform code-signing credential nor has it performed a
+platform signature verification on this artifact."* Not "verified
+unsigned" — the absence of a credential doesn't prove the binary carries
+no signature by some other means, so the claim only asserts what CI
+actually did (nothing), not a conclusion about the binary itself.
+
+`githubArtifactAttestation` is a **separate** top-level field from
+`platformCodeSigning` — a successful GitHub build-provenance attestation
+(§7) proves "this came from this repository's CI run," a materially
+different guarantee from "this binary is signed by an OS-recognized
+identity," and the two must never be collapsed into one status.
+
+## §7 GitHub build provenance attestation
+
+`actions/attest-build-provenance`, run once against every file in the
+already-assembled `release-approved-bundle` (§8) — after the merge and
+manifest checks, so what gets attested is exactly what gets published,
+not an intermediate or raw state. No secrets required (uses GitHub's
+OIDC-based signing). No separate attestation file needs to be uploaded
+as a release asset — a user who downloads a released binary verifies it
+directly with `gh attestation verify <file> --owner sunzrnobug`, since
+GitHub's attestation store is keyed by the artifact's digest and
+repository owner, not by the release itself.
+
+## §8 The approved bundle and `create-release` changes
+
+The gate's final steps, after §2-§6's checks all pass:
+
+1. Copy every binary from the raw per-container artifact directories
+   into one flat `release-approved-bundle/` directory.
+2. Write the merged `latest-mac.yml` (§5) into it, alongside the
+   untouched `latest.yml`/`latest-linux.yml`.
+3. Write `signing-status.json` (§6).
+4. Write a `manifest.json` listing every file in the bundle with its
+   sha512, recomputed from the actual bundled bytes rather than copied
+   from the feed files — and **assert** each recomputed hash equals what
+   the corresponding `latest*.yml` entry claims for that file, failing
+   the gate if any disagree. This is an independent check that the
+   feed's claimed hash matches the real file, not merely a restatement
+   of it.
+5. Upload `release-approved-bundle` as a new named artifact.
+6. Run attestation (§7) against every file in it.
+
+`create-release` changes from downloading *all* artifacts
+(`actions/download-artifact@v8` with no `name:` filter) to downloading
+only `release-approved-bundle`, and its `softprops/action-gh-release`
+`files:` glob narrows from the current
+`artifacts/**/*.{AppImage,deb,msi,exe,dmg,zip,blockmap}` /
+`artifacts/**/latest*.yml` to `release-approved-bundle/**/*` — it can no
+longer accidentally re-encounter the raw per-leg mac feed collision,
+because it never sees the raw per-leg artifacts at all.
+
+## §9 CI fixes bundled into this spec
+
+- **Linux added to the build matrix**: `build-electron.yml` gains
+  `- platform: ubuntu-latest, arch: x64, build_flag: --linux` — this
+  activates the already-written (but never-executed) Linux smoke-test
+  and artifact-upload steps without changing them.
+- **`if-no-files-found: warn` → `error`** on all six upload-artifact
+  steps. Scoped honestly: this only fails a step when its *entire*
+  combined glob resolves to zero files — if `*.exe` matches one file but
+  `latest.yml` (bundled in the same `path:` block) matches zero, the
+  step still succeeds under `error` just as it would under `warn`. This
+  is a fast, free "did this leg produce literally nothing" tripwire, not
+  a substitute for §4's manifest check, which is the actual source of
+  per-file completeness proof.
+
+## §10 Testing
+
+**Pure functions, keyless unit tests** (`scripts/release-admission-gate.test.mjs`):
+version-matching logic; the artifact-manifest matcher (missing container,
+wrong count, unexpected container, wrong filename pattern — one test
+each); the mac-feed-merge function (valid pair merges correctly; a URL
+collision fails; an arm64 entry without `"arm64"` in its URL fails; the
+version-mismatch-between-legs case fails); the signing state-machine
+table (all five rows from §6, one test each); the eval-signal decision
+logic (state !== clean, headSha mismatch, staleness, issue-count !== 1,
+issue title mismatch, issue-referenced-run !== newest-run — each as an
+isolated case against a hand-built fake `gh`-shaped input, not a real
+`gh` call).
+
+**Contract test pinning current `electron-updater` behavior**: a small
+test that directly imports (or re-implements against the same fixture
+shape) `MacUpdater`'s arch-filtering logic assumptions — asserts that,
+given the merged `files` array this spec's merge function produces, an
+arm64-simulated environment resolves to the arm64 entry and an
+x64-simulated environment resolves to the x64 entry. This is what turns
+"verified against the source we read today" into "will keep being true
+after a future `electron-updater` version bump, or CI tells us it broke."
+
+**Manual verification** (requires real GitHub Actions + repo write
+access, adapted from S01's Task 8 pattern — higher stakes here since a
+real tag push fires the real release pipeline):
+
+1. On a disposable branch (not `main`), create one commit that bumps
+   `package.json`'s `version` to a scratch value (e.g. `0.0.0-test1`) and
+   push it.
+2. `gh workflow run eval-nightly.yml --ref <scratch-branch>`, wait for
+   completion, confirm it's clean — this is required *before* the
+   success-path test, since the scratch commit has never been evaluated
+   and §2's SHA-match check would otherwise fail it.
+3. Tag that commit `v0.0.0-test1` and push the tag. Confirm: the gate
+   passes, `release-approved-bundle` is produced with a correctly merged
+   `latest-mac.yml`, and a draft release is created with all expected
+   platforms present (including Linux, confirming §9's matrix fix
+   actually works) and the `unsigned-unverified` declaration in its
+   notes.
+   - **Skip the real attestation step for this run** — `gh attestation`
+     has no delete/revoke subcommand (confirmed via `gh attestation
+     --help`), so a test attestation would permanently exist in the
+     repo's attestation record with no clean-up path. Attestation's
+     actual end-to-end correctness gets validated on the first genuine
+     production release instead; everything else in this manual
+     verification pass is fully automatable/reversible.
+4. On a second disposable commit, deliberately leave `package.json`'s
+   version mismatched with the tag about to be pushed. Push that tag.
+   Confirm: the gate fails hard on the version-consistency check, no
+   `release-approved-bundle` and no draft release are created.
+5. Cleanup: `git push --delete origin v0.0.0-test1 <second-scratch-tag>`,
+   delete the draft release(s) via `gh release delete`, delete the
+   scratch branch.
+
+## §11 Completion criteria
+
+- `release-admission-gate` job exists, wired between `build-electron`
+  and `create-release`, hard-fails on any check in §2-§6.
+- `eval-nightly.yml`/`eval-nightly-report.mjs` produce and upload
+  `eval-nightly-status-json`.
+- Linux is a real leg of `build-electron.yml`'s matrix; its
+  previously-dead smoke-test/upload steps run for real.
+- `create-release` consumes only `release-approved-bundle`, never the
+  raw per-leg artifacts.
+- A real `v0.0.0-test1`-style manual verification pass (§10) has been
+  run and both its success and failure paths confirmed, with cleanup
+  completed and documented in the implementation PR.
+- All pure decision logic (§10) has unit test coverage, including the
+  full signing state-machine table and the mac-merge arch-filtering
+  contract test.
+
+## §12 Parked questions (surfaced, not solved)
+
+- **Real platform signature verification tooling** (`codesign --verify`
+  for macOS, Authenticode verification for Windows). Trigger for
+  revisiting: the day real signing credentials are added to the repo.
+  At that point this spec's §6 state machine already guarantees the
+  release pipeline fails until the verification step is implemented and
+  wired to actually flip `verification` to `"verified"` — so this isn't
+  a silent gap, but it does require a follow-up spec addendum to decide
+  the tool/runner split once real credentials exist to test against.
+- **Reusable-workflow secrets passthrough for `build-electron.yml`**.
+  When signing is enabled, `build-electron.yml`'s `on: workflow_call:`
+  needs an explicit `secrets:` block, and `release.yml`'s `build-electron`
+  job needs to either list them explicitly or add `secrets: inherit` —
+  without this, the gate would see `credentialsConfigured: true` (the
+  secret exists on the repo) while the actual `electron-builder` step
+  never received it, silently producing an unsigned binary despite the
+  gate believing signing was configured. Must be fixed in the same PR
+  that first enables real signing, not discovered after the fact.
+- **The mac merge's legacy `path`/`sha512` = "copy the x64 entry"
+  convention** — verified as inert against the currently-locked
+  `electron-updater` source (§5), but never exercised against a live,
+  signed, auto-updating macOS install. Revisit once macOS signing +
+  auto-update actually ship.
+- **A per-plugin/per-artifact softer degrade path** — not applicable
+  here; unlike S02's schema budgets, every check in this spec has a
+  concrete, actionable fix (re-run eval, fix the version, wait for the
+  right artifacts) rather than a size/complexity trade-off, so there's
+  no analogous "maybe too strict" concern to park.
