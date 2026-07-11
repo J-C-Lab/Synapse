@@ -241,13 +241,28 @@ export function buildRunTrace(
 Four separate named functions, not one function taking the union — this was
 an explicit choice so a caller can't hand-assemble a partially-valid input
 object and coerce it through a single loosely-typed entry point.
+`RunProvenance` is a plain exported structural type, like every other
+domain type in this codebase (`RunTrace`, `ToolCaller`, `CapabilityRequest`
+are all unbranded interfaces) — nothing at the type level stops a file from
+writing a `RunProvenance`-shaped object literal directly instead of calling
+a constructor. This was a deliberate choice, not an oversight: nominal
+typing (a `unique symbol` brand) would make "only the constructors produce
+this type" a real compile-time invariant, but the repo has zero existing
+precedent for that pattern (`grep -rl "unique symbol"` is empty), and S04
+is a consolidation of existing hand-written duplication, not a new
+trust/security boundary — the risk being managed is accidental drift
+between near-duplicate hand-spreads, not adversarial bypass. Enforcement is
+via the constructors being the only *documented and reviewed* path, same as
+every other type in this codebase.
 
-### `InvocationContext` becomes a discriminated union
+### `InvocationContext` becomes a discriminated union, in a neutral file
 
 `plugin-bridge.ts:95-104`'s `InvocationContext` currently flattens the same
 five fields a second time. It becomes:
 
 ```ts
+// src/main/plugins/invocation-context.ts (new file)
+
 export type InvocationContext =
   | { source: "tool"; caller: ToolCaller; trigger: string; signal?: AbortSignal }
   | {
@@ -257,18 +272,39 @@ export type InvocationContext =
       signal?: AbortSignal
       invocationId?: string
     }
+
+export function actorOf(invocation: InvocationContext): CapabilityActor
+export function principalOf(invocation: InvocationContext): ToolPrincipal | undefined
+export function invocationIdOf(invocation: InvocationContext): string | undefined
 ```
 
-This lives in `plugin-bridge.ts` (not `run-provenance.ts`) because it spans
-more than runs — plugin commands, clipboard/event handlers, and non-agent
-trigger handlers are real, currently-served scenarios
-(`plugin-bridge.ts:164-167`'s `defaultInvocation` already models exactly
-this "runless user" case) that have no `RunProvenance` and must not be
-force-fit into one. A plain background hook (clipboard watcher, a trigger
-handler that never spawns an agent) is not a `background-agent` run — that
-name is reserved for a trigger-woken *agent* run with its own budget and
-approval semantics, and mislabeling a hook as one would silently change
-which budget/approval rules apply to it.
+**Not** placed in `plugin-bridge.ts`, and **not** in `run-provenance.ts`.
+Verified: `plugin-bridge.ts:14-23` already does `import type` from
+`capability-gate.ts`, `credential-broker.ts`, and `network-fetcher.ts` — it
+is the orchestration layer consuming those three, not the other way around.
+If `InvocationContext` stayed defined in `plugin-bridge.ts`, those three
+lower-level modules would need to import a type back out of the file that
+imports from them — a real layering inversion even with `import type`
+avoiding a runtime cycle. A neutral `invocation-context.ts` that
+`plugin-bridge.ts` and the three governance modules all import from,
+without any of them importing from each other, avoids this. It doesn't
+live in `run-provenance.ts` either, because it spans more than runs —
+plugin commands, clipboard/event handlers, and non-agent trigger handlers
+are real, currently-served scenarios (`plugin-bridge.ts:164-167`'s
+`defaultInvocation` already models exactly this "runless user" case) that
+have no `RunProvenance` and must not be force-fit into one. A plain
+background hook (clipboard watcher, a trigger handler that never spawns an
+agent) is not a `background-agent` run — that name is reserved for a
+trigger-woken *agent* run with its own budget and approval semantics, and
+mislabeling a hook as one would silently change which budget/approval
+rules apply to it.
+
+`actorOf()`/`principalOf()`/`invocationIdOf()` exist so downstream
+consumers (see the table below) never pattern-match `invocation.source`
+themselves — each helper does the two-branch dispatch once
+(`source: "tool"` → derive from `invocation.caller` via `callerToActor()`/
+`caller.principal`/`caller.invocationId`; `source: "runless"` → read
+`invocation.actor`/`undefined`/`invocation.invocationId` directly).
 
 `createToolContext()` (`plugin-bridge.ts:226-241`) stops flattening
 `options.caller` — it holds the whole `ToolCaller` inside
@@ -278,21 +314,41 @@ which budget/approval rules apply to it.
 
 | Type | Today | After |
 |---|---|---|
-| `CapabilityRequest` (`capability-gate.ts:21-45`) | `invocationId?`, `runId?`, `principal?`, `workspaceId?`, `triggerInstanceId?` as five flat fields | one `invocation: InvocationContext` field; `capability`/`operation`/`requestedScope`/`reason`/`signal` unchanged |
-| `NetworkFetcherConfig` (`network-fetcher.ts:97-110`) | same five flat fields | same collapse |
+| `CapabilityRequest` (`capability-gate.ts:21-45`) | `invocationId?`, `runId?`, `principal?`, `workspaceId?`, `triggerInstanceId?` as five flat fields, plus its own `signal?` | `invocationId`/`runId`/`principal`/`workspaceId`/`triggerInstanceId` collapse into one `invocation: InvocationContext` field. **`signal?: AbortSignal` stays a standalone field, not part of `invocation`** — see the signal note below. `capability`/`operation`/`requestedScope`/`reason` unchanged |
+| `NetworkFetcherConfig` (`network-fetcher.ts:97-110`) | same five flat fields (this interface has no `signal` field today) | same collapse; still no `signal` field — see note below |
 | `createInjectCredential()` args (`credential-broker.ts:346-355`) | `runId?`, `principal?`, `workspaceId?`, `triggerInstanceId?` | same collapse |
 | `CapabilityGate.emit()` (`capability-gate.ts:234-262`) | hand-copies four fields onto `CapabilityAuditEntry` with individual `undefined` guards | becomes the **single** point that projects `invocation` → the persisted audit fields |
-| `callerToActor()` (`capability-governance.ts:56-60`) | consumes `ToolCaller` | unchanged; called only from the `source: "tool"` branch. The `source: "runless"` branch reads `invocation.actor` directly (no `ToolCaller` exists to derive it from) |
+| `callerToActor()` (`capability-governance.ts:56-60`) | consumes `ToolCaller` | unchanged; called only from `actorOf()`'s `source: "tool"` branch |
+| `CapabilityIpcService.grantPrompt` (`capabilities.ts:92-104`) | reads `request.signal` (`:94`), `request.actor` (`:115`), `request.principal?.kind`/`.clientId` (`:119`) directly off the flat `CapabilityRequest` | `request.signal` unchanged (still standalone); `actor`/`principal` come from `actorOf(request.invocation)`/`principalOf(request.invocation)` |
+| `createBudgetBreakerPort().tryDebit()` (`trigger-budget-breaker.ts:17-26`) | reads `request.invocationId` directly | reads `invocationIdOf(request.invocation)` |
 
 This closes the gap P4's own spec explicitly deferred ("the other two
 `gate.ensure` sites (network-fetcher, credential-broker) from caller-parity
 F3 — orthogonal, tracked separately").
 
+**Signal handling is not part of the `invocation` collapse.** Verified:
+`network-fetcher.ts:337-344` already creates its own `AbortController`
+linked to the plugin's own per-fetch `init.signal` (from the plugin's own
+`fetch(url, { signal })` call) — a signal genuinely narrower than, and
+independent of, the invocation's lifetime. That controller's `.signal` is
+what actually gets passed to `gate.ensure()` for the `network:https`
+capability check (`network-fetcher.ts:417`), not any invocation-wide
+signal — `NetworkFetcherConfig` doesn't even have a `signal` field today.
+Collapsing `CapabilityRequest.signal` into `invocation.signal` would
+silently replace this already-correct narrower signal with the broader
+invocation-level one wherever a caller reused `invocation.signal` instead
+of supplying the fetch-specific one, breaking "cancel one fetch without
+cancelling the rest of the invocation." `CapabilityRequest.signal` stays
+its own field: ordinary (non-network) capabilities pass
+`invocation.signal`; the network path continues to pass its own linked
+`controller.signal`, unrelated to `invocation`.
+
 None of `capability-gate.ts`, `network-fetcher.ts`, `credential-broker.ts`,
-or `capability-governance.ts` becomes aware of `RunProvenance` — they only
-ever see `InvocationContext`/`ToolCaller`. Their authorization decisions,
-budget semantics, and approval flow are unchanged; only the shape of what
-carries the identifying fields into them changes.
+`capability-governance.ts`, `capabilities.ts`, or `trigger-budget-breaker.ts`
+becomes aware of `RunProvenance` — they only ever see
+`InvocationContext`/`ToolCaller`. Their authorization decisions, budget
+semantics, and approval flow are unchanged; only the shape of what carries
+the identifying fields into them changes.
 
 ### `AgentRuntime.run()` takes one `provenance` field
 
@@ -303,8 +359,8 @@ carries the identifying fields into them changes.
 `options.conversationId` is read in exactly two places —
 `recordTrace()`'s field-repurposing branch (`:256-258`, the very bug this
 spec fixes) and `runOneTool()`'s default-caller construction (`:307-315`,
-which `toToolCaller(this.provenance)` replaces outright). It has no third
-use inside `AgentRuntime`. Keeping a standalone `conversationId` field on
+which `toToolCaller(provenance)` — passed down as a local argument, per the
+note below — replaces outright). It has no third use inside `AgentRuntime`. Keeping a standalone `conversationId` field on
 `AgentRunOptions` alongside `RunProvenance`'s own `conversationId` (on the
 `interactive`/`subagent` variants) would silently recreate the exact
 two-fields-for-one-concept duplication this spec exists to remove. Any
@@ -328,11 +384,29 @@ export interface AgentRunOptions {
 each build their own `RunProvenance` via the matching constructor and pass
 it in, instead of scattering `runId`/`origin`/`caller`/`parentRunId`/
 `workspaceId`/`triggerInstanceId`/`conversationId` across the call.
-`recordTrace()` and `runOneTool()` both read `this.provenance` instead of
-running their own (currently divergent) defaulting logic. For
-`background-agent`/`mcp`-origin runs, no chat `conversationId` is passed to
-`AgentRuntime.run()` at all — `background-agent-runner.ts:102`'s current
-`conversationId: input.invocationId` was always just smuggling
+
+**`provenance` stays a local, threaded through as a plain argument —
+never stored on `this`.** Verified: `AgentRuntime` today has *zero*
+instance-field assignments anywhere in the class (`constructor(private
+readonly options: AgentRuntimeOptions) {}` is the only thing set once;
+`run()` itself keeps `runId`/`origin`/`toolCalls`/everything else as local
+`const`s, passed as plain arguments into `recordTrace()`/`runOneTool()`).
+A fresh `AgentRuntime` instance is constructed immediately before every
+`.run()` call at all three real call sites
+(`agent-service.ts:445`, `background-agent-runner.ts:84`,
+`subagent-runner.ts:41`) — one instance is never reused across multiple
+runs today. Storing `provenance` as `this.provenance` would be the first
+piece of per-run mutable instance state this class has ever had, and would
+silently break if that convention ever changed (a reused/concurrent
+instance would let one run's provenance leak into another's trace/audit
+records). `provenance` is a local `const` inside `run()`, passed as a
+parameter to `recordTrace()` and `runOneTool()` exactly the way `runId`
+and `origin` already are today — the signatures of both gain a
+`provenance: RunProvenance` parameter; neither reads `this.*` for it.
+
+For `background-agent`/`mcp`-origin runs, no chat `conversationId` is
+passed to `AgentRuntime.run()` at all — `background-agent-runner.ts:102`'s
+current `conversationId: input.invocationId` was always just smuggling
 `invocationId` through a wrongly-named field; once `provenance` carries
 `invocationId` directly, that call site no longer needs to pass anything
 under the `conversationId` name.
@@ -379,6 +453,25 @@ instead of separately minting `runId`/`principal` at each site.
   isolation would not catch a wiring mistake that drops the whole `caller`
   at one of the hand-off points — this test specifically targets that
   failure mode.
+- **`invocation-context.test.ts`** (new): `actorOf()`/`principalOf()`/
+  `invocationIdOf()` each get a case per `InvocationContext` branch —
+  including asserting `principalOf()` returns `undefined` for
+  `source: "runless"` (there is no `ToolCaller` to derive a principal from)
+  and `invocationIdOf()` correctly reads from `caller.invocationId` for
+  `source: "tool"` vs. the top-level `invocationId` for
+  `source: "runless"`.
+- **`capabilities.test.ts`/`trigger-budget-breaker.test.ts` updated**:
+  existing tests covering `grantPrompt`'s `actor`/`principal` extraction and
+  `tryDebit`'s `invocationId` lookup are updated to construct
+  `CapabilityRequest.invocation` instead of the old flat fields; assertions
+  on the resulting approval-prompt payload and budget-debit outcome are
+  unchanged.
+- **Network signal isolation test**: a fetch-level `AbortController.abort()`
+  (the plugin's own per-call signal) must not observably cancel a
+  concurrent, unrelated `gate.ensure()` call using the broader
+  `invocation.signal` on the same invocation, confirming
+  `CapabilityRequest.signal` for the network path stays independently
+  scoped from `invocation.signal` after the refactor.
 - **Legacy `RunTrace` read-compatibility test**: `getRunTrace()`/
   `listRuns()` in `run-trace-store.ts` do an unchecked `JSON.parse(...) as
   RunTrace` (`run-trace-store.ts:73,112`) with no runtime validation. A test
@@ -431,19 +524,30 @@ instead of separately minting `runId`/`principal` at each site.
 
 - `RunProvenance` and its four named constructors exist in
   `src/main/ai/run-provenance.ts`, host-only, not exported from `plugin-sdk`.
+  `provenance` is threaded as a plain local/argument everywhere it's used —
+  `AgentRuntime` gains no instance-field assignments.
+- `InvocationContext` and its `actorOf()`/`principalOf()`/`invocationIdOf()`
+  helpers exist in the neutral `src/main/plugins/invocation-context.ts`.
 - All construction call sites listed under Architecture (`agent-runtime.ts`,
   `background-agent-runner.ts`, `subagent-runner.ts`, `synapse-mcp-server.ts`
   ×7, `plugin-bridge.ts`, `capability-gate.ts`, `network-fetcher.ts`,
-  `credential-broker.ts`) are migrated off hand-spread fields.
+  `credential-broker.ts`) and the two consumers found during review
+  (`capabilities.ts`'s `grantPrompt`, `trigger-budget-breaker.ts`'s
+  `tryDebit`) are migrated off hand-spread fields.
 - The three confirmed bugs are fixed and each has a regression test proving
   it can't recur:
   1. `conversationId`/`invocationId` field-repurposing in
      `agent-runtime.ts:256-258` — each `RunProvenance` variant owns exactly
      one of the two fields by type.
   2. Three divergent `principal`-defaulting rules in `agent-runtime.ts`
-     collapse to the constructors being the only legal construction path.
+     collapse to the constructors being the sole recommended, reviewed
+     construction path (convention + tests, not a compile-time brand — see
+     the constructors note above).
   3. `subagent-runner.ts`'s triple hand-copy of `parentRunId` collapses to a
      single constructor input.
+- `CapabilityRequest.signal` (and the network path's own linked
+  `controller.signal`) remain independent of `invocation.signal`, proven by
+  the network signal isolation test.
 - All tests listed under Testing pass, including the end-to-end audit-chain
   test and the legacy `RunTrace` read-compatibility test.
 - `pnpm typecheck`, `pnpm lint`, `pnpm test`, and `pnpm eval` all pass.
