@@ -124,7 +124,7 @@ credentials it reacts to don't exist yet.
   silently deferred.
 - **A real `electron-updater` integration test** (spin up a built app
   against a local feed server, drive an actual check→download→install
-  cycle). §9's testing section validates the feed *files* structurally —
+  cycle). §10's testing section validates the feed *files* structurally —
   field completeness, version/tag/package.json agreement, sha512 actually
   matching the real artifact bytes, the mac merge's arch-filtering
   contract — which catches everything this spec's admission gate needs
@@ -228,21 +228,51 @@ repo's real run history):
    that the issue never got updated to reflect is itself a signal
    something is wrong with the pipeline, not something to silently work
    around.)
-4. Parse the downloaded JSON. `state !== "clean"` → fail.
-5. `headSha !== github.sha` → fail. (`github.sha` in a tag-push-triggered
-   `release.yml` run is the commit the tag points at.) This is the
-   anti-TOCTOU check: a "clean" result within the staleness window could
-   otherwise be for a different, earlier commit than the one being
+4. Parse the downloaded JSON and validate its shape before trusting any
+   field: `schemaVersion === 1`; `completedAt` parses as a valid ISO 8601
+   timestamp; `completedAt` is not in the future beyond a small clock-skew
+   tolerance (5 minutes — protects against a malformed or malicious
+   future-dated timestamp making a stale run look fresh under check 8).
+5. `gh run view <databaseId> --json headSha,conclusion` — cross-check
+   GitHub's own authoritative run record against the JSON's *self-reported*
+   `runId`/`headSha` fields: the JSON's `runId` must equal `databaseId`
+   (the run it was actually downloaded from, not just whatever the file
+   happens to claim), and the JSON's `headSha` must equal this same `gh
+   run view` call's `headSha`. A JSON artifact's own content is written by
+   a script, not GitHub itself — cross-checking it against GitHub's
+   independent record is what makes the identity check meaningful rather
+   than trusting a file to accurately describe itself.
+6. `conclusion !== "success"` → fail. Belt-and-suspenders alongside
+   `status: "completed"` from step 1: S01's own design keeps the job
+   green even through a real eval regression (`continue-on-error`), so
+   this doesn't duplicate check 7's `state` check — it catches the
+   different failure mode of the *pipeline itself* breaking (the JSON
+   upload step failing outright, infrastructure failures) independent of
+   whether the eval scores looked clean.
+7. `state !== "clean"` → fail.
+8. `headSha !== <the commit actually being released>` → fail. This is
+   the anti-TOCTOU check: a "clean" result within the staleness window
+   could otherwise be for a different, earlier commit than the one being
    released — new code landed on `main` after the last nightly run,
-   immediately tagged, never actually evaluated.
-6. `completedAt` older than 48 hours (nightly runs daily at 07:00 UTC;
-   48h tolerates one missed day) → fail. Independent from check 5: a SHA
+   immediately tagged, never actually evaluated. "The commit actually
+   being released" is **not** read as the raw `github.sha` context
+   value alone — after `actions/checkout@v7` has checked out the tag,
+   the gate also runs `git rev-parse HEAD` and asserts it equals
+   `github.sha`, using that (cross-checked) value as the authoritative
+   comparison target. This avoids depending on an assumption about
+   whether `github.sha` dereferences an *annotated* tag object to its
+   target commit identically to how it resolves a *lightweight* tag —
+   `git rev-parse HEAD` on an actual checkout is unambiguous either way,
+   and the assertion against `github.sha` still catches the (separate,
+   real) case where the two legitimately disagree.
+9. `completedAt` older than 48 hours (nightly runs daily at 07:00 UTC;
+   48h tolerates one missed day) → fail. Independent from check 8: a SHA
    match only proves *that exact commit* was once evaluated, not
    *recently* — an old commit resurrected via a late tag on a stale
-   branch would pass check 5 but should still fail here.
-7. On failure from 5 or 6, the gate's error message names the exact
-   fix: `gh workflow run eval-nightly.yml --ref <tag>`, then retry the
-   release once that run completes clean.
+   branch would pass check 8 but should still fail here.
+10. On failure from 8 or 9, the gate's error message names the exact
+    fix: `gh workflow run eval-nightly.yml --ref <tag>`, then retry the
+    release once that run completes clean.
 
 ## §3 Version consistency
 
@@ -260,10 +290,38 @@ parsing these files and the extra assertion is free.
 
 ## §4 Artifact identity and cardinality
 
-`download-artifact@v8`'s `path: artifacts/` downloads each named GitHub
-Actions artifact into its own subdirectory — the gate uses this directly
-rather than globbing extensions across the whole tree. A manifest maps
-each expected artifact container name to its exact expected file set:
+**The download must be scoped to `electron-*` artifacts, not every
+artifact the run produced.** `release.yml`'s `test` job calls
+`test.yml` as a reusable workflow — confirmed by reading `test.yml`
+directly: it uploads `test-results` and `coverage-report` via
+`actions/upload-artifact@v7` with `if: always()`
+(`test.yml:112-124`). Both become part of the same overall `release.yml`
+run's artifact set. An unscoped `download-artifact@v8` call (no `name`/
+`pattern` filter) would pull these in alongside the `build-electron`
+containers, and a manifest that rejects "any container not in this
+table" would then reject *every single release attempt* on artifacts
+that were never release candidates in the first place — this isn't a
+hypothetical edge case, it's the gate's default, permanent, un-passable
+state as originally specced. The download step:
+
+```yaml
+- uses: actions/download-artifact@v8
+  with:
+    pattern: electron-*
+    merge-multiple: false
+    path: artifacts/
+```
+
+(`pattern`/`merge-multiple` confirmed as real, documented inputs of
+`download-artifact@v8` via its current README.) Only the `electron-*`
+containers are ever visible to the manifest check below — `test-results`/
+`coverage-report` are simply never downloaded, not filtered out after
+the fact.
+
+`path: artifacts/` downloads each named GitHub Actions artifact into its
+own subdirectory — the gate uses this directly rather than globbing
+extensions across the whole tree. A manifest maps each expected artifact
+container name to its exact expected file set:
 
 | Container | Expected files |
 | --- | --- |
@@ -307,20 +365,42 @@ arbitrary convention:
   contains the substring `"arm64"` and the x64 filename reliably does
   not.
 
-The merge step: read both legs' `latest-mac.yml`, assert their `version`
-fields match, merge their `files` arrays (asserting URLs are unique —
-a collision here means the naming assumption above broke, and the merge
-should fail loudly rather than silently drop an entry), assert the arm64
-entry's URL contains `"arm64"` and the x64 entry's does not (a locked
-contract test in §9 pins this assumption against the installed
-`electron-updater` version, so a future dependency bump that changes
-`filterFilesForArch`'s matching logic gets caught by CI rather than
-discovered live), and set the legacy top-level `path`/`sha512` fields to
-copy the x64 entry (arbitrary but consistent, and inert per the
-`getFileList()` behavior above — documented here as "verified against
-locked source, not yet validated via a packaged macOS updater E2E,"
-since no live macOS update path exists to test against today per the
-"Why this is needed" section).
+**Pre-merge, each leg's raw `latest-mac.yml` independently:**
+
+- `files` contains **exactly one** entry — not zero, not multiple.
+- That entry's `url`'s basename equals the actual `.zip` filename present
+  in this same artifact container (§4) — catches a feed referencing a
+  different filename than what was actually uploaded.
+- `sha512` matches the real `.zip` file's bytes.
+- `size` matches the real `.zip` file's byte size.
+- `blockMapSize`, if the field is present, matches the real `.blockmap`
+  file's byte size.
+
+**Post-merge, on the combined result:**
+
+- Exactly two entries in the final `files` array — not more, not fewer.
+- Both URLs unique (a collision here means the per-leg naming assumption
+  broke, and the merge fails loudly rather than silently dropping an
+  entry).
+- Exactly one entry's URL contains `"arm64"`, exactly one does not (a
+  locked contract test in §10 — not a re-implementation of this check,
+  see §10 — pins this assumption against the actual installed
+  `electron-updater` version, so a future dependency bump that changes
+  `filterFilesForArch`'s matching logic gets caught by CI rather than
+  discovered live).
+- The legacy top-level `path`/`sha512` fields are set by copying the x64
+  entry, and are asserted to be pair-consistent with it (the `path`'s
+  basename and the `sha512` value both correspond to the same chosen
+  entry — trivially true if the copy is implemented correctly, but
+  worth asserting explicitly rather than assuming). This convention is
+  arbitrary but consistent, and inert per the `getFileList()` behavior
+  above — documented here as "verified against locked source, not yet
+  validated via a packaged macOS updater E2E," since no live macOS
+  update path exists to test against today per the "Why this is needed"
+  section.
+
+Any failure in either phase excludes the release the same way every
+other gate check does — no partial or best-effort merge.
 
 ## §6 Signing status — a real, fail-closed state machine
 
@@ -355,7 +435,8 @@ secret without also wiring up the verification step, the very next
 release attempt fails hard instead of silently shipping something that
 *looks* configured but was never actually checked.
 
-The declaration written into the approved bundle as `signing-status.json`:
+The declaration written into the approved bundle as `signing-status.json`,
+at the point in §8's step sequence *before* attestation has run:
 
 ```json
 {
@@ -373,10 +454,25 @@ The declaration written into the approved bundle as `signing-status.json`:
     }
   },
   "githubArtifactAttestation": {
-    "status": "verified"
+    "required": true
   }
 }
 ```
+
+**`githubArtifactAttestation` never claims `"status": "verified"` inside
+this file.** `actions/attest@v4` *creates* an attestation — it doesn't
+verify one, and more to the point, this JSON is written in §8 step 2,
+before step 4 (where attestation actually runs) has executed at all — a
+file cannot truthfully assert the outcome of a step that hasn't happened
+yet when the file was written. `signing-status.json` only ever states
+that attestation is `required` (a fixed, load-bearing declaration of
+intent this pipeline makes for every release); the *actual* outcome is
+expressed entirely outside this file — by `actions/attest@v4`'s own
+step succeeding or failing (a failure is a gate failure, §8 step 4), and
+by the real `attestation-url` it produces, captured into
+`release-body.md` in step 5. A reader verifying a release checks the
+attestation itself (`gh attestation verify`), not a self-report inside
+a file the attestation covers.
 
 `unsigned-unverified`'s precise meaning, stated in the release notes
 verbatim rather than left to interpretation: *"CI has neither a
@@ -473,14 +569,35 @@ an already-uploaded GitHub Actions artifact):
    plus the merged `latest-mac.yml` (§5) and the untouched
    `latest.yml`/`latest-linux.yml`, into `release-approved-bundle/assets/`.
 2. Write `assets/signing-status.json` (§6).
-3. Write `assets/manifest.json`: every *other* file in `assets/` listed
-   with its sha512, recomputed from the actual bytes rather than copied
-   from the feed files — `manifest.json` excludes its own hash (hashing
-   a file that contains its own hash is circular) — and **assert** each
-   recomputed hash equals what the corresponding `latest*.yml` entry
-   claims for that file, failing the gate if any disagree. This is an
-   independent check that the feed's claimed hash matches the real file,
-   not merely a restatement of it.
+3. Two separate, independent invariants — not one blanket rule, because
+   not every file in `assets/` has a feed-file counterpart to check
+   against:
+
+   - **`assets/manifest.json`** covers **every** other file in `assets/`
+     (the installers, blockmaps, feed files, `signing-status.json`)
+     with its sha512, recomputed from the actual bytes. It excludes its
+     own hash (a file cannot correctly contain the hash of itself). This
+     is the complete, unconditional inventory — every file that exists
+     must appear here, full stop.
+   - **The feed verifier** (already run in §5's pre-merge phase for the
+     mac zips, and equivalently applied here to the Windows NSIS `.exe`
+     and the Linux `.AppImage` — the only other two files any
+     `latest*.yml` actually references) checks that each of those
+     specific files' real `sha512`/`size` match what their feed entry
+     claims.
+   - **Everything else** — the MSI, the DMG, the `.deb`, every
+     `.blockmap`, `signing-status.json` — has **no** feed-file
+     counterpart at all: electron-updater's feed files only ever
+     describe the one artifact each platform's auto-updater actually
+     fetches (the NSIS installer, the mac zip, the AppImage), never the
+     direct-download-only formats or the blockmap's own hash. These
+     files' only requirements are: present in `manifest.json`, hash
+     matches real bytes (which `manifest.json`'s own construction
+     already guarantees, since it's computed from those same bytes), and
+     covered by attestation (§7, which globs everything in `assets/`
+     regardless of feed-file status). Requiring a feed-file match for
+     files no feed file ever mentions is not a stricter check — it's an
+     unsatisfiable one that would fail every release.
 4. Run `actions/attest@v4` with `subject-path: release-approved-bundle/assets/*`
    against the finished `assets/` directory. Confirm the step succeeds
    before proceeding — an attestation failure here is a gate failure,
@@ -504,7 +621,17 @@ an already-uploaded GitHub Actions artifact):
   the freshly-downloaded `assets/`, before publishing anything — defense
   in depth against corruption or tampering in the artifact upload/download
   round-trip. A mismatch here fails the job with no release created,
-  exactly like a gate failure.
+  exactly like a gate failure. This re-check also asserts **set
+  equality** between `manifest.json`'s listed files and the actual files
+  present in `assets/` (excluding `manifest.json` itself) — not just that
+  every *listed* file's hash matches, but that no *unlisted* file is
+  present either. Without this, a file added to `assets/` after
+  `manifest.json` was written (a bug, or a bundle-assembly step added
+  later without updating step 3) would still get published via the
+  `assets/*` glob despite never having been hashed, inventoried, or
+  covered by this specific check — the file would still be inside the
+  `attestation`'s subject-path glob and thus still attested, but silently
+  absent from the human/machine-readable manifest a user might rely on.
 - `softprops/action-gh-release`'s `files:` glob narrows from the current
   `artifacts/**/*.{AppImage,deb,msi,exe,dmg,zip,blockmap}` /
   `artifacts/**/latest*.yml` to `release-approved-bundle/assets/*` —
@@ -549,45 +676,89 @@ isolated case against a hand-built fake `gh`-shaped input, not a real
 `gh` call).
 
 **Contract test pinning current `electron-updater` behavior**: a small
-test that directly imports (or re-implements against the same fixture
-shape) `MacUpdater`'s arch-filtering logic assumptions — asserts that,
-given the merged `files` array this spec's merge function produces, an
-arm64-simulated environment resolves to the arm64 entry and an
-x64-simulated environment resolves to the x64 entry. This is what turns
-"verified against the source we read today" into "will keep being true
-after a future `electron-updater` version bump, or CI tells us it broke."
+test that `import { MacUpdater } from "electron-updater"` and calls
+`MacUpdater.filterFilesForArch(...)` **directly** — confirmed real and
+importable this way, since `electron-updater`'s package entry
+(`out/main.js`) re-exports `MacUpdater` from `./MacUpdater`. This must
+call the actual, installed dependency's real function — not a
+re-implementation of its matching logic against the same fixture shape.
+The distinction matters precisely because it's the whole point of the
+test: a re-implementation only proves the *test's own copy* of the logic
+behaves as expected, and would keep passing unchanged even if a future
+`electron-updater` version bump changed the real `filterFilesForArch`'s
+actual matching behavior — silently defeating the "dependency bump
+guard" this test exists to be. Given the merged `files` array this
+spec's merge function produces, assert an arm64-simulated environment
+resolves to the arm64 entry and an x64-simulated environment resolves to
+the x64 entry, calling the real, imported function both times.
 
 **Manual verification** (requires real GitHub Actions + repo write
 access, adapted from S01's Task 8 pattern — higher stakes here since a
 real tag push fires the real release pipeline):
 
 1. On a disposable branch (not `main`), create one commit that bumps
-   `package.json`'s `version` to a scratch value (e.g. `0.0.0-test1`) and
+   `package.json`'s `version` to a scratch value (e.g.
+   `0.0.0-s03-test.1` — deliberately identifiable as this spec's own
+   verification artifact, not a plausible-looking real version) and
    push it.
 2. `gh workflow run eval-nightly.yml --ref <scratch-branch>`, wait for
    completion, confirm it's clean — this is required *before* the
    success-path test, since the scratch commit has never been evaluated
    and §2's SHA-match check would otherwise fail it.
-3. Tag that commit `v0.0.0-test1` and push the tag. Confirm: the gate
-   passes, `release-approved-bundle` is produced with a correctly merged
-   `latest-mac.yml`, and a draft release is created with all expected
-   platforms present (including Linux, confirming §9's matrix fix
-   actually works) and the `unsigned-unverified` declaration in its
-   notes.
-   - **Skip the real attestation step for this run** — `gh attestation`
-     has no delete/revoke subcommand (confirmed via `gh attestation
-     --help`), so a test attestation would permanently exist in the
-     repo's attestation record with no clean-up path. Attestation's
-     actual end-to-end correctness gets validated on the first genuine
-     production release instead; everything else in this manual
-     verification pass is fully automatable/reversible.
+3. Tag that commit `v0.0.0-s03-test.1` **as an annotated tag**
+   (`git tag -a v0.0.0-s03-test.1 -m "S03 pipeline verification"`, not a
+   lightweight tag) and push it — this specifically exercises §2 check
+   8's `git rev-parse HEAD`-based SHA comparison against an annotated
+   tag object, the case that motivated not trusting `github.sha` alone.
+   Confirm: the gate passes, `release-approved-bundle` is produced with
+   a correctly merged `latest-mac.yml`, and a draft release is created
+   with all expected platforms present (including Linux, confirming
+   §9's matrix fix actually works), the `unsigned-unverified`
+   declaration in its body, and a real, working attestation URL.
+   - **Run the real `actions/attest@v4` step — do not skip it.** §8
+     defines attestation as a mandatory, gate-blocking step; a test
+     pass that skips it isn't exercising the real pipeline, and
+     `release-body.md`'s generation (step 5) has nothing to reference
+     without a real `attestation-url`. `gh attestation` has no
+     delete/revoke subcommand (confirmed via `gh attestation --help`),
+     so this test run's attestation permanently exists in the repo's
+     attestation record with no clean-up path — accepted deliberately,
+     not worked around: an attestation is an append-only provenance
+     record by design ("this artifact really was produced by this
+     workflow run" stays true forever, including for a test run), and a
+     bypass mechanism that skips a mandatory security check for
+     "test-labeled" tags is itself a real gate-bypass surface — even if
+     nominally scoped to test-looking tags, a draft release produced
+     through a bypassed check could still be manually published. The
+     `0.0.0-s03-test.1` version string, `release-body.md`'s content
+     (labeled "S03 pipeline verification artifact" — an explicit
+     addition to step 5's generation logic when the version matches a
+     recognizable test pattern is *not* required; simply noting the
+     purpose by hand in this manual verification's own record is
+     sufficient), and this test's resulting `attestation-url` (recorded
+     in the implementation PR's description) are what keep this
+     specific attestation identifiable as a test artifact after the
+     fact, not any pipeline-level special-casing.
 4. On a second disposable commit, deliberately leave `package.json`'s
    version mismatched with the tag about to be pushed. Push that tag.
    Confirm: the gate fails hard on the version-consistency check, no
    `release-approved-bundle` and no draft release are created.
-5. Cleanup: `git push --delete origin v0.0.0-test1 <second-scratch-tag>`,
-   delete the draft release(s) via `gh release delete`, delete the
-   scratch branch.
+5. Cleanup: `git push --delete origin v0.0.0-s03-test.1
+   <second-scratch-tag>`, delete the draft release(s) via
+   `gh release delete`, delete the scratch branch. The attestation
+   record from step 3 is **not** deleted (it can't be, and shouldn't be
+   — see step 3).
+6. **`gh workflow run eval-nightly.yml --ref main`, wait for completion,
+   confirm the `eval-nightly-status` issue now points at *this* run
+   (its linked run URL's ID matches, per §2 check 3) before considering
+   verification complete.** Required, not optional cleanup:
+   `gh run list --workflow=eval-nightly.yml` sorts by recency across
+   *all* branches, not just `main` — step 2's scratch-branch run would
+   otherwise remain the "most recent completed" entry §2 step 1 finds,
+   and the very next real release attempt would compare a real tag's
+   `main` commit against that scratch run's `headSha`, fail the
+   anti-TOCTOU check, and block a legitimate release with no actual
+   problem in the code being released.
 
 ## §11 Completion criteria
 
@@ -598,13 +769,22 @@ real tag push fires the real release pipeline):
 - Linux is a real leg of `build-electron.yml`'s matrix; its
   previously-dead smoke-test/upload steps run for real.
 - `create-release` consumes only `release-approved-bundle`, never the
-  raw per-leg artifacts.
-- A real `v0.0.0-test1`-style manual verification pass (§10) has been
-  run and both its success and failure paths confirmed, with cleanup
-  completed and documented in the implementation PR.
+  raw per-leg artifacts, and re-verifies the manifest (hash match *and*
+  file-set equality) after its own download before publishing anything.
+- `download-artifact@v8` in `release-admission-gate` is scoped to
+  `pattern: electron-*`, and never encounters `test.yml`'s
+  `test-results`/`coverage-report` artifacts.
+- A real `v0.0.0-s03-test.1`-style manual verification pass (§10) has
+  been run — including a real, un-skipped `actions/attest@v4` run
+  against an *annotated* scratch tag — and both its success and failure
+  paths confirmed, with cleanup completed (including re-running
+  `eval-nightly.yml` on `main` and confirming the status issue points
+  back to it) and documented in the implementation PR, including the
+  test run's own `attestation-url`.
 - All pure decision logic (§10) has unit test coverage, including the
   full signing state-machine table and the mac-merge arch-filtering
-  contract test.
+  contract test (calling the real, imported `MacUpdater
+  .filterFilesForArch`, not a re-implementation of it).
 
 ## §12 Parked questions (surfaced, not solved)
 
