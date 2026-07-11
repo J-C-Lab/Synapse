@@ -314,8 +314,17 @@ export type ProjectedTool =
   | { ok: true; description: string; inputSchema: JsonSchema; outputSchema?: JsonSchema }
   | { ok: false; reason: string }
 
+/** `JSON.stringify()` throws on a circular reference or a bigint — not
+ *  reachable from parsed plugin/MCP JSON, but a host-authored TypeScript
+ *  schema could construct one by mistake. Treat that as an oversized
+ *  schema (`Infinity`) rather than letting the exception propagate and
+ *  crash the whole `listTools()`/`refresh()` call for every tool. */
 function rawByteSize(value: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(value)).length
+  try {
+    return new TextEncoder().encode(JSON.stringify(value)).length
+  } catch {
+    return Infinity
+  }
 }
 
 /**
@@ -440,9 +449,10 @@ validation semantics at all.
 | --- | --- | --- |
 | **Sanitize** (free text) | `description` | Cap length (`MAX_SCHEMA_DESCRIPTION` per node, `MAX_TOTAL_SCHEMA_DESCRIPTION_CHARS` cumulative across the whole tree), strip control/bidi-override characters. No trust header repeated per-node — the top-level one in §2 already covers the whole tool's metadata. |
 | **Strip** (proven annotation-only) | `examples`, `default`, `$comment` | The only three keywords stripped outright — each is a JSON-Schema-spec-defined pure annotation with zero effect on validation, so dropping it can never change the tool's protocol. |
-| **Passthrough, shape-validated** | `type` (string type-token or array of type-tokens); numeric constraints `minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum`/`multipleOf`/`minLength`/`maxLength`/`minItems`/`maxItems`/`minProperties`/`maxProperties`/`minContains`/`maxContains`; boolean constraint `uniqueItems` | Copied through only after confirming the runtime value actually has the shape a JSON Schema consumer expects (`type` ∈ the 7 valid type tokens; numeric keywords are finite numbers; `uniqueItems` is a boolean). Wrong shape → `{ ok: false }`, not coerced or dropped — a malformed value might itself be an injection vector, or might make a provider reject the whole tool-use request. |
-| **Bound, pass-or-exclude — strings** | `pattern`, `format`, `$ref`, `$dynamicRef`, object keys (property names, wherever they occur), `required` entries | Each ≤ `MAX_PROTOCOL_STRING_LENGTH`. Within budget → unmodified. Over budget → `{ ok: false }`, whole tool excluded. |
-| **Bound, pass-or-exclude — composite values** | `const`, `enum` (per member), `dependentRequired` (per value) | These may be arbitrary JSON (an earlier draft only checked top-level strings — `const: {"text": "10,000-char payload"}` or an object-valued `enum` member sailed straight through). Recursively walked by `checkProtocolValue()` (below): every string leaf ≤ `MAX_PROTOCOL_STRING_LENGTH`, every object key ≤ `MAX_PROTOCOL_STRING_LENGTH`, its own depth/node budget (`MAX_VALUE_DEPTH`/`MAX_VALUE_NODES`, smaller than the schema-structure budget since these are supposed to be simple values, not trees); `enum` additionally ≤ `MAX_ENUM_VALUES` members. Within budget → the **entire value kept intact**, never partially rewritten. Over budget → `{ ok: false }`. |
+| **Passthrough, shape-validated** | `type` (non-empty array of unique type-tokens, or a single token); `minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum` (any finite number); `minLength`/`maxLength`/`minItems`/`maxItems`/`minProperties`/`maxProperties`/`minContains`/`maxContains` (non-negative integer — a plain "finite number" check is not enough, since `-5` or `3.7` are invalid per the JSON Schema meta-schema for these); `multipleOf` (finite number `> 0`); `uniqueItems` (boolean) | Copied through only after confirming the runtime value actually has the shape a JSON Schema consumer expects. Wrong shape → `{ ok: false }`, not coerced or dropped — a malformed value might itself be an injection vector, or might make a provider reject the whole tool-use request. |
+| **Bound, pass-or-exclude — strings** | `pattern`, `format`, `$ref`, `$dynamicRef`, object keys (property names, wherever they occur), `required` entries (also rejected if duplicated) | Each ≤ `MAX_PROTOCOL_STRING_LENGTH`. Within budget → unmodified. Over budget, or shape-invalid → `{ ok: false }`, whole tool excluded. |
+| **Bound, pass-or-exclude — composite values** | `const`, `enum` (per member, also rejected if empty) | These may be arbitrary JSON (an earlier draft only checked top-level strings — `const: {"text": "10,000-char payload"}` or an object-valued `enum` member sailed straight through). Recursively walked by `checkProtocolValue()` (below): only genuine JSON leaf types are accepted at all (a function/symbol/bigint/undefined anywhere is rejected, not silently passed as "no injection surface"); every string leaf ≤ `MAX_PROTOCOL_STRING_LENGTH`, every object key ≤ `MAX_PROTOCOL_STRING_LENGTH`, its own depth/node budget (`MAX_VALUE_DEPTH`/`MAX_VALUE_NODES`, smaller than the schema-structure budget since these are supposed to be simple values, not trees). Within budget → the **entire value kept intact**, never partially rewritten. Over budget, or an illegal JSON value anywhere inside → `{ ok: false }`. |
+| **Bound, pass-or-exclude — `dependentRequired`** | `dependentRequired` | Not arbitrary JSON like `const`/`enum` — its shape is fixed (`Record<string, string[]>`, each array's members unique per the JSON Schema meta-schema), so it gets its own validator (`checkDependentRequired()`, below) rather than `checkProtocolValue()`: every key and every array entry ≤ `MAX_PROTOCOL_STRING_LENGTH`, every array's entries unique, and the value itself must actually be an object of string arrays — a malformed shape (e.g. a string where an array is required) excludes the tool rather than being forwarded. |
 | **Recurse** (schema-or-boolean) | `properties`, `patternProperties`, `$defs`, `dependentSchemas` (map); `prefixItems`, `allOf`, `anyOf`, `oneOf` (array); `not`, `if`, `then`, `else`, `contains`, `propertyNames`, `additionalProperties`, `unevaluatedProperties`, `unevaluatedItems` (single); `items` (single **or** array — matches `validateToolInput()`'s own `SchemaNode.items` union, `tool-input-validation.ts:14`) | JSON Schema permits `true`/`false` as a complete schema anywhere one is expected (`true` = unconstrained, `false` = never valid) — an earlier draft cast every child to `JsonSchema` and recursed, which for `false` silently turned "never valid" into `{}` ("always valid"), the exact opposite meaning. Every recursion target is now typed `JsonSchema \| boolean`; a boolean child passes through **completely unmodified**, an object child is walked by the same `sanitizeSchema()`, sharing depth/node/description-budget counters. Any failure anywhere propagates up and excludes the whole tool. |
 | **Fail closed** (unrecognized) | any keyword not named in any row above | `sanitizeSchema()` returns `{ ok: false }` immediately, before processing anything else in that schema node. An unrecognized keyword might be a real constraint this guardrail doesn't yet know about (a newer JSON Schema keyword, a vendor extension) — silently dropping it changes the tool's protocol exactly as much as rewriting a value would, so the whole tool is excluded rather than guessed at. |
 
@@ -451,11 +461,15 @@ type SchemaOrBoolean = JsonSchema | boolean
 type SchemaSanitizeResult = { ok: true; schema: SchemaOrBoolean } | { ok: false; reason: string }
 
 const TYPE_TOKENS = new Set(["null", "boolean", "object", "array", "number", "string", "integer"])
-const NUMERIC_KEYWORDS = [
-  "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
-  "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties",
-  "minContains", "maxContains",
+/** Must be a finite number, any sign, may be fractional. */
+const ANY_FINITE_NUMBER_KEYWORDS = ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"] as const
+/** Must be a non-negative integer per the JSON Schema meta-schema. */
+const NON_NEGATIVE_INTEGER_KEYWORDS = [
+  "minLength", "maxLength", "minItems", "maxItems",
+  "minProperties", "maxProperties", "minContains", "maxContains",
 ] as const
+/** Must be a finite number strictly greater than 0. */
+const POSITIVE_NUMBER_KEYWORDS = ["multipleOf"] as const
 const BOOLEAN_KEYWORDS = ["uniqueItems"] as const
 const PROTOCOL_STRING_KEYWORDS = ["pattern", "format", "$ref", "$dynamicRef"] as const
 const SCHEMA_MAP_KEYWORDS = ["properties", "patternProperties", "$defs", "dependentSchemas"] as const
@@ -467,7 +481,8 @@ const SCHEMA_SINGLE_KEYWORDS = [
 
 const RECOGNIZED_KEYWORDS = new Set<string>([
   "description", "examples", "default", "$comment",
-  "type", ...NUMERIC_KEYWORDS, ...BOOLEAN_KEYWORDS,
+  "type", ...ANY_FINITE_NUMBER_KEYWORDS, ...NON_NEGATIVE_INTEGER_KEYWORDS,
+  ...POSITIVE_NUMBER_KEYWORDS, ...BOOLEAN_KEYWORDS,
   ...PROTOCOL_STRING_KEYWORDS, "const", "enum", "required", "dependentRequired",
   ...SCHEMA_MAP_KEYWORDS, ...SCHEMA_ARRAY_KEYWORDS, ...SCHEMA_SINGLE_KEYWORDS, "items",
 ])
@@ -476,8 +491,13 @@ const MAX_VALUE_DEPTH = 4
 const MAX_VALUE_NODES = 50
 
 /** Recursively validates an arbitrary JSON value used as a protocol value
- *  (`const`, an `enum` member, `dependentRequired`'s value) — every string
- *  leaf and object key must fit MAX_PROTOCOL_STRING_LENGTH, and the value's
+ *  (`const` or an `enum` member — NOT `dependentRequired`, which has its
+ *  own fixed shape and its own validator below). Only genuine JSON leaf
+ *  types are accepted — a function/symbol/bigint/undefined anywhere in
+ *  the value is rejected outright, since none of those are legal JSON
+ *  (a parsed MCP/plugin payload can't produce them, but a host-authored
+ *  TypeScript schema could construct one by mistake). Every string leaf
+ *  and object key must fit MAX_PROTOCOL_STRING_LENGTH, and the value's
  *  own shape must fit its own (smaller) depth/node budget. Never modifies
  *  the value — only validates that it's safe to pass through as-is. */
 function checkProtocolValue(
@@ -494,6 +514,10 @@ function checkProtocolValue(
       ? { ok: false, reason: `a string exceeds ${MAX_PROTOCOL_STRING_LENGTH} characters` }
       : { ok: true }
   }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? { ok: true } : { ok: false, reason: "a number is not finite" }
+  }
+  if (typeof value === "boolean" || value === null) return { ok: true }
   if (Array.isArray(value)) {
     for (const item of value) {
       const result = checkProtocolValue(item, depth + 1, nodeCounter)
@@ -501,7 +525,7 @@ function checkProtocolValue(
     }
     return { ok: true }
   }
-  if (value !== null && typeof value === "object") {
+  if (typeof value === "object") {
     for (const [key, child] of Object.entries(value)) {
       if (key.length > MAX_PROTOCOL_STRING_LENGTH) {
         return { ok: false, reason: `an object key exceeds ${MAX_PROTOCOL_STRING_LENGTH} characters` }
@@ -511,11 +535,52 @@ function checkProtocolValue(
     }
     return { ok: true }
   }
-  return { ok: true } // number, boolean, null — no injection surface
+  // undefined, function, symbol, bigint — not a legal JSON value
+  return { ok: false, reason: `a ${typeof value} value is not valid JSON` }
 }
 
+/** dependentRequired has a fixed shape — Record<string, string[]>, each
+ *  array's members unique — not arbitrary JSON, so it gets its own
+ *  validator rather than routing through checkProtocolValue(). An earlier
+ *  draft used checkProtocolValue() generically, which would have let a
+ *  malformed `dependentRequired: {"a": "<200-char string>"}` (a string
+ *  where an array is required) through unrejected, since a single
+ *  under-budget string always passes the generic check regardless of
+ *  which keyword it's attached to. */
+function checkDependentRequired(value: unknown): { ok: true } | { ok: false; reason: string } {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, reason: "dependentRequired is not an object" }
+  }
+  for (const [key, arr] of Object.entries(value)) {
+    if (key.length > MAX_PROTOCOL_STRING_LENGTH) {
+      return { ok: false, reason: "a dependentRequired key exceeds the length budget" }
+    }
+    if (!Array.isArray(arr) || !arr.every((name) => typeof name === "string")) {
+      return { ok: false, reason: `dependentRequired["${key}"] is not a string array` }
+    }
+    if (arr.some((name) => name.length > MAX_PROTOCOL_STRING_LENGTH)) {
+      return { ok: false, reason: `a dependentRequired["${key}"] entry exceeds the length budget` }
+    }
+    if (new Set(arr).size !== arr.length) {
+      return { ok: false, reason: `dependentRequired["${key}"] has duplicate entries` }
+    }
+  }
+  return { ok: true }
+}
+
+/**
+ * `schema` is intentionally typed `unknown`, not `SchemaOrBoolean` — every
+ * recursive call site used to cast its child value with `as SchemaOrBoolean`
+ * before calling this function, which is exactly the kind of assertion that
+ * hides a real bug: `allOf: [null]` from an untrusted external MCP server
+ * would have been cast straight through and crashed on `Object.keys(null)`;
+ * `not: 123` would have been silently accepted and turned into `{}` (an
+ * "always valid" schema — the opposite of whatever `123` was supposed to
+ * mean). The shape check below is the single place every recursion path
+ * — map/array/single/items — now goes through, so no call site can skip it.
+ */
 function sanitizeSchema(
-  schema: SchemaOrBoolean,
+  schema: unknown,
   depth: number,
   budget: { chars: number },
   nodeCounter = { count: 0 }
@@ -525,6 +590,10 @@ function sanitizeSchema(
     return { ok: false, reason: `schema has more than ${MAX_SCHEMA_NODES} nodes` }
   }
   if (typeof schema === "boolean") return { ok: true, schema } // complete schema — pass through unmodified
+  if (typeof schema !== "object" || schema === null || Array.isArray(schema)) {
+    const kind = schema === null ? "null" : Array.isArray(schema) ? "array" : typeof schema
+    return { ok: false, reason: `schema value must be an object or boolean, got ${kind}` }
+  }
   if (depth > MAX_SCHEMA_DEPTH) {
     return { ok: false, reason: `schema nesting exceeds ${MAX_SCHEMA_DEPTH} levels` }
   }
@@ -548,18 +617,38 @@ function sanitizeSchema(
 
   if ("type" in s) {
     const types = Array.isArray(s.type) ? s.type : [s.type]
+    if (types.length === 0) return { ok: false, reason: `"type" array must not be empty` }
+    if (new Set(types).size !== types.length) return { ok: false, reason: `"type" array has duplicate entries` }
     if (!types.every((t) => typeof t === "string" && TYPE_TOKENS.has(t))) {
       return { ok: false, reason: `"type" is not a valid JSON Schema type token` }
     }
     out.type = s.type
   }
 
-  for (const key of NUMERIC_KEYWORDS) {
+  for (const key of ANY_FINITE_NUMBER_KEYWORDS) {
     if (!(key in s)) continue
     if (typeof s[key] !== "number" || !Number.isFinite(s[key] as number)) {
       return { ok: false, reason: `"${key}" is not a finite number` }
     }
     out[key] = s[key]
+  }
+
+  for (const key of NON_NEGATIVE_INTEGER_KEYWORDS) {
+    if (!(key in s)) continue
+    const value = s[key]
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+      return { ok: false, reason: `"${key}" is not a non-negative integer` }
+    }
+    out[key] = value
+  }
+
+  for (const key of POSITIVE_NUMBER_KEYWORDS) {
+    if (!(key in s)) continue
+    const value = s[key]
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      return { ok: false, reason: `"${key}" must be a number greater than 0` }
+    }
+    out[key] = value
   }
 
   for (const key of BOOLEAN_KEYWORDS) {
@@ -585,6 +674,7 @@ function sanitizeSchema(
 
   if ("enum" in s) {
     if (!Array.isArray(s.enum)) return { ok: false, reason: `"enum" is not an array` }
+    if (s.enum.length === 0) return { ok: false, reason: `"enum" must not be empty` }
     if (s.enum.length > MAX_ENUM_VALUES) return { ok: false, reason: `enum has more than ${MAX_ENUM_VALUES} values` }
     for (const member of s.enum) {
       const result = checkProtocolValue(member)
@@ -600,24 +690,30 @@ function sanitizeSchema(
     if ((s.required as string[]).some((name) => name.length > MAX_PROTOCOL_STRING_LENGTH)) {
       return { ok: false, reason: `a required property name exceeds ${MAX_PROTOCOL_STRING_LENGTH} characters` }
     }
+    if (new Set(s.required).size !== s.required.length) {
+      return { ok: false, reason: `"required" has duplicate entries` }
+    }
     out.required = s.required
   }
 
   if ("dependentRequired" in s) {
-    const result = checkProtocolValue(s.dependentRequired)
+    const result = checkDependentRequired(s.dependentRequired)
     if (!result.ok) return { ok: false, reason: `"dependentRequired": ${result.reason}` }
     out.dependentRequired = s.dependentRequired
   }
 
   for (const key of SCHEMA_MAP_KEYWORDS) {
     if (!(key in s)) continue
-    if (typeof s[key] !== "object" || s[key] === null) return { ok: false, reason: `"${key}" is not an object` }
+    const value = s[key]
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return { ok: false, reason: `"${key}" is not an object` }
+    }
     const sanitizedMap: Record<string, SchemaOrBoolean> = {}
-    for (const [name, child] of Object.entries(s[key] as Record<string, unknown>)) {
+    for (const [name, child] of Object.entries(value as Record<string, unknown>)) {
       if (name.length > MAX_PROTOCOL_STRING_LENGTH) {
         return { ok: false, reason: `a "${key}" key exceeds ${MAX_PROTOCOL_STRING_LENGTH} characters` }
       }
-      const result = sanitizeSchema(child as SchemaOrBoolean, depth + 1, budget, nodeCounter)
+      const result = sanitizeSchema(child, depth + 1, budget, nodeCounter) // shape validated inside
       if (!result.ok) return result
       sanitizedMap[name] = result.schema // property names are protocol values — never touched
     }
@@ -629,7 +725,7 @@ function sanitizeSchema(
     if (!Array.isArray(s[key])) return { ok: false, reason: `"${key}" is not an array` }
     const sanitizedArray: SchemaOrBoolean[] = []
     for (const child of s[key] as unknown[]) {
-      const result = sanitizeSchema(child as SchemaOrBoolean, depth + 1, budget, nodeCounter)
+      const result = sanitizeSchema(child, depth + 1, budget, nodeCounter) // shape validated inside
       if (!result.ok) return result
       sanitizedArray.push(result.schema)
     }
@@ -638,7 +734,7 @@ function sanitizeSchema(
 
   for (const key of SCHEMA_SINGLE_KEYWORDS) {
     if (!(key in s)) continue
-    const result = sanitizeSchema(s[key] as SchemaOrBoolean, depth + 1, budget, nodeCounter)
+    const result = sanitizeSchema(s[key], depth + 1, budget, nodeCounter) // shape validated inside
     if (!result.ok) return result
     out[key] = result.schema
   }
@@ -647,13 +743,13 @@ function sanitizeSchema(
     if (Array.isArray(s.items)) {
       const sanitizedItems: SchemaOrBoolean[] = []
       for (const child of s.items as unknown[]) {
-        const result = sanitizeSchema(child as SchemaOrBoolean, depth + 1, budget, nodeCounter)
+        const result = sanitizeSchema(child, depth + 1, budget, nodeCounter) // shape validated inside
         if (!result.ok) return result
         sanitizedItems.push(result.schema)
       }
       out.items = sanitizedItems
     } else {
-      const result = sanitizeSchema(s.items as SchemaOrBoolean, depth + 1, budget, nodeCounter)
+      const result = sanitizeSchema(s.items, depth + 1, budget, nodeCounter) // shape validated inside
       if (!result.ok) return result
       out.items = result.schema
     }
@@ -689,6 +785,26 @@ follows the identical shape for the new guardrail, rather than
 introducing a second, different filtering strategy alongside the
 existing one.
 
+Both `refresh()`/`listTools()` implementations run on every agent turn (or
+every `tools/list` request) — an excluded tool stays excluded for the
+lifetime of the process in the common case (nothing about its schema
+changes), so logging a warning unconditionally every single call would
+spam the log for no new information. Both classes gain a small
+`Map<string /* fqName */, string /* last-logged reason */>` field
+alongside `safeToDescriptor`/`safeToEntry`, and a shared `warnOnce`
+helper that only calls `logger.warn` the first time a given fqName is
+excluded, or again if the *reason* changes (e.g. a plugin update shrinks
+an oversized schema back down, then a later update re-introduces a
+different oversized field):
+
+```ts
+function warnOnce(seen: Map<string, string>, fqName: string, reason: string): void {
+  if (seen.get(fqName) === reason) return
+  seen.set(fqName, reason)
+  logger.warn(`tool ${fqName} excluded from model exposure: ${reason}`)
+}
+```
+
 **`AiToolRegistry.refresh()`** (`tool-registry.ts:58-78`) — *list*: replace
 the current inline `description` string-concat with a call to
 `projectModelVisibleTool()`, passing `provenance` and the existing
@@ -696,7 +812,9 @@ the current inline `description` string-concat with a call to
 descriptors becomes a `.map()` + `.filter()` so an excluded tool is
 dropped from the returned list rather than appearing with a broken
 schema. `safeToDescriptor` is still populated for *every* descriptor,
-unconditionally, matching the existing map-population shape:
+unconditionally, matching the existing map-population shape. A new
+`private exclusionWarnings = new Map<string, string>()` field backs
+`warnOnce()`:
 
 ```ts
 private refresh(): { schema: ProviderToolSchema; descriptor: RegisteredToolDescriptor }[] {
@@ -717,7 +835,7 @@ private refresh(): { schema: ProviderToolSchema; descriptor: RegisteredToolDescr
         hostNote: this.pluginNote?.(descriptor.pluginId),
       })
       if (!projected.ok) {
-        logger.warn(`tool ${safeName} excluded from model exposure: ${projected.reason}`)
+        warnOnce(this.exclusionWarnings, descriptor.fqName, projected.reason)
         return undefined
       }
       return {
@@ -764,7 +882,9 @@ async invoke(safeName: string, input: unknown, options: ToolInvocationOptions): 
 **`SynapseMcpToolService.listTools()`** (`synapse-mcp-server.ts:101-121`) —
 *list*: replace the direct `tool.description`/`tool.inputSchema`/
 `tool.outputSchema` reads with the same `projectModelVisibleTool()` call,
-plus `sanitizeTitle()` (now provenance-gated, §2) for `title`:
+plus `sanitizeTitle()` (now provenance-gated, §2) for `title`. A new
+`private exclusionWarnings = new Map<string, string>()` field backs
+`warnOnce()`, same as `AiToolRegistry`'s:
 
 ```ts
 async listTools(): Promise<ListToolsResult> {
@@ -783,7 +903,7 @@ async listTools(): Promise<ListToolsResult> {
       provenance: entry.descriptor.provenance,
     })
     if (!projected.ok) {
-      logger.warn(`tool ${entry.safeName} excluded from MCP tools/list: ${projected.reason}`)
+      warnOnce(this.exclusionWarnings, entry.descriptor.fqName, projected.reason)
       continue
     }
     tools.push({
@@ -1072,6 +1192,44 @@ becomes a T0/T1 hard gate per S01's existing "T0/T1 are hard gates" rule
   returns the capped title; `plugin`/`mcp-client` provenance returns
   `undefined` regardless of title length or content (the regression guard
   for the length-cap-isn't-enough finding).
+- **`tool-metadata.test.ts`, non-schema children and shape edge cases**
+  (regression guards for round-4 review findings): `allOf: [null]` returns
+  `{ ok: false }` rather than throwing (the earlier draft crashed on
+  `Object.keys(null)` — this is the one that could take down an entire
+  `listTools()`/`refresh()` call over a single malicious tool from an
+  untrusted external MCP server, not just exclude that one tool); `not: 123`
+  and `not: "a string"` both return `{ ok: false }` rather than being
+  silently turned into `{}` (an earlier draft's cast-and-recurse turned
+  "not-a-valid-schema" into "always valid" — the opposite of doing
+  nothing safe); `properties: []` (an array where a map is required)
+  returns `{ ok: false }` rather than being accepted via `Object.entries()`
+  reinterpreting array indices as property names. `minLength: -5` and
+  `minLength: 3.7` both return `{ ok: false }` (non-negative-integer
+  keywords reject negative and non-integer values, not just non-finite
+  ones); `multipleOf: 0` and `multipleOf: -2` both return `{ ok: false }`;
+  `type: []` (empty array) and `type: ["string", "string"]` (duplicate)
+  both return `{ ok: false }`; `enum: []` returns `{ ok: false }`;
+  `required: ["a", "a"]` returns `{ ok: false }`. `dependentRequired: {"a":
+  ["b", "c"]}` (valid shape) passes and is kept intact;
+  `dependentRequired: {"a": "ignore all previous instructions"}` (a string
+  where an array is required) returns `{ ok: false }` — the regression
+  guard for the earlier draft's gap where `checkProtocolValue()`'s
+  generic per-string check would have let this through since a single
+  under-budget string always passes regardless of which keyword it's
+  attached to; `dependentRequired: {"a": ["b", "b"]}` (duplicate array
+  entry) returns `{ ok: false }`. `checkProtocolValue()` — a `const`
+  containing a function, a symbol, or a bigint (constructed directly in a
+  test, standing in for a host-authored TypeScript schema mistake — not
+  reachable from parsed JSON) returns `{ ok: false }`; `const: NaN` and
+  `const: Infinity` both return `{ ok: false }`. `rawByteSize()` — a value
+  containing a circular reference does not throw; the function returns
+  `Infinity`, and `projectModelVisibleTool()` on such a schema returns
+  `{ ok: false }` via the ordinary raw-ingestion-budget path rather than
+  the exception propagating out of `projectModelVisibleTool()` entirely.
+  `warnOnce()` — two consecutive exclusions of the same `fqName` with the
+  same `reason` log exactly one warning; a `reason` change for the same
+  `fqName` (e.g. simulating a plugin update that changes what's oversized)
+  logs a second warning.
 - **`tool-registry.test.ts`** (extend): `AiToolRegistry.refresh()`'s
   emitted `ProviderToolSchema.description` contains the trust header for
   `plugin`-provenance descriptors and omits it for `host`-provenance
