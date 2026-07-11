@@ -263,6 +263,14 @@ five fields a second time. It becomes:
 ```ts
 // src/main/plugins/invocation-context.ts (new file)
 
+export type CapabilityActor =
+  | "user"
+  | "agent"
+  | "background"
+  | "background-agent"
+  | "external-mcp"
+  | "subagent"
+
 export type InvocationContext =
   | { source: "tool"; caller: ToolCaller; trigger: string; signal?: AbortSignal }
   | {
@@ -273,9 +281,22 @@ export type InvocationContext =
       invocationId?: string
     }
 
+/** Moved here from capability-governance.ts:56-62, verbatim — see the
+ *  circular-dependency note below for why. */
+export function callerToActor(caller: ToolCaller): CapabilityActor
+
 export function actorOf(invocation: InvocationContext): CapabilityActor
 export function principalOf(invocation: InvocationContext): ToolPrincipal | undefined
 export function invocationIdOf(invocation: InvocationContext): string | undefined
+/** Bundles the four fields CapabilityGate.emit() copies onto a persisted
+ *  CapabilityAuditEntry — undefined across the board for "runless" (no
+ *  run exists to have any of these). */
+export function auditIdentityOf(invocation: InvocationContext): {
+  runId?: string
+  principal?: ToolPrincipal
+  workspaceId?: string
+  triggerInstanceId?: string
+}
 ```
 
 **Not** placed in `plugin-bridge.ts`, and **not** in `run-provenance.ts`.
@@ -285,26 +306,46 @@ is the orchestration layer consuming those three, not the other way around.
 If `InvocationContext` stayed defined in `plugin-bridge.ts`, those three
 lower-level modules would need to import a type back out of the file that
 imports from them — a real layering inversion even with `import type`
-avoiding a runtime cycle. A neutral `invocation-context.ts` that
-`plugin-bridge.ts` and the three governance modules all import from,
-without any of them importing from each other, avoids this. It doesn't
-live in `run-provenance.ts` either, because it spans more than runs —
-plugin commands, clipboard/event handlers, and non-agent trigger handlers
-are real, currently-served scenarios (`plugin-bridge.ts:164-167`'s
-`defaultInvocation` already models exactly this "runless user" case) that
-have no `RunProvenance` and must not be force-fit into one. A plain
-background hook (clipboard watcher, a trigger handler that never spawns an
-agent) is not a `background-agent` run — that name is reserved for a
-trigger-woken *agent* run with its own budget and approval semantics, and
-mislabeling a hook as one would silently change which budget/approval
-rules apply to it.
+avoiding a runtime cycle. It doesn't live in `run-provenance.ts` either,
+because it spans more than runs — plugin commands, clipboard/event
+handlers, and non-agent trigger handlers are real, currently-served
+scenarios (`plugin-bridge.ts:164-167`'s `defaultInvocation` already models
+exactly this "runless user" case) that have no `RunProvenance` and must not
+be force-fit into one. A plain background hook (clipboard watcher, a
+trigger handler that never spawns an agent) is not a `background-agent`
+run — that name is reserved for a trigger-woken *agent* run with its own
+budget and approval semantics, and mislabeling a hook as one would
+silently change which budget/approval rules apply to it.
 
-`actorOf()`/`principalOf()`/`invocationIdOf()` exist so downstream
-consumers (see the table below) never pattern-match `invocation.source`
-themselves — each helper does the two-branch dispatch once
-(`source: "tool"` → derive from `invocation.caller` via `callerToActor()`/
-`caller.principal`/`caller.invocationId`; `source: "runless"` → read
-`invocation.actor`/`undefined`/`invocation.invocationId` directly).
+**`CapabilityActor` and `callerToActor()` move into this same file**,
+instead of staying in `capability-governance.ts`
+(`capability-governance.ts:1-7,56-62`) as originally drafted. Verified this
+was a real gap in the first revision: `actorOf()` needs to call
+`callerToActor()` for its `source: "tool"` branch; `callerToActor()`
+currently lives in `capability-governance.ts`, which imports `CapabilityActor`
+from `capability-gate.ts` (`capability-governance.ts:2-7`); and
+`capability-gate.ts` needs to import `InvocationContext` from this file
+(`CapabilityRequest.invocation` — see the table below) — closing a real
+3-hop type cycle (`invocation-context → capability-governance →
+capability-gate → invocation-context`) that would have contradicted this
+section's own "without any of them importing from each other" claim.
+`callerToActor()` has zero dependency on anything else in
+`capability-governance.ts` (only on `ToolCaller`/`CapabilityActor`), so it
+moves here cleanly. `capability-governance.ts` no longer defines or
+exports `CapabilityActor`/`callerToActor` — consumers (`plugin-bridge.ts`,
+tests) import both directly from `invocation-context.ts`. No re-export
+shim is kept; this is an atomic internal refactor, not a phased external
+rollout, so every import site is just updated directly.
+
+`actorOf()`/`principalOf()`/`invocationIdOf()`/`auditIdentityOf()` exist so
+downstream consumers (see the table below) never pattern-match
+`invocation.source` themselves — each helper does the two-branch dispatch
+once (`source: "tool"` → derive from `invocation.caller` via
+`callerToActor()`/`caller.principal`/`caller.invocationId`/
+`caller.{runId,principal,workspaceId,triggerInstanceId}`; `source:
+"runless"` → read `invocation.actor`/`undefined`/`invocation.invocationId`/
+all-`undefined` directly, since a runless call has no run and therefore
+none of `runId`/`workspaceId`/`triggerInstanceId`).
 
 `createToolContext()` (`plugin-bridge.ts:226-241`) stops flattening
 `options.caller` — it holds the whole `ToolCaller` inside
@@ -314,11 +355,11 @@ themselves — each helper does the two-branch dispatch once
 
 | Type | Today | After |
 |---|---|---|
-| `CapabilityRequest` (`capability-gate.ts:21-45`) | `invocationId?`, `runId?`, `principal?`, `workspaceId?`, `triggerInstanceId?` as five flat fields, plus its own `signal?` | `invocationId`/`runId`/`principal`/`workspaceId`/`triggerInstanceId` collapse into one `invocation: InvocationContext` field. **`signal?: AbortSignal` stays a standalone field, not part of `invocation`** — see the signal note below. `capability`/`operation`/`requestedScope`/`reason` unchanged |
-| `NetworkFetcherConfig` (`network-fetcher.ts:97-110`) | same five flat fields (this interface has no `signal` field today) | same collapse; still no `signal` field — see note below |
+| `CapabilityRequest` (`capability-gate.ts:21-45`) | `actor`, `trigger` (both required), plus `invocationId?`, `runId?`, `principal?`, `workspaceId?`, `triggerInstanceId?` as five flat optional fields, plus its own `signal?` | `actor`/`invocationId`/`runId`/`principal`/`workspaceId`/`triggerInstanceId` **removed as standalone fields** — collapsed into one `invocation: InvocationContext` field (`actor` is derived via `actorOf(request.invocation)` at point of use, never stored twice). `trigger` **removed** too — every reader uses `request.invocation.trigger` (present on both `InvocationContext` branches, no re-derivation needed). **`signal?: AbortSignal` stays a standalone field, not part of `invocation`** — see the signal note below. `capability`/`operation`/`requestedScope`/`reason` unchanged |
+| `NetworkFetcherConfig` (`network-fetcher.ts:97-110`) | `actor`, `trigger`, plus the same five flat fields (this interface has no `signal` field today) | same collapse/removal as `CapabilityRequest`; still no `signal` field — see note below |
 | `createInjectCredential()` args (`credential-broker.ts:346-355`) | `runId?`, `principal?`, `workspaceId?`, `triggerInstanceId?` | same collapse |
-| `CapabilityGate.emit()` (`capability-gate.ts:234-262`) | hand-copies four fields onto `CapabilityAuditEntry` with individual `undefined` guards | becomes the **single** point that projects `invocation` → the persisted audit fields |
-| `callerToActor()` (`capability-governance.ts:56-60`) | consumes `ToolCaller` | unchanged; called only from `actorOf()`'s `source: "tool"` branch |
+| `CapabilityGate.ensure()`/`emit()` (`capability-gate.ts:126,234-262`) | `emit()` hand-copies `request.actor`/`.trigger` plus four provenance fields onto `CapabilityAuditEntry` with individual `undefined` guards | `emit()` calls `actorOf(request.invocation)` for `actor`, reads `request.invocation.trigger` for `trigger`, and calls `auditIdentityOf(request.invocation)` once for the `{runId, principal, workspaceId, triggerInstanceId}` bundle — the **single** point that projects `invocation` → the persisted audit fields |
+| `callerToActor()` | moves from `capability-governance.ts:56-62` to `invocation-context.ts` (see the circular-dependency note above) | unchanged body; called only from `actorOf()`'s `source: "tool"` branch |
 | `CapabilityIpcService.grantPrompt` (`capabilities.ts:92-104`) | reads `request.signal` (`:94`), `request.actor` (`:115`), `request.principal?.kind`/`.clientId` (`:119`) directly off the flat `CapabilityRequest` | `request.signal` unchanged (still standalone); `actor`/`principal` come from `actorOf(request.invocation)`/`principalOf(request.invocation)` |
 | `createBudgetBreakerPort().tryDebit()` (`trigger-budget-breaker.ts:17-26`) | reads `request.invocationId` directly | reads `invocationIdOf(request.invocation)` |
 
@@ -453,13 +494,15 @@ instead of separately minting `runId`/`principal` at each site.
   isolation would not catch a wiring mistake that drops the whole `caller`
   at one of the hand-off points — this test specifically targets that
   failure mode.
-- **`invocation-context.test.ts`** (new): `actorOf()`/`principalOf()`/
-  `invocationIdOf()` each get a case per `InvocationContext` branch —
-  including asserting `principalOf()` returns `undefined` for
-  `source: "runless"` (there is no `ToolCaller` to derive a principal from)
-  and `invocationIdOf()` correctly reads from `caller.invocationId` for
-  `source: "tool"` vs. the top-level `invocationId` for
-  `source: "runless"`.
+- **`invocation-context.test.ts`** (new): `callerToActor()`/`actorOf()`/
+  `principalOf()`/`invocationIdOf()`/`auditIdentityOf()` each get a case per
+  `InvocationContext` branch — including asserting `principalOf()` returns
+  `undefined` for `source: "runless"` (there is no `ToolCaller` to derive a
+  principal from), `invocationIdOf()` correctly reads from
+  `caller.invocationId` for `source: "tool"` vs. the top-level
+  `invocationId` for `source: "runless"`, and `auditIdentityOf()` returns
+  all four fields `undefined` for `source: "runless"` (no run exists) vs.
+  reading all four off `caller` for `source: "tool"`.
 - **`capabilities.test.ts`/`trigger-budget-breaker.test.ts` updated**:
   existing tests covering `grantPrompt`'s `actor`/`principal` extraction and
   `tryDebit`'s `invocationId` lookup are updated to construct
@@ -526,8 +569,13 @@ instead of separately minting `runId`/`principal` at each site.
   `src/main/ai/run-provenance.ts`, host-only, not exported from `plugin-sdk`.
   `provenance` is threaded as a plain local/argument everywhere it's used —
   `AgentRuntime` gains no instance-field assignments.
-- `InvocationContext` and its `actorOf()`/`principalOf()`/`invocationIdOf()`
-  helpers exist in the neutral `src/main/plugins/invocation-context.ts`.
+- `InvocationContext`, `CapabilityActor`, `callerToActor()`, and the
+  `actorOf()`/`principalOf()`/`invocationIdOf()`/`auditIdentityOf()` helpers
+  all live in `src/main/plugins/invocation-context.ts`, which imports
+  nothing from `capability-gate.ts` or `capability-governance.ts` — no
+  cycle. `capability-governance.ts` no longer defines `CapabilityActor`/
+  `callerToActor`. `CapabilityRequest`/`NetworkFetcherConfig` no longer
+  have standalone `actor`/`trigger` fields.
 - All construction call sites listed under Architecture (`agent-runtime.ts`,
   `background-agent-runner.ts`, `subagent-runner.ts`, `synapse-mcp-server.ts`
   ×7, `plugin-bridge.ts`, `capability-gate.ts`, `network-fetcher.ts`,
