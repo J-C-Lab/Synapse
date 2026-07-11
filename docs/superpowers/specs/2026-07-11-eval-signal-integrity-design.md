@@ -36,10 +36,12 @@ Verified against the real repo, not assumed:
   `toJUnit()`'s own branching (`scorecard.ts`) only emits a `<failure>`
   for `gated && !passed`; an ungated failure renders as `<skipped
   message="recorded finding">`. Two independent layers, both silent.
-  `coverage/eval/rag-judged.json`'s current committed contents confirm
-  this isn't hypothetical: `scope-isolation` scores `faithfulness: 0,
-  relevancy: 0, passed: false` today, and nothing anywhere has ever
-  surfaced that.
+  `coverage/eval/rag-judged.json`, a local artifact left over from an
+  earlier real-key run (`coverage/` is `.gitignore`d — `/coverage` at
+  line 9 — this file was never committed, but its contents are still real
+  evidence from an actual run), confirms this isn't hypothetical:
+  `scope-isolation` scores `faithfulness: 0, relevancy: 0, passed: false`
+  today, and nothing anywhere has ever surfaced that.
 - **The `scope-isolation` failure is a real scoring-semantics bug, not (as
   far as this data shows) a real security leak.** The fixture
   (`evals/rag/scope-isolation.json`) declares
@@ -76,9 +78,26 @@ Verified against the real repo, not assumed:
 than no signal — it creates false confidence.** This spec's job is not to
 add more automation, ensembles, or dashboards; it's to make the signal
 that already exists (or was already promised) actually distinguishable
-into three states — *configured and clean*, *configured and regressed*,
-*not configured* — every single run, visible without digging into
-workflow logs.
+into **four** states, every single run, visible without digging into
+workflow logs:
+
+1. **not configured** — no judge key; the suites never ran, expected and
+   low-urgency (true every night until a key is set).
+2. **clean** — key present, both suites ran to completion, nothing
+   regressed against baseline.
+3. **regressed** — key present, both suites ran to completion, at least
+   one fixture/surface fell below its baseline — named explicitly, not
+   just "something failed."
+4. **incomplete/error** — key present, but a suite didn't finish (thrown
+   exception before `writeScorecard()` ran, provider outage, judge API
+   error) — this is *not* the same as "regressed" (no fixture was actually
+   scored) and must not be silently folded into either "clean" (nothing to
+   report) or "regressed" (implies a specific, named finding that doesn't
+   exist here). Reviewer-caught gap: the original draft's §1 already
+   described handling a missing scorecard file ("worth surfacing as suite
+   did not produce output") while separately parking "whether this needs
+   its own state" as an open question — those two statements contradicted
+   each other. It does need its own state, settled here, not parked.
 
 **Nightly stays a non-blocking ratchet, matching the original 2026-07-07
 P5 design intent** (§7: "T2 is a ratchet, not a gate... ASR going up flags
@@ -115,9 +134,11 @@ that signal is explicitly out of scope here — that's S03's job.
 
 ## 1. Workflow changes (`.github/workflows/eval-nightly.yml`)
 
-Three steps, added around the existing `pnpm eval:judged` step:
-
 ```yaml
+concurrency:
+  group: eval-nightly
+  cancel-in-progress: false
+
 permissions:
   contents: read
   issues: write
@@ -130,13 +151,16 @@ jobs:
       # ...existing setup steps unchanged...
       - name: Check judge key configuration
         id: key-check
+        env:
+          CHECK_JUDGE_KEY: ${{ secrets.EVAL_JUDGE_KEY }}
         run: |
-          if [ -n "${{ secrets.EVAL_JUDGE_KEY }}" ]; then
+          if [ -n "$CHECK_JUDGE_KEY" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Run keyed eval
+        id: eval
         continue-on-error: true
         env:
           EVAL_JUDGE_PROVIDER: ${{ secrets.EVAL_JUDGE_PROVIDER }}
@@ -150,39 +174,96 @@ jobs:
           name: eval-judged-scorecard
           path: coverage/eval/
           retention-days: 30
-      - name: Report nightly trend
+      - name: Report nightly status
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           JUDGE_CONFIGURED: ${{ steps.key-check.outputs.configured }}
+          EVAL_STEP_OUTCOME: ${{ steps.eval.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node scripts/eval-nightly-report.mjs
 ```
 
-`scripts/eval-nightly-report.mjs` (new, plain Node — no new dependency):
-reads `JUDGE_CONFIGURED`; if `"false"`, writes a single unambiguous line
-to `$GITHUB_STEP_SUMMARY` ("⚠️ Judge key not configured — this run did not
-execute the judged suites.") and updates the trend issue with the same
-notice, then exits 0. If `"true"`, reads `coverage/eval/asr.json` and
-`coverage/eval/rag-judged.json` (tolerating either being absent — a real
-error before `writeScorecard()` ran, e.g. a thrown exception building the
-provider, is itself worth surfacing as "suite did not produce output"),
-renders a Markdown table of each suite's aggregate + any fixture/surface
-that regressed against its baseline, writes it to `$GITHUB_STEP_SUMMARY`,
-and syncs the same content into a fixed-title issue ("Eval Nightly Trend")
-via `gh issue edit`/`gh issue create` (create once if the issue doesn't
-exist yet, matching the "single persistently-updated issue" decision).
-**English only** — checked `quality.yml`/`test.yml`, the two existing
-workflows that already write to `$GITHUB_STEP_SUMMARY` in this repo, and
-both are English-only; this project's bilingual convention is scoped to
-renderer-facing i18n strings, not CI/GitHub-facing output, so there is no
-precedent to match here and this spec doesn't invent one. This step never
-fails the job — it only ever informs.
+**Reviewer-caught fix, secret handling**: the key-check condition no longer
+interpolates `${{ secrets.EVAL_JUDGE_KEY }}` directly into shell source —
+`${{ }}` expressions are substituted as literal text into the script
+*before* the shell parses it, so a key value containing quotes, backticks,
+or other shell metacharacters could break the script or, worse, get
+re-parsed as code. The secret goes through `env:` and is read back as a
+plain shell variable (`$CHECK_JUDGE_KEY`) instead.
+
+`node scripts/eval-nightly-report.mjs` (new, plain Node — no new
+dependency) determines which of the four Guiding-principle states applies,
+using **both** `JUDGE_CONFIGURED` and `EVAL_STEP_OUTCOME`
+(`steps.eval.outcome`, which reflects the step's real pass/fail
+*independent of* `continue-on-error` masking the job-level conclusion —
+`steps.eval.conclusion` would always read `success` because of
+`continue-on-error`, which is exactly why `outcome` and not `conclusion`
+is read here):
+
+- `JUDGE_CONFIGURED=false` → **not configured**. Regardless of
+  `EVAL_STEP_OUTCOME` (the suites `describe.skipIf`-skip, so the step
+  trivially "succeeds").
+- `JUDGE_CONFIGURED=true`, `EVAL_STEP_OUTCOME=success` → read
+  `coverage/eval/asr.json` and `coverage/eval/rag-judged.json`. Both
+  present and both `aggregates` show no regressions → **clean**. (A
+  passing step outcome and a present-but-regressed scorecard should not
+  occur together once §2's ordering fix lands — regressions throw, which
+  makes the step's outcome `failure` — but the reporter still checks the
+  scorecard contents rather than trusting the outcome flag alone, so a
+  future change to either suite's assertions can't silently reintroduce
+  this spec's exact bug one level up.)
+- `JUDGE_CONFIGURED=true`, `EVAL_STEP_OUTCOME=failure`, scorecard files
+  present and readable → **regressed**. Render the specific
+  fixture/surface names the scorecards flag as below baseline.
+- `JUDGE_CONFIGURED=true`, `EVAL_STEP_OUTCOME=failure` (or `success`),
+  scorecard file(s) missing or unparseable → **incomplete/error**. Report
+  which suite(s) produced no output, and link `RUN_URL` for log triage —
+  this is the state a provider outage or an unrelated thrown exception
+  produces, and it must render distinctly from "regressed" (nothing was
+  actually scored, there is no fixture name to blame).
+
+Renders a Markdown table for whichever state applies, writes it to
+`$GITHUB_STEP_SUMMARY`, and syncs the same content to a fixed-purpose
+GitHub issue (see the naming/discovery fix below). **English only** —
+checked `quality.yml`/`test.yml`, the two existing workflows that already
+write to `$GITHUB_STEP_SUMMARY` in this repo, and both are English-only;
+this project's bilingual convention is scoped to renderer-facing i18n
+strings, not CI/GitHub-facing output, so there is no precedent to match
+here and this spec doesn't invent one. This step never fails the job — it
+only ever informs.
+
+**Reviewer-caught fix, "trend" vs. what this actually delivers**: editing
+one issue's body in place every night is a rolling *snapshot*, not a
+*trend* (no history of prior nights accumulates anywhere) — despite the
+original P5 spec's own wording promising a "trend." Renamed to **"Eval
+Nightly Status"** throughout (workflow, issue title, Job Summary heading)
+to describe what's actually being built; an actual multi-day trend view
+is not in this spec's scope (no dashboard, per Non-goals) and can be a
+later spec if the snapshot proves insufficient in practice. Three
+operational details the original draft left unspecified, now fixed:
+
+- The issue is found by a stable label (`eval-nightly-status`), not by
+  matching its title string — `gh issue list --label eval-nightly-status
+  --state all --json number` and use the first match if any exist, create
+  a new one (with the label attached) only if none do.
+- If the found issue is `closed`, reopen it (`gh issue reopen`) before
+  editing — a maintainer closing it to mark "seen" shouldn't cause the
+  next night to spawn a duplicate.
+- `concurrency: { group: eval-nightly, cancel-in-progress: false }` on the
+  job (shown above) serializes the scheduled run against any manual
+  `workflow_dispatch` triggered in the same window, so two runs can never
+  race to create two issues.
 
 ## 2. `rag-faithfulness.judged.eval.ts` — real scoring, real gate
 
-**Rubric fix**: `judge()`'s two calls change from generic
-faithfulness/relevancy prompts to include the fixture's own
-`expectedAnswerContains` as the reference the judge grades against:
+**Rubric fix**: the two separate `judge()` calls (faithfulness, relevancy)
+collapse into one `correctness` call per fixture — decided during Q&A:
+"faithfulness"/"relevancy" don't cleanly apply to a fixture whose correct
+answer is a refusal, a single expectation-aware verdict is a better fit
+than forcing two, and it halves the judge API cost/latency per fixture.
+The rubric now includes the fixture's own `expectedAnswerContains` as the
+reference the judge grades against:
 
 ```ts
 const correctness = await judge(provider, model, {
@@ -194,40 +275,96 @@ const correctness = await judge(provider, model, {
 })
 ```
 
-(Exact rubric wording is an implementation-plan-level detail — what's
-fixed here is that `expectedAnswerContains` becomes real judge input, not
-dead documentation, and a correct refusal fixture can now actually score
-as passing.)
+`ScoreResult.metrics` narrows from `{ faithfulness, relevancy }` to
+`{ correctness: 0 | 1 }` accordingly — this is a scorecard schema change,
+called out explicitly since it affects both the new baseline file's shape
+(below) and the reporter's rendering (§1).
 
-**Real gate**: after the fixture loop, mirroring
-`injection.judged.eval.ts:316-321`'s existing pattern exactly:
+**Reviewer-caught fix — two independent verdict mechanisms could
+disagree.** The original draft set `result.passed` directly from the
+judge's own verdict, and separately gated the *test* on
+`checkAgainstBaseline()`. Once `gated: true`, `scorecard.ts`'s `toJUnit()`
+emits `<failure>` for any `gated && !passed` result **unconditionally** —
+independent of what the baseline check decides. If a baseline were ever
+seeded at `0` (accepting a currently-failing score as "the baseline"),
+`checkAgainstBaseline()` would report `ok: true` (nothing is below a
+floor of `0`) while the *same run's* JUnit output reports that exact
+fixture as a `<failure>` — one run, two disagreeing verdicts. Fix:
+`result.passed` is *computed from* the baseline check, not set
+independently from the raw judge verdict — there is exactly one verdict
+per fixture, and both the scorecard and the test's own `expect()` read
+it:
 
 ```ts
-const metrics = Object.fromEntries(results.map((r) => [r.id, r.passed ? 1 : 0]))
-const baseline = loadBaseline(path.join(ROOT, "evals/baselines/rag-judged.json"))
+const metrics = Object.fromEntries(results.map((r) => [r.id, r.correctness]))
+const baseline = loadRequiredBaseline(path.join(ROOT, "evals/baselines/rag-judged.json"))
 const check = checkAgainstBaseline(metrics, baseline)
+
+const card = buildScorecard(
+  "rag-judged",
+  results.map((r) => ({
+    id: r.id,
+    tier: "T2" as const,
+    tags: ["rag-judged", "correctness"],
+    passed: !check.regressions.includes(r.id),
+    gated: true,
+    metrics: { correctness: r.correctness },
+  }))
+)
+writeScorecard(OUT, card)
+
 expect(check.ok, `RAG judged regression on: ${check.regressions.join(", ")}`).toBe(true)
 ```
 
-Reuses `checkAgainstBaseline()` from `baselines.ts` verbatim — no new
-comparison mechanism. Each result's `gated` field changes from the
-hardcoded `false` to `true`. New file `evals/baselines/rag-judged.json`
-(distinct from the existing `evals/baselines/rag.json`, which is the
-T0/T1 deterministic-retrieval scope check and is untouched by this spec).
-**Seed values are not pre-declared here** — LLM-judge scores are noisy,
-so pre-writing "this fix will produce 1" would be exactly the kind of
-unverified assumption this spec exists to stop making. The implementation
-plan's job is to land the rubric fix, run the suite for real with a live
-key, and seed the baseline from whatever score that real run actually
-produces (expected to be 1 for both current fixtures given the rubric now
-matches their intent, but the plan confirms this rather than assuming
-it) — same discipline as any other baseline entry per §3 below.
+`loadRequiredBaseline()` (new, thin wrapper in `baselines.ts` — not a
+parallel mechanism, just `loadBaseline()` plus a check) **throws if the
+file is missing**, rather than `loadBaseline()`'s existing
+missing-file-returns-`{}`-behavior. Reviewer-caught: an empty baseline
+makes `checkAgainstBaseline()` vacuously pass *everything*
+(`Object.entries({}).filter(...)` iterates zero entries) — if the
+implementation plan ever landed the gate code without actually committing
+`evals/baselines/rag-judged.json`, this would silently reproduce the
+exact "gate that never gates" bug this spec exists to close, just moved
+one file over. `loadBaseline()` itself is untouched (its
+missing-file-tolerant behavior is still correct for *optional* baselines
+elsewhere); `loadRequiredBaseline()` is additive.
+
+**Reviewer-caught fix — ordering.** `writeScorecard()` must run before
+the `expect()` that can throw on a regression, unconditionally — shown
+correctly in the code above, but called out explicitly because the
+original draft's snippet didn't show `writeScorecard()`'s position at
+all, and `injection.judged.eval.ts:335-338` (the pattern this is
+"mirroring") only gets this right by virtue of its own line order, never
+stated as a rule. If a regression's `expect()` throws *before*
+`writeScorecard()` runs, the scorecard JSON never gets written, and §1's
+reporter can't distinguish "regressed" from "incomplete" for that suite —
+exactly the state confusion §1 exists to prevent. **Acceptance
+criterion**: for both suites, `writeScorecard()` must execute on every
+code path that reaches a baseline check, whether or not that check
+passes.
+
+**Baseline seeding — reviewer-caught tightening of this spec's own
+principle.** New file `evals/baselines/rag-judged.json` (distinct from
+`evals/baselines/rag.json`, the T0/T1 deterministic-retrieval scope check,
+untouched by this spec). Seed values are still not pre-declared in this
+document — but the implementation plan's job is not merely to "run once
+and record whatever comes out": if the real run (after the rubric fix)
+still produces `0` for a fixture, **that means the rubric fix isn't done
+yet**, not that `0` is an acceptable baseline. Keep iterating on the
+rubric/prompt until both current fixtures genuinely score `1` against a
+live key, then seed `{ "recall-basic": 1, "scope-isolation": 1 }` — a
+freshly-passing baseline, never a pre-failing one accepted as the floor.
+This is the same discipline §3 states for every future baseline change,
+applied to this baseline's very first value.
 
 ## 3. Baseline-tightening process (written policy, no new tooling)
 
-Added as a short section in `evals/baselines/README.md` (new, short file)
-or a comment block at the top of `asr.json`/`rag-judged.json` themselves —
-implementation plan decides the exact location:
+Added as a short section in `evals/baselines/README.md` (new, short
+file). **Reviewer-caught error**: the original draft offered "a comment
+block at the top of `asr.json`/`rag-judged.json`" as an alternative
+location — JSON has no comment syntax, so that would make the baseline
+files invalid JSON and break `loadBaseline()`'s `JSON.parse()`. The README
+is the only location.
 
 - A baseline value only ever moves in the strict direction (ASR ceilings
   down, `checkAgainstBaseline`-style minimums up) except when a
@@ -243,12 +380,20 @@ implementation plan decides the exact location:
 ## 4. Testing
 
 - **`eval-nightly-report.mjs`**: since this is a plain Node script (not a
-  Vitest suite — it runs in the workflow, not the test runner), test it
-  as a small pure function extracted for unit-testing (`renderSummary
-  (asrCard, ragCard, configured) → string`) with Vitest fixtures covering:
-  key-not-configured render, all-clean render, a regressed-surface render,
-  and a missing-scorecard-file render (treated as "suite errored before
-  producing output," not silently skipped).
+  Vitest suite — it runs in the workflow, not the test runner), extract
+  the state-selection and rendering logic into a small pure function
+  (`renderStatus({ configured, evalOutcome, asrCard, ragCard }) →
+  string`) and unit-test all four states from the Guiding principle: not
+  configured (regardless of `evalOutcome`/card contents); clean
+  (`configured`, `evalOutcome: "success"`, both cards present with no
+  regressions); regressed (`configured`, `evalOutcome: "failure"`, a card
+  present showing a named regression); incomplete/error (`configured`,
+  either `evalOutcome`, a card missing or unparseable) — plus the
+  disagreement guard: a `failure` outcome with clean-looking card contents
+  should still render as *something is wrong* (surfaced as
+  incomplete/error, not silently downgraded to clean), since that
+  combination should not occur once §2's ordering fix lands and its
+  occurrence is itself worth flagging.
 - **`rag-faithfulness.judged.eval.ts`**: existing `describe.skipIf(!KEY)`
   structure unchanged (still needs a real key to exercise for real), but
   add a keyless unit test for the new rubric-construction helper (the
@@ -261,20 +406,27 @@ implementation plan decides the exact location:
   behavior this spec depends on.
 - **Manual verification** (can't be asserted in CI without real secrets):
   after landing, one `workflow_dispatch` run with a real key configured
-  should show a clean Job Summary and an updated trend issue; one
-  deliberately-broken run (e.g. temporarily lowering a baseline value to
-  force a regression) should show the regression called out by name in
-  both places, with the job still reporting success.
+  should show **clean** in both the Job Summary and the status issue.
+  Then one deliberately-broken run should show **regressed**, named by
+  fixture/surface, in both places, with the job still reporting success —
+  concretely: temporarily *lowering* the ASR ceiling in `asr.json` below
+  the real attack-success rate (`checkAsrCeiling` flags `rate >
+  ceiling`), **or** temporarily *raising* a minimum in
+  `rag-judged.json` above the real correctness score
+  (`checkAgainstBaseline` flags `metric < min`) — reviewer-caught: these
+  are opposite directions for the two baseline shapes, the original draft
+  only stated one direction and it doesn't apply to both suites. Revert
+  the temporary change afterward; it's a manual verification step, not a
+  permanent baseline edit.
 
 ## 5. Parked questions (surfaced, not solved)
 
 - **How S03 actually consults this signal before a release** — explicitly
   S03's design, not re-litigated here.
-- **Whether judge-outage handling ever needs its own distinct
-  Job-Summary state** (distinct from "regressed" and "not configured") —
-  not observed as a real problem yet; revisit if judge API flakiness
-  becomes a recurring nightly occurrence.
 - **Whether `evals/baselines/*.json`'s written-policy-only tightening
   process needs actual CI enforcement later** — deferred per the Q&A
   decision; revisit if a baseline is ever loosened without justification
   in practice.
+- **Whether the status issue should ever grow real multi-day history**
+  (beyond the single-snapshot rename in §1) — not built here; revisit if
+  a snapshot proves insufficient for spotting a slow, multi-night drift.
