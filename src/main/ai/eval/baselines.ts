@@ -27,7 +27,19 @@ export function loadRequiredBaseline(file: string): Baseline {
   if (!existsSync(file)) {
     throw new Error(`Required baseline file does not exist: ${file}`)
   }
-  return loadBaseline(file)
+  const baseline = loadBaseline(file)
+  const entries = Object.entries(baseline)
+  if (entries.length === 0) {
+    throw new Error(`Required baseline file is empty: ${file}`)
+  }
+  for (const [metric, threshold] of entries) {
+    if (typeof threshold !== "number" || !Number.isFinite(threshold)) {
+      throw new TypeError(
+        `Required baseline ${file} has a non-finite numeric threshold for "${metric}"`
+      )
+    }
+  }
+  return baseline
 }
 
 export function checkAgainstBaseline(

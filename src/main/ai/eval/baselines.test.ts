@@ -70,4 +70,16 @@ describe("loadRequiredBaseline", () => {
     writeFileSync(file, JSON.stringify({ "recall-basic": 1 }))
     expect(loadRequiredBaseline(file)).toEqual({ "recall-basic": 1 })
   })
+
+  it("throws when the required baseline is empty", () => {
+    const file = join(dir, "empty.json")
+    writeFileSync(file, "{}")
+    expect(() => loadRequiredBaseline(file)).toThrow(/empty/)
+  })
+
+  it("throws when a required threshold is not a finite number", () => {
+    const file = join(dir, "invalid.json")
+    writeFileSync(file, JSON.stringify({ recall: "1", precision: null }))
+    expect(() => loadRequiredBaseline(file)).toThrow(/non-finite/)
+  })
 })
