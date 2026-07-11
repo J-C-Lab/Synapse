@@ -60,3 +60,11 @@ jobs:
           EVAL_STEP_OUTCOME: ${{ steps.eval.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node scripts/eval-nightly-report.mjs
+      - name: Upload eval-nightly-status-json
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: eval-nightly-status-json
+          path: eval-nightly-status.json
+          retention-days: 90
+          if-no-files-found: error

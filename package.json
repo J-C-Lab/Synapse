@@ -107,6 +107,7 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react-refresh": "^0.5.2",
     "husky": "^9.1.7",
+    "js-yaml": "^4.1.1",
     "jsdom": "^25.0.1",
     "lint-staged": "^15.5.2",
     "png2icons": "^2.0.1",

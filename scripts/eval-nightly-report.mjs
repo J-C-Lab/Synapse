@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { appendFileSync, readFileSync } from "node:fs"
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
 import process from "node:process"
 import { fileURLToPath } from "node:url"
 
@@ -54,6 +54,22 @@ export function renderStatus({ configured, evalOutcome, asrCard, ragCard }) {
   return { state: "clean", summary: "✅ All judged suites within baseline." }
 }
 
+/** Builds the machine-readable status artifact main() writes alongside
+ *  the human-facing issue body. `state` is the same value renderStatus()
+ *  already computed — never re-derived. */
+export function buildStatusJson({ state, runId, headSha, now = () => new Date() }) {
+  return {
+    schemaVersion: 1,
+    state,
+    // GitHub exposes GITHUB_RUN_ID as an environment string. Keep that
+    // representation in the persisted contract so consumers never depend on
+    // a JSON number versus API-number coincidence.
+    runId: String(runId),
+    headSha,
+    completedAt: now().toISOString(),
+  }
+}
+
 function regressedIds(card) {
   if (!card.results) return []
   return card.results.filter((r) => r.gated && !r.passed).map((r) => r.id)
@@ -75,6 +91,13 @@ function main() {
   const ragCard = configured ? readCard("coverage/eval/rag-judged.json") : null
 
   const { state, summary } = renderStatus({ configured, evalOutcome, asrCard, ragCard })
+
+  const statusJson = buildStatusJson({
+    state,
+    runId: process.env.GITHUB_RUN_ID ?? "",
+    headSha: process.env.GITHUB_SHA ?? "",
+  })
+  writeFileSync("eval-nightly-status.json", `${JSON.stringify(statusJson, null, 2)}\n`)
 
   const body = [
     `## Eval Nightly Status`,

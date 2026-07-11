@@ -44,6 +44,9 @@ jobs:
           - platform: macos-latest
             arch: arm64
             build_flag: --mac --arm64
+          - platform: ubuntu-latest
+            arch: x64
+            build_flag: --linux
 
     runs-on: ${{ matrix.platform }}
 
@@ -169,7 +172,7 @@ jobs:
             release/*.AppImage
             release/latest-linux.yml
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Upload Linux artifacts (deb)
         if: matrix.platform == 'ubuntu-latest'
@@ -178,7 +181,7 @@ jobs:
           name: electron-linux-${{ matrix.arch }}-deb
           path: release/*.deb
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Upload Windows artifacts (NSIS)
         if: matrix.platform == 'windows-latest'
@@ -191,7 +194,7 @@ jobs:
             release/*.blockmap
             release/latest.yml
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Upload Windows artifacts (MSI)
         if: matrix.platform == 'windows-latest'
@@ -200,7 +203,7 @@ jobs:
           name: electron-windows-${{ matrix.arch }}-msi
           path: release/*.msi
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Upload macOS artifacts (DMG)
         if: matrix.platform == 'macos-latest'
@@ -209,7 +212,7 @@ jobs:
           name: electron-macos-${{ matrix.arch }}-dmg
           path: release/*.dmg
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Upload macOS artifacts (ZIP)
         if: matrix.platform == 'macos-latest'
@@ -222,4 +225,4 @@ jobs:
             release/*.blockmap
             release/latest-mac.yml
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
