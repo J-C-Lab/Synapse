@@ -46,6 +46,7 @@ function descriptor(): RegisteredToolDescriptor {
   return {
     fqName: "com.x.demo/greet",
     pluginId: "com.x.demo",
+    provenance: "plugin",
     manifestTool: {
       name: "greet",
       description: "Greet",

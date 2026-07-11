@@ -17,6 +17,7 @@ const TOOLS: RegisteredToolDescriptor[] = [
   {
     fqName: `${INTROSPECT_PLUGIN_ID}/describe_plugin`,
     pluginId: INTROSPECT_PLUGIN_ID,
+    provenance: "host",
     manifestTool: {
       name: "describe_plugin",
       title: "Describe plugin",

@@ -16,6 +16,7 @@ function stubHost(): ToolHostPort {
       {
         fqName: FQ,
         pluginId: "com.probe",
+        provenance: "plugin",
         manifestTool: {
           name: "read_probe",
           description: "read probe",

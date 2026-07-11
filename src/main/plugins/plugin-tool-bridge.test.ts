@@ -7,6 +7,7 @@ function descriptor(): RegisteredToolDescriptor {
   return {
     fqName: "com.synapse.test/greet",
     pluginId: "com.synapse.test",
+    provenance: "plugin",
     manifestTool: {
       name: "greet",
       description: "Greet someone",

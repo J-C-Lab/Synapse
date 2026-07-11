@@ -36,6 +36,7 @@ const TOOL_DESCRIPTORS: RegisteredToolDescriptor[] = [
   {
     fqName: `${EXECUTION_PLUGIN_ID}/list_files`,
     pluginId: EXECUTION_PLUGIN_ID,
+    provenance: "host",
     manifestTool: {
       name: "list_files",
       title: "List files",
@@ -53,6 +54,7 @@ const TOOL_DESCRIPTORS: RegisteredToolDescriptor[] = [
   {
     fqName: `${EXECUTION_PLUGIN_ID}/read_file`,
     pluginId: EXECUTION_PLUGIN_ID,
+    provenance: "host",
     manifestTool: {
       name: "read_file",
       title: "Read file",
@@ -67,6 +69,7 @@ const TOOL_DESCRIPTORS: RegisteredToolDescriptor[] = [
   {
     fqName: `${EXECUTION_PLUGIN_ID}/search_files`,
     pluginId: EXECUTION_PLUGIN_ID,
+    provenance: "host",
     manifestTool: {
       name: "search_files",
       title: "Search files",
@@ -85,6 +88,7 @@ const TOOL_DESCRIPTORS: RegisteredToolDescriptor[] = [
   {
     fqName: `${EXECUTION_PLUGIN_ID}/apply_patch`,
     pluginId: EXECUTION_PLUGIN_ID,
+    provenance: "host",
     manifestTool: {
       name: "apply_patch",
       title: "Apply patch",
@@ -99,6 +103,7 @@ const TOOL_DESCRIPTORS: RegisteredToolDescriptor[] = [
   {
     fqName: `${EXECUTION_PLUGIN_ID}/run_command`,
     pluginId: EXECUTION_PLUGIN_ID,
+    provenance: "host",
     manifestTool: {
       name: "run_command",
       title: "Run command",

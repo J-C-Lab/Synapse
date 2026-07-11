@@ -24,7 +24,9 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js"
 import { decideApproval } from "../ai/approval-gate"
+import { projectModelVisibleTool, sanitizeTitle, warnOnce } from "../ai/guardrails/tool-metadata"
 import { sanitizeToolName, uniqueName } from "../ai/tool-registry"
+import { logger } from "../logging"
 import { WORKSPACE_INSTRUCTIONS_PREFIX } from "./workspace-instructions-resource"
 
 const MEMORY_RESOURCE_PREFIX = "synapse://memory/"
@@ -92,6 +94,7 @@ type McpObjectSchema = ListToolsResult["tools"][number]["inputSchema"]
 
 export class SynapseMcpToolService {
   private safeToEntry = new Map<string, McpToolEntry>()
+  private exclusionWarnings = new Map<string, string>()
 
   constructor(
     private readonly host: ToolHostPort,
@@ -105,21 +108,32 @@ export class SynapseMcpToolService {
         (await this.shouldExpose(entry.descriptor)) ? entry : undefined
       )
     )
-    return {
-      tools: included
-        .filter((entry): entry is McpToolEntry => entry !== undefined)
-        .map((entry) => {
-          const tool = entry.descriptor.manifestTool
-          return {
-            name: entry.safeName,
-            title: localizedString(tool.title),
-            description: tool.description,
-            inputSchema: mcpObjectSchema(tool.inputSchema),
-            outputSchema: tool.outputSchema ? mcpObjectSchema(tool.outputSchema) : undefined,
-            annotations: mcpAnnotations(tool.annotations),
-          }
-        }),
+    const tools: ListToolsResult["tools"] = []
+    for (const entry of included) {
+      if (!entry) continue
+      const tool = entry.descriptor.manifestTool
+      const projected = projectModelVisibleTool({
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        outputSchema: tool.outputSchema,
+        provenance: entry.descriptor.provenance,
+      })
+      if (!projected.ok) {
+        warnOnce(this.exclusionWarnings, entry.descriptor.fqName, projected.reason, (msg) =>
+          logger.warn(msg)
+        )
+        continue
+      }
+      tools.push({
+        name: entry.safeName,
+        title: sanitizeTitle(localizedString(tool.title), entry.descriptor.provenance),
+        description: projected.description,
+        inputSchema: mcpObjectSchema(projected.inputSchema),
+        outputSchema: projected.outputSchema ? mcpObjectSchema(projected.outputSchema) : undefined,
+        annotations: mcpAnnotations(tool.annotations),
+      })
     }
+    return { tools }
   }
 
   async callTool(
@@ -138,6 +152,19 @@ export class SynapseMcpToolService {
     }
     if (!(await this.shouldExpose(entry.descriptor))) {
       return errorResult(`Synapse MCP policy does not expose tool: ${entry.descriptor.fqName}`)
+    }
+
+    const tool = entry.descriptor.manifestTool
+    const projected = projectModelVisibleTool({
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      outputSchema: tool.outputSchema,
+      provenance: entry.descriptor.provenance,
+    })
+    if (!projected.ok) {
+      return errorResult(
+        `Synapse MCP policy does not expose tool: ${entry.descriptor.fqName} (${projected.reason})`
+      )
     }
 
     const runId = randomUUID()

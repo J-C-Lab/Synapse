@@ -9,6 +9,7 @@ import type {
 } from "./types"
 import process from "node:process"
 import { describe, expect, it, vi } from "vitest"
+import { logger } from "../logging"
 import { PermissionDenied } from "./permissions"
 import { PluginRegistry } from "./plugin-registry"
 import { PluginInvocationTimeoutError } from "./plugin-sandbox"
@@ -225,6 +226,7 @@ describe("pluginRegistry", () => {
         fqName: "com.synapse.test/greet",
         pluginId: "com.synapse.test",
         manifestTool: toolDef("greet"),
+        provenance: "plugin",
       },
     ])
 
@@ -285,6 +287,31 @@ describe("pluginRegistry", () => {
 
     expect(registry.get("com.synapse.test")?.status).toBe("crashed")
     expect(registry.listTools()).toHaveLength(0)
+  })
+
+  it("logs a diagnostic when a loaded plugin's tool schema exceeds a structural budget", async () => {
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {})
+    const sandbox = fakeSandbox()
+    const registry = new PluginRegistry({ sandbox, now: () => 1 })
+    await registry.load([
+      discovered({
+        tools: [
+          {
+            name: "oversized",
+            description: "Bad tool",
+            inputSchema: {
+              type: "object",
+              properties: { x: { const: "a".repeat(10_000) } },
+            },
+          },
+        ],
+      }),
+    ])
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("excluded from model exposure"),
+      expect.objectContaining({ pluginId: "com.synapse.test" })
+    )
+    warnSpy.mockRestore()
   })
 })
 

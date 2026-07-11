@@ -14,6 +14,7 @@ function parentRegistry() {
       {
         fqName: "com.x/read",
         pluginId: "com.x",
+        provenance: "plugin",
         manifestTool: {
           name: "read",
           description: "",
@@ -24,6 +25,7 @@ function parentRegistry() {
       {
         fqName: UPDATE_PLAN_FQ,
         pluginId: "plan:core",
+        provenance: "host",
         manifestTool: {
           name: "update_plan",
           description: "",
@@ -34,6 +36,7 @@ function parentRegistry() {
       {
         fqName: "com.x/write",
         pluginId: "com.x",
+        provenance: "plugin",
         manifestTool: { name: "write", description: "", inputSchema: { type: "object" } },
       },
     ],

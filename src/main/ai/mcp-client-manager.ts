@@ -4,6 +4,8 @@ import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../plugins
 import type { ToolHostSource } from "./composite-tool-host"
 import type { WorkspaceRoot } from "./execution/types"
 import type { McpServerConfig } from "./mcp-server-config-store"
+import { logger } from "../logging"
+import { projectModelVisibleTool } from "./guardrails/tool-metadata"
 
 // MCP client side (P5, inbound): connect to external MCP servers over stdio and
 // surface their tools to the built-in agent. Each server's tools enter the
@@ -188,6 +190,17 @@ export class McpClientManager implements ToolHostSource {
       conn.client = client
       conn.tools = tools.map((tool) => toDescriptor(config.id, tool))
       conn.state = "connected"
+      for (const descriptor of conn.tools) {
+        const projected = projectModelVisibleTool({
+          description: descriptor.manifestTool.description,
+          inputSchema: descriptor.manifestTool.inputSchema,
+          outputSchema: descriptor.manifestTool.outputSchema,
+          provenance: "mcp-client",
+        })
+        if (!projected.ok) {
+          logger.warn(`tool ${descriptor.fqName} excluded from model exposure: ${projected.reason}`)
+        }
+      }
     } catch (err) {
       conn.state = "error"
       conn.error = err instanceof Error ? err.message : String(err)
@@ -217,6 +230,7 @@ function toDescriptor(serverId: string, tool: McpToolDefinition): RegisteredTool
     fqName: `${MCP_FQ_PREFIX}${serverId}/${tool.name}`,
     pluginId: `${MCP_FQ_PREFIX}${serverId}`,
     manifestTool: toManifestTool(tool),
+    provenance: "mcp-client",
   }
 }
 

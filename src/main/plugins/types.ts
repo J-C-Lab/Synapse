@@ -167,11 +167,14 @@ export interface PluginToolInvokeRequest {
   options: ToolInvocationOptions
 }
 
+export type ToolProvenance = "host" | "plugin" | "mcp-client"
+
 /** A manifest tool of an active plugin, addressable by its `${pluginId}/${name}`. */
 export interface RegisteredToolDescriptor {
   fqName: string
   pluginId: string
   manifestTool: ManifestTool
+  provenance: ToolProvenance
 }
 
 /** A registered tool plus a bound runner — the public shape AI callers consume. */

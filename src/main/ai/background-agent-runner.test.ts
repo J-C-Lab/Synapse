@@ -41,6 +41,7 @@ function descriptor(
   return {
     fqName: `com.example.organizer/${name}`,
     pluginId: "com.example.organizer",
+    provenance: "plugin",
     manifestTool: {
       name,
       description: name,

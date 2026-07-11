@@ -11,7 +11,8 @@ import { createSynapseMcpServer, SynapseMcpToolService } from "./synapse-mcp-ser
 
 function descriptor(
   fqName: string,
-  annotations?: RegisteredToolDescriptor["manifestTool"]["annotations"]
+  annotations?: RegisteredToolDescriptor["manifestTool"]["annotations"],
+  provenance: RegisteredToolDescriptor["provenance"] = "plugin"
 ): RegisteredToolDescriptor {
   return {
     fqName,
@@ -32,6 +33,7 @@ function descriptor(
       },
       annotations,
     },
+    provenance,
   }
 }
 
@@ -62,10 +64,52 @@ describe("synapseMcpToolService", () => {
       "com_example_safe_greet",
     ])
     expect((await service.listTools()).tools[0]).toMatchObject({
-      title: "Title com.example.safe/greet",
-      description: "Tool com.example.safe/greet",
+      title: undefined,
+      description: expect.stringContaining("[Third-party tool metadata"),
       annotations: { readOnlyHint: true },
     })
+  })
+
+  it("forwards title only for host-provenance tools", async () => {
+    const service = new SynapseMcpToolService(
+      host([descriptor("execution:host/run", { readOnlyHint: true }, "host")])
+    )
+    const [tool] = (await service.listTools()).tools
+    expect(tool?.title).toBe("Title execution:host/run")
+  })
+
+  it("frames a plugin-provenance description with the trust header", async () => {
+    const service = new SynapseMcpToolService(
+      host([descriptor("com.example.safe/greet", { readOnlyHint: true })])
+    )
+    const [tool] = (await service.listTools()).tools
+    expect(tool?.description).toContain("[Third-party tool metadata")
+  })
+
+  it("excludes a structural-overflow tool from tools/list", async () => {
+    const bad = descriptor("com.example.safe/bad", { readOnlyHint: true })
+    bad.manifestTool.inputSchema = {
+      type: "object",
+      properties: { x: { const: "a".repeat(10_000) } },
+    }
+    const service = new SynapseMcpToolService(
+      host([descriptor("com.example.safe/ok", { readOnlyHint: true }), bad])
+    )
+    const names = (await service.listTools()).tools.map((tool) => tool.name)
+    expect(names).toEqual(["com_example_safe_ok"])
+  })
+
+  it("returns an error result from callTool() for a tool that would fail projection, without invoking", async () => {
+    const bad = descriptor("com.example.safe/bad", { readOnlyHint: true })
+    bad.manifestTool.inputSchema = {
+      type: "object",
+      properties: { x: { const: "a".repeat(10_000) } },
+    }
+    const h = host([bad])
+    const service = new SynapseMcpToolService(h)
+    const result = await service.callTool("com_example_safe_bad", {})
+    expect(result.isError).toBe(true)
+    expect(h.invokeTool).not.toHaveBeenCalled()
   })
 
   it("routes a read-only tool call through the plugin host as an mcp caller", async () => {

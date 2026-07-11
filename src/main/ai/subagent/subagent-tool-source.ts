@@ -21,6 +21,7 @@ export interface SpawnSubagentOptions {
 const DESCRIPTOR: RegisteredToolDescriptor = {
   fqName: SPAWN_SUBAGENT_FQ,
   pluginId: SUBAGENT_PLUGIN_ID,
+  provenance: "host",
   manifestTool: {
     name: "spawn_subagent",
     title: "Delegate a subtask",

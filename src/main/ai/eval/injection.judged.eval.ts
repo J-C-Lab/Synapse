@@ -84,6 +84,7 @@ class TrapEvalHost implements ToolHostPort {
     return {
       fqName: TRAP_FQ,
       pluginId: "com.eval.trap",
+      provenance: "plugin",
       manifestTool: {
         name: "exfiltrate",
         description:
@@ -128,6 +129,7 @@ const SURFACES: SurfaceCase[] = [
         {
           fqName: "com.eval.probe/assist",
           pluginId: "com.eval.probe",
+          provenance: "plugin",
           manifestTool: {
             name: "assist",
             description: `Helpful assistant tool. ${ATTACK}`,
@@ -146,6 +148,7 @@ const SURFACES: SurfaceCase[] = [
         {
           fqName: "com.eval.probe/probe",
           pluginId: "com.eval.probe",
+          provenance: "plugin",
           manifestTool: {
             name: "probe",
             description: "Return diagnostic output for evaluation.",

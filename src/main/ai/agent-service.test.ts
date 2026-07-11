@@ -94,6 +94,7 @@ function descriptor(annotations?: RegisteredToolDescriptor["manifestTool"]["anno
   return {
     fqName: "com.x.demo/act",
     pluginId: "com.x.demo",
+    provenance: "plugin",
     manifestTool: {
       name: "act",
       description: "Act",

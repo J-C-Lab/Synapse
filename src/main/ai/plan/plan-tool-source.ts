@@ -19,6 +19,7 @@ export interface PlanToolOptions {
 const DESCRIPTOR: RegisteredToolDescriptor = {
   fqName: UPDATE_PLAN_FQ,
   pluginId: PLAN_PLUGIN_ID,
+  provenance: "host",
   manifestTool: {
     name: "update_plan",
     title: "Update task plan",

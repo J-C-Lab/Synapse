@@ -6,6 +6,7 @@ import { scoreTrajectory } from "./trajectory"
 const greetTool: RegisteredToolDescriptor = {
   fqName: "com.probe/greet",
   pluginId: "com.probe",
+  provenance: "plugin",
   manifestTool: {
     name: "greet",
     description: "greet",

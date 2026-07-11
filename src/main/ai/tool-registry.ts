@@ -1,6 +1,8 @@
 import type { ToolResult } from "@synapse/plugin-sdk"
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../plugins/types"
 import type { ProviderToolSchema } from "./providers/types"
+import { logger } from "../logging"
+import { projectModelVisibleTool, warnOnce } from "./guardrails/tool-metadata"
 
 // Bridges the plugin tool surface to what a model can call. Plugin fqNames look
 // like `com.example.hello-world/greet`, which contain `.` and `/` and so fail
@@ -21,6 +23,7 @@ export interface ToolHostPort {
 
 export class AiToolRegistry {
   private safeToDescriptor = new Map<string, RegisteredToolDescriptor>()
+  private exclusionWarnings = new Map<string, string>()
 
   constructor(
     private readonly host: ToolHostPort,
@@ -52,29 +55,52 @@ export class AiToolRegistry {
       descriptor = this.safeToDescriptor.get(safeName)
     }
     if (!descriptor) throw new Error(`Unknown tool: ${safeName}`)
+
+    const projected = projectModelVisibleTool({
+      description: descriptor.manifestTool.description,
+      inputSchema: descriptor.manifestTool.inputSchema,
+      outputSchema: descriptor.manifestTool.outputSchema,
+      provenance: descriptor.provenance,
+      hostNote: this.pluginNote?.(descriptor.pluginId),
+    })
+    if (!projected.ok) throw new Error(`Tool ${safeName} is not model-visible: ${projected.reason}`)
+
     return this.host.invokeTool(descriptor.fqName, input, options)
   }
 
   private refresh(): { schema: ProviderToolSchema; descriptor: RegisteredToolDescriptor }[] {
     this.safeToDescriptor.clear()
     const used = new Set<string>()
-    return this.host.listTools().map((descriptor) => {
-      const safeName = uniqueName(sanitizeToolName(descriptor.fqName), used)
-      used.add(safeName)
-      this.safeToDescriptor.set(safeName, descriptor)
-      const note = this.pluginNote?.(descriptor.pluginId)
-      const description = note
-        ? `${note}\n\n${descriptor.manifestTool.description}`
-        : descriptor.manifestTool.description
-      return {
-        descriptor,
-        schema: {
-          name: safeName,
-          description,
+    return this.host
+      .listTools()
+      .map((descriptor) => {
+        const safeName = uniqueName(sanitizeToolName(descriptor.fqName), used)
+        used.add(safeName)
+        this.safeToDescriptor.set(safeName, descriptor)
+
+        const projected = projectModelVisibleTool({
+          description: descriptor.manifestTool.description,
           inputSchema: descriptor.manifestTool.inputSchema,
-        },
-      }
-    })
+          outputSchema: descriptor.manifestTool.outputSchema,
+          provenance: descriptor.provenance,
+          hostNote: this.pluginNote?.(descriptor.pluginId),
+        })
+        if (!projected.ok) {
+          warnOnce(this.exclusionWarnings, descriptor.fqName, projected.reason, (msg) =>
+            logger.warn(msg)
+          )
+          return undefined
+        }
+        return {
+          descriptor,
+          schema: {
+            name: safeName,
+            description: projected.description,
+            inputSchema: projected.inputSchema,
+          },
+        }
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
   }
 }
 
