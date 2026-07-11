@@ -7,6 +7,7 @@
     {
       "fqName": "com.probe/greet",
       "pluginId": "com.probe",
+      "provenance": "host",
       "manifestTool": {
         "name": "greet",
         "description": "greet",
