@@ -387,6 +387,81 @@ describe("pluginBridge notification actions", () => {
   })
 })
 
+describe("createBackgroundHostToolAuthorizer", () => {
+  it("confirmedCapabilities returns only the subset actually granted, without auditing or debiting", async () => {
+    const isGrantedCalls: string[] = []
+    const audit = vi.fn()
+    const bridge = new PluginBridge({
+      userDataDir: dir,
+      adapters: adapters(),
+      governance: {
+        grants: {
+          isGranted: async (_identity, capabilityId) => {
+            isGrantedCalls.push(capabilityId)
+            return capabilityId === "memory:read"
+          },
+          grant: vi.fn(),
+          isExternalMcpPreauthorized: async () => false,
+        },
+        prompt: async () => true,
+        approve: async () => true,
+        audit,
+      },
+    })
+
+    const authorizer = bridge.createBackgroundHostToolAuthorizer(
+      "com.example.watcher",
+      manifest({ permissions: ["memory:read", "execution:read"] })
+    )
+    const confirmed = await authorizer.confirmedCapabilities(["memory:read", "execution:read"])
+
+    expect(confirmed).toEqual(new Set(["memory:read"]))
+    expect(isGrantedCalls.sort()).toEqual(["execution:read", "memory:read"])
+    expect(audit).not.toHaveBeenCalled()
+  })
+
+  it("ensure() delegates to the real CapabilityGate for the given plugin identity", async () => {
+    const audit = vi.fn()
+    const bridge = new PluginBridge({
+      userDataDir: dir,
+      adapters: adapters(),
+      governance: {
+        grants: {
+          isGranted: async () => false,
+          grant: vi.fn(),
+          isExternalMcpPreauthorized: async () => false,
+        },
+        prompt: async () => false,
+        approve: async () => true,
+        audit,
+      },
+    })
+
+    const authorizer = bridge.createBackgroundHostToolAuthorizer(
+      "com.example.watcher",
+      manifest({ permissions: ["memory:read"] })
+    )
+
+    await expect(
+      authorizer.ensure({
+        capability: "memory:read",
+        invocation: {
+          source: "tool",
+          caller: {
+            kind: "background-agent",
+            invocationId: "inv-1",
+            workspaceId: "ws-1",
+            triggerInstanceId: "inst-1",
+          },
+          trigger: "tool:memory:core/memory_search",
+        },
+        operation: "memory_search",
+      })
+    ).rejects.toBeInstanceOf(CapabilityDenied)
+    expect(audit).toHaveBeenCalled()
+  })
+})
+
 function bridgeWithGate(
   gate: {
     ensure: (request: CapabilityRequest) => Promise<void>
