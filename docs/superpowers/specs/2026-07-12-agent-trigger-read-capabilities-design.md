@@ -194,32 +194,107 @@ behavior completely unchanged:
 4. A new pure function, `pendingCapabilityConfirmations(manifest,
    isGranted)` (`src/main/plugins/trigger-grants.ts`), walks a plugin
    manifest's triggers' `uses[]`, filters to
-   `requiresExplicitTriggerConfirmation` capabilities, and returns the ones
-   not yet granted for that identity. No new persisted state — "pending" is
-   always computed live from the manifest + `GrantStore`, unlike
-   `TriggerMigrationNotice`'s file-backed dismissal state (that mechanism
-   solves a different problem, remembering an already-handled one-time
-   migration; there's nothing to "dismiss" here — an ungranted capability
-   stays pending until the user acts, indefinitely, by design).
-5. Renderer: a new banner (modeled on the existing shape of
+   `requiresExplicitTriggerConfirmation` capabilities not yet granted for
+   that identity, and **deduplicates by capability id** — a plugin whose
+   manifest declares `memory:read` on two different triggers reports it
+   once, with both trigger ids attached for display, not two duplicate rows:
+   ```ts
+   interface PendingTriggerCapability {
+     capabilityId: string
+     triggerIds: string[]
+   }
+   function pendingCapabilityConfirmations(
+     manifest: PluginManifest,
+     isGranted: (capabilityId: string) => Promise<boolean>
+   ): Promise<PendingTriggerCapability[]>
+   ```
+   No new persisted state — "pending" is always computed live from the
+   manifest + `GrantStore`, unlike `TriggerMigrationNotice`'s file-backed
+   dismissal state (that mechanism solves a different problem, remembering
+   an already-handled one-time migration; there's nothing to "dismiss"
+   here — an ungranted capability stays pending until the user acts,
+   indefinitely, by design).
+
+5. **Renderer cannot write grants directly — this is a privilege-escalation
+   surface, not a display concern.** The first draft said the confirm
+   dialog "calls `GrantStore.grant()` directly," which would let a
+   compromised or buggy renderer submit an arbitrary `{pluginId,
+   capabilityIds}` pair and have it granted verbatim — for a manifest that
+   never declared the capability, a capability that doesn't require
+   explicit confirmation at all, a stale identity from before a manifest
+   update, or a disabled/unknown plugin. The renderer never touches
+   `GrantStore` — it only calls two new host-owned `PluginHost` methods,
+   IPC-exposed behind the existing trusted-sender guard:
+   ```ts
+   // PluginHost
+   async listPendingTriggerCapabilityConfirmations(): Promise<
+     { pluginId: string; capabilities: PendingTriggerCapability[] }[]
+   >
+
+   async confirmTriggerCapabilities(input: {
+     pluginId: string
+     capabilityIds: string[]
+   }): Promise<PendingTriggerCapability[]>  // returns the recomputed remaining-pending list
+   ```
+   `confirmTriggerCapabilities()` re-derives everything from scratch rather
+   than trusting the renderer's input, in this order: (1) re-resolve the
+   plugin from the live registry, reject if `status !== "active"` or
+   `manifest` is absent; (2) build `GrantIdentity` from the *current*
+   manifest/source kind (never a captured one — the same freshness
+   discipline as `dispatchBackgroundAgent()`'s registry re-resolution
+   above); (3) recompute `pendingCapabilityConfirmations()` fresh; (4)
+   intersect the caller's `capabilityIds` against that fresh pending set —
+   any id not currently pending (unknown, already granted, not declared, or
+   lacking `requiresExplicitTriggerConfirmation`) is silently dropped, not
+   granted; (5) for the surviving intersection, grant each via
+   `GrantStore.grant()` — the same store, same shape
+   `ensureTriggerUseGrants()` already writes to, just from this explicit,
+   re-validated call site instead of the automatic sweep; (6) return the
+   freshly recomputed pending list (should now exclude what was just
+   granted). New IPC channels `plugins:list-pending-trigger-capabilities`/
+   `plugins:confirm-trigger-capabilities`, preload exposure, and a
+   `lib/electron.ts` wrapper follow this codebase's existing `guard(event,
+   channel)` + typed-argument-validation pattern (see Testing).
+6. Renderer: a new banner (modeled on the existing shape of
    `trigger-migration-notice-banner.tsx`, not its file-backed persistence)
-   surfaces on the Plugins page whenever any active plugin has pending
-   confirmations, computed by polling/refreshing
-   `pendingCapabilityConfirmations()` over IPC. Clicking it opens the
-   existing `DeclaredTriggersPanel`-based confirm dialog (already used for
-   the disabled→enabled toggle), scoped to just the pending capabilities;
-   confirming calls `GrantStore.grant()` directly for each — the same store,
-   same shape `ensureTriggerUseGrants()` already writes to, just from an
-   explicit user-initiated call site instead of the automatic sweep. The
-   copy must state exactly what's being granted per the earlier
-   Architecture decision — "can read this workspace's memory and global
-   memory" / "can read this workspace's files" — not a bare capability id.
-6. This banner path also covers the "plugin update newly adds `memory:read`/
-   `execution:read` to an already-installed, already-active plugin" case —
-   `pendingCapabilityConfirmations()` is computed from the *current*
-   manifest on every check, so a manifest update that adds either capability
-   makes it pending again automatically, with no separate migration-detection
-   logic needed.
+   surfaces on the Plugins page whenever
+   `listPendingTriggerCapabilityConfirmations()` returns a non-empty result
+   for any active plugin. Clicking it opens a confirm dialog reusing
+   `DeclaredTriggersPanel`, scoped to just the pending capabilities;
+   confirming calls `confirmTriggerCapabilities()`. The copy must state
+   exactly what's being granted per the earlier Architecture decision —
+   "can read this workspace's memory and global memory" / "can read this
+   workspace's files" — not a bare capability id.
+7. **This banner alone does not cover the disabled→enabled toggle —
+   confirmed as a real gap during review.** The existing Enable Confirm
+   dialog's "Allow" button (`plugins-page.tsx:499-506`) calls
+   `applyEnabled(plugin, true)` → `setPluginEnabled()` → `PluginHost.
+   setEnabled()` (`plugin-host.ts:373-381`) → `ensureTriggerUseGrants()`,
+   which (per this spec's fix, item 2 above) now *skips*
+   `memory:read`/`execution:read` — so a plugin re-enabled through the
+   existing dialog becomes active with its trigger registered, but the two
+   new capabilities stay ungranted until the *separate* banner is noticed.
+   Worse: because visibility filtering only checks `uses[]` declaration
+   (§ "Read-only tool sources" below), the tools would still appear in the
+   model's tool list and get called-then-denied on every fire, burning
+   `maxToolCallsPerRun`/token budget for nothing until the user acts. Fix:
+   a new host-side `confirmAndEnablePlugin(pluginId, capabilityIds)`
+   method composes `confirmTriggerCapabilities()` and `setEnabled(pluginId,
+   true)` as one atomic sequence (grant first, enable second; if enabling
+   fails, the grant already succeeded and is harmless — a granted-but-
+   disabled capability does nothing — so there's no rollback needed, only
+   ordering). The Enable Confirm dialog's "Allow" button calls this new
+   method instead of the bare `setPluginEnabled()`, passing whichever
+   pending capability ids `DeclaredTriggersPanel` is already displaying for
+   that plugin's triggers.
+8. `pendingCapabilityConfirmations()`/the banner also cover the "plugin
+   update newly adds `memory:read`/`execution:read` to an already-
+   installed, already-active plugin" case for free — it's computed from
+   the *current* manifest on every check, so a manifest update that adds
+   either capability makes it pending again automatically, no separate
+   migration-detection logic needed. This case doesn't need
+   `confirmAndEnablePlugin()` (the plugin is already enabled) — the plain
+   banner + `confirmTriggerCapabilities()` path handles it.
 
 ### Read-only tool sources
 
@@ -302,22 +377,68 @@ entirely):
 createBackgroundHostToolAuthorizer(
   pluginId: string,
   manifest: PluginManifest
-): { ensure(request: CapabilityRequest): Promise<void> } {
-  return this.gateFor(pluginId, manifest)
+): {
+  ensure(request: CapabilityRequest): Promise<void>
+  /** Which of the given capability ids are currently granted for this
+   *  plugin's identity — a pure read, no audit entry, no budget debit.
+   *  Used only to decide tool *visibility*; `ensure()` remains the
+   *  authoritative, audited check at invoke time. */
+  confirmedCapabilities(candidateIds: readonly string[]): Promise<Set<string>>
+} {
+  const sourceKind = this.sourceKindFor(pluginId)
+  const identity = buildGrantIdentity(pluginId, manifest, sourceKind)
+  const gate = this.gateFor(pluginId, manifest)
+  return {
+    ensure: (request) => gate.ensure(request),
+    confirmedCapabilities: async (candidateIds) => {
+      const entries = await Promise.all(
+        candidateIds.map(async (id) => [id, await this.governance.grants.isGranted(identity, id)] as const)
+      )
+      return new Set(entries.filter(([, granted]) => granted).map(([id]) => id))
+    },
+  }
 }
 ```
+
+**Confirmed as a real gap during review**: without this, `listTools()` would
+list a tool as soon as its capability is *declared* in `uses[]`
+(`toolCapabilitiesAllowed`, checked one layer up by `BackgroundAgentRunner.
+limitedTools()`, unchanged) — regardless of whether it's actually *granted*
+yet. Since visibility and the confirmation gate (above) are now
+independent, an instance whose trigger declares `memory:read` but hasn't
+been confirmed would still see `memory_search` in its tool list, could call
+it, and would get denied by `gate.ensure()` every single time — burning a
+full tool-call round-trip (and its `maxToolCallsPerRun`/token cost) on a
+call that can never succeed. `GovernedBackgroundToolHost` closes this by
+resolving the currently-granted subset **once per dispatch**, before
+`BackgroundAgentRunner` ever calls `listTools()` (not per-`listTools()`-call
+— `ToolHostPort.listTools()` is synchronous, confirmed via
+`tool-registry.ts:16-18`, so an async grant check cannot live inside it):
 
 New `GovernedBackgroundToolHost` (`src/main/ai/background-host-tool-gate.ts`):
 
 ```ts
 export interface GovernedBackgroundToolHostOptions {
-  authorizer: { ensure(request: CapabilityRequest): Promise<void> }
-  sources: ToolHostSource[]  // MemoryReadOnlyToolSource, ExecutionReadOnlyToolSource
+  authorizer: {
+    ensure(request: CapabilityRequest): Promise<void>
+    confirmedCapabilities(candidateIds: readonly string[]): Promise<Set<string>>
+  }
+  sources: ToolHostSource[]  // only the sources whose backing tool instance actually exists — see below
+  /** Resolved once, before construction, via authorizer.confirmedCapabilities(). */
+  confirmed: ReadonlySet<string>
 }
 
 export class GovernedBackgroundToolHost implements ToolHostSource {
-  // listTools(): flat-maps sources.listTools(), unchanged from CompositeToolHost's pattern
-  // ownsTool(fqName): true iff some source.ownsTool(fqName)
+  // listTools(): sources.flatMap(s => s.listTools()), then filters out any
+  //   descriptor whose sole manifestTool.capabilities[0].id is not in `confirmed`
+  //   — this is IN ADDITION TO, not instead of, limitedTools()'s existing
+  //   uses[]-declaration filter one layer up; declared-but-unconfirmed tools
+  //   are hidden here, declared-and-confirmed-but-not-in-uses[] tools are
+  //   already hidden by the existing filter.
+  // ownsTool(fqName): true iff some source.ownsTool(fqName) — unaffected by
+  //   confirmation status, so invokeTool() below still runs for a stale/direct
+  //   call and gate.ensure() still denies it (defense in depth; listTools()
+  //   is a visibility optimization, not the security boundary).
   // invokeTool(fqName, input, options):
   //   1. find the owning source; resolve its descriptor's manifestTool.capabilities
   //      (asserted to be exactly one S07 capability id — memory:read or execution:read;
@@ -352,10 +473,15 @@ private async dispatchBackgroundAgent(request: PluginAgentTriggerDispatchRequest
   }
 
   const authorizer = this.bridge.createBackgroundHostToolAuthorizer(request.pluginId, entry.manifest)
-  const governed = new GovernedBackgroundToolHost({
-    authorizer,
-    sources: [this.memoryReadSource, this.executionReadSource],
-  })
+  const confirmed = await authorizer.confirmedCapabilities(["memory:read", "execution:read"])
+
+  const sources: ToolHostSource[] = []
+  const executionTools = this.options.executionTools?.()
+  if (executionTools) sources.push(new ExecutionReadOnlyToolSource(executionTools))
+  const memoryTools = this.options.memoryTools?.()
+  if (memoryTools) sources.push(new MemoryReadOnlyToolSource(memoryTools))
+
+  const governed = new GovernedBackgroundToolHost({ authorizer, sources, confirmed })
   const tools = new CompositeToolHost([
     governed,
     asFallbackSource(this, (fqName) => governed.ownsTool(fqName)),
@@ -390,6 +516,13 @@ Two fixes over the first draft, both caught during review:
   so an unbound `governed.ownsTool` would crash or misbehave the first time
   it reads `this` internally. Wrapped in an arrow function, `this` stays
   bound to `governed` correctly.
+- **`confirmed` is resolved once, before `GovernedBackgroundToolHost` is
+  constructed**, from `authorizer.confirmedCapabilities(["memory:read",
+  "execution:read"])` — the visibility-vs-grant fix described above.
+  `sources` is built conditionally, pushing `ExecutionReadOnlyToolSource`/
+  `MemoryReadOnlyToolSource` only when their backing tool instance actually
+  resolves (see Constructor wiring, below) — omitted, not constructed
+  around a missing inner, when a feature is genuinely unconfigured.
 
 `governed` is claimed first in the `CompositeToolHost`'s source list; it
 only ever claims the 5 fqNames its two sources produce
@@ -401,63 +534,83 @@ never accidentally routed into the unrestricted background path). The
 fallback claims everything else, preserving today's plugin-tool behavior
 unchanged.
 
-**Constructor wiring — confirmed and corrected during review.** The first
-draft assumed `PluginHostOptions` could receive an already-constructed
+**Constructor wiring — confirmed and corrected twice during review.** The
+first draft assumed `PluginHostOptions` could receive an already-constructed
 `memory?: MemoryService` and build `this.memoryReadSource` once in the
 constructor. Tracing the real startup order in `src/main/index.ts`
 disproves this: `initPluginHost()` runs at line 1209, but `MemoryService`
-(line 857) and `ExecutionLogStore` (line 877) are both constructed *inside*
-`createAgentService()`, called afterward at line 1239 — `PluginHost`'s
-constructor genuinely cannot receive either as a direct value. Constructing
-a second, independent `MemoryStore`/`ExecutionLogStore` instance inside
-`PluginHost` instead is not an option either — both cache their full
-contents in memory (confirmed: `MemoryStore`'s in-memory array, `
-ExecutionLogStore`'s own cached array), so two instances would see stale
-data and could silently drop each other's writes.
+(line 857), `ExecutionLogStore` (line 877), and the interactive path's own
+`executionSource = new ExecutionToolHostSource({...})` (line 878) are all
+constructed *inside* `createAgentService()`, called afterward at line 1239
+— `PluginHost`'s constructor genuinely cannot receive any of them as a
+direct value.
 
-The fix mirrors a pattern this exact file already uses for the identical
-problem: `backgroundAgentProvider` (already on `PluginHostOptions`) is
-wired as `backgroundAgentProvider: () => agent.createBackgroundAgentProvider()`
-(`main/index.ts:786`) — a closure over a module-level `let agent:
-AgentService` (line 253) declared *before* `initPluginHost()` runs and
-assigned *after* `createAgentService()` resolves (`agent = await
-createAgentService()`, inside the same startup function, after line 1239).
-`memory`/`executionLog` get the identical treatment:
+**Second, deeper problem, also confirmed during review**: the *second*
+draft fixed the ordering with lazy getters over the raw `MemoryService`/
+`ExecutionLogStore`, but proposed constructing a **second, independent**
+`ExecutionToolHostSource` inside `PluginHost` from those raw stores.
+`ExecutionToolHostSource` holds its own private `anyRootsExist` flag
+(`execution-tool-host.ts:126`), populated only by an explicit `refresh()`
+call — and `refresh()` is wired to workspace-root changes in exactly one
+place: `onWorkspaceRootsChanged: () => void executionSource.refresh()`
+(`main/index.ts:971-972`), naming the interactive path's specific instance.
+A second, independently-constructed instance would never receive that
+callback — if no `WorkspaceRoot` exists at the moment `PluginHost` first
+builds it, its `anyRootsExist` would stay `false` forever, even after the
+user creates one later, permanently hiding `execution:read`'s tools from
+every background-agent instance regardless of grant status. Sharing the
+underlying `workspaceRoots`/`log`/`isAllowed` *stores* was not enough —
+the *tool source instance itself* carries state that only one wiring path
+updates.
+
+**Fix**: share the actual `MemoryToolSource`/`ExecutionToolHostSource`
+*instances* the interactive path already builds and maintains, not just
+their backing stores — mirroring the same `let agent` / `backgroundAgentProvider`
+lazy-getter pattern this file already uses for the identical ordering
+problem (`main/index.ts:253,786`, `agent` assigned after
+`createAgentService()` resolves):
 
 ```ts
 // main/index.ts, alongside the existing `let agent`/`let runTraceRecorder`
-let memoryService: MemoryService | undefined
-let executionLogStore: ExecutionLogStore | undefined
+let sharedMemoryTools: MemoryToolSource | undefined
+let sharedExecutionTools: ExecutionToolHostSource | undefined
 
 // inside initPluginHost()'s options, alongside backgroundAgentProvider:
-memory: () => memoryService,
-executionLog: () => executionLogStore,
+memoryTools: () => sharedMemoryTools,
+executionTools: () => sharedExecutionTools,
 
-// inside createAgentService(), right after each is constructed
-// (mirroring the existing `runTraceRecorder = recordRun` assignment):
-memoryService = memory
-executionLogStore = executionLog
+// inside createAgentService(), right after `executionSource`/the memory
+// tool source are constructed (mirroring the existing
+// `runTraceRecorder = recordRun` assignment) — the SAME instances the
+// interactive CompositeToolHost already uses, not new ones:
+sharedMemoryTools = memoryToolSource
+sharedExecutionTools = executionSource
 ```
 
 `PluginHostOptions` gains, alongside the already-required `workspaceRoots`:
 
 ```ts
-memory?: () => MemoryService | undefined
-executionLog?: () => ExecutionLogStore | undefined
+memoryTools?: () => MemoryToolSource | undefined
+executionTools?: () => ExecutionToolHostSource | undefined
 ```
 
-Both are read once, lazily, the first time a background-agent dispatch
-actually needs them (constructing `this.memoryReadSource`/
-`this.executionReadSource` on first use inside `dispatchBackgroundAgent()`,
-memoized after that point rather than in the constructor) — by then
+Both are read fresh on every `dispatchBackgroundAgent()` call (not cached
+at construction, not memoized — a plain getter call is cheap and this
+guarantees the very latest `refresh()`-updated state), by which point
 `createAgentService()` has always already run, since `agent` (consumed by
 the pre-existing `backgroundAgentProvider` getter on the very same dispatch
-path) already depends on that same ordering guarantee today. When `memory`
-resolves `undefined` (the AI memory feature itself unconfigured),
-`memoryReadSource` still constructs but its `listTools()` returns nothing —
-exactly like `ExecutionToolHostSource`'s own `anyRootsExist`-gated
-`listTools()` already does when no `WorkspaceRoot` exists for the calling
-workspace.
+path) already depends on that same ordering guarantee today. This
+automatically and permanently shares `refresh()` state, `isAllowed`,
+`ExecutionLogStore` auditing, and `MemoryService` — including any future
+internal fix to either class — with zero separate wiring to maintain. When
+a getter resolves `undefined` (the feature genuinely unconfigured), the
+corresponding read-only source is **omitted from `sources` entirely**
+(see the `dispatchBackgroundAgent()` listing above) — `ExecutionReadOnlyToolSource`/
+`MemoryReadOnlyToolSource`'s constructors require a real, non-optional
+inner instance; there is no "constructs anyway with an empty listTools()"
+mode, since that would mean maintaining a second no-op code path for a
+case that's already cleanly handled by not adding the source to the list
+at all.
 
 `isAllowed` needs none of this getter treatment — `launcher.getSettings
 ().allowAgentShell` is already read as `isAllowed: () =>
@@ -513,6 +666,9 @@ same way any other `CapabilityDenied` does.
   narrow-scope regression — the fix must not touch the other 14's
   behavior); `pendingCapabilityConfirmations(manifest, isGranted)` returns
   exactly the declared-but-ungranted explicit-confirmation capabilities,
+  **deduplicated by capability id with all declaring trigger ids attached**
+  (two triggers both declaring `memory:read` produce one
+  `PendingTriggerCapability` with `triggerIds: [id1, id2]`, not two rows),
   empty once granted, and recomputes fresh (no stale caching) when a
   manifest is updated to add a new one.
 - **`background-host-tool-gate.test.ts`** (new): the core of this spec's
@@ -531,22 +687,37 @@ same way any other `CapabilityDenied` does.
   - a descriptor declaring zero or more-than-one S07 capability id throws
     at construction/registration time rather than silently picking one (the
     "single source of truth" invariant, enforced defensively).
+  - **`listTools()` excludes a tool whose capability is declared in
+    `uses[]` but absent from the `confirmed` set passed at construction**
+    — the visibility-vs-grant regression; `invokeTool()` for that same
+    fqName still routes through `ensure()` and is denied (defense in
+    depth — `listTools()` filtering is a UX/budget optimization, not the
+    security boundary; a stale/direct call must still be caught).
 - **`plugin-host.test.ts`**: a background-agent dispatch for a trigger whose
-  `uses[]` includes `memory:read` (granted) successfully calls
-  `memory_search`; a dispatch for a trigger whose `uses[]` does **not**
-  declare `memory:read` gets a tool list from `governed.listTools()` that
-  excludes it entirely (visibility filtering, matching today's
-  `toolCapabilitiesAllowed` behavior for plugin tools); a dispatch for a
-  trigger that declares `memory:read` but has **not** been through the new
-  confirmation gate is denied at the `authorizer.ensure()` step (not merely
-  hidden from the tool list) — both regression tests reuse this file's
-  existing `writeHostPlugin()`/`hostOptions()` harness pattern. A companion
-  test confirms budget exhaustion (fire past `uses[].budget.maxCalls`)
-  denies the Nth call without denying the `maxToolCallsPerRun` cap's own
-  independent accounting. A dispatch for a plugin entry whose `status` is
+  `uses[]` includes `memory:read`, granted and confirmed, successfully
+  calls `memory_search`; a dispatch for a trigger whose `uses[]` does
+  **not** declare `memory:read` gets a tool list from `governed.
+  listTools()` that excludes it entirely (visibility filtering, matching
+  today's `toolCapabilitiesAllowed` behavior for plugin tools); a dispatch
+  for a trigger that **does** declare `memory:read` but has not been
+  through the confirmation gate gets a tool list that *also* excludes it
+  (the `confirmed`-set filter, not just a denied-on-invoke outcome) — three
+  regression tests reusing this file's existing `writeHostPlugin()`/
+  `hostOptions()` harness pattern. A companion test confirms budget
+  exhaustion (fire past `uses[].budget.maxCalls`) denies the Nth call
+  without denying the `maxToolCallsPerRun` cap's own independent
+  accounting. A dispatch for a plugin entry whose `status` is
   `"disabled"`/`"crashed"` (registry mutated between fire and dispatch)
   throws before constructing an authorizer, never using a stale captured
-  manifest.
+  manifest. **A dedicated test constructs `hostOptions()` with a fake
+  `executionTools: () => sharedExecutionSource` returning the same instance
+  across two dispatches, mutates a fake `WorkspaceRootStore` and calls
+  `sharedExecutionSource.refresh()` between them, and asserts the second
+  dispatch's tool list reflects the change** — the shared-instance,
+  refresh-lifecycle regression; a version of this test using two
+  *independently constructed* `ExecutionToolHostSource` instances instead
+  must be shown to fail first, to prove the test actually catches the bug
+  the fix addresses.
 - **`capabilities.test.ts`** (`packages/plugin-manifest`): `memory:read`/
   `execution:read` round-trip through `getCapability()`/
   `capabilityEntrySchema` like every other registry entry, both carrying
@@ -554,16 +725,69 @@ same way any other `CapabilityDenied` does.
   `uses: [{capability: "memory:read", budget: {...}}]` with no top-level
   `capabilities` entry validates successfully (the
   `mergeDeclaredWithTriggerUses` regression this spec depends on).
+- **`plugin-bridge.test.ts`**: `createBackgroundHostToolAuthorizer(pluginId,
+  manifest).confirmedCapabilities(candidateIds)` returns only the subset
+  actually granted for that plugin's identity (a pure read — asserted to
+  write zero audit entries and debit zero budget, unlike `ensure()`).
+- **`plugins.test.ts`** (or wherever `registerPluginIpc` lives — new IPC
+  handler tests): `plugins:confirm-trigger-capabilities` rejects an
+  untrusted sender; rejects a `pluginId` for a disabled/crashed/unknown
+  plugin; **silently drops any `capabilityIds` entry that isn't currently
+  pending** — a manifest-undeclared id, an id lacking
+  `requiresExplicitTriggerConfirmation`, and an already-granted id are all
+  submitted in one call and none of them end up newly granted (only a
+  genuinely-pending id in the same payload is); the response reflects the
+  freshly recomputed remaining-pending list, not an echo of the request.
+  `plugins:list-pending-trigger-capabilities` returns the deduplicated,
+  per-plugin pending list with no side effects.
+- **`plugin-host.test.ts`** (host-method level, below the IPC layer):
+  `confirmAndEnablePlugin(pluginId, capabilityIds)` grants first, then
+  enables, in that order — a test asserts `setEnabled` is never called if
+  the grant step throws; a companion test confirms a granted-but-not-yet-
+  enabled state is inert (no dispatch can happen for a disabled plugin
+  regardless of grant status), so there's nothing to roll back if enabling
+  itself fails after a successful grant.
 - **Renderer**: new `pending-capability-confirmation-banner.test.tsx`
   (modeled on `trigger-migration-notice-banner.test.tsx`'s existing shape)
-  — the banner renders when `pendingCapabilityConfirmations()` returns a
-  non-empty result for any active plugin, is absent when empty, and
-  clicking it opens a confirm dialog reusing `DeclaredTriggersPanel` scoped
-  to just the pending entries. `declared-triggers-panel.test.tsx` gains a
-  case asserting `permissions.items.memory:read`/`permissions.items.execution:read`
+  — the banner renders when `listPendingTriggerCapabilityConfirmations()`
+  returns a non-empty result for any active plugin, is absent when empty,
+  and clicking it opens a confirm dialog reusing `DeclaredTriggersPanel`
+  scoped to just the pending entries, calling `confirmTriggerCapabilities()`
+  on confirm. The existing Enable Confirm dialog's "Allow" button, when the
+  plugin's manifest has pending explicit-confirmation capabilities, calls
+  `confirmAndEnablePlugin()` instead of the bare `setPluginEnabled()` —
+  asserted via a test on `plugins-page.tsx`'s existing enable-confirm flow.
+  `declared-triggers-panel.test.tsx` gains a case asserting
+  `permissions.items.memory:read`/`permissions.items.execution:read`
   render as translated copy, not the raw capability id (the
   `defaultValue: use.capability` fallback this spec's missing i18n keys
   would otherwise silently fall through to).
+- **Lifecycle integration tests** (`plugin-host.test.ts`, exercising the
+  real `PluginHost.init()`/`installFromMarketplace()`/`setEnabled()`
+  sequence against a real `GrantStore`, not individually-mocked pieces —
+  requested during review because the unit tests above only prove each
+  piece works in isolation, not that the real startup/install/update
+  sequence wires them together correctly):
+  1. **Fresh install**: installing a plugin whose manifest declares
+     `memory:read` on a trigger leaves it ungranted immediately after
+     install (`grantTriggerUses()`'s skip, exercised through the real
+     install path, not called directly).
+  2. **Update adds a capability**: an already-active, already-granted-for-
+     its-old-manifest plugin is updated to a new manifest version that adds
+     `execution:read` to a trigger's `uses[]`; `execution:read` becomes
+     pending again, `memory:read` (if unchanged and previously confirmed)
+     stays granted.
+  3. **Restart doesn't backfill**: a plugin with a pending (ungranted)
+     `memory:read` declaration, when the app restarts (`init()`'s
+     `syncTriggerRegistrations()` sweep runs again), still has it pending
+     afterward — the auto-grant sweep must not silently catch up a
+     previously-skipped capability on a later sync pass.
+  4. **disabled→confirmed→enabled uses the current identity**: a disabled
+     plugin's manifest is updated (changing its `capabilityDeclarationHash`
+     or similar identity-affecting field) before the user re-enables it
+     through `confirmAndEnablePlugin()`; the resulting grant is recorded
+     against the *new* manifest's `GrantIdentity`, not a stale one captured
+     before the update.
 
 ## Non-goals
 
@@ -610,32 +834,50 @@ same way any other `CapabilityDenied` does.
 - `grantTriggerUses()`'s automatic sync path never auto-grants either new
   capability; the other 14 existing capabilities' auto-grant behavior is
   unchanged (regression-tested).
+- **The renderer never writes a grant directly.** `listPendingTriggerCapabilityConfirmations()`/
+  `confirmTriggerCapabilities()`/`confirmAndEnablePlugin()` are the only
+  host-owned entry points, each re-resolving the plugin from the live
+  registry, re-deriving `GrantIdentity` from the current manifest, and
+  intersecting the caller's requested capability ids against a freshly
+  recomputed pending set before granting anything — an id that's
+  undeclared, already granted, or lacking
+  `requiresExplicitTriggerConfirmation` is silently dropped, never granted.
+  `pendingCapabilityConfirmations()` deduplicates by capability id across
+  multiple triggers declaring the same one.
 - A new confirmation banner + dialog lets a user explicitly grant
-  `memory:read`/`execution:read` per plugin, covering fresh install,
-  plugin update adding either capability, and the pre-existing
-  disabled→enabled toggle — writing through the same `GrantStore.grant()`
-  every other capability grant already uses.
+  `memory:read`/`execution:read` per plugin through those host-owned
+  methods, covering fresh install, plugin update adding either capability,
+  and — via a new `confirmAndEnablePlugin()` that composes granting and
+  `setEnabled()` atomically — the pre-existing disabled→enabled toggle,
+  whose "Allow" button previously only called `setPluginEnabled()` with no
+  grant step at all.
 - `MemoryReadOnlyToolSource`/`ExecutionReadOnlyToolSource` exist, each
   wrapping (not reimplementing) its real read+write counterpart, exposing
   exactly the read-only subset, each descriptor tagged with exactly one of
   the two new capability ids. `ExecutionReadOnlyToolSource` inherits the
   wrapped `ExecutionToolHostSource`'s `isAllowed()` gating and
   `ExecutionLogStore` auditing unchanged — verified by tests that construct
-  a real `ExecutionLogStore`, not a stub.
+  a real `ExecutionLogStore`, not a stub. Both wrap the **same singleton
+  instances** the interactive path already builds and maintains (shared via
+  lazy getters on `PluginHostOptions`, mirroring the existing
+  `backgroundAgentProvider` pattern) — not independently-constructed
+  duplicates that would silently lose `ExecutionToolHostSource.refresh()`'s
+  workspace-root-change updates.
 - `GovernedBackgroundToolHost` calls `PluginBridge.createBackgroundHostToolAuthorizer(...).ensure()`
   before every delegated invocation, resolving the capability id from the
   tool descriptor (not a hand-maintained map), denying without delegating
-  on failure, debiting exactly once per call.
+  on failure, debiting exactly once per call. Its `listTools()` additionally
+  filters by a `confirmed` set resolved once per dispatch via
+  `authorizer.confirmedCapabilities()` — a tool declared in `uses[]` but
+  not yet confirmed is hidden from the model's tool list (not just denied
+  on invoke), so a background-agent run never burns `maxToolCallsPerRun`/
+  token budget on a call that can never succeed.
 - `PluginHost.dispatchBackgroundAgent()` composes
   `CompositeToolHost([governed, asFallbackSource(this, (fqName) =>
   governed.ownsTool(fqName))])` in place of the old bare `tools: this`,
   re-resolving the plugin's live registry entry and checking `status ===
   "active"` + a present `manifest` (not a captured/stale one) at dispatch
-  time. `memory`/`executionLog` are threaded into `PluginHostOptions` as
-  lazy getters over module-level references assigned after
-  `createAgentService()` resolves, mirroring the existing
-  `backgroundAgentProvider` pattern — not constructed a second time inside
-  `PluginHost`.
+  time.
 - A background-agent instance whose trigger declares `memory:read`/
   `execution:read` in `uses[]` **and has been explicitly confirmed through
   the new banner/dialog flow** can call the corresponding read-only tools,
@@ -643,9 +885,14 @@ same way any other `CapabilityDenied` does.
   budget enforcement and a capability-audit entry for every call — verified
   by tests that exercise the real `CapabilityGate`/`BudgetBreakerPort`
   chain, not a stub. An instance whose trigger declares either capability
-  but has *not* been confirmed is denied, not silently granted.
+  but has *not* been confirmed sees neither the tool in its list nor a
+  successful call if attempted anyway.
 - An instance whose trigger does *not* declare these capabilities never
   sees the tools in its model-facing tool list.
+- The four lifecycle integration tests (fresh install, manifest update
+  adding a capability, app restart, disabled→confirmed→enabled) all pass
+  against the real `PluginHost.init()`/install/`setEnabled()` sequence, not
+  individually-mocked pieces.
 - `pnpm typecheck`, `pnpm lint`, `pnpm test` all pass.
 
 ## Parked questions
