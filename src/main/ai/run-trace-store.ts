@@ -11,14 +11,16 @@ import { logger } from "../logging"
 // synchronous, best-effort fs calls (matching logging/file-sink.ts): a disk
 // error must never fail the agent turn.
 
+export type RunTraceErrorCategory = "denied" | "tool-error" | "aborted" | "exception"
+
 export interface RunTraceToolCall {
   /** Fully-qualified tool name as seen by AiToolRegistry. */
   name: string
   startedAt: number
   ms: number
   ok: boolean
-  /** Short category only ("denied" | error.message) — never a payload. */
-  error?: string
+  /** Closed set — never a payload. See RunTraceErrorCategory. */
+  error?: RunTraceErrorCategory
 }
 
 export interface RunTrace {
@@ -40,6 +42,13 @@ export interface RunTrace {
 
 /** Cap on retained per-run files; oldest beyond this are pruned after each write. */
 export const MAX_RUN_FILES = 500
+
+/** The one place the runs directory path is computed — used by both the
+ *  existing AgentService wiring and the new runs IPC registration, so
+ *  they can never drift apart. */
+export function runTraceDir(userDataDir: string): string {
+  return path.join(userDataDir, "logs", "runs")
+}
 
 // runId becomes a filename, so the store validates it defensively rather than
 // trusting callers. Real ids are UUIDs; anything with a path separator, `..`,
@@ -76,16 +85,35 @@ export function getRunTrace(dir: string, runId: string): RunTrace | undefined {
   }
 }
 
-export function listRuns(
-  dir: string,
-  opts: { conversationId?: string; parentRunId?: string; limit?: number } = {}
-): RunTrace[] {
+export interface RunListFilter {
+  conversationId?: string
+  parentRunId?: string
+  origin?: RunTrace["origin"]
+  outcome?: RunTrace["outcome"]
+  workspaceId?: string
+  triggerInstanceId?: string
+  limit?: number
+}
+
+export function listRuns(dir: string, opts: RunListFilter = {}): RunTrace[] {
   let traces = readAll(dir)
   if (opts.conversationId !== undefined) {
     traces = traces.filter((t) => t.conversationId === opts.conversationId)
   }
   if (opts.parentRunId !== undefined) {
     traces = traces.filter((t) => t.parentRunId === opts.parentRunId)
+  }
+  if (opts.origin !== undefined) {
+    traces = traces.filter((t) => t.origin === opts.origin)
+  }
+  if (opts.outcome !== undefined) {
+    traces = traces.filter((t) => t.outcome === opts.outcome)
+  }
+  if (opts.workspaceId !== undefined) {
+    traces = traces.filter((t) => t.workspaceId === opts.workspaceId)
+  }
+  if (opts.triggerInstanceId !== undefined) {
+    traces = traces.filter((t) => t.triggerInstanceId === opts.triggerInstanceId)
   }
   traces.sort((a, b) => b.startedAt - a.startedAt)
   return opts.limit !== undefined ? traces.slice(0, opts.limit) : traces
