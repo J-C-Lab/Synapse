@@ -212,6 +212,22 @@
       "primaryBadge": "Primary"
     }
   },
+  "workspaceSettings": {
+    "title": "Workspaces",
+    "subtitle": "Rename or archive workspaces. Archiving hides a workspace from the switcher and pauses its background triggers, without deleting anything.",
+    "nameLabel": "Name",
+    "statusActive": "Active",
+    "statusArchived": "Archived",
+    "renameButton": "Rename",
+    "saveButton": "Save",
+    "cancelButton": "Cancel",
+    "archiveButton": "Archive",
+    "unarchiveButton": "Unarchive",
+    "defaultWorkspaceHint": "The default workspace can't be renamed or archived.",
+    "renameSuccess": "Workspace renamed.",
+    "archiveSuccess": "Workspace archived.",
+    "unarchiveSuccess": "Workspace unarchived."
+  },
   "trustedSources": {
     "title": "Trusted plugin sources",
     "subtitle": "Choose which plugin package sources Synapse exposes in the desktop app.",
