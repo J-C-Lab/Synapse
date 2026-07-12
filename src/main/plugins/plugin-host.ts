@@ -8,6 +8,8 @@ import type {
   Visibility,
 } from "@synapse/marketplace-types"
 import type { ClipboardContent, ToolResult } from "@synapse/plugin-sdk"
+import type { ExecutionToolHostSource } from "../ai/execution/execution-tool-host"
+import type { MemoryToolSource } from "../ai/memory/memory-tools"
 import type { ChatProvider } from "../ai/providers/types"
 import type { WorkspaceRootStore } from "../ai/workspace/workspace-root-store"
 import type { WorkspaceStore } from "../ai/workspace/workspace-store"
@@ -24,6 +26,7 @@ import type { MarketplaceApi } from "./marketplace-api"
 import type { MarketplaceEntry } from "./marketplace-registry"
 import type { PluginBridgeAdapters, PluginRuntimeSnapshot } from "./plugin-bridge"
 import type { TimerAdapter } from "./timer-adapter"
+import type { PendingTriggerCapability } from "./trigger-grants"
 import type { TriggerInstanceRecord } from "./trigger-instance-store"
 import type { TriggerMigrationNoticeState } from "./trigger-migration-notice"
 import type {
@@ -41,6 +44,10 @@ import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import { getCapability } from "@synapse/plugin-manifest"
 import { BackgroundAgentRunner } from "../ai/background-agent-runner"
+import { GovernedBackgroundToolHost } from "../ai/background-host-tool-gate"
+import { asFallbackSource, CompositeToolHost } from "../ai/composite-tool-host"
+import { ExecutionReadOnlyToolSource } from "../ai/execution/execution-read-tools"
+import { MemoryReadOnlyToolSource } from "../ai/memory/memory-read-tools"
 import { logger } from "../logging"
 import { AgentBudgetLedger } from "./agent-budget"
 import { BackgroundInvoker } from "./background-invoker"
@@ -72,7 +79,11 @@ import { createTimerAdapter } from "./timer-adapter"
 import { AdmissionBreaker } from "./trigger-admission"
 import { BudgetLedger } from "./trigger-budget"
 import { createBudgetBreakerPort, scopeKeyForUse } from "./trigger-budget-breaker"
-import { grantTriggerUses, revokeTriggerUses } from "./trigger-grants"
+import {
+  grantTriggerUses,
+  pendingCapabilityConfirmations,
+  revokeTriggerUses,
+} from "./trigger-grants"
 import { TriggerInstanceStore } from "./trigger-instance-store"
 import {
   dismissTriggerMigrationNotice,
@@ -121,6 +132,17 @@ export interface PluginHostOptions {
   }
   workspaceRoots: Pick<WorkspaceRootStore, "listForWorkspace">
   workspaces?: Pick<WorkspaceStore, "get" | "exists" | "isActive" | "isArchived">
+  /** The interactive path's own MemoryToolSource/ExecutionToolHostSource
+   *  singleton instances (built in createAgentService()), shared here — not
+   *  duplicated — so isAllowed()-gating, ExecutionLogStore auditing, and
+   *  ExecutionToolHostSource's refresh() lifecycle stay correct for the
+   *  background-agent path too. Lazy getters because PluginHost is
+   *  constructed before these exist (initPluginHost() runs before
+   *  createAgentService() in main/index.ts) — mirrors the existing
+   *  backgroundAgentProvider pattern. Absent means the feature itself is
+   *  unconfigured, not merely "not ready yet". */
+  memoryTools?: () => MemoryToolSource | undefined
+  executionTools?: () => ExecutionToolHostSource | undefined
   safeStorage?: SafeStoragePort
   secretPrompt?: SecretPromptPort
   credentialBroker?: CredentialBroker
@@ -384,6 +406,59 @@ export class PluginHost {
     return entry
   }
 
+  async listPendingTriggerCapabilityConfirmations(): Promise<
+    { pluginId: string; capabilities: PendingTriggerCapability[] }[]
+  > {
+    const results: { pluginId: string; capabilities: PendingTriggerCapability[] }[] = []
+    for (const entry of this.registry.list()) {
+      if (entry.status !== "active" || !entry.manifest?.triggers?.length) continue
+      const identity = buildGrantIdentity(entry.pluginId, entry.manifest, entry.source.kind)
+      const pending = await pendingCapabilityConfirmations(entry.manifest.triggers, (id) =>
+        this.grants.isGranted(identity, id)
+      )
+      if (pending.length > 0) results.push({ pluginId: entry.pluginId, capabilities: pending })
+    }
+    return results
+  }
+
+  async confirmTriggerCapabilities(input: {
+    pluginId: string
+    capabilityIds: string[]
+  }): Promise<PendingTriggerCapability[]> {
+    const entry = this.registry.get(input.pluginId)
+    if (!entry || entry.status !== "active" || !entry.manifest) {
+      throw new Error(`Plugin is not active: ${input.pluginId}`)
+    }
+    const identity = buildGrantIdentity(input.pluginId, entry.manifest, entry.source.kind)
+    const pending = await pendingCapabilityConfirmations(entry.manifest.triggers, (id) =>
+      this.grants.isGranted(identity, id)
+    )
+    const pendingIds = new Set(pending.map((p) => p.capabilityId))
+    for (const capabilityId of input.capabilityIds.filter((id) => pendingIds.has(id))) {
+      await this.grants.grant(identity, capabilityId, "user")
+    }
+    return pendingCapabilityConfirmations(entry.manifest.triggers, (id) =>
+      this.grants.isGranted(identity, id)
+    )
+  }
+
+  async confirmAndEnablePlugin(
+    pluginId: string,
+    capabilityIds: string[]
+  ): Promise<PluginRegistryEntry> {
+    const entry = this.registry.get(pluginId)
+    if (!entry || !entry.manifest) throw new Error(`Unknown plugin: ${pluginId}`)
+    const identity = buildGrantIdentity(pluginId, entry.manifest, entry.source.kind)
+    const pending = await pendingCapabilityConfirmations(entry.manifest.triggers, (id) =>
+      this.grants.isGranted(identity, id)
+    )
+    const pendingIds = new Set(pending.map((p) => p.capabilityId))
+    for (const capabilityId of capabilityIds.filter((id) => pendingIds.has(id))) {
+      await this.grants.grant(identity, capabilityId, "user")
+    }
+    return this.setEnabled(pluginId, true)
+  }
+
   triggerSnapshot(): Array<{ pluginId: string; triggerId: string; status: string }> {
     return this.triggerRegistry.snapshot()
   }
@@ -456,11 +531,34 @@ export class PluginHost {
     if (!this.options.backgroundAgentProvider) {
       throw new Error("background agent provider not configured")
     }
+    const entry = this.registry.get(request.pluginId)
+    if (!entry || entry.status !== "active" || !entry.manifest) {
+      throw new Error(`Plugin is not active: ${request.pluginId}`)
+    }
+
+    const authorizer = this.bridge.createBackgroundHostToolAuthorizer(
+      request.pluginId,
+      entry.manifest
+    )
+    const confirmed = await authorizer.confirmedCapabilities(["memory:read", "execution:read"])
+
+    const sources = []
+    const executionTools = this.options.executionTools?.()
+    if (executionTools) sources.push(new ExecutionReadOnlyToolSource(executionTools))
+    const memoryTools = this.options.memoryTools?.()
+    if (memoryTools) sources.push(new MemoryReadOnlyToolSource(memoryTools))
+
+    const governed = new GovernedBackgroundToolHost({ authorizer, sources, confirmed })
+    const tools = new CompositeToolHost([
+      governed,
+      asFallbackSource(this, (fqName) => governed.ownsTool(fqName)),
+    ])
+
     const { provider, model } = await this.options.backgroundAgentProvider()
     const runner = new BackgroundAgentRunner({
       provider,
       model,
-      tools: this,
+      tools,
       ledger: this.agentBudgetLedger,
       recordRun: this.options.recordRun,
       runBudgetRegistry: this.options.runBudgetRegistry,

@@ -8,7 +8,9 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { MemoryToolSource } from "../ai/memory/memory-tools"
 import { emptyUsage } from "../ai/providers/types"
+import { modelToolName } from "../ai/tool-registry"
 import { CapabilityIpcService } from "../ipc/capabilities"
 import { buildGrantIdentity } from "./capability-governance"
 import { createMigrationMarker } from "./grant-migration"
@@ -1185,5 +1187,344 @@ describe("workspaceIdForInstance", () => {
   it("returns undefined for an unknown instance id", async () => {
     const host = new PluginHost(hostOptions())
     expect(await host.workspaceIdForInstance("nope")).toBeUndefined()
+  })
+})
+
+function agentTriggerDeclaration(
+  overrides: {
+    uses?: Array<{ capability: string; budget: { maxCalls: number; period: "1h" } }>
+  } = {}
+) {
+  return {
+    id: "tick",
+    type: "timer" as const,
+    schedule: { intervalMs: 60_000 },
+    handler: "triggers.onTick",
+    uses: overrides.uses ?? [
+      { capability: "notification", budget: { maxCalls: 1, period: "1h" as const } },
+    ],
+    agent: {
+      maxRuns: 1,
+      period: "1d" as const,
+      maxToolCallsPerRun: 5,
+      maxTokensPerRun: 500,
+      timeoutMs: 5000,
+    },
+  }
+}
+
+function providerWithToolCall(toolName: string, input: unknown = { query: "hi" }): ChatProvider {
+  let index = 0
+  const turns = [{ toolUses: [{ id: "t1", name: toolName, input }] }, { text: "done" }]
+  return {
+    id: "fake",
+    async *stream() {
+      const turn = turns[index++] ?? { text: "done" }
+      const content: ChatContentBlock[] = []
+      if (turn.text) content.push({ type: "text", text: turn.text })
+      for (const call of turn.toolUses ?? []) {
+        content.push({ type: "tool_use", id: call.id, name: call.name, input: call.input })
+      }
+      yield {
+        type: "message",
+        message: { role: "assistant", content },
+        usage: emptyUsage(),
+        stopReason: turn.toolUses?.length ? "tool_use" : "end_turn",
+      }
+    },
+  }
+}
+
+describe("dispatchBackgroundAgent — memory:read/execution:read wiring", () => {
+  it("a confirmed, granted memory:read call succeeds through the real CapabilityGate chain", async () => {
+    const memory = {
+      save: vi.fn(),
+      ingestDocument: vi.fn(),
+      search: vi.fn(async () => [
+        { entry: { id: "m1", text: "hi", tags: [], scope: { visibility: "global" } }, score: 0.5 },
+      ]),
+      list: vi.fn(async () => []),
+      delete: vi.fn(),
+    }
+    const memoryToolSource = new MemoryToolSource(memory as never)
+    const memorySearchToolName = modelToolName({
+      fqName: "memory:core/memory_search",
+      provenance: "host",
+    })
+    const fires: Record<string, Parameters<TimerAdapter["register"]>[2]> = {}
+    const timerAdapter: TimerAdapter = {
+      register: (id, _schedule, fire) => {
+        fires[id] = fire
+        return () => {}
+      },
+      registerCron: () => () => {},
+    }
+    const pluginId = "com.synapse.agent-trigger"
+    const host = new PluginHost(
+      hostOptions({
+        migrationMarker: migrationAlreadyDone(),
+        timerAdapter,
+        adapters: noopAdapters,
+        memoryTools: () => memoryToolSource,
+        backgroundAgentProvider: async () => ({
+          provider: providerWithToolCall(memorySearchToolName),
+          model: "fake-model",
+        }),
+      })
+    )
+    await writeHostPlugin({
+      id: pluginId,
+      permissions: ["notification"],
+      triggers: [
+        agentTriggerDeclaration({
+          uses: [
+            { capability: "notification", budget: { maxCalls: 1, period: "1h" } },
+            { capability: "memory:read", budget: { maxCalls: 10, period: "1h" } },
+          ],
+        }),
+      ],
+    })
+    await host.init()
+    const identity = buildGrantIdentity(pluginId, (await host.get(pluginId))!.manifest!, "user")
+    await host.grants.grant(identity, "memory:read", "user")
+    await host.createTriggerInstance(pluginId, "tick", "default")
+    fires.tick?.({ scheduledAt: 0, firedAt: 1, driftMs: 0 })
+
+    await vi.waitFor(() => expect(memory.search).toHaveBeenCalled())
+  })
+
+  it("a declared-but-unconfirmed capability is denied, not silently used", async () => {
+    const memory = {
+      save: vi.fn(),
+      ingestDocument: vi.fn(),
+      search: vi.fn(async () => []),
+      list: vi.fn(async () => []),
+      delete: vi.fn(),
+    }
+    const memoryToolSource = new MemoryToolSource(memory as never)
+    const memorySearchToolName = modelToolName({
+      fqName: "memory:core/memory_search",
+      provenance: "host",
+    })
+    const fires: Record<string, Parameters<TimerAdapter["register"]>[2]> = {}
+    const timerAdapter: TimerAdapter = {
+      register: (id, _schedule, fire) => {
+        fires[id] = fire
+        return () => {}
+      },
+      registerCron: () => () => {},
+    }
+    const pluginId = "com.synapse.agent-trigger"
+    const host = new PluginHost(
+      hostOptions({
+        migrationMarker: migrationAlreadyDone(),
+        timerAdapter,
+        adapters: noopAdapters,
+        memoryTools: () => memoryToolSource,
+        backgroundAgentProvider: async () => ({
+          provider: providerWithToolCall(memorySearchToolName),
+          model: "fake-model",
+        }),
+      })
+    )
+    await writeHostPlugin({
+      id: pluginId,
+      permissions: ["notification"],
+      triggers: [
+        agentTriggerDeclaration({
+          uses: [{ capability: "memory:read", budget: { maxCalls: 10, period: "1h" } }],
+        }),
+      ],
+    })
+    await host.init()
+    await host.createTriggerInstance(pluginId, "tick", "default")
+    fires.tick?.({ scheduledAt: 0, firedAt: 1, driftMs: 0 })
+
+    await vi.waitFor(() => expect(fires.tick).toBeDefined())
+    expect(memory.search).not.toHaveBeenCalled()
+  })
+})
+
+describe("listPendingTriggerCapabilityConfirmations / confirmTriggerCapabilities / confirmAndEnablePlugin", () => {
+  it("lists a pending memory:read declaration for an active plugin", async () => {
+    const pluginId = "com.synapse.agent-trigger"
+    const host = new PluginHost(hostOptions({ migrationMarker: migrationAlreadyDone() }))
+    await writeHostPlugin({
+      id: pluginId,
+      permissions: ["notification"],
+      triggers: [
+        agentTriggerDeclaration({
+          uses: [{ capability: "memory:read", budget: { maxCalls: 10, period: "1h" } }],
+        }),
+      ],
+    })
+    await host.init()
+
+    const pending = await host.listPendingTriggerCapabilityConfirmations()
+
+    expect(pending).toEqual([
+      {
+        pluginId,
+        capabilities: [{ capabilityId: "memory:read", triggerIds: ["tick"] }],
+      },
+    ])
+  })
+
+  it("confirmTriggerCapabilities grants only ids that are genuinely pending, ignoring the rest of the payload", async () => {
+    const pluginId = "com.synapse.agent-trigger"
+    const host = new PluginHost(hostOptions({ migrationMarker: migrationAlreadyDone() }))
+    await writeHostPlugin({
+      id: pluginId,
+      permissions: ["notification"],
+      triggers: [
+        agentTriggerDeclaration({
+          uses: [{ capability: "memory:read", budget: { maxCalls: 10, period: "1h" } }],
+        }),
+      ],
+    })
+    await host.init()
+
+    const remaining = await host.confirmTriggerCapabilities({
+      pluginId,
+      capabilityIds: ["memory:read", "execution:read", "network:https", "not-a-real-capability"],
+    })
+
+    expect(remaining).toEqual([])
+    const pending = await host.listPendingTriggerCapabilityConfirmations()
+    expect(pending).toEqual([])
+  })
+
+  it("confirmTriggerCapabilities rejects a disabled/unknown plugin", async () => {
+    const host = new PluginHost(hostOptions())
+    await expect(
+      host.confirmTriggerCapabilities({ pluginId: "nonexistent", capabilityIds: ["memory:read"] })
+    ).rejects.toThrow()
+  })
+
+  it("confirmAndEnablePlugin grants pending capabilities and enables in one call", async () => {
+    const pluginId = "com.synapse.agent-trigger"
+    const host = new PluginHost(hostOptions({ migrationMarker: migrationAlreadyDone() }))
+    await writeHostPlugin({
+      id: pluginId,
+      permissions: ["notification"],
+      triggers: [
+        agentTriggerDeclaration({
+          uses: [{ capability: "memory:read", budget: { maxCalls: 10, period: "1h" } }],
+        }),
+      ],
+    })
+    await host.init()
+    await host.setEnabled(pluginId, false)
+
+    const entry = await host.confirmAndEnablePlugin(pluginId, ["memory:read"])
+
+    expect(entry.status).toBe("active")
+    expect(await host.listPendingTriggerCapabilityConfirmations()).toEqual([])
+  })
+})
+
+describe("s07 lifecycle integration", () => {
+  it("fresh install leaves a declared memory:read ungranted", async () => {
+    const pluginId = "com.synapse.agent-trigger"
+    const host = new PluginHost(hostOptions({ migrationMarker: migrationAlreadyDone() }))
+    await writeHostPlugin({
+      id: pluginId,
+      permissions: ["notification"],
+      triggers: [
+        agentTriggerDeclaration({
+          uses: [{ capability: "memory:read", budget: { maxCalls: 10, period: "1h" } }],
+        }),
+      ],
+    })
+    await host.init()
+
+    const pending = await host.listPendingTriggerCapabilityConfirmations()
+    expect(pending).toEqual([
+      { pluginId, capabilities: [{ capabilityId: "memory:read", triggerIds: ["tick"] }] },
+    ])
+  })
+
+  it("a manifest update adding execution:read makes new capabilities pending (identity hash change invalidates prior grants)", async () => {
+    const pluginId = "com.synapse.agent-trigger"
+    const host = new PluginHost(hostOptions({ migrationMarker: migrationAlreadyDone() }))
+    await writeHostPlugin({
+      id: pluginId,
+      permissions: ["notification"],
+      triggers: [
+        agentTriggerDeclaration({
+          uses: [{ capability: "memory:read", budget: { maxCalls: 10, period: "1h" } }],
+        }),
+      ],
+    })
+    await host.init()
+    await host.confirmTriggerCapabilities({ pluginId, capabilityIds: ["memory:read"] })
+
+    await writeHostPlugin({
+      id: pluginId,
+      permissions: ["notification"],
+      triggers: [
+        agentTriggerDeclaration({
+          uses: [
+            { capability: "memory:read", budget: { maxCalls: 10, period: "1h" } },
+            { capability: "execution:read", budget: { maxCalls: 10, period: "1h" } },
+          ],
+        }),
+      ],
+    })
+    await host.init()
+
+    const pending = await host.listPendingTriggerCapabilityConfirmations()
+    expect(pending).toEqual([
+      {
+        pluginId,
+        capabilities: expect.arrayContaining([
+          { capabilityId: "memory:read", triggerIds: ["tick"] },
+          { capabilityId: "execution:read", triggerIds: ["tick"] },
+        ]),
+      },
+    ])
+    expect(pending[0]?.capabilities).toHaveLength(2)
+  })
+
+  it("a restart (re-running init()) does not backfill a previously-skipped grant", async () => {
+    const pluginId = "com.synapse.agent-trigger"
+    const host = new PluginHost(hostOptions({ migrationMarker: migrationAlreadyDone() }))
+    await writeHostPlugin({
+      id: pluginId,
+      permissions: ["notification"],
+      triggers: [
+        agentTriggerDeclaration({
+          uses: [{ capability: "memory:read", budget: { maxCalls: 10, period: "1h" } }],
+        }),
+      ],
+    })
+    await host.init()
+    expect(await host.listPendingTriggerCapabilityConfirmations()).toHaveLength(1)
+
+    await host.init()
+
+    expect(await host.listPendingTriggerCapabilityConfirmations()).toHaveLength(1)
+  })
+
+  it("disabled -> confirmAndEnablePlugin -> enabled records the grant against the current manifest identity", async () => {
+    const pluginId = "com.synapse.agent-trigger"
+    const host = new PluginHost(hostOptions({ migrationMarker: migrationAlreadyDone() }))
+    await writeHostPlugin({
+      id: pluginId,
+      permissions: ["notification"],
+      triggers: [
+        agentTriggerDeclaration({
+          uses: [{ capability: "memory:read", budget: { maxCalls: 10, period: "1h" } }],
+        }),
+      ],
+    })
+    await host.init()
+    await host.setEnabled(pluginId, false)
+
+    const entry = await host.confirmAndEnablePlugin(pluginId, ["memory:read"])
+
+    expect(entry.status).toBe("active")
+    const identity = buildGrantIdentity(pluginId, entry.manifest!, entry.source.kind)
+    expect(await host.grants.isGranted(identity, "memory:read")).toBe(true)
   })
 })
