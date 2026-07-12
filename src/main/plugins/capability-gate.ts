@@ -1,8 +1,10 @@
 import type { NormalizedCapability } from "@synapse/plugin-manifest"
 import type { ToolPrincipal } from "@synapse/plugin-sdk"
 import type { GrantIdentity, GrantStore } from "./grant-store"
+import type { CapabilityActor, InvocationContext } from "./invocation-context"
 import { createHash } from "node:crypto"
 import { getCapability } from "@synapse/plugin-manifest"
+import { actorOf, auditIdentityOf, invocationIdOf } from "./invocation-context"
 
 // The runtime decision engine. A grant is not a one-time pass — it is a
 // context-bearing capability-call decision. Non-trigger calls JIT-prompt for
@@ -10,36 +12,23 @@ import { getCapability } from "@synapse/plugin-manifest"
 // work. Trigger-origin calls (host-minted invocationId) require enable-time grants
 // and debit per-trigger `uses` budgets — no JIT prompt and no per-call approve.
 
-export type CapabilityActor =
-  | "user"
-  | "agent"
-  | "background"
-  | "background-agent"
-  | "external-mcp"
-  | "subagent"
+export type { CapabilityActor } from "./invocation-context"
 
 export interface CapabilityRequest {
   capability: string
-  actor: CapabilityActor
-  /** What initiated the call, e.g. "command:hello.world" | "tool:greet" | "clipboard:change". */
-  trigger: string
+  invocation: InvocationContext
   /** The concrete operation, e.g. "read" | "POST api.github.com/repos" | "write ~/Documents/x". */
   operation: string
   /** The scope THIS call needs; matched against the capability's scopeSchema when enforced. */
   requestedScope?: unknown
   /** Human-readable justification — shown in the prompt and audited. */
   reason?: string
-  /** When aborted (tool timeout, capability revoke, renderer reload), pending prompts deny. */
+  /** When aborted (tool timeout, capability revoke, renderer reload), pending prompts deny.
+   *  Independent of `invocation.signal` — the network path passes its own narrower,
+   *  per-fetch-linked signal here instead of the invocation-wide one. Ordinary
+   *  (non-network) capabilities pass `invocation.signal`. See the spec's "Signal handling
+   *  is not part of the invocation collapse" note for why these must stay separate. */
   signal?: AbortSignal
-  /** Set by the host for trigger-origin background calls; resolves the budget path. */
-  invocationId?: string
-  /** The agent run this call belongs to; copied through to the audit entry. */
-  runId?: string
-  /** Who initiated the call — the finer identity behind the coarse `actor`. */
-  principal?: ToolPrincipal
-  /** The workspace this call is bound to; copied through to the audit entry. */
-  workspaceId?: string
-  triggerInstanceId?: string
   /** Host-computed: whether this concrete write operation can be reversed. */
   reversible?: boolean
 }
@@ -150,8 +139,8 @@ export class CapabilityGate implements CapabilityGatePort {
     }
 
     const isTriggerOrigin =
-      request.invocationId !== undefined &&
-      this.options.budgetBreaker?.isTriggerOrigin(request.invocationId) === true
+      invocationIdOf(request.invocation) !== undefined &&
+      this.options.budgetBreaker?.isTriggerOrigin(invocationIdOf(request.invocation)) === true
 
     if (isTriggerOrigin) {
       if (!this.options.budgetBreaker) deny("trigger origin not configured")
@@ -214,9 +203,9 @@ export class CapabilityGate implements CapabilityGatePort {
     // reversible-escalation rule above. Every other non-user actor
     // (agent/background/background-agent/subagent) is unaffected — this
     // flag has no meaning for them.
-    if (cap.tier === "elevated" && request.actor !== "user") {
+    if (cap.tier === "elevated" && actorOf(request.invocation) !== "user") {
       const preauthorized =
-        request.actor === "external-mcp" &&
+        actorOf(request.invocation) === "external-mcp" &&
         request.reversible !== false &&
         (await this.options.grants.isExternalMcpPreauthorized(
           this.options.identity,
@@ -238,13 +227,14 @@ export class CapabilityGate implements CapabilityGatePort {
     why: string,
     tier = "unknown"
   ): void {
+    const identity = auditIdentityOf(request.invocation)
     this.options.audit({
       pluginId: this.options.identity.pluginId,
       identityFingerprint: identityFingerprint(this.options.identity),
       capabilityId: request.capability,
       tier,
-      actor: request.actor,
-      trigger: request.trigger,
+      actor: actorOf(request.invocation),
+      trigger: request.invocation.trigger,
       operation: request.operation,
       requestedScope: request.requestedScope,
       declaredScope: this.declaredById.get(request.capability)?.scope,
@@ -252,11 +242,11 @@ export class CapabilityGate implements CapabilityGatePort {
       decision,
       grantedNow,
       why,
-      ...(request.runId !== undefined ? { runId: request.runId } : {}),
-      ...(request.principal !== undefined ? { principal: request.principal } : {}),
-      ...(request.workspaceId !== undefined ? { workspaceId: request.workspaceId } : {}),
-      ...(request.triggerInstanceId !== undefined
-        ? { triggerInstanceId: request.triggerInstanceId }
+      ...(identity.runId !== undefined ? { runId: identity.runId } : {}),
+      ...(identity.principal !== undefined ? { principal: identity.principal } : {}),
+      ...(identity.workspaceId !== undefined ? { workspaceId: identity.workspaceId } : {}),
+      ...(identity.triggerInstanceId !== undefined
+        ? { triggerInstanceId: identity.triggerInstanceId }
         : {}),
     })
   }

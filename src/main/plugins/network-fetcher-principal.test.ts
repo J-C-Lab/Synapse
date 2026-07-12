@@ -1,6 +1,7 @@
 import type { CapabilityGatePort, CapabilityRequest } from "./capability-gate"
 import { Buffer } from "node:buffer"
 import { describe, expect, it } from "vitest"
+import { auditIdentityOf } from "./invocation-context"
 import { createNetworkFetcher } from "./network-fetcher"
 
 describe("networkFetcher principal + workspaceId threading", () => {
@@ -15,12 +16,17 @@ describe("networkFetcher principal + workspaceId threading", () => {
     }
     const fetcher = createNetworkFetcher({
       gate,
-      actor: "agent",
-      trigger: "tool:fetch",
+      invocation: {
+        source: "tool",
+        trigger: "tool:fetch",
+        caller: {
+          kind: "mcp",
+          runId: "run-net",
+          principal: { kind: "external-mcp", clientId: "claude-desktop" },
+          workspaceId: "ws-external",
+        },
+      },
       pluginId: "com.synapse.test",
-      runId: "run-net",
-      principal: { kind: "external-mcp", clientId: "claude-desktop" },
-      workspaceId: "ws-external",
       resolve: async () => [{ address: "140.82.112.3", family: 4 }],
       transport: async () => ({
         status: 200,
@@ -33,7 +39,10 @@ describe("networkFetcher principal + workspaceId threading", () => {
     await expect(fetcher.fetch("https://api.example.com/x", { method: "GET" })).rejects.toThrow()
 
     expect(seen).toHaveLength(1)
-    expect(seen[0].principal).toEqual({ kind: "external-mcp", clientId: "claude-desktop" })
-    expect(seen[0].workspaceId).toBe("ws-external")
+    expect(auditIdentityOf(seen[0].invocation).principal).toEqual({
+      kind: "external-mcp",
+      clientId: "claude-desktop",
+    })
+    expect(auditIdentityOf(seen[0].invocation).workspaceId).toBe("ws-external")
   })
 })

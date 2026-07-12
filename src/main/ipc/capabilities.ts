@@ -8,6 +8,7 @@ import type { CapabilityApprover, GrantPromptPort } from "../plugins/capability-
 import type { PluginHost } from "../plugins/plugin-host"
 import { derivePluginProfile, getCapability, parseManifest } from "@synapse/plugin-manifest"
 import { buildGrantIdentity } from "../plugins/capability-governance"
+import { actorOf, principalOf } from "../plugins/invocation-context"
 import { invokePluginIpcHandler, PluginIpcInvalidPayloadError } from "./plugins"
 
 export interface PluginCapabilityRow {
@@ -97,7 +98,7 @@ export class CapabilityIpcService {
       pluginId: identity.pluginId,
       capability: request.capability,
       tier,
-      trigger: request.trigger,
+      trigger: request.invocation.trigger,
       operation: request.operation,
       reason: request.reason,
     })
@@ -112,11 +113,14 @@ export class CapabilityIpcService {
       promptId,
       pluginId: identity.pluginId,
       capability: request.capability,
-      actor: request.actor,
-      trigger: request.trigger,
+      actor: actorOf(request.invocation),
+      trigger: request.invocation.trigger,
       operation: request.operation,
       reason: request.reason,
-      clientId: request.principal?.kind === "external-mcp" ? request.principal.clientId : undefined,
+      clientId: (() => {
+        const principal = principalOf(request.invocation)
+        return principal?.kind === "external-mcp" ? principal.clientId : undefined
+      })(),
     })
     return decision
   }

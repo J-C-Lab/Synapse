@@ -41,8 +41,11 @@ function identity(): GrantIdentity {
 function request(): Omit<CapabilityRequest, "signal"> {
   return {
     capability: "clipboard:watch",
-    actor: "external-mcp",
-    trigger: "mcp:call",
+    invocation: {
+      source: "tool",
+      trigger: "mcp:call",
+      caller: { kind: "mcp", principal: { kind: "external-mcp" } },
+    },
     operation: "watch",
   }
 }

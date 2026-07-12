@@ -9,6 +9,7 @@ import type {
 import { Buffer } from "node:buffer"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { CapabilityDenied } from "./capability-gate"
+import { actorOf } from "./invocation-context"
 import { BodyAlreadyConsumed, createNetworkFetcher } from "./network-fetcher"
 
 // ---- Test doubles -----------------------------------------------------------
@@ -46,8 +47,11 @@ function fakeGate(impl?: (req: unknown) => Promise<void>): FakeGate {
 function makeConfig(overrides: Partial<NetworkFetcherConfig> = {}): NetworkFetcherConfig {
   return {
     gate: fakeGate(),
-    actor: "user",
-    trigger: "tool:fetch",
+    invocation: {
+      source: "tool",
+      trigger: "tool:fetch",
+      caller: { kind: "user", principal: { kind: "local-user" } },
+    },
     pluginId: "com.example.plugin",
     resolve: fakeResolve(),
     transport: okTransport(),
@@ -105,8 +109,8 @@ describe("network-fetcher gate enforcement", () => {
     expect(gate.ensure).toHaveBeenCalledTimes(1)
     const req = gate.ensure.mock.calls[0][0]
     expect(req.capability).toBe("network:https")
-    expect(req.actor).toBe("user")
-    expect(req.trigger).toBe("tool:fetch")
+    expect(req.invocation.trigger).toBe("tool:fetch")
+    expect(actorOf(req.invocation)).toBe("user")
     expect(req.requestedScope).toMatchObject({
       host: "api.github.com",
       method: "POST",

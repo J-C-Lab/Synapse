@@ -84,6 +84,11 @@ describe("credentialBroker", () => {
       manifest,
       sourceKind: "user",
       isTriggerOrigin: false,
+      invocation: {
+        source: "tool",
+        trigger: "network:fetch",
+        caller: { kind: "user", principal: { kind: "local-user" } },
+      },
     })
     const header = await inject({ host: "api.github.com", method: "GET", path: "/repos/foo" }, {})
     expect(header).toEqual({ name: "authorization", value: "Bearer ghp_test" })
@@ -103,7 +108,11 @@ describe("credentialBroker", () => {
       manifest,
       sourceKind: "user",
       isTriggerOrigin: false,
-      runId: "run-cred",
+      invocation: {
+        source: "tool",
+        trigger: "network:fetch",
+        caller: { kind: "agent", runId: "run-cred", principal: { kind: "internal-agent" } },
+      },
     })
     await inject({ host: "api.github.com", method: "GET", path: "/repos/foo" }, {})
 
@@ -126,8 +135,15 @@ describe("credentialBroker", () => {
       manifest,
       sourceKind: "user",
       isTriggerOrigin: false,
-      principal: { kind: "external-mcp", clientId: "claude-desktop" },
-      workspaceId: "ws-external",
+      invocation: {
+        source: "tool",
+        trigger: "network:fetch",
+        caller: {
+          kind: "mcp",
+          principal: { kind: "external-mcp", clientId: "claude-desktop" },
+          workspaceId: "ws-external",
+        },
+      },
     })
     await inject({ host: "api.github.com", method: "GET", path: "/repos/foo" }, {})
 
@@ -151,7 +167,15 @@ describe("credentialBroker", () => {
       manifest,
       sourceKind: "user",
       isTriggerOrigin: false,
-      triggerInstanceId: "instance-1",
+      invocation: {
+        source: "tool",
+        trigger: "network:fetch",
+        caller: {
+          kind: "background-agent",
+          principal: { kind: "internal-agent" },
+          triggerInstanceId: "instance-1",
+        },
+      },
     })
     await inject({ host: "api.github.com", method: "GET", path: "/repos/foo" }, {})
 
@@ -202,6 +226,11 @@ describe("credentialBroker", () => {
       manifest: oauthManifest,
       sourceKind: "user",
       isTriggerOrigin: false,
+      invocation: {
+        source: "tool",
+        trigger: "network:fetch",
+        caller: { kind: "user", principal: { kind: "local-user" } },
+      },
     })
     const header = await inject({ host: "api.github.com", method: "GET", path: "/repos/foo" }, {})
     expect(header).toEqual({ name: "authorization", value: "Bearer oauth-at" })
@@ -220,6 +249,11 @@ describe("credentialBroker", () => {
       manifest,
       sourceKind: "user",
       isTriggerOrigin: false,
+      invocation: {
+        source: "tool",
+        trigger: "network:fetch",
+        caller: { kind: "user", principal: { kind: "local-user" } },
+      },
     })
     await expect(
       inject({ host: "api.github.com", method: "GET", path: "/repos/foo" }, {})

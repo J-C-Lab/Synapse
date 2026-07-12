@@ -157,6 +157,7 @@ export class PluginSandbox {
     const code = await fs.readFile(mainPath, "utf-8")
     const moduleObject: CommonJSModule = { exports: {} }
     const runtime = this.options.bridge.createContext(entry.pluginId, entry.manifest, {
+      source: "runless",
       actor: "user",
       trigger: "plugin:load",
     })
@@ -220,6 +221,7 @@ export class PluginSandbox {
     }
 
     const pluginCtx = this.options.bridge.createContext(request.pluginId, plugin.manifest, {
+      source: "runless",
       actor: "user",
       trigger: `command:${request.commandId}`,
       signal: plugin.capabilityAbort.signal,
@@ -332,6 +334,7 @@ export class PluginSandbox {
     const handler = plugin?.module.commands[commandId]
     if (!plugin || !handler?.dispose) return
     const pluginCtx = this.options.bridge.createContext(pluginId, plugin.manifest, {
+      source: "runless",
       actor: "user",
       trigger: `command:${commandId}:dispose`,
     })
@@ -346,6 +349,7 @@ export class PluginSandbox {
     if (request.event === "clipboard:change" && !plugin.module.events?.onClipboardChange) return
 
     const pluginCtx = this.options.bridge.createContext(request.pluginId, plugin.manifest, {
+      source: "runless",
       actor: "background",
       trigger: "clipboard:change",
       signal: plugin.capabilityAbort.signal,
@@ -371,6 +375,7 @@ export class PluginSandbox {
     if (typeof handler !== "function") return
 
     const pluginCtx = this.options.bridge.createContext(request.pluginId, plugin.manifest, {
+      source: "runless",
       actor: "background",
       trigger: request.trigger,
       signal: request.signal,
