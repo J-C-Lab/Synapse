@@ -1,5 +1,6 @@
 import type { CapabilityAuditEntry, CapabilityRequest } from "./capability-gate"
 import type { GrantIdentity } from "./grant-store"
+import type { InvocationContext } from "./invocation-context"
 import { rootIdForPattern } from "@synapse/plugin-manifest"
 import { describe, expect, it, vi } from "vitest"
 import { BackgroundInvoker } from "./background-invoker"
@@ -51,11 +52,24 @@ function makeGate(opts: {
   return { gate, grants, prompt, approve, audit }
 }
 
+/** Test-only: mirrors what plugin-bridge.ts's createToolContext() would build for a
+ *  "user"-actor ToolCaller, since capability-gate.ts's own tests exercise the gate in
+ *  isolation without going through the bridge. */
+function toolInvocation(
+  overrides: Partial<InvocationContext & { source: "tool" }> = {}
+): InvocationContext {
+  return {
+    source: "tool",
+    trigger: "command:x",
+    caller: { kind: "user", principal: { kind: "local-user" } },
+    ...overrides,
+  }
+}
+
 function req(overrides: Partial<CapabilityRequest> = {}): CapabilityRequest {
   return {
     capability: "clipboard:read",
-    actor: "user",
-    trigger: "command:x",
+    invocation: toolInvocation(),
     operation: "read",
     ...overrides,
   }
@@ -101,7 +115,14 @@ describe("capabilityGate.ensure", () => {
 
   it("prompts then per-call approves an ungranted elevated capability driven by the agent", async () => {
     const { gate, prompt, approve } = makeGate({ declared: ["clipboard:watch"] })
-    await gate.ensure(req({ capability: "clipboard:watch", actor: "agent" }))
+    await gate.ensure(
+      req({
+        capability: "clipboard:watch",
+        invocation: toolInvocation({
+          caller: { kind: "agent", principal: { kind: "internal-agent" } },
+        }),
+      })
+    )
     expect(prompt).toHaveBeenCalledOnce()
     expect(approve).toHaveBeenCalledOnce()
   })
@@ -113,7 +134,14 @@ describe("capabilityGate.ensure", () => {
       approve: async () => false,
     })
     await expect(
-      gate.ensure(req({ capability: "clipboard:watch", actor: "agent" }))
+      gate.ensure(
+        req({
+          capability: "clipboard:watch",
+          invocation: toolInvocation({
+            caller: { kind: "agent", principal: { kind: "internal-agent" } },
+          }),
+        })
+      )
     ).rejects.toBeInstanceOf(CapabilityDenied)
     expect(approve).toHaveBeenCalledOnce()
   })
@@ -123,7 +151,7 @@ describe("capabilityGate.ensure", () => {
       declared: ["clipboard:watch"],
       granted: ["clipboard:watch"],
     })
-    await gate.ensure(req({ capability: "clipboard:watch", actor: "user" }))
+    await gate.ensure(req({ capability: "clipboard:watch" }))
     expect(approve).not.toHaveBeenCalled()
   })
 
@@ -134,7 +162,13 @@ describe("capabilityGate.ensure", () => {
       preauthorizedExternalMcp: ["clipboard:watch"],
     })
     await gate.ensure(
-      req({ capability: "clipboard:watch", actor: "external-mcp", reversible: true })
+      req({
+        capability: "clipboard:watch",
+        invocation: toolInvocation({
+          caller: { kind: "mcp", principal: { kind: "external-mcp" } },
+        }),
+        reversible: true,
+      })
     )
     expect(approve).not.toHaveBeenCalled()
   })
@@ -147,7 +181,15 @@ describe("capabilityGate.ensure", () => {
       approve: async () => false,
     })
     await expect(
-      gate.ensure(req({ capability: "clipboard:watch", actor: "external-mcp", reversible: false }))
+      gate.ensure(
+        req({
+          capability: "clipboard:watch",
+          invocation: toolInvocation({
+            caller: { kind: "mcp", principal: { kind: "external-mcp" } },
+          }),
+          reversible: false,
+        })
+      )
     ).rejects.toBeInstanceOf(CapabilityDenied)
     expect(approve).toHaveBeenCalledOnce()
   })
@@ -157,7 +199,14 @@ describe("capabilityGate.ensure", () => {
       declared: ["clipboard:watch"],
       granted: ["clipboard:watch"],
     })
-    await gate.ensure(req({ capability: "clipboard:watch", actor: "external-mcp" }))
+    await gate.ensure(
+      req({
+        capability: "clipboard:watch",
+        invocation: toolInvocation({
+          caller: { kind: "mcp", principal: { kind: "external-mcp" } },
+        }),
+      })
+    )
     expect(approve).toHaveBeenCalledOnce()
   })
 
@@ -167,7 +216,14 @@ describe("capabilityGate.ensure", () => {
       granted: ["clipboard:watch"],
       preauthorizedExternalMcp: ["clipboard:watch"],
     })
-    await gate.ensure(req({ capability: "clipboard:watch", actor: "agent" }))
+    await gate.ensure(
+      req({
+        capability: "clipboard:watch",
+        invocation: toolInvocation({
+          caller: { kind: "agent", principal: { kind: "internal-agent" } },
+        }),
+      })
+    )
     expect(approve).toHaveBeenCalledOnce()
   })
 
@@ -178,7 +234,14 @@ describe("capabilityGate.ensure", () => {
       approve: async () => false,
     })
     await expect(
-      gate.ensure(req({ capability: "clipboard:watch", actor: "external-mcp" }))
+      gate.ensure(
+        req({
+          capability: "clipboard:watch",
+          invocation: toolInvocation({
+            caller: { kind: "mcp", principal: { kind: "external-mcp" } },
+          }),
+        })
+      )
     ).rejects.toBeInstanceOf(CapabilityDenied)
     expect(approve).toHaveBeenCalledOnce()
   })
@@ -190,7 +253,14 @@ describe("capabilityGate.ensure", () => {
       approve: async () => false,
     })
     await expect(
-      gate.ensure(req({ capability: "clipboard:watch", actor: "subagent" }))
+      gate.ensure(
+        req({
+          capability: "clipboard:watch",
+          invocation: toolInvocation({
+            caller: { kind: "subagent", principal: { kind: "subagent", parentRunId: "p1" } },
+          }),
+        })
+      )
     ).rejects.toBeInstanceOf(CapabilityDenied)
     expect(approve).toHaveBeenCalledOnce()
   })
@@ -248,7 +318,13 @@ describe("capabilityGate.ensure", () => {
 
   it("copies runId onto the audited entry", async () => {
     const { gate, audit } = makeGate({ declared: ["clipboard:read"], granted: ["clipboard:read"] })
-    await gate.ensure(req({ runId: "run-123" }))
+    await gate.ensure(
+      req({
+        invocation: toolInvocation({
+          caller: { kind: "user", principal: { kind: "local-user" }, runId: "run-123" },
+        }),
+      })
+    )
     expect(audit).toHaveLength(1)
     expect(audit[0]).toMatchObject({ runId: "run-123" })
   })
@@ -261,7 +337,13 @@ describe("capabilityGate.ensure", () => {
 
   it("attributes a capability decision to the subagent's child runId", async () => {
     const { gate, audit } = makeGate({ declared: ["clipboard:read"], granted: ["clipboard:read"] })
-    await gate.ensure(req({ runId: "child-run", actor: "agent" }))
+    await gate.ensure(
+      req({
+        invocation: toolInvocation({
+          caller: { kind: "agent", principal: { kind: "internal-agent" }, runId: "child-run" },
+        }),
+      })
+    )
     expect(audit[0]).toMatchObject({ runId: "child-run" })
   })
 
@@ -287,11 +369,15 @@ describe("capabilityGate.ensure", () => {
 
     await gate.ensure({
       capability: "storage:plugin",
-      actor: "agent",
-      trigger: "tool:read_probe",
+      invocation: toolInvocation({
+        trigger: "tool:read_probe",
+        caller: {
+          kind: "mcp",
+          principal: { kind: "external-mcp", clientId: "claude-desktop" },
+          workspaceId: "ws-external",
+        },
+      }),
       operation: "read",
-      principal: { kind: "external-mcp", clientId: "claude-desktop" },
-      workspaceId: "ws-external",
     })
 
     expect(audited).toHaveLength(1)
@@ -355,11 +441,14 @@ describe("capabilityGate budget breaker", () => {
     await expect(
       gate.ensure({
         capability: "network:https",
-        actor: "background",
-        trigger: "timer:t",
+        invocation: {
+          source: "runless",
+          actor: "background",
+          trigger: "timer:t",
+          invocationId: "inv-1",
+        },
         operation: "GET",
         requestedScope: { host: "api.example.com", method: "GET", path: "/x" },
-        invocationId: "inv-1",
       })
     ).resolves.toBeUndefined()
   })
@@ -369,11 +458,14 @@ describe("capabilityGate budget breaker", () => {
     await expect(
       gate.ensure({
         capability: "network:https",
-        actor: "background",
-        trigger: "timer:t",
+        invocation: {
+          source: "runless",
+          actor: "background",
+          trigger: "timer:t",
+          invocationId: "inv-1",
+        },
         operation: "GET",
         requestedScope: { host: "api.example.com", method: "GET", path: "/x" },
-        invocationId: "inv-1",
       })
     ).rejects.toBeInstanceOf(CapabilityDenied)
     expect(audit.at(-1)?.why).toMatch(/budget/)
@@ -384,11 +476,14 @@ describe("capabilityGate budget breaker", () => {
     await expect(
       gate.ensure({
         capability: "network:https",
-        actor: "background",
-        trigger: "timer:t",
+        invocation: {
+          source: "runless",
+          actor: "background",
+          trigger: "timer:t",
+          invocationId: "inv-1",
+        },
         operation: "GET",
         requestedScope: { host: "api.example.com", method: "GET", path: "/x" },
-        invocationId: "inv-1",
       })
     ).rejects.toBeInstanceOf(CapabilityDenied)
     expect(audit.at(-1)?.why).toMatch(/not in trigger uses/)
@@ -404,10 +499,13 @@ describe("capabilityGate budget breaker", () => {
     await expect(
       gate.ensure({
         capability: "clipboard:read",
-        actor: "background",
-        trigger: "clipboard:clip",
+        invocation: {
+          source: "runless",
+          actor: "background",
+          trigger: "clipboard:clip",
+          invocationId: "inv-1",
+        },
         operation: "read",
-        invocationId: "inv-1",
       })
     ).rejects.toThrow(/not granted at enable time/)
     expect(prompt).not.toHaveBeenCalled()
@@ -422,11 +520,14 @@ describe("capabilityGate budget breaker", () => {
 
     await gate.ensure({
       capability: "fs:write",
-      actor: "background",
-      trigger: "fs.watch:downloads",
+      invocation: {
+        source: "runless",
+        actor: "background",
+        trigger: "fs.watch:downloads",
+        invocationId: "inv-1",
+      },
       operation: "move",
       requestedScope: { rootId: rootIdForPattern("~/Downloads/**"), relativePath: "a.txt" },
-      invocationId: "inv-1",
       reversible: true,
     })
 
@@ -442,11 +543,16 @@ describe("capabilityGate budget breaker", () => {
 
     await gate.ensure({
       capability: "fs:write",
-      actor: "background-agent",
-      trigger: "fs.watch:downloads",
+      invocation: toolInvocation({
+        trigger: "fs.watch:downloads",
+        caller: {
+          kind: "background-agent",
+          principal: { kind: "internal-agent" },
+          invocationId: "inv-1",
+        },
+      }),
       operation: "move",
       requestedScope: { rootId: rootIdForPattern("~/Downloads/**"), relativePath: "a.txt" },
-      invocationId: "inv-1",
       reversible: true,
     })
 
@@ -462,11 +568,14 @@ describe("capabilityGate budget breaker", () => {
 
     await gate.ensure({
       capability: "fs:write",
-      actor: "background",
-      trigger: "fs.watch:downloads",
+      invocation: {
+        source: "runless",
+        actor: "background",
+        trigger: "fs.watch:downloads",
+        invocationId: "inv-1",
+      },
       operation: "writeText",
       requestedScope: { rootId: rootIdForPattern("~/Downloads/**"), relativePath: "a.txt" },
-      invocationId: "inv-1",
       reversible: false,
     })
 
@@ -483,11 +592,14 @@ describe("capabilityGate budget breaker", () => {
     await expect(
       gate.ensure({
         capability: "fs:write",
-        actor: "background",
-        trigger: "fs.watch:downloads",
+        invocation: {
+          source: "runless",
+          actor: "background",
+          trigger: "fs.watch:downloads",
+          invocationId: "inv-1",
+        },
         operation: "writeText",
         requestedScope: { rootId: rootIdForPattern("~/Downloads/**"), relativePath: "a.txt" },
-        invocationId: "inv-1",
         reversible: false,
       })
     ).rejects.toBeInstanceOf(CapabilityDenied)
@@ -537,19 +649,25 @@ describe("capabilityGate budget breaker", () => {
     for (let i = 0; i < 20; i++) {
       await gate.ensure({
         capability: "clipboard:read",
-        actor: "background",
-        trigger: "clipboard:clip",
+        invocation: {
+          source: "runless",
+          actor: "background",
+          trigger: "clipboard:clip",
+          invocationId,
+        },
         operation: "read",
-        invocationId,
       })
     }
     await expect(
       gate.ensure({
         capability: "clipboard:read",
-        actor: "background",
-        trigger: "clipboard:clip",
+        invocation: {
+          source: "runless",
+          actor: "background",
+          trigger: "clipboard:clip",
+          invocationId,
+        },
         operation: "read",
-        invocationId,
       })
     ).rejects.toThrow(/budget exhausted/)
   })

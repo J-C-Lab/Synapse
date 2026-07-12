@@ -68,6 +68,7 @@ describe("pluginBridge.revokeCapability network teardown", () => {
     const bridge = makeBridge()
     // createContext builds the capability surface and registers a fetcher.
     bridge.createContext("com.synapse.test", manifest(["network:https"]), {
+      source: "runless",
       actor: "user",
       trigger: "command:test.run",
     })
@@ -80,6 +81,7 @@ describe("pluginBridge.revokeCapability network teardown", () => {
   it("does NOT abort fetchers when an unrelated capability is revoked", () => {
     const bridge = makeBridge()
     bridge.createContext("com.synapse.test", manifest(["network:https"]), {
+      source: "runless",
       actor: "user",
       trigger: "command:test.run",
     })

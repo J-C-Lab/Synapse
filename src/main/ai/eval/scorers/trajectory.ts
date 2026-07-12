@@ -5,6 +5,7 @@ import type { ToolHostPort } from "../../tool-registry"
 import type { FixtureMeta, ScoreResult } from "../fixture-types"
 import type { ScriptedTurn } from "../scripted-provider"
 import { AgentRuntime } from "../../agent-runtime"
+import { buildInteractiveRun } from "../../run-provenance"
 import { AiToolRegistry } from "../../tool-registry"
 import { scriptedProvider } from "../scripted-provider"
 
@@ -49,9 +50,12 @@ export async function scoreTrajectory(fixture: TrajectoryFixture): Promise<Score
   })
 
   await runtime.run({
-    conversationId: `eval-${fixture.id}`,
+    provenance: buildInteractiveRun({
+      runId: `eval-${fixture.id}`,
+      conversationId: `eval-${fixture.id}`,
+      workspaceId: fixture.workspaceId,
+    }),
     messages: [{ role: "user", content: [{ type: "text", text: "go" }] }],
-    workspaceId: fixture.workspaceId,
     onText: (delta) => {
       finalText += delta
     },

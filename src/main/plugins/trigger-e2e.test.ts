@@ -126,11 +126,14 @@ async function makeHarness() {
         try {
           await gate.ensure({
             capability: "network:https",
-            actor: "background",
-            trigger: req.trigger,
+            invocation: {
+              source: "runless",
+              actor: "background",
+              trigger: req.trigger,
+              invocationId: req.invocationId,
+            },
             operation: "GET",
             requestedScope: { host: "api.example.com", method: "GET", path: "/x" },
-            invocationId: req.invocationId,
           })
         } catch {
           if (i === 2) return

@@ -4,12 +4,13 @@ import type {
   CredentialInjectScheme,
   TriggerUse,
 } from "@synapse/plugin-manifest"
-import type { CredentialStatus, ToolPrincipal } from "@synapse/plugin-sdk"
+import type { CredentialStatus } from "@synapse/plugin-sdk"
 import type { CapabilityAuditEntry } from "./capability-gate"
 import type { InjectionRequest } from "./credential-injector"
 import type { SecretPromptPort } from "./credential-secret-prompt"
 import type { CredentialPayload, SafeStoragePort } from "./credential-vault"
 import type { GrantIdentity, GrantStore } from "./grant-store"
+import type { InvocationContext } from "./invocation-context"
 import type { PluginManifest, PluginSourceKind } from "./types"
 import { createHash, randomUUID } from "node:crypto"
 import * as path from "node:path"
@@ -22,6 +23,7 @@ import { oauthHttpsPost } from "./credential-oauth-egress"
 import { runOAuthPkceFlow } from "./credential-oauth-flow"
 import { OAuthTokenRefresher } from "./credential-oauth-refresher"
 import { CredentialVault } from "./credential-vault"
+import { auditIdentityOf } from "./invocation-context"
 
 export type { SecretPromptPort } from "./credential-secret-prompt"
 export { createElectronSecretPrompt, createFixedSecretPrompt } from "./credential-secret-prompt"
@@ -349,10 +351,7 @@ export class CredentialBroker {
     sourceKind: PluginSourceKind
     isTriggerOrigin: boolean
     allowedUses?: readonly TriggerUse[]
-    runId?: string
-    principal?: ToolPrincipal
-    workspaceId?: string
-    triggerInstanceId?: string
+    invocation: InvocationContext
   }): (
     request: InjectionRequest,
     pluginHeaders: Record<string, string>
@@ -416,10 +415,7 @@ export class CredentialBroker {
               path: request.path,
               credentialId: entry.credentialId,
             },
-            runId: args.runId,
-            principal: args.principal,
-            workspaceId: args.workspaceId,
-            triggerInstanceId: args.triggerInstanceId,
+            ...auditIdentityOf(args.invocation),
           })
         }
         return injected

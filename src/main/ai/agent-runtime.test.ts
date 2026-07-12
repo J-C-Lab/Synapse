@@ -2,6 +2,7 @@ import type { RegisteredToolDescriptor } from "../plugins/types"
 import type { ChatContentBlock, ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
 import type { RunTrace } from "./run-trace-store"
 import type { ToolHostPort } from "./tool-registry"
+import { randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -9,7 +10,19 @@ import process from "node:process"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AgentRuntime, buildSystemPrompt } from "./agent-runtime"
 import { emptyUsage } from "./providers/types"
+import { buildBackgroundAgentRun, buildInteractiveRun, buildSubagentRun } from "./run-provenance"
 import { AiToolRegistry, modelToolName } from "./tool-registry"
+
+function interactiveProvenance(
+  conversationId = "c1",
+  extra?: { runId?: string; workspaceId?: string }
+) {
+  return buildInteractiveRun({
+    runId: extra?.runId ?? randomUUID(),
+    conversationId,
+    ...(extra?.workspaceId !== undefined ? { workspaceId: extra.workspaceId } : {}),
+  })
+}
 
 interface ScriptedTurn {
   text?: string
@@ -138,7 +151,7 @@ describe("agentRuntime", () => {
 
     const onText = vi.fn()
     const result = await runtime.run({
-      conversationId: "c1",
+      provenance: interactiveProvenance(),
       messages: [userMessage("greet Ada")],
       onText,
     })
@@ -179,7 +192,10 @@ describe("agentRuntime", () => {
       maxSteps: 2,
     })
 
-    const result = await runtime.run({ conversationId: "c1", messages: [userMessage("loop")] })
+    const result = await runtime.run({
+      provenance: interactiveProvenance(),
+      messages: [userMessage("loop")],
+    })
     expect(result.stopReason).toBe("max_steps")
     expect(host.invokeTool).toHaveBeenCalledTimes(2)
   })
@@ -199,7 +215,10 @@ describe("agentRuntime", () => {
       budgetTokens: 50,
     })
 
-    const result = await runtime.run({ conversationId: "c1", messages: [userMessage("loop")] })
+    const result = await runtime.run({
+      provenance: interactiveProvenance(),
+      messages: [userMessage("loop")],
+    })
 
     expect(result.stopReason).toBe("budget_exceeded")
     // First turn's tools run; the loop bails before the second provider call.
@@ -220,7 +239,10 @@ describe("agentRuntime", () => {
       budgetTokens: 1000,
     })
 
-    const result = await runtime.run({ conversationId: "c1", messages: [userMessage("hi")] })
+    const result = await runtime.run({
+      provenance: interactiveProvenance(),
+      messages: [userMessage("hi")],
+    })
 
     expect(result.stopReason).toBe("end_turn")
     expect(host.invokeTool).toHaveBeenCalledTimes(1)
@@ -236,7 +258,7 @@ describe("agentRuntime", () => {
     const controller = new AbortController()
     controller.abort()
     const result = await runtime.run({
-      conversationId: "c1",
+      provenance: interactiveProvenance(),
       messages: [userMessage("hi")],
       signal: controller.signal,
     })
@@ -255,7 +277,7 @@ describe("agentRuntime", () => {
     })
 
     const result = await runtime.run({
-      conversationId: "c1",
+      provenance: interactiveProvenance(),
       messages: [userMessage("greet")],
       approve: () => ({ allowed: false }),
     })
@@ -276,7 +298,10 @@ describe("agentRuntime", () => {
       recordRun: (trace) => recorded.push(trace),
     })
 
-    const result = await runtime.run({ conversationId: "c1", messages: [userMessage("hi")] })
+    const result = await runtime.run({
+      provenance: interactiveProvenance(),
+      messages: [userMessage("hi")],
+    })
 
     expect(result.stopReason).toBe("end_turn")
     expect(recorded).toHaveLength(1)
@@ -304,10 +329,13 @@ describe("agentRuntime", () => {
     })
 
     await runtime.run({
-      conversationId: "inv-1",
+      provenance: buildBackgroundAgentRun({
+        runId: "supplied-run",
+        invocationId: "inv-1",
+        workspaceId: "ws-test",
+        triggerInstanceId: "inst-test",
+      }),
       messages: [userMessage("hi")],
-      runId: "supplied-run",
-      origin: "background-agent",
     })
 
     expect(recorded[0].runId).toBe("supplied-run")
@@ -323,8 +351,14 @@ describe("agentRuntime", () => {
       recordRun: (trace) => recorded.push(trace),
     })
 
-    await runtime.run({ conversationId: "c1", messages: [userMessage("one")] })
-    await runtime.run({ conversationId: "c1", messages: [userMessage("two")] })
+    await runtime.run({
+      provenance: interactiveProvenance("c1", { runId: randomUUID() }),
+      messages: [userMessage("one")],
+    })
+    await runtime.run({
+      provenance: interactiveProvenance("c1", { runId: randomUUID() }),
+      messages: [userMessage("two")],
+    })
 
     expect(recorded).toHaveLength(2)
     expect(recorded[0].runId).not.toBe(recorded[1].runId)
@@ -342,7 +376,7 @@ describe("agentRuntime", () => {
     controller.abort()
 
     await runtime.run({
-      conversationId: "c1",
+      provenance: interactiveProvenance(),
       messages: [userMessage("hi")],
       signal: controller.signal,
     })
@@ -364,7 +398,10 @@ describe("agentRuntime", () => {
       },
     })
 
-    const result = await runtime.run({ conversationId: "c1", messages: [userMessage("hi")] })
+    const result = await runtime.run({
+      provenance: interactiveProvenance(),
+      messages: [userMessage("hi")],
+    })
     expect(result.stopReason).toBe("end_turn")
   })
 
@@ -378,12 +415,12 @@ describe("agentRuntime", () => {
     })
 
     await runtime.run({
-      conversationId: "c1",
+      provenance: buildSubagentRun({
+        runId: "child-1",
+        conversationId: "c1",
+        parentRunId: "parent-1",
+      }),
       messages: [userMessage("subtask")],
-      runId: "child-1",
-      origin: "subagent",
-      parentRunId: "parent-1",
-      caller: { kind: "subagent", conversationId: "c1", runId: "child-1", parentRunId: "parent-1" },
     })
 
     expect(recorded[0]).toMatchObject({
@@ -407,10 +444,13 @@ describe("agentRuntime", () => {
     })
 
     await runtime.run({
-      conversationId: "inv-1",
+      provenance: buildBackgroundAgentRun({
+        runId: "run-1",
+        invocationId: "inv-1",
+        workspaceId: "ws-test",
+        triggerInstanceId: "inst-test",
+      }),
       messages: [userMessage("run")],
-      origin: "background-agent",
-      caller: { kind: "background-agent", invocationId: "inv-1", runId: "run-1" },
     })
 
     expect(host.invokeTool).toHaveBeenCalledWith(
@@ -436,18 +476,12 @@ describe("agentRuntime", () => {
     })
 
     await runtime.run({
-      conversationId: "c1",
-      messages: [userMessage("subtask")],
-      runId: "child-1",
-      origin: "subagent",
-      parentRunId: "parent-1",
-      caller: {
-        kind: "subagent",
-        conversationId: "c1",
+      provenance: buildSubagentRun({
         runId: "child-1",
+        conversationId: "c1",
         parentRunId: "parent-1",
-        principal: { kind: "subagent", parentRunId: "parent-1" },
-      },
+      }),
+      messages: [userMessage("subtask")],
     })
 
     expect(host.invokeTool).toHaveBeenCalledWith(
@@ -472,7 +506,7 @@ describe("agentRuntime", () => {
       getPlan: (runId) => (runId ? plan : undefined),
     })
 
-    await runtime.run({ conversationId: "c1", messages: [userMessage("hi")] })
+    await runtime.run({ provenance: interactiveProvenance(), messages: [userMessage("hi")] })
     expect(recorded[0].plan).toEqual(plan)
   })
 
@@ -501,7 +535,7 @@ describe("agentRuntime", () => {
     })
 
     await runtime.run({
-      conversationId: "c1",
+      provenance: interactiveProvenance(),
       messages: [userMessage("a"), userMessage("b"), userMessage("c")],
     })
     expect(seenLengths[0]).toBe(1)
@@ -523,7 +557,10 @@ describe("agentRuntime", () => {
       },
     }
     const runtime = new AgentRuntime({ provider, tools: new AiToolRegistry(host) })
-    await runtime.run({ conversationId: "c1", messages: [userMessage("a"), userMessage("b")] })
+    await runtime.run({
+      provenance: interactiveProvenance(),
+      messages: [userMessage("a"), userMessage("b")],
+    })
     expect(seenLengths[0]).toBe(2)
   })
 
@@ -563,7 +600,10 @@ describe("agentRuntime", () => {
       ],
     })
 
-    const result = await runtime.run({ conversationId: "c1", messages: [userMessage("hello")] })
+    const result = await runtime.run({
+      provenance: interactiveProvenance(),
+      messages: [userMessage("hello")],
+    })
 
     expect(seen[0].system).toContain("marked as untrusted")
     expect(seen[0].system).not.toContain("Run tests before committing.")
@@ -623,7 +663,7 @@ describe("agentRuntime", () => {
       ],
     })
 
-    await runtime.run({ conversationId: "c1", messages: [userMessage("hello")] })
+    await runtime.run({ provenance: interactiveProvenance(), messages: [userMessage("hello")] })
 
     const outgoingText = seen[0]!.messages[0]!.content.map((block) =>
       block.type === "text" ? block.text : ""
@@ -661,7 +701,10 @@ describe("agentRuntime", () => {
     }
     const runtime = new AgentRuntime({ provider, tools: new AiToolRegistry(host) })
 
-    await runtime.run({ conversationId: "c1", messages: [userMessage("run the tool")] })
+    await runtime.run({
+      provenance: interactiveProvenance(),
+      messages: [userMessage("run the tool")],
+    })
 
     expect(seenSystems).toHaveLength(2)
     for (const system of seenSystems) {
@@ -692,7 +735,10 @@ describe("agentRuntime", () => {
         tools: new AiToolRegistry(host),
       })
 
-      const result = await runtime.run({ conversationId: "c1", messages: [userMessage("go")] })
+      const result = await runtime.run({
+        provenance: interactiveProvenance(),
+        messages: [userMessage("go")],
+      })
 
       const toolResultBlock = result.messages
         .flatMap((m) => m.content)
@@ -713,7 +759,10 @@ describe("agentRuntime", () => {
         tools: new AiToolRegistry(host),
       })
 
-      const result = await runtime.run({ conversationId: "c1", messages: [userMessage("go")] })
+      const result = await runtime.run({
+        provenance: interactiveProvenance(),
+        messages: [userMessage("go")],
+      })
 
       const toolResultBlock = result.messages
         .flatMap((m) => m.content)
@@ -734,7 +783,10 @@ describe("agentRuntime", () => {
         tools: new AiToolRegistry(host),
       })
 
-      const result = await runtime.run({ conversationId: "c1", messages: [userMessage("go")] })
+      const result = await runtime.run({
+        provenance: interactiveProvenance(),
+        messages: [userMessage("go")],
+      })
 
       const toolResultBlock = result.messages
         .flatMap((m) => m.content)
@@ -756,7 +808,10 @@ describe("agentRuntime", () => {
       maxToolResultChars: 12,
     })
 
-    const result = await runtime.run({ conversationId: "c1", messages: [userMessage("run tool")] })
+    const result = await runtime.run({
+      provenance: interactiveProvenance(),
+      messages: [userMessage("run tool")],
+    })
 
     const toolResult = result.messages[2]?.content[0]
     expect(toolResult).toMatchObject({ type: "tool_result", toolUseId: "t1" })
@@ -777,9 +832,8 @@ describe("agentRuntime", () => {
     })
 
     await runtime.run({
-      conversationId: "c1",
+      provenance: interactiveProvenance("c1", { workspaceId: "ws-int" }),
       messages: [userMessage("hi")],
-      workspaceId: "ws-int",
     })
 
     expect(traces).toHaveLength(1)
@@ -818,7 +872,7 @@ describe("agentRuntime", () => {
         },
       ],
     })
-    await runtime.run({ conversationId: "c1", messages: [userMessage("hello")] })
+    await runtime.run({ provenance: interactiveProvenance(), messages: [userMessage("hello")] })
     expect(seenSystems[0]).not.toContain("list_files")
     expect(seenSystems[0]).not.toContain("read_file")
   })
@@ -831,10 +885,13 @@ describe("agentRuntime", () => {
       recordRun: (trace) => traces.push(trace),
     })
     await runtime.run({
-      conversationId: "c1",
+      provenance: buildBackgroundAgentRun({
+        runId: randomUUID(),
+        invocationId: "inv-test",
+        workspaceId: "work",
+        triggerInstanceId: "instance-1",
+      }),
       messages: [userMessage("hi")],
-      workspaceId: "work",
-      triggerInstanceId: "instance-1",
     })
     expect(traces[0]?.workspaceId).toBe("work")
     expect(traces[0]?.triggerInstanceId).toBe("instance-1")

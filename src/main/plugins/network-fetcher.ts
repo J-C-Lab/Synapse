@@ -1,7 +1,7 @@
 import type { NetworkHttpsRequestedScope } from "@synapse/plugin-manifest"
-import type { ToolPrincipal } from "@synapse/plugin-sdk"
 import type { IncomingMessage } from "node:http"
-import type { CapabilityActor, CapabilityGatePort } from "./capability-gate"
+import type { CapabilityGatePort } from "./capability-gate"
+import type { InvocationContext } from "./invocation-context"
 import type { ResolvedAddress } from "./network-dns"
 import { Buffer } from "node:buffer"
 import * as https from "node:https"
@@ -96,18 +96,8 @@ export type NetworkStreamTransport = (args: TransportArgs) => Promise<StreamTran
 
 export interface NetworkFetcherConfig {
   gate: CapabilityGatePort
-  actor: CapabilityActor
-  trigger: string
+  invocation: InvocationContext
   pluginId: string
-  /** Trigger-origin background calls carry this for budget-breaker routing. */
-  invocationId?: string
-  /** The agent run this fetch belongs to; copied onto the network:https audit entry. */
-  runId?: string
-  /** Who initiated this fetch; copied onto the network:https audit entry. */
-  principal?: ToolPrincipal
-  /** The workspace this fetch is bound to; copied onto the network:https audit entry. */
-  workspaceId?: string
-  triggerInstanceId?: string
   /** Optional host-side credential injector. Called with the per-hop request and
    *  the (lowercased-key) headers about to be sent; returns the header to attach
    *  or undefined. Throwing aborts the fetch (plugin-set-header conflict). Plan 2
@@ -410,16 +400,10 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
     // 9. Consent gate BEFORE any byte leaves the process.
     await config.gate.ensure({
       capability: "network:https",
-      actor: config.actor,
-      trigger: config.trigger,
+      invocation: config.invocation,
       operation,
       requestedScope: requested,
       signal: controller.signal,
-      invocationId: config.invocationId,
-      runId: config.runId,
-      principal: config.principal,
-      workspaceId: config.workspaceId,
-      triggerInstanceId: config.triggerInstanceId,
     })
 
     return { parsed, addresses }

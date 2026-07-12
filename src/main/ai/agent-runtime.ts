@@ -1,12 +1,12 @@
-import type { ToolCaller } from "@synapse/plugin-sdk"
 import type { WorkspaceInstruction } from "./context/workspace-instructions"
 import type { WorkspaceRootRecord } from "./execution/types"
 import type { EnvelopeTier } from "./guardrails/untrusted-content"
 import type { PlanStep } from "./plan/plan-types"
 import type { ChatContentBlock, ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
+import type { RunProvenance } from "./run-provenance"
 import type { RunTrace, RunTraceToolCall } from "./run-trace-store"
+
 import type { AiToolRegistry } from "./tool-registry"
-import { randomUUID } from "node:crypto"
 import process from "node:process"
 import { logger } from "../logging"
 import { truncateToolResultText } from "./context/tool-result-budget"
@@ -14,6 +14,7 @@ import { loadWorkspaceInstructions } from "./context/workspace-instructions"
 import { labelUntrustedContent } from "./guardrails/untrusted-content"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
 import { addUsage, emptyUsage, totalTokens } from "./providers/types"
+import { buildRunTrace, toToolCaller } from "./run-provenance"
 import { renderToolResultText } from "./tool-registry"
 
 // The agent loop: stream a turn → if the model called tools, run them through
@@ -120,20 +121,13 @@ export type AgentEvent =
   | { type: "tool_result"; id: string; isError: boolean }
 
 export interface AgentRunOptions {
-  conversationId: string
+  provenance: RunProvenance
   messages: ChatMessage[]
   system?: string
   signal?: AbortSignal
   onText?: (delta: string) => void
   onEvent?: (event: AgentEvent) => void
   approve?: (request: ApprovalRequest) => ToolApprovalOutcome | Promise<ToolApprovalOutcome>
-  caller?: ToolCaller
-  runId?: string
-  origin?: "interactive" | "background-agent" | "subagent"
-  parentRunId?: string
-  /** The workspace this run is bound to; stamped onto the trace and tool caller. */
-  workspaceId?: string
-  triggerInstanceId?: string
 }
 
 export interface AgentRunResult {
@@ -146,8 +140,7 @@ export class AgentRuntime {
   constructor(private readonly options: AgentRuntimeOptions) {}
 
   async run(options: AgentRunOptions): Promise<AgentRunResult> {
-    const runId = options.runId ?? randomUUID()
-    const origin = options.origin ?? "interactive"
+    const provenance = options.provenance
     const startedAt = Date.now()
     const toolCalls: RunTraceToolCall[] = []
     const messages = [...options.messages]
@@ -170,7 +163,7 @@ export class AgentRuntime {
     let usage = emptyUsage()
 
     const finish = (stopReason: AgentRunResult["stopReason"]): AgentRunResult => {
-      this.recordTrace({ runId, origin, options, startedAt, toolCalls, outcome: stopReason })
+      this.recordTrace({ provenance, startedAt, toolCalls, outcome: stopReason })
       return { messages, stopReason, usage }
     }
 
@@ -219,56 +212,40 @@ export class AgentRuntime {
         const resultBlocks: ChatContentBlock[] = []
         for (const call of calls) {
           options.onEvent?.({ type: "tool_call", id: call.id, name: call.name, input: call.input })
-          resultBlocks.push(await this.runOneTool(call, options, runId, toolCalls))
+          resultBlocks.push(await this.runOneTool(call, options, provenance, toolCalls))
         }
         messages.push({ role: "user", content: resultBlocks })
       }
 
       return finish("max_steps")
     } catch (err) {
-      this.recordTrace({ runId, origin, options, startedAt, toolCalls, outcome: "error" })
+      this.recordTrace({ provenance, startedAt, toolCalls, outcome: "error" })
       throw err
     }
   }
 
   private recordTrace(args: {
-    runId: string
-    origin: RunTrace["origin"]
-    options: AgentRunOptions
+    provenance: RunProvenance
     startedAt: number
     toolCalls: RunTraceToolCall[]
     outcome: RunTrace["outcome"]
   }): void {
     const record = this.options.recordRun
     if (!record) return
-    const trace: RunTrace = {
-      runId: args.runId,
-      origin: args.origin,
+    const plan = this.options.getPlan?.(args.provenance.runId)
+    const trace = buildRunTrace(args.provenance, {
       startedAt: args.startedAt,
       endedAt: Date.now(),
       outcome: args.outcome,
       toolCalls: args.toolCalls,
-      principal:
-        args.origin === "subagent" && args.options.parentRunId !== undefined
-          ? { kind: "subagent", parentRunId: args.options.parentRunId }
-          : { kind: "internal-agent" },
-    }
-    if (args.origin === "interactive" || args.origin === "subagent") {
-      trace.conversationId = args.options.conversationId
-    } else trace.invocationId = args.options.conversationId
-    if (args.options.parentRunId !== undefined) trace.parentRunId = args.options.parentRunId
-
-    const plan = this.options.getPlan?.(args.runId)
-    if (plan && plan.length > 0) trace.plan = plan
-    if (args.options.workspaceId !== undefined) trace.workspaceId = args.options.workspaceId
-    if (args.options.triggerInstanceId !== undefined)
-      trace.triggerInstanceId = args.options.triggerInstanceId
+      ...(plan && plan.length > 0 ? { plan } : {}),
+    })
 
     try {
       record(trace)
     } catch (err) {
       logger.child("agent-runtime").warn("recordRun threw; run trace dropped", {
-        runId: args.runId,
+        runId: args.provenance.runId,
         err,
       })
     }
@@ -277,7 +254,7 @@ export class AgentRuntime {
   private async runOneTool(
     call: { id: string; name: string; input: unknown },
     options: AgentRunOptions,
-    runId: string,
+    provenance: RunProvenance,
     toolCalls: RunTraceToolCall[]
   ): Promise<ChatContentBlock> {
     const startedAt = Date.now()
@@ -300,19 +277,7 @@ export class AgentRuntime {
       return toolResult(call.id, "Tool call denied.", true)
     }
 
-    // Every caller of run() that supplies its own `caller` is still an
-    // internal Synapse origin (background-agent, subagent) — default the
-    // principal to internal-agent so it's never silently absent, but let an
-    // explicit principal on options.caller (e.g. subagent's own) win.
-    const caller: ToolCaller = options.caller
-      ? { principal: { kind: "internal-agent" }, ...options.caller }
-      : {
-          kind: "agent",
-          conversationId: options.conversationId,
-          runId,
-          principal: { kind: "internal-agent" },
-          workspaceId: options.workspaceId,
-        }
+    const caller = toToolCaller(provenance)
 
     try {
       const result = await this.options.tools.invoke(call.name, call.input, {

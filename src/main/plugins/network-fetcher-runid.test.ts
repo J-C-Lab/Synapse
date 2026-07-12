@@ -1,6 +1,7 @@
 import type { CapabilityGatePort, CapabilityRequest } from "./capability-gate"
 import { Buffer } from "node:buffer"
 import { describe, expect, it } from "vitest"
+import { auditIdentityOf } from "./invocation-context"
 import { createNetworkFetcher } from "./network-fetcher"
 
 describe("networkFetcher runId threading", () => {
@@ -15,10 +16,12 @@ describe("networkFetcher runId threading", () => {
     }
     const fetcher = createNetworkFetcher({
       gate,
-      actor: "agent",
-      trigger: "tool:fetch",
+      invocation: {
+        source: "tool",
+        trigger: "tool:fetch",
+        caller: { kind: "agent", runId: "run-net", principal: { kind: "internal-agent" } },
+      },
       pluginId: "com.synapse.test",
-      runId: "run-net",
       resolve: async () => [{ address: "140.82.112.3", family: 4 }],
       transport: async () => ({
         status: 200,
@@ -32,6 +35,6 @@ describe("networkFetcher runId threading", () => {
 
     expect(seen).toHaveLength(1)
     expect(seen[0].capability).toBe("network:https")
-    expect(seen[0].runId).toBe("run-net")
+    expect(auditIdentityOf(seen[0].invocation).runId).toBe("run-net")
   })
 })

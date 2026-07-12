@@ -13,6 +13,7 @@ import {
 import { AgentBudgetLedger } from "../plugins/agent-budget"
 import { AgentRuntime } from "./agent-runtime"
 import { emptyUsage, totalTokens } from "./providers/types"
+import { buildBackgroundAgentRun } from "./run-provenance"
 import { AiToolRegistry } from "./tool-registry"
 
 export interface BackgroundAgentRunInput {
@@ -99,20 +100,14 @@ export class BackgroundAgentRunner {
 
     try {
       const result = await runtime.run({
-        conversationId: input.invocationId,
-        messages: [backgroundUserMessage(input)],
-        signal: controller.signal,
-        runId: start.runId,
-        origin: "background-agent",
-        workspaceId: input.workspaceId,
-        triggerInstanceId: input.instanceId,
-        caller: {
-          kind: "background-agent",
-          invocationId: input.invocationId,
+        provenance: buildBackgroundAgentRun({
           runId: start.runId,
+          invocationId: input.invocationId,
           workspaceId: input.workspaceId,
           triggerInstanceId: input.instanceId,
-        },
+        }),
+        messages: [backgroundUserMessage(input)],
+        signal: controller.signal,
         approve: () => ({ allowed: this.ledger.tryDebitToolCall(start.runId, input.agent) }),
       })
       return tokenBudgetExceeded ? { ...result, stopReason: "budget_exceeded" } : result

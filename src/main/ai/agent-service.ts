@@ -29,6 +29,7 @@ import { ContextCompressor } from "./context/context-compressor"
 import { summarizeViaProvider } from "./context/summarize-via-provider"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./providers/catalog"
+import { buildInteractiveRun } from "./run-provenance"
 import { DEFAULT_WORKSPACE } from "./workspace/workspace-store"
 
 // Assembles the AI pieces (credentials + provider catalog + tools + runtime +
@@ -440,6 +441,7 @@ export class AgentService {
 
     const existing = await this.options.conversations.get(conversationId)
     const workspaceId = existing?.workspaceId ?? "default"
+    const provenance = buildInteractiveRun({ runId, conversationId, workspaceId })
     const resolvedExecutionRoots = (await this.options.getExecutionWorkspaces?.(workspaceId)) ?? []
 
     const runtime = new AgentRuntime({
@@ -464,10 +466,8 @@ export class AgentService {
 
     try {
       const result = await runtime.run({
-        conversationId,
-        runId,
+        provenance,
         messages,
-        workspaceId,
         signal: controller.signal,
         onText: (delta) => textBatcher.push(delta),
         onEvent: (event) => {

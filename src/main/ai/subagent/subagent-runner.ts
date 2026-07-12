@@ -3,6 +3,7 @@ import type { RunTrace } from "../run-trace-store"
 import type { AiToolRegistry } from "../tool-registry"
 import { randomUUID } from "node:crypto"
 import { AgentRuntime } from "../agent-runtime"
+import { buildSubagentRun } from "../run-provenance"
 
 const SUMMARY_MAX = 2000
 
@@ -49,19 +50,13 @@ export class SubagentRunner {
     })
 
     const result = await runtime.run({
-      conversationId: input.parentConversationId,
+      provenance: buildSubagentRun({
+        runId: childRunId,
+        conversationId: input.parentConversationId,
+        parentRunId: input.parentRunId,
+      }),
       messages: [subUserMessage(input.instruction)],
       signal: input.signal,
-      runId: childRunId,
-      origin: "subagent",
-      parentRunId: input.parentRunId,
-      caller: {
-        kind: "subagent",
-        conversationId: input.parentConversationId,
-        runId: childRunId,
-        parentRunId: input.parentRunId,
-        principal: { kind: "subagent", parentRunId: input.parentRunId },
-      },
     })
 
     return {
