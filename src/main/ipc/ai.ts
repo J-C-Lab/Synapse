@@ -11,6 +11,7 @@ import type { ToolStatSnapshot } from "../ai/tool-circuit-breaker"
 import type { Workspace } from "../ai/workspace/workspace-store"
 import { logger } from "../logging"
 import { withCapabilityPromptTarget } from "./capability-prompt-router"
+import { requireString } from "./validation"
 
 // IPC surface for the built-in assistant (design §8). Streaming is push-based:
 // `ai:chat` kicks off a turn and resolves when it ends, while text / tool /
@@ -393,9 +394,4 @@ export function coerceApprove(payload: unknown): {
     allow: v.allow,
     remember: (remember as RememberScope | undefined) ?? "once",
   }
-}
-
-function requireString(value: unknown, label: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`${label} must be a string.`)
-  return value
 }
