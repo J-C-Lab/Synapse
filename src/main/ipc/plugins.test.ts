@@ -9,11 +9,14 @@ import { PluginCrashedError } from "../plugins/plugin-registry"
 import { PluginInvocationTimeoutError } from "../plugins/plugin-sandbox"
 import { createPluginIpcHandlers, invokePluginIpcHandler } from "./plugins"
 
-function fakeHost(): PluginHost {
+function fakeHost(overrides: Partial<PluginHost> = {}): PluginHost {
   return {
     list: vi.fn(() => [{ pluginId: "com.synapse.test" }]),
     get: vi.fn((pluginId: string) => ({ pluginId })),
     setEnabled: vi.fn(async (pluginId: string, enabled: boolean) => ({ pluginId, enabled })),
+    listPendingTriggerCapabilityConfirmations: vi.fn(async () => []),
+    confirmTriggerCapabilities: vi.fn(async () => []),
+    confirmAndEnablePlugin: vi.fn(async (pluginId: string) => ({ pluginId, status: "active" })),
     setPreference: vi.fn(async () => {}),
     installFolder: vi.fn(async () => {
       throw new PluginHostNotImplementedError("Folder plugin installation is planned later")
@@ -32,6 +35,7 @@ function fakeHost(): PluginHost {
     listMarketplacePlugins: vi.fn(async () => [{ id: "com.synapse.marketplace" }]),
     installMarketplacePlugin: vi.fn(async (id: string, version?: string) => ({ id, version })),
     registry: { on: vi.fn() },
+    ...overrides,
   } as unknown as PluginHost
 }
 
@@ -374,6 +378,47 @@ describe("plugin ipc handlers", () => {
 
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error.code).toBe("PLUGIN_CRASHED")
+  })
+})
+
+describe("listPendingTriggerCapabilities / confirmTriggerCapabilities / confirmAndEnable", () => {
+  it("listPendingTriggerCapabilities delegates to host.listPendingTriggerCapabilityConfirmations", async () => {
+    const pending = [
+      { pluginId: "p1", capabilities: [{ capabilityId: "memory:read", triggerIds: ["t1"] }] },
+    ]
+    const host = fakeHost({ listPendingTriggerCapabilityConfirmations: async () => pending })
+    const handlers = createPluginIpcHandlers(host)
+    expect(await handlers.listPendingTriggerCapabilities()).toEqual(pending)
+  })
+
+  it("confirmTriggerCapabilities validates the payload shape before delegating", async () => {
+    const confirmTriggerCapabilities = vi.fn(async () => [])
+    const host = fakeHost({ confirmTriggerCapabilities })
+    const handlers = createPluginIpcHandlers(host)
+
+    await handlers.confirmTriggerCapabilities({ pluginId: "p1", capabilityIds: ["memory:read"] })
+    expect(confirmTriggerCapabilities).toHaveBeenCalledWith({
+      pluginId: "p1",
+      capabilityIds: ["memory:read"],
+    })
+
+    expect(() => handlers.confirmTriggerCapabilities({ pluginId: "p1" })).toThrow()
+    expect(() =>
+      handlers.confirmTriggerCapabilities({ pluginId: "p1", capabilityIds: "not-an-array" })
+    ).toThrow("capabilityIds must be an array of strings.")
+  })
+
+  it("confirmAndEnable validates the payload shape before delegating", async () => {
+    const confirmAndEnablePlugin = vi.fn(async () => ({ pluginId: "p1" }) as never)
+    const host = fakeHost({ confirmAndEnablePlugin })
+    const handlers = createPluginIpcHandlers(host)
+
+    await handlers.confirmAndEnable({ pluginId: "p1", capabilityIds: ["memory:read"] })
+    expect(confirmAndEnablePlugin).toHaveBeenCalledWith("p1", ["memory:read"])
+
+    expect(() => handlers.confirmAndEnable({ capabilityIds: [] })).toThrow(
+      "pluginId must be a non-empty string"
+    )
   })
 })
 
