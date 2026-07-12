@@ -441,6 +441,10 @@
       "migrationNoticeTitle": "后台自动化现已按 workspace 运行",
       "migrationNoticeBody": "以下自动化在更新前已在运行，需要按 workspace 重新激活：{{triggers}}",
       "migrationNoticeDismiss": "知道了",
+      "pendingCapabilityTitle": "这个插件需要你的确认",
+      "pendingCapabilityBody": "{{plugin}} 想要使用：{{capabilities}}。确认后它才能开始使用这些能力。",
+      "pendingCapabilityReview": "查看",
+      "pendingCapabilityConfirm": "确认",
       "status": {
         "active": "运行中",
         "ok": "运行中",
@@ -476,7 +480,9 @@
       "fs:resolvePath": "定位允许文件夹中的文件",
       "hotkey:global": "使用全局快捷键",
       "network:https": "访问网络",
-      "credentials:broker": "代表你使用已连接的账号"
+      "credentials:broker": "代表你使用已连接的账号",
+      "memory:read": "读取此工作区的记忆和全局记忆",
+      "execution:read": "读取此工作区的文件"
     }
   },
   "profile": {

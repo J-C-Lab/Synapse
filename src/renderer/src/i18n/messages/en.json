@@ -441,6 +441,10 @@
       "migrationNoticeTitle": "Background automations now run per workspace",
       "migrationNoticeBody": "These automations were running before this update and need to be re-activated per workspace: {{triggers}}",
       "migrationNoticeDismiss": "Dismiss",
+      "pendingCapabilityTitle": "This plugin needs your approval",
+      "pendingCapabilityBody": "{{plugin}} wants to use: {{capabilities}}. Review and approve to let it start using them.",
+      "pendingCapabilityReview": "Review",
+      "pendingCapabilityConfirm": "Approve",
       "status": {
         "active": "Running",
         "ok": "Running",
@@ -476,7 +480,9 @@
       "fs:resolvePath": "Locate files in allowed folders",
       "hotkey:global": "Use a global keyboard shortcut",
       "network:https": "Access the internet",
-      "credentials:broker": "Use connected accounts on your behalf"
+      "credentials:broker": "Use connected accounts on your behalf",
+      "memory:read": "Read this workspace's memory and global memory",
+      "execution:read": "Read this workspace's files"
     }
   },
   "profile": {
