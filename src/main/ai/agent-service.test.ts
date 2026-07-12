@@ -150,7 +150,7 @@ function service(options: {
   host: ToolHostPort
   key?: string
   recordRun?: (trace: import("./run-trace-store").RunTrace) => void
-  workspaces?: { exists: (id: string) => Promise<boolean> }
+  workspaces?: AgentServiceOptions["workspaces"]
   getToolHealth?: () => import("./tool-circuit-breaker").ToolStatSnapshot[]
   getLatestPlan?: (conversationId: string) => import("./plan/plan-types").PlanStep[] | undefined
   getExecutionWorkspaces?: (
@@ -557,7 +557,10 @@ describe("agentService", () => {
       host: fakeHost({ readOnlyHint: true }),
       provider: fakeProvider([{ text: "done" }]),
       recordRun: (t) => traces.push(t),
-      workspaces: { exists: async (id) => id === "default" || id === "work" },
+      workspaces: {
+        isActive: async (id) => id === "default" || id === "work",
+        exists: async (id) => id === "default" || id === "work",
+      },
     })
     saved.push({
       id: "c-work",
@@ -620,16 +623,69 @@ describe("agentService", () => {
     expect(traces.at(-1)?.workspaceId).toBe("default")
   })
 
-  it("createConversation binds the chosen workspace and rejects unknown ones", async () => {
+  it("createConversation binds the chosen workspace and rejects inactive ones", async () => {
     const { service: svc } = service({
       host: fakeHost(),
       provider: fakeProvider([{ text: "x" }]),
-      workspaces: { exists: async (id) => id === "default" || id === "work" },
+      workspaces: {
+        isActive: async (id) => id === "default" || id === "work",
+        exists: async (id) => id === "default" || id === "work",
+      },
     })
     const created = await svc.createConversation("work")
     expect(created.workspaceId).toBe("work")
     expect((await svc.getConversation(created.id))?.workspaceId).toBe("work")
-    await expect(svc.createConversation("ghost")).rejects.toThrow(/Unknown workspace/)
+    await expect(svc.createConversation("ghost")).rejects.toThrow("Workspace is not active: ghost")
+  })
+
+  describe("workspace lifecycle wrappers", () => {
+    const baseWorkspaces = {
+      exists: async () => true,
+      isActive: async () => true,
+    }
+
+    it("renameWorkspace delegates to the store", async () => {
+      const renamed = { id: "w1", name: "Renamed", createdAt: 1 }
+      const rename = vi.fn(async () => renamed)
+      const svc = minimalService({ workspaces: { ...baseWorkspaces, rename } })
+      await expect(svc.renameWorkspace("w1", "Renamed")).resolves.toEqual(renamed)
+      expect(rename).toHaveBeenCalledWith("w1", "Renamed")
+    })
+
+    it("archiveWorkspace/unarchiveWorkspace delegate to the store", async () => {
+      const archived = { id: "w1", name: "Work", createdAt: 1, archived: true as const }
+      const unarchived = { id: "w1", name: "Work", createdAt: 1 }
+      const archive = vi.fn(async () => archived)
+      const unarchive = vi.fn(async () => unarchived)
+      const svc = minimalService({ workspaces: { ...baseWorkspaces, archive, unarchive } })
+      await expect(svc.archiveWorkspace("w1")).resolves.toEqual(archived)
+      await expect(svc.unarchiveWorkspace("w1")).resolves.toEqual(unarchived)
+      expect(archive).toHaveBeenCalledWith("w1")
+      expect(unarchive).toHaveBeenCalledWith("w1")
+    })
+
+    it("listWorkspaces forwards includeArchived", async () => {
+      const list = vi.fn(async () => [])
+      const svc = minimalService({ workspaces: { ...baseWorkspaces, list } })
+      await svc.listWorkspaces({ includeArchived: true })
+      expect(list).toHaveBeenCalledWith({ includeArchived: true })
+    })
+  })
+
+  describe("createConversation — archived workspace", () => {
+    it("rejects creating a conversation in an archived workspace", async () => {
+      const { service: svc } = service({
+        host: fakeHost(),
+        provider: fakeProvider([{ text: "x" }]),
+        workspaces: {
+          isActive: async (id) => id !== "archived-ws",
+          exists: async () => true,
+        },
+      })
+      await expect(svc.createConversation("archived-ws")).rejects.toThrow(
+        "Workspace is not active: archived-ws"
+      )
+    })
   })
 
   describe("workspace root management", () => {
