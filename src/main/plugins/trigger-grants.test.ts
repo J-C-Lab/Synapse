@@ -3,7 +3,11 @@ import { tmpdir } from "node:os"
 import * as path from "node:path"
 import { describe, expect, it } from "vitest"
 import { GrantStore, grantStoreFilePath } from "./grant-store"
-import { grantTriggerUses, revokeTriggerUses } from "./trigger-grants"
+import {
+  grantTriggerUses,
+  pendingCapabilityConfirmations,
+  revokeTriggerUses,
+} from "./trigger-grants"
 
 const identity = {
   pluginId: "com.example.clip",
@@ -218,5 +222,92 @@ describe("grantTriggerUses", () => {
     await revokeTriggerUses(store, identity, triggers)
     expect(await store.isGranted(identity, "clipboard:read")).toBe(false)
     await fs.rm(dir, { recursive: true, force: true })
+  })
+})
+
+describe("grantTriggerUses — explicit-confirmation capabilities", () => {
+  it("never auto-grants memory:read or execution:read", async () => {
+    const granted: string[] = []
+    const grants: Pick<GrantStore, "isGranted" | "grant" | "list"> = {
+      isGranted: async () => false,
+      grant: async (_identity, capabilityId) => {
+        granted.push(capabilityId)
+      },
+      list: async () => [],
+    }
+    const triggers = [
+      {
+        id: "poll",
+        type: "timer" as const,
+        schedule: { intervalMs: 60_000 },
+        handler: "triggers.onPoll",
+        uses: [
+          { capability: "memory:read", budget: { maxCalls: 10, period: "1h" as const } },
+          { capability: "execution:read", budget: { maxCalls: 10, period: "1h" as const } },
+          { capability: "clipboard:read", budget: { maxCalls: 10, period: "1h" as const } },
+        ],
+      },
+    ]
+
+    await grantTriggerUses(grants, identity, triggers)
+
+    expect(granted).toEqual(["clipboard:read"])
+  })
+})
+
+describe("pendingCapabilityConfirmations", () => {
+  it("returns declared-but-ungranted explicit-confirmation capabilities, deduplicated by id", async () => {
+    const triggers = [
+      {
+        id: "trigger-a",
+        type: "timer" as const,
+        schedule: { intervalMs: 60_000 },
+        handler: "triggers.onA",
+        uses: [{ capability: "memory:read", budget: { maxCalls: 10, period: "1h" as const } }],
+      },
+      {
+        id: "trigger-b",
+        type: "timer" as const,
+        schedule: { intervalMs: 60_000 },
+        handler: "triggers.onB",
+        uses: [
+          { capability: "memory:read", budget: { maxCalls: 5, period: "1h" as const } },
+          { capability: "execution:read", budget: { maxCalls: 5, period: "1h" as const } },
+        ],
+      },
+    ]
+
+    const pending = await pendingCapabilityConfirmations(triggers, async () => false)
+
+    expect(pending).toEqual(
+      expect.arrayContaining([
+        { capabilityId: "memory:read", triggerIds: ["trigger-a", "trigger-b"] },
+        { capabilityId: "execution:read", triggerIds: ["trigger-b"] },
+      ])
+    )
+    expect(pending).toHaveLength(2)
+  })
+
+  it("excludes an already-granted capability", async () => {
+    const triggers = [
+      {
+        id: "trigger-a",
+        type: "timer" as const,
+        schedule: { intervalMs: 60_000 },
+        handler: "triggers.onA",
+        uses: [{ capability: "memory:read", budget: { maxCalls: 10, period: "1h" as const } }],
+      },
+    ]
+
+    const pending = await pendingCapabilityConfirmations(
+      triggers,
+      async (id) => id === "memory:read"
+    )
+
+    expect(pending).toEqual([])
+  })
+
+  it("returns [] for undefined triggers", async () => {
+    expect(await pendingCapabilityConfirmations(undefined, async () => false)).toEqual([])
   })
 })
