@@ -196,6 +196,8 @@ const electronAPI = {
     ipcRenderer.invoke("ai:rename-workspace", { id, name }),
   archiveAiWorkspace: (id: string) => ipcRenderer.invoke("ai:archive-workspace", { id }),
   unarchiveAiWorkspace: (id: string) => ipcRenderer.invoke("ai:unarchive-workspace", { id }),
+  listRuns: (query?: { parentRunId?: string }) => ipcRenderer.invoke("runs:list", query),
+  getRun: (runId: string) => ipcRenderer.invoke("runs:get", runId),
   listWorkspaceRoots: (workspaceId: string) =>
     ipcRenderer.invoke("ai:list-workspace-roots", workspaceId),
   createWorkspaceRoot: (

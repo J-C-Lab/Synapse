@@ -370,6 +370,39 @@ declare global {
     archived?: boolean
   }
 
+  interface SynapseRunSummary {
+    runId: string
+    origin: "interactive" | "background-agent" | "subagent" | "mcp"
+    outcome: "end_turn" | "max_steps" | "aborted" | "budget_exceeded" | "error"
+    conversationId?: string
+    invocationId?: string
+    parentRunId?: string
+    workspaceId?: string
+    triggerInstanceId?: string
+    principal?: { kind: string; clientId?: string; parentRunId?: string }
+    startedAt: number
+    endedAt: number
+    toolCallCount: number
+    failedToolCallCount: number
+    hasPlan: boolean
+  }
+
+  interface SynapseRunToolCall {
+    name: string
+    startedAt: number
+    ms: number
+    ok: boolean
+    error?: "denied" | "tool-error" | "aborted" | "exception" | "legacy-error"
+  }
+
+  interface SynapseRunDetail extends Omit<
+    SynapseRunSummary,
+    "toolCallCount" | "failedToolCallCount" | "hasPlan"
+  > {
+    toolCalls: SynapseRunToolCall[]
+    plan?: { title: string; status: "pending" | "in_progress" | "completed" }[]
+  }
+
   interface SynapseWorkspaceRoot {
     id: string
     workspaceId: string
@@ -761,6 +794,8 @@ declare global {
       renameAiWorkspace: (id: string, name: string) => Promise<SynapseAiWorkspace>
       archiveAiWorkspace: (id: string) => Promise<SynapseAiWorkspace>
       unarchiveAiWorkspace: (id: string) => Promise<SynapseAiWorkspace>
+      listRuns: (query?: { parentRunId?: string }) => Promise<SynapseRunSummary[]>
+      getRun: (runId: string) => Promise<SynapseRunDetail | undefined>
       listWorkspaceRoots: (workspaceId: string) => Promise<SynapseWorkspaceRoot[]>
       createWorkspaceRoot: (
         workspaceId: string,
