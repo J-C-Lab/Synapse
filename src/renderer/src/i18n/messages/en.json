@@ -18,6 +18,7 @@
     "plugins": "Plugins",
     "marketplace": "Marketplace",
     "lanTransfer": "LAN Transfer",
+    "runs": "Runs",
     "openLauncher": "Open command launcher",
     "openLauncherHint": "Open command launcher ({{hotkey}})"
   },
@@ -700,6 +701,26 @@
         "failed": "Failed"
       }
     }
+  },
+  "runObservatory": {
+    "title": "Runs",
+    "subtitle": "Browse the latest 500 agent runs. History retains the latest 500 runs.",
+    "filterOrigin": "Origin",
+    "filterOutcome": "Outcome",
+    "filterWorkspace": "Workspace",
+    "filterAll": "All",
+    "emptyList": "No runs match the current filters.",
+    "selectPrompt": "Select a run to see its details.",
+    "detailConversation": "Conversation",
+    "detailWorkspace": "Workspace",
+    "detailTrigger": "Trigger instance",
+    "detailParentRun": "Parent run",
+    "detailChildRuns": "Child runs",
+    "detailToolCalls": "Tool calls",
+    "detailPlan": "Plan",
+    "conversationGone": "This conversation no longer exists.",
+    "parentUnavailable": "Parent run trace is unavailable. It may have aged out of retention or failed to persist.",
+    "noChildRuns": "No child runs."
   },
   "launcher": {
     "placeholder": "Search apps and commands…",

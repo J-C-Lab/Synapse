@@ -18,6 +18,7 @@
     "plugins": "插件",
     "marketplace": "应用市场",
     "lanTransfer": "局域网传输",
+    "runs": "运行记录",
     "openLauncher": "打开命令启动器",
     "openLauncherHint": "打开命令启动器（{{hotkey}}）"
   },
@@ -700,6 +701,26 @@
         "failed": "失败"
       }
     }
+  },
+  "runObservatory": {
+    "title": "运行记录",
+    "subtitle": "浏览最近 500 条 agent 运行记录。历史记录只保留最新 500 条。",
+    "filterOrigin": "来源",
+    "filterOutcome": "结果",
+    "filterWorkspace": "工作区",
+    "filterAll": "全部",
+    "emptyList": "没有符合当前筛选条件的运行记录。",
+    "selectPrompt": "选择一条运行记录查看详情。",
+    "detailConversation": "所属会话",
+    "detailWorkspace": "工作区",
+    "detailTrigger": "触发器实例",
+    "detailParentRun": "父级运行",
+    "detailChildRuns": "子级运行",
+    "detailToolCalls": "工具调用",
+    "detailPlan": "计划",
+    "conversationGone": "该会话已不存在。",
+    "parentUnavailable": "父级运行记录不可用，可能已超出保留窗口或未能成功写入。",
+    "noChildRuns": "没有子级运行。"
   },
   "launcher": {
     "placeholder": "搜索应用与命令…",

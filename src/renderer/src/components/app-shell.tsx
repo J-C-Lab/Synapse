@@ -1,6 +1,7 @@
 import {
   BrainCircuit,
   House,
+  ListTree,
   Puzzle,
   Search,
   Settings as SettingsIcon,
@@ -78,8 +79,20 @@ const MarketplacePage = lazy(() =>
 const LanTransferPage = lazy(() =>
   import("@/components/pages/lan-transfer-page").then((m) => ({ default: m.LanTransferPage }))
 )
+const RunObservatoryPage = lazy(() =>
+  import("@/components/pages/run-observatory-page").then((m) => ({
+    default: m.RunObservatoryPage,
+  }))
+)
 
-export type NavId = "home" | "cortex" | "settings" | "plugins" | "marketplace" | "lan-transfer"
+export type NavId =
+  | "home"
+  | "cortex"
+  | "settings"
+  | "plugins"
+  | "marketplace"
+  | "lan-transfer"
+  | "runs"
 
 const NAV_IDS = new Set<NavId>([
   "home",
@@ -88,6 +101,7 @@ const NAV_IDS = new Set<NavId>([
   "plugins",
   "marketplace",
   "lan-transfer",
+  "runs",
 ])
 
 function readNavFromLocation(): NavId {
@@ -242,6 +256,16 @@ export function AppShell() {
                     <span>{t("nav.marketplace")}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    isActive={nav === "runs"}
+                    onClick={() => setNav("runs")}
+                    tooltip={t("nav.runs")}
+                  >
+                    <ListTree />
+                    <span>{t("nav.runs")}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
@@ -295,7 +319,10 @@ export function AppShell() {
               "mx-auto w-full",
               nav === "cortex"
                 ? "flex min-h-0 flex-1 flex-col"
-                : nav === "plugins" || nav === "marketplace" || nav === "lan-transfer"
+                : nav === "plugins" ||
+                    nav === "marketplace" ||
+                    nav === "lan-transfer" ||
+                    nav === "runs"
                   ? "max-w-5xl"
                   : "max-w-3xl"
             )}
@@ -318,6 +345,7 @@ export function AppShell() {
               {nav === "plugins" && <PluginsPage />}
               {nav === "marketplace" && <MarketplacePage />}
               {nav === "lan-transfer" && <LanTransferPage />}
+              {nav === "runs" && <RunObservatoryPage />}
             </Suspense>
           </div>
         </main>
@@ -340,5 +368,7 @@ function navKey(id: NavId): string {
       return "marketplace"
     case "lan-transfer":
       return "lanTransfer"
+    case "runs":
+      return "runs"
   }
 }

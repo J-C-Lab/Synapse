@@ -138,6 +138,13 @@ describe("buildSystemPrompt", () => {
   })
 })
 
+function oneToolThenDone(): ChatProvider {
+  return fakeProvider([
+    { toolUses: [{ id: "t1", name: GREET_TOOL_NAME, input: {} }] },
+    { text: "done" },
+  ])
+}
+
 describe("agentRuntime", () => {
   it("runs a tool call and feeds the result back to the model", async () => {
     const host = fakeHost()
@@ -895,5 +902,58 @@ describe("agentRuntime", () => {
     })
     expect(traces[0]?.workspaceId).toBe("work")
     expect(traces[0]?.triggerInstanceId).toBe("instance-1")
+  })
+
+  it("never persists raw exception text into the trace — only a closed category", async () => {
+    const traces: RunTrace[] = []
+    const secretMessage = "ENOENT: /Users/alice/.ssh/id_rsa not found, token=sk-abc123"
+    const host: ToolHostPort = {
+      listTools: () => [descriptor()],
+      invokeTool: vi.fn(async () => {
+        throw new Error(secretMessage)
+      }),
+    }
+    const runtime = new AgentRuntime({
+      provider: oneToolThenDone(),
+      tools: new AiToolRegistry(host),
+      recordRun: (t) => traces.push(t),
+    })
+
+    const result = await runtime.run({
+      provenance: buildInteractiveRun({ runId: "r1", conversationId: "c1" }),
+      messages: [userMessage("go")],
+    })
+
+    expect(traces[0]?.toolCalls[0]?.error).toBe("exception")
+    expect(traces[0]?.toolCalls[0]?.error).not.toContain("id_rsa")
+    const toolResultBlock = result.messages
+      .flatMap((m) => m.content)
+      .find((b) => b.type === "tool_result")
+    expect(JSON.stringify(toolResultBlock)).toContain(secretMessage)
+  })
+
+  it("persists 'aborted' instead of 'exception' when the run's signal was already aborted", async () => {
+    const traces: RunTrace[] = []
+    const controller = new AbortController()
+    const host: ToolHostPort = {
+      listTools: () => [descriptor()],
+      invokeTool: vi.fn(async () => {
+        controller.abort()
+        throw new Error("boom")
+      }),
+    }
+    const runtime = new AgentRuntime({
+      provider: oneToolThenDone(),
+      tools: new AiToolRegistry(host),
+      recordRun: (t) => traces.push(t),
+    })
+
+    await runtime.run({
+      provenance: buildInteractiveRun({ runId: "r1", conversationId: "c1" }),
+      messages: [userMessage("go")],
+      signal: controller.signal,
+    })
+
+    expect(traces[0]?.toolCalls[0]?.error).toBe("aborted")
   })
 })

@@ -648,6 +648,17 @@ export async function listAiWorkspaces(options?: {
   return api().listAiWorkspaces(options)
 }
 
+export type RunSummary = SynapseRunSummary
+export type RunDetail = SynapseRunDetail
+
+export async function listRuns(query?: { parentRunId?: string }): Promise<RunSummary[]> {
+  return api().listRuns(query)
+}
+
+export async function getRun(runId: string): Promise<RunDetail | undefined> {
+  return api().getRun(runId)
+}
+
 export async function createAiWorkspace(name: string): Promise<AiWorkspace> {
   return api().createAiWorkspace(name)
 }

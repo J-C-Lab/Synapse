@@ -147,6 +147,8 @@ function installElectronApi(settings: SynapseUserSettings): TestElectronApi {
       .fn()
       .mockResolvedValue({ id: "work", name: "Work", createdAt: 1, archived: true }),
     unarchiveAiWorkspace: vi.fn().mockResolvedValue({ id: "work", name: "Work", createdAt: 1 }),
+    listRuns: vi.fn().mockResolvedValue([]),
+    getRun: vi.fn().mockResolvedValue(undefined),
     listWorkspaceRoots: vi.fn().mockResolvedValue([]),
     createWorkspaceRoot: vi.fn().mockResolvedValue({
       id: "r1",

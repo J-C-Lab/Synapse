@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { getLatestPlan, getRunTrace, listRuns, recordRun } from "./run-trace-store"
+import { getLatestPlan, getRunTrace, listRuns, recordRun, runTraceDir } from "./run-trace-store"
 
 let dir: string
 
@@ -176,6 +176,51 @@ describe("runTraceStore", () => {
         })
       )
       expect(getLatestPlan(dir, "c1")).toBeUndefined()
+    })
+  })
+
+  describe("runTraceDir", () => {
+    it("joins userDataDir/logs/runs", () => {
+      expect(runTraceDir("/tmp/synapse-data")).toBe(path.join("/tmp/synapse-data", "logs", "runs"))
+    })
+  })
+
+  describe("listRuns — extended filters", () => {
+    it("filters by origin", () => {
+      recordRun(dir, trace({ runId: "a", origin: "interactive" }))
+      recordRun(dir, trace({ runId: "b", origin: "mcp" }))
+      expect(listRuns(dir, { origin: "mcp" }).map((t) => t.runId)).toEqual(["b"])
+    })
+
+    it("filters by outcome", () => {
+      recordRun(dir, trace({ runId: "a", outcome: "end_turn" }))
+      recordRun(dir, trace({ runId: "b", outcome: "error" }))
+      expect(listRuns(dir, { outcome: "error" }).map((t) => t.runId)).toEqual(["b"])
+    })
+
+    it("filters by workspaceId", () => {
+      recordRun(dir, trace({ runId: "a", workspaceId: "ws-1" }))
+      recordRun(dir, trace({ runId: "b", workspaceId: "ws-2" }))
+      expect(listRuns(dir, { workspaceId: "ws-2" }).map((t) => t.runId)).toEqual(["b"])
+    })
+
+    it("filters by triggerInstanceId", () => {
+      recordRun(dir, trace({ runId: "a", triggerInstanceId: "inst-1" }))
+      recordRun(dir, trace({ runId: "b", triggerInstanceId: "inst-2" }))
+      expect(listRuns(dir, { triggerInstanceId: "inst-2" }).map((t) => t.runId)).toEqual(["b"])
+    })
+
+    it("combines a new filter with the existing conversationId filter", () => {
+      recordRun(dir, trace({ runId: "a", conversationId: "c1", origin: "interactive" }))
+      recordRun(dir, trace({ runId: "b", conversationId: "c1", origin: "subagent" }))
+      expect(
+        listRuns(dir, { conversationId: "c1", origin: "subagent" }).map((t) => t.runId)
+      ).toEqual(["b"])
+    })
+
+    it("a filter matching nothing returns an empty array, not undefined", () => {
+      recordRun(dir, trace({ runId: "a", origin: "interactive" }))
+      expect(listRuns(dir, { origin: "mcp" })).toEqual([])
     })
   })
 

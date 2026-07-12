@@ -4,7 +4,7 @@ import type { EnvelopeTier } from "./guardrails/untrusted-content"
 import type { PlanStep } from "./plan/plan-types"
 import type { ChatContentBlock, ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
 import type { RunProvenance } from "./run-provenance"
-import type { RunTrace, RunTraceToolCall } from "./run-trace-store"
+import type { RunTrace, RunTraceErrorCategory, RunTraceToolCall } from "./run-trace-store"
 
 import type { AiToolRegistry } from "./tool-registry"
 import process from "node:process"
@@ -258,7 +258,7 @@ export class AgentRuntime {
     toolCalls: RunTraceToolCall[]
   ): Promise<ChatContentBlock> {
     const startedAt = Date.now()
-    const record = (ok: boolean, error?: string): void => {
+    const record = (ok: boolean, error?: RunTraceErrorCategory): void => {
       toolCalls.push({
         name: this.resolveToolName(call.name),
         startedAt,
@@ -300,7 +300,7 @@ export class AgentRuntime {
     } catch (err) {
       options.onEvent?.({ type: "tool_result", id: call.id, isError: true })
       const message = err instanceof Error ? err.message : String(err)
-      record(false, message)
+      record(false, options.signal?.aborted ? "aborted" : "exception")
       return toolResult(call.id, message, true)
     }
   }
