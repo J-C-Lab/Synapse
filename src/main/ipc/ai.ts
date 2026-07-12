@@ -31,8 +31,11 @@ export interface AiIpcService {
   listConversations: () => Promise<ConversationSummary[]>
   getConversation: (id: string) => Promise<(StoredConversation & { plan?: PlanStep[] }) | undefined>
   deleteConversation: (id: string) => Promise<void>
-  listWorkspaces: () => Promise<Workspace[]>
+  listWorkspaces: (options?: { includeArchived?: boolean }) => Promise<Workspace[]>
   createWorkspace: (name: string) => Promise<Workspace>
+  renameWorkspace: (id: string, name: string) => Promise<Workspace>
+  archiveWorkspace: (id: string) => Promise<Workspace>
+  unarchiveWorkspace: (id: string) => Promise<Workspace>
   listWorkspaceRoots: (workspaceId: string) => Promise<WorkspaceRootRecord[]>
   createWorkspaceRoot: (
     workspaceId: string,
@@ -128,13 +131,26 @@ export function registerAiIpc(
     guard(event, "ai:delete-conversation")
     return service.deleteConversation(requireString(id, "id"))
   })
-  ipcMain.handle("ai:list-workspaces", (event) => {
+  ipcMain.handle("ai:list-workspaces", (event, payload: unknown) => {
     guard(event, "ai:list-workspaces")
-    return service.listWorkspaces()
+    return service.listWorkspaces(coerceListWorkspaces(payload))
   })
   ipcMain.handle("ai:create-workspace", (event, payload: unknown) => {
     guard(event, "ai:create-workspace")
     return service.createWorkspace(coerceCreateWorkspace(payload).name)
+  })
+  ipcMain.handle("ai:rename-workspace", (event, payload: unknown) => {
+    guard(event, "ai:rename-workspace")
+    const { id, name } = coerceRenameWorkspace(payload)
+    return service.renameWorkspace(id, name)
+  })
+  ipcMain.handle("ai:archive-workspace", (event, payload: unknown) => {
+    guard(event, "ai:archive-workspace")
+    return service.archiveWorkspace(coerceWorkspaceId(payload).id)
+  })
+  ipcMain.handle("ai:unarchive-workspace", (event, payload: unknown) => {
+    guard(event, "ai:unarchive-workspace")
+    return service.unarchiveWorkspace(coerceWorkspaceId(payload).id)
   })
   ipcMain.handle("ai:list-workspace-roots", (event, workspaceId: unknown) => {
     guard(event, "ai:list-workspace-roots")
@@ -310,6 +326,27 @@ export function coerceCreateWorkspace(payload: unknown): { name: string } {
   const name = requireString(v.name, "name").trim()
   if (!name) throw new Error("name is required")
   return { name }
+}
+
+export function coerceListWorkspaces(payload: unknown): { includeArchived?: boolean } {
+  if (payload === undefined) return {}
+  if (!payload || typeof payload !== "object") throw new Error("payload must be an object")
+  const v = payload as Record<string, unknown>
+  return v.includeArchived === true ? { includeArchived: true } : {}
+}
+
+export function coerceRenameWorkspace(payload: unknown): { id: string; name: string } {
+  if (!payload || typeof payload !== "object") throw new Error("payload must be an object")
+  const v = payload as Record<string, unknown>
+  const name = requireString(v.name, "name").trim()
+  if (!name) throw new Error("name is required")
+  return { id: requireString(v.id, "id"), name }
+}
+
+export function coerceWorkspaceId(payload: unknown): { id: string } {
+  if (!payload || typeof payload !== "object") throw new Error("payload must be an object")
+  const v = payload as Record<string, unknown>
+  return { id: requireString(v.id, "id") }
 }
 
 export function coerceCreateWorkspaceRoot(payload: unknown): {

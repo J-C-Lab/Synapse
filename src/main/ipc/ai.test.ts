@@ -6,7 +6,10 @@ import {
   coerceCreateConversation,
   coerceCreateWorkspace,
   coerceCreateWorkspaceRoot,
+  coerceListWorkspaces,
   coerceMcpServer,
+  coerceRenameWorkspace,
+  coerceWorkspaceId,
 } from "./ai"
 
 describe("coerceBudget", () => {
@@ -114,6 +117,43 @@ describe("coerceCreateWorkspace", () => {
     expect(coerceCreateWorkspace({ name: "Work" })).toEqual({ name: "Work" })
     expect(() => coerceCreateWorkspace({ name: "  " })).toThrow(/name/)
     expect(() => coerceCreateWorkspace({})).toThrow()
+  })
+})
+
+describe("coerceListWorkspaces", () => {
+  it("defaults to {} for undefined or an object without includeArchived", () => {
+    expect(coerceListWorkspaces(undefined)).toEqual({})
+    expect(coerceListWorkspaces({})).toEqual({})
+    expect(coerceListWorkspaces({ includeArchived: false })).toEqual({})
+  })
+
+  it("passes through includeArchived: true", () => {
+    expect(coerceListWorkspaces({ includeArchived: true })).toEqual({ includeArchived: true })
+  })
+})
+
+describe("coerceRenameWorkspace", () => {
+  it("accepts id and a trimmed name", () => {
+    expect(coerceRenameWorkspace({ id: "w1", name: "  New Name  " })).toEqual({
+      id: "w1",
+      name: "New Name",
+    })
+  })
+
+  it("rejects a blank name or missing id", () => {
+    expect(() => coerceRenameWorkspace({ id: "w1", name: "   " })).toThrow(/name/)
+    expect(() => coerceRenameWorkspace({ name: "New Name" })).toThrow(/id must be a string/)
+  })
+})
+
+describe("coerceWorkspaceId", () => {
+  it("accepts an id", () => {
+    expect(coerceWorkspaceId({ id: "w1" })).toEqual({ id: "w1" })
+  })
+
+  it("rejects a missing id", () => {
+    expect(() => coerceWorkspaceId({})).toThrow(/id must be a string/)
+    expect(() => coerceWorkspaceId(null)).toThrow(/must be an object/)
   })
 })
 
