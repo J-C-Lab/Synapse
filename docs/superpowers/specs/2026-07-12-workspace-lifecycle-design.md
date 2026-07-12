@@ -153,6 +153,36 @@ export class WorkspaceStore {
   gain new conversations — that *is* the intended effect of archiving);
   `TriggerRegistry`'s archived check (below) uses `isArchived()` directly
   rather than reading `.archived` off a `Workspace` object.
+- **A second real `exists()` caller, found during review**:
+  `plugin-host.ts:564`'s `workspaceExists()` has exactly one production
+  consumer — `triggers.ts:86`'s `createInstance()`, which gates *creating a
+  new agent-trigger instance* on the target workspace
+  (`if (!(await host.workspaceExists(workspaceId))) throw new Error(...)`).
+  That's an `isActive()` question ("can a new instance start dispatching
+  here"), not an `exists()` question — leaving it on `exists()` (which
+  deliberately resolves archived workspaces as real) would let the IPC
+  layer create a fresh agent-trigger instance bound to an archived
+  workspace, directly contradicting "archiving takes it offline."
+  `plugin-host.ts:564` is renamed `workspaceIsActive()`, backed by
+  `WorkspaceStore.isActive()`; `triggers.ts:86` calls it, and the error
+  distinguishes the two failure modes (`Unknown workspace: ${id}` vs.
+  `Workspace is archived: ${id}`) so the renderer doesn't have to guess
+  which one happened.
+- **`reactivateInstance()`** (`triggers.ts:93-100`) currently checks only
+  `isPluginActive(pluginId)` before reviving a stale-identity instance
+  (`plugin-host.ts:510-515`'s `reactivateTriggerInstance`) — it never
+  checks the instance's `workspaceId`. Reviving a stale instance whose
+  workspace is archived would create a fresh, dispatch-eligible binding in
+  a workspace the user has taken offline — the same problem as
+  `createInstance()` above. `reactivateInstance()` gains the same
+  `workspaceIsActive()` check and is rejected for an archived workspace.
+  This deliberately does **not** extend to `pauseInstance`/
+  `resumeInstance()` (`triggers.ts:102-108`) — a separate, pre-existing
+  mechanism (toggling `TriggerInstanceRecord.paused` directly, unrelated to
+  identity staleness) already orthogonal to archiving per the
+  "independent of `i.paused`" decision below; a paused instance sitting in
+  an archived workspace is inert either way, and resuming it is the user's
+  own explicit choice, not something this spec needs to gate.
 - **`rename(id, name)`** — validates non-empty `name` (same trim-and-
   reject-empty rule as `create()`, line 31-32); rejects `id === "default"`
   (`DEFAULT_WORKSPACE`'s name is fixed, matching its already-fixed identity)
@@ -201,17 +231,29 @@ This already exists as a latent risk for `create()` alone today, but S05
 adding three more mutation entry points on the *same* records makes a real
 lost-update a realistic outcome, not a theoretical one.
 
-Fix: `WorkspaceStore` gets an instance-level mutex — the same pattern
-`trigger-instance-store.ts:143-150`'s `runExclusive` already establishes in
-this codebase — wrapping the full read-modify-write cycle of `create()`,
-`rename()`, `archive()`, and `unarchive()`:
+Fix: `WorkspaceStore` gets its own `runExclusive` wrapping the full
+read-modify-write cycle of `create()`, `rename()`, `archive()`, and
+`unarchive()`. **Corrected during review**: `trigger-instance-store.ts`'s
+`runExclusive` (lines 143-150) is a *private instance method* on that
+class, not an importable standalone helper — there is nothing to call
+`runExclusive()` as a factory. `WorkspaceStore` gets its own copy of the
+same real pattern, verbatim:
 
 ```ts
 export class WorkspaceStore {
-  private readonly mutex = runExclusive() // same helper trigger-instance-store.ts uses
+  private exclusive: Promise<void> = Promise.resolve()
+
+  private async runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.exclusive.then(fn)
+    this.exclusive = run.then(
+      () => {},
+      () => {}
+    )
+    return run
+  }
 
   async create(name: string): Promise<Workspace> {
-    return this.mutex(async () => {
+    return this.runExclusive(async () => {
       /* existing read-modify-write body */
     })
   }
@@ -269,37 +311,71 @@ instance.
 
 **Part 2 — this alone does not "take the workspace offline."** Verified
 against `trigger-registry.ts`'s real `onFire()` (lines 269-370): the
-trigger's own plugin handler (`this.deps.dispatchHandler(...)`, dispatched
-around lines 293-304, well before the `liveInstances` computation at
-327-329) runs unconditionally on every fire — admission check, minting a
-background invocation, and executing the plugin's handler function (which
-can itself perform capability/network/other side effects) all happen
-*before* any workspace-archived check. The `liveInstances` filter above
-only gates the second phase, `dispatchAgent()` fan-out — so archiving a
-workspace, as originally drafted, would still let the plugin handler run
-and side-effect on every fire; only the *agent* dispatch for that
-workspace's instances would be skipped. That is a real, useful
-protection (it's the piece that actually spends AI budget and creates
-conversations) but it does not match this spec's "taken offline" framing,
-and needs to be either delivered for real or the claim narrowed. This spec
-takes the former:
+trigger's own plugin handler (`this.deps.dispatch(...)` —
+`TriggerRegistryDeps.dispatch: TriggerDispatch`, `trigger-registry.ts:33`;
+**not** `dispatchHandler`, corrected during review — dispatched around
+lines 293-304, well before the `liveInstances` computation at 327-329)
+runs unconditionally on every fire — admission check, minting a background
+invocation, and executing the plugin's handler function (which can itself
+perform capability/network/other side effects) all happen *before* any
+workspace-archived check. The `liveInstances` filter above only gates the
+second phase, `dispatchAgent()` fan-out — so archiving a workspace, as
+originally drafted, would still let the plugin handler run and side-effect
+on every fire; only the *agent* dispatch for that workspace's instances
+would be skipped. That is a real, useful protection (it's the piece that
+actually spends AI budget and creates conversations) but it does not match
+this spec's "taken offline" framing, and needs to be either delivered for
+real or the claim narrowed. This spec takes the former.
 
-`onFire()` computes `allInstances`/`archivedByWorkspace`/`liveInstances`
-*before* dispatching the base handler, not after. If `decl.agent` is
-configured (this trigger has agent instances at all) and every one of
-`allInstances` resolves archived (`liveInstances` is empty purely because
-of archiving, not because `allInstances` was already empty for unrelated
-reasons like no instances existing yet), `onFire()` returns immediately —
+**A further correction from review**: the early-return condition cannot
+be "every one of `allInstances` is archived" — `allInstances` is every
+`TriggerInstanceRecord` for this trigger declaration regardless of
+identity, and can contain *stale* instances (from before a manifest
+change/reinstall) that will never pass `sameIdentity()` and therefore
+could never dispatch anyway, archived or not. A real scenario this breaks:
+the current-identity instance sits in an archived workspace, but a stale
+instance happens to sit in a still-active workspace — `allInstances.every
+(archived)` is `false` (the stale one isn't archived), so the early return
+never fires and the handler runs, even though *zero* dispatch-eligible
+instances exist. The candidate set for the "should the handler even run"
+decision must be restricted to identity-eligible instances first — the
+same `sameIdentity()` condition `liveInstances` already applies, computed
+once and reused, deliberately excluding `paused` (a paused instance is
+still identity-eligible; the "all inputs to the offline decision" set and
+the "all inputs to the fan-out filter" set differ only by `paused`):
+
+```ts
+// trigger-registry.ts, before dispatching the base handler
+const identityEligibleInstances = identity
+  ? allInstances.filter((i) => sameIdentity(i.identity, identity))
+  : []
+
+const allEligibleArchived =
+  identityEligibleInstances.length > 0 &&
+  identityEligibleInstances.every((i) => archivedByWorkspace.get(i.workspaceId) === true)
+
+if (decl.agent && allEligibleArchived) return // fully offline — see Part 2
+```
+
+`onFire()` computes `allInstances`/`archivedByWorkspace`/
+`identityEligibleInstances` *before* dispatching the base handler, not
+after. If `decl.agent` is configured (this trigger has agent instances at
+all) and `allEligibleArchived` is true, `onFire()` returns immediately —
 no admission debit, no minted invocation, no handler dispatch, no agent
-fan-out. If at least one instance's workspace is still active, the handler
-runs exactly as it does today (unconditionally, shared across every
-instance of that trigger declaration — the handler is plugin-scoped, not
-per-workspace, so it cannot be skipped for one workspace while running for
-another), and only the archived instances are excluded from the
-subsequent agent fan-out via `liveInstances`, as before. A trigger with no
-`decl.agent` configured (no agent instances ever exist for it) is
-completely unaffected by this spec — there is no workspace concept to gate
-on.
+fan-out. If at least one identity-eligible instance's workspace is still
+active, the handler runs exactly as it does today (unconditionally, shared
+across every instance of that trigger declaration — the handler is
+plugin-scoped, not per-workspace, so it cannot be skipped for one
+workspace while running for another), and `liveInstances` (computed after
+the handler, as originally drafted, now also reusing
+`identityEligibleInstances` instead of re-filtering `allInstances`) excludes
+the archived and/or paused ones from the subsequent agent fan-out. A
+trigger with no `decl.agent` configured (no agent instances ever exist for
+it), or with zero identity-eligible instances at all (a brand-new plugin
+install with no instances created yet — `identityEligibleInstances.length
+=== 0` deliberately makes `allEligibleArchived` false, not vacuously true,
+so a trigger with no instances still fires its base handler as it does
+today), is completely unaffected by this spec.
 
 This is independent of `i.paused` (an existing, per-instance, user-set
 flag) — both must pass for an instance's agent dispatch, and the new
@@ -411,12 +487,21 @@ than silently failing on click.
     fix's own regression test). The archived instances' `dispatchAgent` is
     never called; the active one's is; the skip does not call
     `admission.recordFault` and does not debit budget.
-  - **A separate case where *every* bound instance's workspace is
-    archived**: asserts the base handler (`dispatchHandler`) is never
+  - **A separate case where *every identity-eligible* instance's workspace
+    is archived**: asserts the base handler (`deps.dispatch`) is never
     called either, no invocation is minted, and `admission.admit`/
     `recordSuccess` are not invoked — the "actually offline" behavior from
     Part 2 above, distinct from the partial-archive case where the handler
     still runs.
+  - **A companion "stale instance" case**: one identity-eligible instance
+    in an archived workspace, plus one *stale-identity* instance (fails
+    `sameIdentity()`) in a non-archived workspace — asserts the handler is
+    still skipped (the stale instance must not count as "still active" and
+    prevent the early return), the regression test for the
+    `identityEligibleInstances` fix above.
+  - **A zero-instance case**: a trigger with `decl.agent` configured but no
+    `TriggerInstanceRecord`s created yet — asserts the base handler still
+    runs (an empty eligible set must not vacuously satisfy "all archived").
   - A companion case confirms `i.paused` and workspace-archived are
     independent gates for the *fan-out* filter specifically: an unpaused
     instance in an archived workspace (among otherwise-active instances) is
@@ -426,6 +511,13 @@ than silently failing on click.
     one other active instance so the handler still runs and the two
     exclusions are actually observable in `liveInstances` rather than
     short-circuited by the all-archived early return above.
+- **`triggers.test.ts`**: `createInstance()` against an archived workspace
+  is rejected with a message distinguishable from the unknown-workspace
+  case; `reactivateInstance()` against a stale instance whose workspace is
+  archived is rejected (previously this method performed no workspace
+  check at all — a real behavior addition, not just a rename);
+  `pauseInstance`/`resumeInstance` are asserted unchanged — no new
+  workspace check — confirming they stay orthogonal to archiving.
 - **`agent-service.test.ts`**: new `renameWorkspace`/`archiveWorkspace`/
   `unarchiveWorkspace` wrapper methods delegate to the matching
   `WorkspaceStore` method and propagate its rejections; `createConversation`
@@ -488,20 +580,31 @@ than silently failing on click.
   semantics — "is this a real workspace id"); `isActive()`/`isArchived()`
   are the new "is this usable right now" / "is this archived" queries, and
   every real caller identified during review that needs the *active*
-  question (`agent-service.ts`'s `createConversation` gate) has migrated
-  from `exists()` to `isActive()`.
-- `create()`/`rename()`/`archive()`/`unarchive()` share a mutex around
-  their full read-modify-write cycle, with a regression test proving a
-  concurrent `rename()` + `archive()` on the same workspace doesn't lose
-  either mutation.
+  question has migrated: `agent-service.ts`'s `createConversation` gate
+  (`exists()` → `isActive()`), and `plugin-host.ts:564`'s
+  `workspaceExists()` → `workspaceIsActive()`, consumed by both
+  `triggers.ts:86`'s `createInstance()` and `triggers.ts:93-100`'s
+  `reactivateInstance()` (the latter previously performed no
+  workspace-status check at all).
+- `create()`/`rename()`/`archive()`/`unarchive()` share a `runExclusive`
+  (`WorkspaceStore`'s own copy of `trigger-instance-store.ts`'s real
+  pattern, not an imported helper) around their full read-modify-write
+  cycle, with a regression test proving a concurrent `rename()` +
+  `archive()` on the same workspace doesn't lose either mutation.
 - `trigger-registry.ts`'s archived check resolves each distinct
   `workspaceId` at most once per fire (not once per instance), gates the
   `liveInstances` fan-out filter independently of the pre-existing
   `i.paused` check, **and** short-circuits the entire `onFire()` — no base
-  handler dispatch, no minted invocation — when every bound instance's
-  workspace is archived. Regression tests cover both the partial-archive
-  case (handler still runs, only some instances fan out) and the
-  all-archived case (handler never runs).
+  handler dispatch, no minted invocation — when every *identity-eligible*
+  bound instance's workspace is archived (correctly computed against
+  `identityEligibleInstances`, not raw `allInstances`, so a stale-identity
+  instance sitting in a non-archived workspace cannot mask the current
+  identity's instances all being archived). Regression tests cover the
+  partial-archive case (handler still runs, only some instances fan out),
+  the all-eligible-archived case (handler never runs), the stale-instance
+  case (a non-eligible active instance doesn't block the offline
+  short-circuit), and the zero-instance case (no instances yet ≠
+  vacuously all archived).
 - The full IPC chain from the "IPC + renderer wrapper" section's numbered
   list (`WorkspaceStore` → `AgentService` → `AiIpcService` interface →
   `registerAiIpc` validated handlers → preload `index.ts` → preload
