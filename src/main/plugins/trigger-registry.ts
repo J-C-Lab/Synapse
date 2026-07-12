@@ -38,6 +38,11 @@ export interface TriggerRegistryDeps {
    *  plugin still returns its identity here — disable/enable never makes an
    *  instance stale, only a manifest change or uninstall does. */
   identityForPlugin: (pluginId: string) => GrantIdentity | undefined
+  /** Resolves whether a workspace is currently archived. Never throws —
+   *  an unknown workspaceId resolves false (fail-open on existence, since
+   *  a genuinely orphaned workspaceId is a referential-integrity problem
+   *  this dependency isn't responsible for diagnosing). */
+  isWorkspaceArchived: (workspaceId: string) => Promise<boolean>
 }
 
 export interface TriggerInstanceRuntimeState {
@@ -272,6 +277,21 @@ export class TriggerRegistry {
     controller: AbortController,
     event: unknown
   ): Promise<void> {
+    const identity = this.deps.identityForPlugin(pluginId)
+    const allInstances =
+      decl.agent && identity ? await this.deps.instanceStore.listForTrigger(pluginId, decl.id) : []
+    const identityEligibleInstances = identity
+      ? allInstances.filter((i) => sameIdentity(i.identity, identity))
+      : []
+    const archivedByWorkspace = await this.resolveArchivedByWorkspace(identityEligibleInstances)
+
+    if (decl.agent && identityEligibleInstances.length > 0) {
+      const allEligibleArchived = identityEligibleInstances.every(
+        (i) => archivedByWorkspace.get(i.workspaceId) === true
+      )
+      if (allEligibleArchived) return
+    }
+
     const admit = this.deps.admission.admit(pluginId, decl.id)
     if (!admit.ok) return
 
@@ -320,12 +340,8 @@ export class TriggerRegistry {
         return
       }
 
-      const identity = this.deps.identityForPlugin(pluginId)
-      const allInstances = identity
-        ? await this.deps.instanceStore.listForTrigger(pluginId, decl.id)
-        : []
-      const liveInstances = allInstances.filter(
-        (i) => !i.paused && identity && sameIdentity(i.identity, identity)
+      const liveInstances = identityEligibleInstances.filter(
+        (i) => !i.paused && !archivedByWorkspace.get(i.workspaceId)
       )
 
       await Promise.allSettled(
@@ -394,6 +410,16 @@ export class TriggerRegistry {
     } finally {
       this.deps.admission.release(pluginId, decl.id)
     }
+  }
+
+  private async resolveArchivedByWorkspace(
+    instances: readonly TriggerInstanceRecord[]
+  ): Promise<Map<string, boolean>> {
+    const ids = [...new Set(instances.map((i) => i.workspaceId))]
+    const entries = await Promise.all(
+      ids.map(async (id) => [id, await this.deps.isWorkspaceArchived(id)] as const)
+    )
+    return new Map(entries)
   }
 
   deregisterTrigger(pluginId: string, triggerId: string): void {
