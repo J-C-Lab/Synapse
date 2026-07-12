@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest"
 import { SynapseMcpToolService } from "../mcp/synapse-mcp-server"
 import { AgentRuntime } from "./agent-runtime"
 import { emptyUsage } from "./providers/types"
+import { buildInteractiveRun } from "./run-provenance"
 import { AiToolRegistry, modelToolName } from "./tool-registry"
 
 const FQ = "com.probe/read_probe"
@@ -67,9 +68,12 @@ describe("caller parity", () => {
       tools: new AiToolRegistry(host),
       recordRun: (trace) => traces.push(trace),
     }).run({
-      conversationId: "c1",
+      provenance: buildInteractiveRun({
+        runId: "parity-internal",
+        conversationId: "c1",
+        workspaceId: "ws-internal",
+      }),
       messages: [{ role: "user", content: [{ type: "text", text: "probe" }] }],
-      workspaceId: "ws-internal",
     })
 
     await new SynapseMcpToolService(host, {
