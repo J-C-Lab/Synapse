@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { ActiveBackgroundPanel } from "@/components/plugins/active-background-panel"
 import { DeclaredTriggersPanel } from "@/components/plugins/declared-triggers-panel"
+import { PendingCapabilityConfirmationBanner } from "@/components/plugins/pending-capability-confirmation-banner"
 import { PluginCapabilityList } from "@/components/plugins/plugin-capability-list"
 import { PluginCapabilityProfileCard } from "@/components/plugins/plugin-capability-profile"
 import { PluginCredentialsPanel } from "@/components/plugins/plugin-credentials-panel"
@@ -48,6 +49,7 @@ import {
   useCapabilityProfile,
 } from "@/hooks/use-capability-profile"
 import {
+  confirmAndEnablePlugin,
   droppedFilePath,
   ElectronIpcError,
   getSettings,
@@ -220,6 +222,15 @@ export function PluginsPage() {
     })
   }
 
+  async function applyEnabledWithConfirmation(plugin: PluginRegistryEntry) {
+    const triggers = (plugin.manifest as ManifestWithTriggers | undefined)?.triggers ?? []
+    const capabilityIds = [...new Set(triggers.flatMap((t) => t.uses.map((u) => u.capability)))]
+    await mutate(`toggle:${plugin.pluginId}`, async () => {
+      upsertPlugin(await confirmAndEnablePlugin(plugin.pluginId, capabilityIds))
+      toast.success(t("plugins.toasts.enabled"))
+    })
+  }
+
   async function onToggle(plugin: PluginRegistryEntry, enabled: boolean) {
     const triggers = (plugin.manifest as ManifestWithTriggers | undefined)?.triggers
     if (enabled && triggers?.length) {
@@ -338,6 +349,7 @@ export function PluginsPage() {
         }
       >
         <TriggerMigrationNoticeBanner />
+        <PendingCapabilityConfirmationBanner />
         {!loading && plugins.length > 0 && (
           <>
             <div className="flex flex-col gap-3 rounded-lg border bg-card p-3">
@@ -501,7 +513,7 @@ export function PluginsPage() {
               onClick={() => {
                 const plugin = enableConfirm
                 setEnableConfirm(null)
-                if (plugin) void applyEnabled(plugin, true)
+                if (plugin) void applyEnabledWithConfirmation(plugin)
               }}
             >
               {t("plugins.capabilities.allow")}

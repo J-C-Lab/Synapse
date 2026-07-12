@@ -41,11 +41,14 @@ const mocks = vi.hoisted(() => ({
   reloadPlugin: vi.fn(),
   revokePluginCapability: vi.fn(),
   setPluginEnabled: vi.fn(),
+  confirmAndEnablePlugin: vi.fn(),
   setPluginPreference: vi.fn(),
   uninstallPlugin: vi.fn(),
   listTriggers: vi.fn().mockResolvedValue([]),
   getTriggerMigrationNotice: vi.fn().mockResolvedValue({ affectedTriggers: [] }),
   dismissTriggerMigrationNotice: vi.fn().mockResolvedValue(undefined),
+  listPendingTriggerCapabilities: vi.fn().mockResolvedValue([]),
+  confirmTriggerCapabilities: vi.fn().mockResolvedValue([]),
 }))
 
 vi.mock("@/lib/electron", () => ({
@@ -188,6 +191,55 @@ describe("pluginsPage", () => {
     await user.click(screen.getByRole("button", { name: "plugins.source.builtin" }))
 
     expect(screen.getByText("plugins.filteredEmptyTitle")).toBeInTheDocument()
+  })
+})
+
+describe("enable Confirm — pending capability grant", () => {
+  it("allow calls confirmAndEnablePlugin with every declared trigger capability, not the bare toggle", async () => {
+    const user = userEvent.setup()
+    mocks.listPlugins.mockResolvedValue([
+      plugin({
+        pluginId: "com.example.watcher",
+        status: "disabled",
+        manifest: {
+          ...plugin().manifest,
+          id: "com.example.watcher",
+          displayName: "Watcher",
+          permissions: ["notification"],
+          triggers: [
+            {
+              id: "tick",
+              type: "timer",
+              schedule: { intervalMs: 60_000 },
+              handler: "triggers.onTick",
+              uses: [{ capability: "memory:read", budget: { maxCalls: 10, period: "1h" } }],
+              agent: {
+                maxRuns: 1,
+                period: "1d",
+                maxToolCallsPerRun: 1,
+                maxTokensPerRun: 100,
+                timeoutMs: 1000,
+              },
+            },
+          ],
+        },
+      }),
+    ])
+    mocks.confirmAndEnablePlugin.mockResolvedValue({
+      pluginId: "com.example.watcher",
+      status: "active",
+    })
+
+    renderPage()
+    await user.click(await screen.findByRole("switch"))
+
+    await user.click(await screen.findByRole("button", { name: "plugins.capabilities.allow" }))
+
+    await waitFor(() =>
+      expect(mocks.confirmAndEnablePlugin).toHaveBeenCalledWith("com.example.watcher", [
+        "memory:read",
+      ])
+    )
   })
 })
 
