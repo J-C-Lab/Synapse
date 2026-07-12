@@ -367,6 +367,7 @@ declare global {
     id: string
     name: string
     createdAt: number
+    archived?: boolean
   }
 
   interface SynapseWorkspaceRoot {
@@ -755,8 +756,11 @@ declare global {
       listAiConversations: () => Promise<SynapseAiConversationSummary[]>
       getAiConversation: (id: string) => Promise<SynapseAiConversation | undefined>
       deleteAiConversation: (id: string) => Promise<void>
-      listAiWorkspaces: () => Promise<SynapseAiWorkspace[]>
+      listAiWorkspaces: (options?: { includeArchived?: boolean }) => Promise<SynapseAiWorkspace[]>
       createAiWorkspace: (name: string) => Promise<SynapseAiWorkspace>
+      renameAiWorkspace: (id: string, name: string) => Promise<SynapseAiWorkspace>
+      archiveAiWorkspace: (id: string) => Promise<SynapseAiWorkspace>
+      unarchiveAiWorkspace: (id: string) => Promise<SynapseAiWorkspace>
       listWorkspaceRoots: (workspaceId: string) => Promise<SynapseWorkspaceRoot[]>
       createWorkspaceRoot: (
         workspaceId: string,

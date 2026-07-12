@@ -642,12 +642,26 @@ export async function deleteAiConversation(id: string): Promise<void> {
   await api().deleteAiConversation(id)
 }
 
-export async function listAiWorkspaces(): Promise<AiWorkspace[]> {
-  return api().listAiWorkspaces()
+export async function listAiWorkspaces(options?: {
+  includeArchived?: boolean
+}): Promise<AiWorkspace[]> {
+  return api().listAiWorkspaces(options)
 }
 
 export async function createAiWorkspace(name: string): Promise<AiWorkspace> {
   return api().createAiWorkspace(name)
+}
+
+export async function renameAiWorkspace(id: string, name: string): Promise<AiWorkspace> {
+  return api().renameAiWorkspace(id, name)
+}
+
+export async function archiveAiWorkspace(id: string): Promise<AiWorkspace> {
+  return api().archiveAiWorkspace(id)
+}
+
+export async function unarchiveAiWorkspace(id: string): Promise<AiWorkspace> {
+  return api().unarchiveAiWorkspace(id)
 }
 
 export async function listWorkspaceRoots(workspaceId: string): Promise<WorkspaceRoot[]> {
