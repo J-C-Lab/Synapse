@@ -1,7 +1,8 @@
 import type { ToolCaller } from "@synapse/plugin-sdk"
 import type { PluginManifest } from "./types"
 import { describe, expect, it } from "vitest"
-import { buildGrantIdentity, callerToActor } from "./capability-governance"
+import { buildGrantIdentity } from "./capability-governance"
+import { callerToActor } from "./invocation-context"
 
 const baseManifest: PluginManifest = {
   manifestVersion: 2,

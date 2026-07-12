@@ -9,17 +9,12 @@ import type {
   SystemAPI,
   ToolCaller,
   ToolContext,
-  ToolPrincipal,
 } from "@synapse/plugin-sdk"
 import type { BackgroundInvoker } from "./background-invoker"
-import type {
-  BudgetBreakerPort,
-  CapabilityActor,
-  CapabilityGatePort,
-  CapabilityRequest,
-} from "./capability-gate"
+import type { BudgetBreakerPort, CapabilityGatePort, CapabilityRequest } from "./capability-gate"
 import type { CapabilityGovernance } from "./capability-governance"
 import type { CredentialBroker } from "./credential-broker"
+import type { InvocationContext } from "./invocation-context"
 import type { NetworkFetcher } from "./network-fetcher"
 import type { PluginManifest, PluginSourceKind } from "./types"
 import { promises as fs } from "node:fs"
@@ -32,11 +27,7 @@ import {
 } from "@synapse/plugin-manifest"
 import { logger } from "../logging"
 import { CapabilityGate as CapabilityGateImpl } from "./capability-gate"
-import {
-  buildGrantIdentity,
-  callerToActor,
-  createCapabilityGovernance,
-} from "./capability-governance"
+import { buildGrantIdentity, createCapabilityGovernance } from "./capability-governance"
 import { readVerifiedText, resolveVerifiedAbsolutePath, safeScopedStat } from "./fs-path-resolver"
 import {
   fsWriteMkdir,
@@ -44,6 +35,7 @@ import {
   fsWriteText,
   resolveVerifiedWritePath,
 } from "./fs-write-resolver"
+import { invocationIdOf } from "./invocation-context"
 import { MoveJournal } from "./move-journal"
 import { createNetworkFetcher } from "./network-fetcher"
 import { NotificationActionRegistry } from "./notification-actions"
@@ -92,16 +84,7 @@ export interface PluginBridgeAdapters {
 }
 
 /** Context passed into each capability `ensure()` call for one plugin invocation. */
-export interface InvocationContext {
-  actor: CapabilityActor
-  trigger: string
-  signal?: AbortSignal
-  invocationId?: string
-  runId?: string
-  principal?: ToolPrincipal
-  workspaceId?: string
-  triggerInstanceId?: string
-}
+export type { InvocationContext } from "./invocation-context"
 
 export interface PluginBridgeOptions {
   userDataDir: string
@@ -162,6 +145,7 @@ const defaultRuntime: PluginRuntimeSnapshot = {
 }
 
 const defaultInvocation: InvocationContext = {
+  source: "runless",
   actor: "user",
   trigger: "plugin:runtime",
 }
@@ -230,14 +214,10 @@ export class PluginBridge {
   ): ToolContext {
     const gate = this.gateFor(pluginId, manifest, options.capabilities)
     const invocation: InvocationContext = {
-      actor: callerToActor(options.caller),
+      source: "tool",
+      caller: options.caller,
       trigger: `tool:${options.toolName}`,
       signal: options.signal,
-      invocationId: options.caller.invocationId,
-      runId: options.caller.runId,
-      principal: options.caller.principal,
-      workspaceId: options.caller.workspaceId,
-      triggerInstanceId: options.caller.triggerInstanceId,
     }
 
     return {
@@ -292,58 +272,26 @@ export class PluginBridge {
     gate: CapabilityGatePort,
     invocation: InvocationContext
   ): PluginCapabilities {
-    const ensure = (
-      request: Omit<
-        CapabilityRequest,
-        | "actor"
-        | "trigger"
-        | "signal"
-        | "invocationId"
-        | "runId"
-        | "principal"
-        | "workspaceId"
-        | "triggerInstanceId"
-      >
-    ) =>
-      gate.ensure({
-        ...request,
-        actor: invocation.actor,
-        trigger: invocation.trigger,
-        signal: invocation.signal,
-        invocationId: invocation.invocationId,
-        runId: invocation.runId,
-        principal: invocation.principal,
-        workspaceId: invocation.workspaceId,
-        triggerInstanceId: invocation.triggerInstanceId,
-      })
+    const ensure = (request: Omit<CapabilityRequest, "invocation">) =>
+      gate.ensure({ ...request, invocation })
 
     // The fetcher runs its own gate.ensure inside fetch(), so network needs no
     // separate ensure() wrapper here. Track it per-plugin for revoke teardown.
     const sourceKind = this.sourceKindFor(pluginId)
-    const invRecord = invocation.invocationId
-      ? this.options.invoker?.get(invocation.invocationId)
-      : undefined
+    const invocationId = invocationIdOf(invocation)
+    const invRecord = invocationId ? this.options.invoker?.get(invocationId) : undefined
     const injectCredential = this.options.credentialBroker?.createInjectCredential({
       pluginId,
       manifest,
       sourceKind,
-      isTriggerOrigin: this.budgetBreaker?.isTriggerOrigin(invocation.invocationId) ?? false,
+      isTriggerOrigin: this.budgetBreaker?.isTriggerOrigin(invocationId) ?? false,
       allowedUses: invRecord?.allowedUses,
-      runId: invocation.runId,
-      principal: invocation.principal,
-      workspaceId: invocation.workspaceId,
-      triggerInstanceId: invocation.triggerInstanceId,
+      invocation,
     })
     const fetcher = createNetworkFetcher({
       gate,
-      actor: invocation.actor,
-      trigger: invocation.trigger,
+      invocation,
       pluginId,
-      invocationId: invocation.invocationId,
-      runId: invocation.runId,
-      principal: invocation.principal,
-      workspaceId: invocation.workspaceId,
-      triggerInstanceId: invocation.triggerInstanceId,
       injectCredential,
     })
     this.registerFetcher(pluginId, fetcher)
@@ -414,9 +362,7 @@ export class PluginBridge {
   private createCredentialsAPI(
     pluginId: string,
     manifest: PluginManifest,
-    ensure: (
-      request: Omit<CapabilityRequest, "actor" | "trigger" | "signal" | "invocationId">
-    ) => Promise<void>,
+    ensure: (request: Omit<CapabilityRequest, "invocation">) => Promise<void>,
     sourceKind: PluginSourceKind
   ): PluginContext["credentials"] {
     const broker = this.options.credentialBroker
@@ -439,9 +385,7 @@ export class PluginBridge {
   private createFsAPI(
     pluginId: string,
     manifest: PluginManifest,
-    ensure: (
-      request: Omit<CapabilityRequest, "actor" | "trigger" | "signal" | "invocationId">
-    ) => Promise<void>
+    ensure: (request: Omit<CapabilityRequest, "invocation">) => Promise<void>
   ): PluginContext["fs"] {
     const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? ""
     const pathScopes = pathScopesFromManifest(manifest)
@@ -610,8 +554,7 @@ export class PluginBridge {
     void gate
       .ensure({
         capability: "clipboard:watch",
-        actor: invocation.actor,
-        trigger: invocation.trigger,
+        invocation,
         operation: "watch",
         signal: invocation.signal,
       })
@@ -679,14 +622,9 @@ export class PluginBridge {
     const ensure = (operation: string, key?: string) =>
       gate.ensure({
         capability: "storage:plugin",
-        actor: invocation.actor,
-        trigger: invocation.trigger,
+        invocation,
         operation: key === undefined ? operation : `${operation} ${key}`,
         signal: invocation.signal,
-        runId: invocation.runId,
-        principal: invocation.principal,
-        workspaceId: invocation.workspaceId,
-        triggerInstanceId: invocation.triggerInstanceId,
       })
 
     return {

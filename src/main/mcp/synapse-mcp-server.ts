@@ -9,6 +9,7 @@ import type { JsonSchema } from "@synapse/plugin-manifest"
 import type { ToolResult } from "@synapse/plugin-sdk"
 import type { MemoryQueryScope } from "../ai/memory/memory-scope"
 import type { MemoryEntry } from "../ai/memory/memory-store"
+import type { RunProvenance } from "../ai/run-provenance"
 import type { RunTrace } from "../ai/run-trace-store"
 import type { ToolHostPort } from "../ai/tool-registry"
 import type { GrantIdentity } from "../plugins/grant-store"
@@ -25,6 +26,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js"
 import { decideApproval } from "../ai/approval-gate"
 import { projectModelVisibleTool, sanitizeTitle, warnOnce } from "../ai/guardrails/tool-metadata"
+import { buildMcpRun, buildRunTrace, toToolCaller } from "../ai/run-provenance"
 import { modelToolName, uniqueName } from "../ai/tool-registry"
 import { logger } from "../logging"
 import { WORKSPACE_INSTRUCTIONS_PREFIX } from "./workspace-instructions-resource"
@@ -167,38 +169,40 @@ export class SynapseMcpToolService {
       )
     }
 
-    const runId = randomUUID()
+    const provenance = buildMcpRun({
+      runId: randomUUID(),
+      workspaceId: this.options.workspaceId,
+      clientId: this.options.clientId,
+    })
     const startedAt = Date.now()
-    const principal = this.principal()
     try {
       const result = toMcpResult(
         await this.host.invokeTool(entry.descriptor.fqName, input, {
-          caller: {
-            kind: "mcp",
-            runId,
-            principal,
-            workspaceId: this.options.workspaceId,
-          },
+          caller: toToolCaller(provenance),
           signal: options.signal,
           progress: options.progress,
         })
       )
-      this.recordTrace(entry.descriptor.fqName, runId, principal, startedAt, !result.isError)
+      this.recordTrace(entry.descriptor.fqName, provenance, startedAt, !result.isError)
       return result
     } catch (err) {
-      this.recordTrace(entry.descriptor.fqName, runId, principal, startedAt, false)
+      this.recordTrace(entry.descriptor.fqName, provenance, startedAt, false)
       return errorResult(err instanceof Error ? err.message : String(err))
     }
   }
 
   async listResources(): Promise<ListResourcesResult> {
-    const runId = randomUUID()
+    const provenance = buildMcpRun({
+      runId: randomUUID(),
+      workspaceId: this.options.workspaceId,
+      clientId: this.options.clientId,
+    })
     const startedAt = Date.now()
     const [memoryResources, workspaceInstructionResources] = await Promise.all([
       this.listMemoryResources(),
       this.listWorkspaceInstructionResources(),
     ])
-    this.recordTrace("resources/list", runId, this.principal(), startedAt, true)
+    this.recordTrace("resources/list", provenance, startedAt, true)
     return { resources: [...memoryResources, ...workspaceInstructionResources] }
   }
 
@@ -232,7 +236,11 @@ export class SynapseMcpToolService {
   }
 
   private async readMemoryResource(uri: string): Promise<ReadResourceResult> {
-    const runId = randomUUID()
+    const provenance = buildMcpRun({
+      runId: randomUUID(),
+      workspaceId: this.options.workspaceId,
+      clientId: this.options.clientId,
+    })
     const startedAt = Date.now()
     const id = parseResourceId(uri)
     const entry =
@@ -241,11 +249,11 @@ export class SynapseMcpToolService {
         : undefined
 
     if (!entry) {
-      this.recordTrace(`resources/read:${uri}`, runId, this.principal(), startedAt, false)
+      this.recordTrace(`resources/read:${uri}`, provenance, startedAt, false)
       throw new Error(`Unknown Synapse resource: ${uri}`)
     }
 
-    this.recordTrace(`resources/read:${uri}`, runId, this.principal(), startedAt, true)
+    this.recordTrace(`resources/read:${uri}`, provenance, startedAt, true)
     return { contents: [{ uri, mimeType: "text/plain", text: entry.text }] }
   }
 
@@ -253,7 +261,11 @@ export class SynapseMcpToolService {
     uri: string,
     signal: AbortSignal | undefined
   ): Promise<ReadResourceResult> {
-    const runId = randomUUID()
+    const provenance = buildMcpRun({
+      runId: randomUUID(),
+      workspaceId: this.options.workspaceId,
+      clientId: this.options.clientId,
+    })
     const startedAt = Date.now()
     const content =
       this.options.workspaceInstructions && this.options.workspaceId
@@ -266,15 +278,29 @@ export class SynapseMcpToolService {
         : undefined
 
     if (!content) {
-      this.recordTrace(`resources/read:${uri}`, runId, this.principal(), startedAt, false)
+      this.recordTrace(`resources/read:${uri}`, provenance, startedAt, false)
       throw new Error(`Unknown Synapse resource: ${uri}`)
     }
-    this.recordTrace(`resources/read:${uri}`, runId, this.principal(), startedAt, true)
+    this.recordTrace(`resources/read:${uri}`, provenance, startedAt, true)
     return { contents: [{ uri, mimeType: "text/plain", text: content.text }] }
   }
 
-  private principal(): { kind: "external-mcp"; clientId?: string } {
-    return { kind: "external-mcp", clientId: this.options.clientId }
+  private recordTrace(
+    name: string,
+    provenance: RunProvenance,
+    startedAt: number,
+    ok: boolean
+  ): void {
+    if (!this.options.recordRun) return
+    const endedAt = Date.now()
+    this.options.recordRun(
+      buildRunTrace(provenance, {
+        startedAt,
+        endedAt,
+        outcome: ok ? "end_turn" : "error",
+        toolCalls: [{ name, startedAt, ms: endedAt - startedAt, ok }],
+      })
+    )
   }
 
   private resourceScope(): MemoryQueryScope {
@@ -282,27 +308,6 @@ export class SynapseMcpToolService {
       workspaceId: this.options.workspaceId,
       includeGlobal: this.options.memoryIncludeGlobal ?? false,
     }
-  }
-
-  private recordTrace(
-    name: string,
-    runId: string,
-    principal: { kind: "external-mcp"; clientId?: string },
-    startedAt: number,
-    ok: boolean
-  ): void {
-    if (!this.options.recordRun) return
-    const endedAt = Date.now()
-    this.options.recordRun({
-      runId,
-      origin: "mcp",
-      principal,
-      workspaceId: this.options.workspaceId,
-      startedAt,
-      endedAt,
-      outcome: ok ? "end_turn" : "error",
-      toolCalls: [{ name, startedAt, ms: endedAt - startedAt, ok }],
-    })
   }
 
   private refresh(): McpToolEntry[] {

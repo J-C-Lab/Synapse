@@ -79,11 +79,9 @@ describe("createBudgetBreakerPort", () => {
     expect(
       port.tryDebit({
         capability: "network:https",
-        actor: "background",
-        trigger: "timer:sync",
+        invocation: { source: "runless", actor: "background", trigger: "timer:sync", invocationId },
         operation: "GET",
         requestedScope: { host: "api.example.com", method: "GET", path: "/x" },
-        invocationId,
       })
     ).toBe("debited")
 
@@ -140,10 +138,8 @@ describe("createBudgetBreakerPort", () => {
     expect(
       port.tryDebit({
         capability: "clipboard:read",
-        actor: "background",
-        trigger: "timer:t",
+        invocation: { source: "runless", actor: "background", trigger: "timer:t", invocationId },
         operation: "read",
-        invocationId,
       })
     ).toBe("not-in-uses")
   })
@@ -181,19 +177,23 @@ describe("createBudgetBreakerPort", () => {
     expect(
       port.tryDebit({
         capability: "fs:write",
-        actor: "background-agent",
-        trigger: "fs.watch:downloads",
+        invocation: {
+          source: "tool",
+          trigger: "fs.watch:downloads",
+          caller: { kind: "background-agent", principal: { kind: "internal-agent" }, invocationId },
+        },
         operation: "move",
-        invocationId,
       })
     ).toBe("not-in-uses")
     expect(
       port.tryDebit({
         capability: "fs:read",
-        actor: "background-agent",
-        trigger: "fs.watch:downloads",
+        invocation: {
+          source: "tool",
+          trigger: "fs.watch:downloads",
+          caller: { kind: "background-agent", principal: { kind: "internal-agent" }, invocationId },
+        },
         operation: "read",
-        invocationId,
       })
     ).toBe("debited")
   })

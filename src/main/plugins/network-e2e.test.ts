@@ -104,8 +104,11 @@ async function makeHarness(options: HarnessOptions = {}): Promise<Harness> {
 
   const fetcher = createNetworkFetcher({
     gate,
-    actor: "user",
-    trigger: "tool:test",
+    invocation: {
+      source: "tool",
+      trigger: "tool:test",
+      caller: { kind: "user", principal: { kind: "local-user" } },
+    },
     pluginId: PLUGIN_ID,
     resolve,
     transport: transport as never,

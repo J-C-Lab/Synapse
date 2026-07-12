@@ -1,5 +1,6 @@
 import type { CapabilityGatePort, CapabilityRequest } from "./capability-gate"
 import { describe, expect, it } from "vitest"
+import { auditIdentityOf } from "./invocation-context"
 import { PluginBridge } from "./plugin-bridge"
 
 function manifest() {
@@ -42,7 +43,10 @@ describe("pluginBridge principal threading", () => {
     await ctx.storage.get("k")
 
     expect(seen).toHaveLength(1)
-    expect(seen[0].principal).toEqual({ kind: "external-mcp", clientId: "claude" })
-    expect(seen[0].workspaceId).toBe("ws-ext")
+    expect(auditIdentityOf(seen[0].invocation).principal).toEqual({
+      kind: "external-mcp",
+      clientId: "claude",
+    })
+    expect(auditIdentityOf(seen[0].invocation).workspaceId).toBe("ws-ext")
   })
 })

@@ -183,8 +183,11 @@ describe("capabilityIpcService", () => {
       identity,
       request: {
         capability: "clipboard:read",
-        actor: "user",
-        trigger: "command:run",
+        invocation: {
+          source: "tool",
+          trigger: "command:run",
+          caller: { kind: "user", principal: { kind: "local-user" } },
+        },
         operation: "read",
         reason: "needs clipboard",
       },
@@ -216,8 +219,11 @@ describe("capabilityIpcService", () => {
       identity,
       request: {
         capability: "system:capture-screen",
-        actor: "agent",
-        trigger: "tool:capture",
+        invocation: {
+          source: "tool",
+          trigger: "tool:capture",
+          caller: { kind: "agent", principal: { kind: "internal-agent" } },
+        },
         operation: "capture",
         reason: "screenshot",
       },
@@ -247,10 +253,15 @@ describe("capabilityIpcService", () => {
       identity,
       request: {
         capability: "clipboard:watch",
-        actor: "external-mcp",
-        trigger: "mcp:call",
+        invocation: {
+          source: "tool",
+          trigger: "mcp:call",
+          caller: {
+            kind: "mcp",
+            principal: { kind: "external-mcp", clientId: "Claude Desktop" },
+          },
+        },
         operation: "watch",
-        principal: { kind: "external-mcp", clientId: "Claude Desktop" },
       },
     })
 
@@ -270,8 +281,11 @@ describe("capabilityIpcService", () => {
       identity,
       request: {
         capability: "clipboard:watch",
-        actor: "agent",
-        trigger: "tool:x",
+        invocation: {
+          source: "tool",
+          trigger: "tool:x",
+          caller: { kind: "agent", principal: { kind: "internal-agent" } },
+        },
         operation: "watch",
       },
     })
@@ -291,8 +305,11 @@ describe("capabilityIpcService", () => {
       identity: buildGrantIdentity("com.synapse.test", testManifest(), "user"),
       request: {
         capability: "clipboard:write",
-        actor: "agent",
-        trigger: "tool:write",
+        invocation: {
+          source: "tool",
+          trigger: "tool:write",
+          caller: { kind: "agent", principal: { kind: "internal-agent" } },
+        },
         operation: "write",
       },
       tier: "consent",
@@ -309,8 +326,11 @@ describe("capabilityIpcService", () => {
       identity: buildGrantIdentity("com.synapse.test", testManifest(), "user"),
       request: {
         capability: "clipboard:read",
-        actor: "user",
-        trigger: "command:run",
+        invocation: {
+          source: "tool",
+          trigger: "command:run",
+          caller: { kind: "user", principal: { kind: "local-user" } },
+        },
         operation: "read",
       },
       tier: "consent",
@@ -330,8 +350,11 @@ describe("capabilityIpcService", () => {
       identity: buildGrantIdentity("com.synapse.test", testManifest(), "user"),
       request: {
         capability: "clipboard:read",
-        actor: "agent",
-        trigger: "tool:read",
+        invocation: {
+          source: "tool",
+          trigger: "tool:read",
+          caller: { kind: "agent", principal: { kind: "internal-agent" } },
+        },
         operation: "read",
         signal: controller.signal,
       },
@@ -351,8 +374,11 @@ describe("capabilityIpcService", () => {
       identity,
       request: {
         capability: "notification",
-        actor: "user",
-        trigger: "command:run",
+        invocation: {
+          source: "tool",
+          trigger: "command:run",
+          caller: { kind: "user", principal: { kind: "local-user" } },
+        },
         operation: "show",
       },
       tier: "auto",
@@ -361,8 +387,11 @@ describe("capabilityIpcService", () => {
       identity,
       request: {
         capability: "system:capture-screen",
-        actor: "agent",
-        trigger: "tool:capture",
+        invocation: {
+          source: "tool",
+          trigger: "tool:capture",
+          caller: { kind: "agent", principal: { kind: "internal-agent" } },
+        },
         operation: "capture",
       },
     })
@@ -384,8 +413,11 @@ describe("capabilityIpcService", () => {
       identity: buildGrantIdentity("com.synapse.test", testManifest(), "user"),
       request: {
         capability: "clipboard:read",
-        actor: "user",
-        trigger: "command:run",
+        invocation: {
+          source: "tool",
+          trigger: "command:run",
+          caller: { kind: "user", principal: { kind: "local-user" } },
+        },
         operation: "read",
       },
       tier: "consent",

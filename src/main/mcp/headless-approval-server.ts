@@ -118,9 +118,17 @@ function parseCapabilityPayload(
   if (!v.request || typeof v.request !== "object") return undefined
   const request = v.request as Record<string, unknown>
   if (typeof request.capability !== "string") return undefined
-  if (typeof request.actor !== "string") return undefined
-  if (typeof request.trigger !== "string") return undefined
   if (typeof request.operation !== "string") return undefined
+  if (!request.invocation || typeof request.invocation !== "object") return undefined
+  const invocation = request.invocation as Record<string, unknown>
+  if (typeof invocation.trigger !== "string") return undefined
+  if (invocation.source === "tool") {
+    if (!invocation.caller || typeof invocation.caller !== "object") return undefined
+  } else if (invocation.source === "runless") {
+    if (typeof invocation.actor !== "string") return undefined
+  } else {
+    return undefined
+  }
   return {
     token: v.token as string,
     kind: "plugin-capability",

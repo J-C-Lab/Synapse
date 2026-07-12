@@ -903,8 +903,7 @@ export class PluginHost {
       try {
         await gate.ensure({
           capability: "clipboard:watch",
-          actor: "background",
-          trigger: "clipboard:change",
+          invocation: { source: "runless", actor: "background", trigger: "clipboard:change" },
           operation: "watch",
         })
         allowed.push(entry.pluginId)

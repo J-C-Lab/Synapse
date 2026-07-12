@@ -5,6 +5,7 @@ import type { BudgetLedger } from "./trigger-budget"
 import type { TriggerRegistry } from "./trigger-registry"
 import type { PluginManifest } from "./types"
 import { getCapability, stableStringify } from "@synapse/plugin-manifest"
+import { invocationIdOf } from "./invocation-context"
 
 /** Stable scope bucket for a trigger `uses` entry — shared by debit and panel. */
 export function scopeKeyForUse(use: TriggerUse): string {
@@ -23,7 +24,8 @@ export function createBudgetBreakerPort(deps: {
   return {
     isTriggerOrigin: (id) => deps.invoker.isTriggerOrigin(id),
     tryDebit: (request): BudgetDebitOutcome => {
-      const rec = request.invocationId ? deps.invoker.get(request.invocationId) : undefined
+      const invocationId = invocationIdOf(request.invocation)
+      const rec = invocationId ? deps.invoker.get(invocationId) : undefined
       if (!rec) return "exhausted"
       const decl =
         deps.registry.getDeclaration(rec.pluginId, rec.triggerId) ??

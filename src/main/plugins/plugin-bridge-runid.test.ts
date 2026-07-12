@@ -1,5 +1,6 @@
 import type { CapabilityGatePort, CapabilityRequest } from "./capability-gate"
 import { describe, expect, it } from "vitest"
+import { auditIdentityOf } from "./invocation-context"
 import { PluginBridge } from "./plugin-bridge"
 
 function manifest() {
@@ -37,6 +38,6 @@ describe("pluginBridge runId threading", () => {
     await ctx.storage.get("k")
 
     expect(seen).toHaveLength(1)
-    expect(seen[0].runId).toBe("run-xyz")
+    expect(auditIdentityOf(seen[0].invocation).runId).toBe("run-xyz")
   })
 })

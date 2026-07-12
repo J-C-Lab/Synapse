@@ -6,6 +6,7 @@ import { AgentBudgetLedger } from "../plugins/agent-budget"
 import { AgentRuntime } from "./agent-runtime"
 import { BackgroundAgentRunner } from "./background-agent-runner"
 import { emptyUsage } from "./providers/types"
+import { toToolCaller } from "./run-provenance"
 import { modelToolName } from "./tool-registry"
 
 interface ScriptedTurn {
@@ -289,9 +290,11 @@ describe("backgroundAgentRunner", () => {
       instruction: "do the thing",
     })
 
-    expect(capturedOptions?.workspaceId).toBe("work")
-    expect(capturedOptions?.triggerInstanceId).toBe("instance-1")
-    expect(capturedOptions?.caller).toMatchObject({
+    expect(capturedOptions?.provenance).toMatchObject({
+      workspaceId: "work",
+      triggerInstanceId: "instance-1",
+    })
+    expect(toToolCaller(capturedOptions!.provenance)).toMatchObject({
       kind: "background-agent",
       workspaceId: "work",
       triggerInstanceId: "instance-1",

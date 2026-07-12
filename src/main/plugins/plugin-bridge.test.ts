@@ -10,6 +10,7 @@ import process from "node:process"
 import { rootIdForPattern } from "@synapse/plugin-manifest"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { CapabilityDenied } from "./capability-gate"
+import { auditIdentityOf } from "./invocation-context"
 import { PluginBridge } from "./plugin-bridge"
 
 let dir: string
@@ -35,14 +36,13 @@ describe("pluginBridge capability ensure", () => {
     const pluginCtx = bridge.createContext(
       "com.synapse.test",
       manifest({ permissions: ["clipboard:read"] }),
-      { actor: "user", trigger: "command:test.run" }
+      { source: "runless", actor: "user", trigger: "command:test.run" }
     )
 
     await expect(pluginCtx.clipboard.readText()).resolves.toBe("hello")
     expect(ensure).toHaveBeenCalledWith({
       capability: "clipboard:read",
-      actor: "user",
-      trigger: "command:test.run",
+      invocation: { source: "runless", actor: "user", trigger: "command:test.run" },
       operation: "read",
     })
     expect(read).toHaveBeenCalledTimes(1)
@@ -82,7 +82,7 @@ describe("pluginBridge capability ensure", () => {
     const pluginCtx = bridge.createContext(
       "com.synapse.test",
       manifest({ permissions: ["clipboard:watch"] }),
-      { actor: "user", trigger: "command:watch" }
+      { source: "runless", actor: "user", trigger: "command:watch" }
     )
 
     const unwatch = pluginCtx.clipboard.watch(listener)
@@ -90,8 +90,7 @@ describe("pluginBridge capability ensure", () => {
       await vi.advanceTimersByTimeAsync(0)
       expect(ensure).toHaveBeenCalledWith({
         capability: "clipboard:watch",
-        actor: "user",
-        trigger: "command:watch",
+        invocation: { source: "runless", actor: "user", trigger: "command:watch" },
         operation: "watch",
       })
       await vi.advanceTimersByTimeAsync(10)
@@ -129,7 +128,7 @@ describe("pluginBridge capability ensure", () => {
       }
     )
     await ctx.notifications.show({ title: "x", body: "y" })
-    expect(ensured.at(-1)?.triggerInstanceId).toBe("instance-1")
+    expect(auditIdentityOf(ensured.at(-1)!.invocation).triggerInstanceId).toBe("instance-1")
   })
 })
 
