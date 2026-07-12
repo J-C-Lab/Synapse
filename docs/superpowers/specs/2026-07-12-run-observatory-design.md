@@ -105,6 +105,33 @@ written before this fix ships.** The IPC projection layer (below) maps any
 it ever reaches the renderer — old files are never rewritten, but old
 free text never leaves the main process either.
 
+**The writer's type is tightened too, not just its behavior — corrected
+during review.** `RunTraceToolCall.error` stays a plain `error?: string`
+today; nothing stops a future call site from writing arbitrary text again,
+since the type itself doesn't forbid it. It becomes:
+
+```ts
+// run-trace-store.ts
+export type RunTraceErrorCategory = "denied" | "tool-error" | "aborted" | "exception"
+
+export interface RunTraceToolCall {
+  name: string
+  startedAt: number
+  ms: number
+  ok: boolean
+  error?: RunTraceErrorCategory
+}
+```
+
+`agent-runtime.ts`'s three `record(ok, error?)` call sites already only
+ever pass one of these four literals after the fix above — this change
+makes that invariant a compile-time guarantee, not just current behavior.
+The renderer-facing type (below) is a separate, wider type
+(`RunTraceErrorCategory | "legacy-error"`) so the persisted-data contract
+and the renderer-display contract aren't silently coupled — a future fifth
+write-side category doesn't require touching the renderer type, and
+`"legacy-error"` can never accidentally leak into what gets persisted.
+
 ### `RunListFilter` and `listRuns()`'s extended signature
 
 ```ts
@@ -129,14 +156,136 @@ Observatory's own child-run lookup (`{ parentRunId }`, see below) and any
 future internal reuse — **not** the mechanism the renderer's filter
 dropdowns use directly (see IPC section for why).
 
-### `RunSummary` — the list projection, not the full trace
+### `RunTrace` on disk is untrusted input, not a typed value — a real gap found during review
 
-Returning full `RunTrace[]` (complete `toolCalls` and `plan` arrays) for
-up to 500 records on every list call is real, avoidable overhead — most of
-it never rendered until a specific run is opened. A summary projection:
+`getRunTrace()`/`readAll()` (`run-trace-store.ts:73,112`) do
+`JSON.parse(...) as RunTrace` — a compile-time assertion, not a runtime
+check. Any structurally-valid-but-wrong-shaped JSON on disk (a corrupted
+write, a manually-edited file, a future format change) passes straight
+through as if it were a real `RunTrace`. This spec's own first-draft
+`toRunSummary()`/`toSafeRunTrace()` inherited that false trust: `trace
+.toolCalls.length`/`.filter(...)` throws outright on a record with
+`toolCalls: null`, which would fail the *entire* `runs:list` call for one
+bad file among up to 500 good ones; `{ ...trace, toolCalls: ... }` spreads
+every field on disk into the renderer-bound object, including anything
+that isn't part of the real `RunTrace` shape at all.
+
+The fix: a real normalizer at the IPC boundary that validates and
+reconstructs field-by-field — never spreads — and treats a single
+malformed file as "skip this one," not "fail the whole list":
 
 ```ts
 // src/main/ipc/runs.ts
+import type { PlanStep } from "../ai/plan/plan-types"
+import type { RunTrace, RunTraceErrorCategory, RunTraceToolCall } from "../ai/run-trace-store"
+import type { ToolPrincipal } from "@synapse/plugin-sdk"
+
+const ORIGINS = new Set<string>(["interactive", "background-agent", "subagent", "mcp"])
+const OUTCOMES = new Set<string>(["end_turn", "max_steps", "aborted", "budget_exceeded", "error"])
+const ERROR_CATEGORIES = new Set<string>(["denied", "tool-error", "aborted", "exception"])
+const PLAN_STATUSES = new Set<string>(["pending", "in_progress", "completed"])
+
+export type RendererRunTraceError = RunTraceErrorCategory | "legacy-error"
+
+export interface RendererToolCall {
+  name: string
+  startedAt: number
+  ms: number
+  ok: boolean
+  error?: RendererRunTraceError
+}
+
+export interface RendererRunTrace {
+  runId: string
+  origin: RunTrace["origin"]
+  outcome: RunTrace["outcome"]
+  conversationId?: string
+  invocationId?: string
+  parentRunId?: string
+  workspaceId?: string
+  triggerInstanceId?: string
+  principal?: ToolPrincipal
+  startedAt: number
+  endedAt: number
+  toolCalls: RendererToolCall[]
+  plan?: PlanStep[]
+}
+
+function optionalString(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined
+}
+
+function normalizeToolCall(value: unknown): RendererToolCall | undefined {
+  if (!value || typeof value !== "object") return undefined
+  const v = value as Record<string, unknown>
+  if (
+    typeof v.name !== "string" ||
+    typeof v.startedAt !== "number" ||
+    typeof v.ms !== "number" ||
+    typeof v.ok !== "boolean"
+  ) {
+    return undefined
+  }
+  const rawError = optionalString(v.error)
+  const error: RendererRunTraceError | undefined =
+    rawError === undefined ? undefined : ERROR_CATEGORIES.has(rawError) ? (rawError as RunTraceErrorCategory) : "legacy-error"
+  return { name: v.name, startedAt: v.startedAt, ms: v.ms, ok: v.ok, ...(error !== undefined ? { error } : {}) }
+}
+
+function normalizePlanStep(value: unknown): PlanStep | undefined {
+  if (!value || typeof value !== "object") return undefined
+  const v = value as Record<string, unknown>
+  if (typeof v.title !== "string" || typeof v.status !== "string" || !PLAN_STATUSES.has(v.status)) {
+    return undefined
+  }
+  return { title: v.title.slice(0, 500), status: v.status as PlanStep["status"] }
+}
+
+/** Validates and reconstructs a value read off disk into a renderer-safe
+ *  shape, field by field — never `{ ...value }`. Returns undefined for a
+ *  structurally invalid record (caller skips it, doesn't fail the whole
+ *  list) rather than throwing. */
+export function normalizeRunTraceForRenderer(value: unknown): RendererRunTrace | undefined {
+  if (!value || typeof value !== "object") return undefined
+  const v = value as Record<string, unknown>
+  if (typeof v.runId !== "string") return undefined
+  if (typeof v.origin !== "string" || !ORIGINS.has(v.origin)) return undefined
+  if (typeof v.outcome !== "string" || !OUTCOMES.has(v.outcome)) return undefined
+  if (typeof v.startedAt !== "number" || typeof v.endedAt !== "number") return undefined
+
+  const toolCalls = Array.isArray(v.toolCalls)
+    ? v.toolCalls.map(normalizeToolCall).filter((c): c is RendererToolCall => c !== undefined)
+    : []
+  const plan = Array.isArray(v.plan)
+    ? v.plan.map(normalizePlanStep).filter((s): s is PlanStep => s !== undefined)
+    : undefined
+
+  return {
+    runId: v.runId,
+    origin: v.origin as RunTrace["origin"],
+    outcome: v.outcome as RunTrace["outcome"],
+    startedAt: v.startedAt,
+    endedAt: v.endedAt,
+    conversationId: optionalString(v.conversationId),
+    invocationId: optionalString(v.invocationId),
+    parentRunId: optionalString(v.parentRunId),
+    workspaceId: optionalString(v.workspaceId),
+    triggerInstanceId: optionalString(v.triggerInstanceId),
+    principal: v.principal as ToolPrincipal | undefined, // ToolPrincipal is a
+    // plugin-sdk discriminated union already; a full recursive validator for
+    // it is out of scope here — an unrecognized shape just won't match any
+    // renderer switch-case and renders as "unknown", it can't inject markup
+    // (see the plan[].title rendering note below) or crash the page.
+    toolCalls,
+    ...(plan && plan.length > 0 ? { plan } : {}),
+  }
+}
+```
+
+### `RunSummary` — the list projection, built from the normalized value
+
+```ts
+// src/main/ipc/runs.ts (continued)
 export interface RunSummary {
   runId: string
   origin: RunTrace["origin"]
@@ -154,7 +303,7 @@ export interface RunSummary {
   hasPlan: boolean
 }
 
-export function toRunSummary(trace: RunTrace): RunSummary {
+export function toRunSummary(trace: RendererRunTrace): RunSummary {
   return {
     runId: trace.runId,
     origin: trace.origin,
@@ -172,44 +321,95 @@ export function toRunSummary(trace: RunTrace): RunSummary {
     hasPlan: Boolean(trace.plan && trace.plan.length > 0),
   }
 }
+```
 
-const ALLOWED_ERROR_CATEGORIES = new Set(["denied", "tool-error", "aborted", "exception"])
+`runs:list` calls `listRuns()`, runs every result through
+`normalizeRunTraceForRenderer()`, drops anything that normalizes to
+`undefined` (logging a warning with the filename, not the content), and
+maps the rest through `toRunSummary()`. `runs:get` calls `getRunTrace()`
+then `normalizeRunTraceForRenderer()` directly — a single malformed file
+here just resolves `undefined` (the same "not found" shape `getRunTrace`
+already returns for a missing file, so the renderer doesn't need a third
+state to handle). Both paths go through the same normalizer — there's only
+one place that decides what's safe to send to the renderer.
 
-export function toSafeRunTrace(trace: RunTrace): RunTrace {
-  return {
-    ...trace,
-    toolCalls: trace.toolCalls.map((c) => ({
-      ...c,
-      error: c.error === undefined || ALLOWED_ERROR_CATEGORIES.has(c.error) ? c.error : "legacy-error",
-    })),
-  }
+### Shared IPC validation helper — `requireString` isn't reusable today
+
+**Corrected during review**: `requireString` (`ai.ts:398`) has no `export`
+keyword — private to that file. `runs.ts` can't import it as drafted. It
+moves to a new, small, shared module:
+
+```ts
+// src/main/ipc/validation.ts (new file)
+export function requireString(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${label} must be a string.`)
+  return value
 }
 ```
 
-`runs:list` returns `RunSummary[]`; `runs:get` returns
-`toSafeRunTrace(trace) | undefined` — the only place the legacy-error
-allowlist is enforced, so every renderer-visible path (list *and* detail)
-is covered by one projection.
+`ai.ts`'s own private copy is deleted; it imports `requireString` from
+`./validation` instead — one definition, not two copies drifting apart.
+`runs.ts` imports the same one.
+
+### `runTraceDir()` — the one place the runs directory path is computed
+
+**Also corrected during review**: `runsDir` (`main/index.ts:882`) is a
+`const` local to the function that wires up `AgentService`, and
+`registerAiIpc(...)` (`main/index.ts:434`) is called from a different
+place in the same file, in a different scope — the spec as first drafted
+never said how a future `registerRunsIpc(...)` call would get a directory
+path at all. Rather than threading `runsDir` across scopes, the path
+becomes a pure, deterministic function of `userDataDir` (which is already
+available everywhere `main/index.ts` wires up IPC):
+
+```ts
+// run-trace-store.ts
+export function runTraceDir(userDataDir: string): string {
+  return path.join(userDataDir, "logs", "runs")
+}
+```
+
+`main/index.ts`'s existing `const runsDir = path.join(userDataDir, "logs", "runs")`
+(line 882) becomes `const runsDir = runTraceDir(userDataDir)` — same
+value, now defined once. The new `registerRunsIpc(ipcMain, runTraceDir(userDataDir), { isTrustedSender: isTrustedIpcSender })`
+call is added next to the existing `registerAiIpc(...)` call (line 434),
+computing the same path independently from the same `userDataDir` — no
+cross-scope variable threading needed.
 
 ### `runs.ts` IPC module — new file, not folded into `ai.ts`
 
 ```ts
-// src/main/ipc/runs.ts
+// src/main/ipc/runs.ts (continued)
 export interface RunListQuery {
   parentRunId?: string
 }
 
 export function normalizeRunListQuery(input: unknown): RunListQuery {
   if (input === undefined) return {}
-  if (!input || typeof input !== "object") throw new Error("payload must be an object")
-  const v = input as Record<string, unknown>
-  if (v.parentRunId === undefined) return {}
-  if (typeof v.parentRunId !== "string" || v.parentRunId.length === 0 || v.parentRunId.length > 200) {
-    throw new Error("parentRunId must be a non-empty string")
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("payload must be an object")
   }
-  return { parentRunId: v.parentRunId }
+  const v = input as Record<string, unknown>
+  const keys = Object.keys(v)
+  if (keys.length === 0) return {}
+  if (keys.some((key) => key !== "parentRunId")) {
+    throw new Error("unexpected field in payload")
+  }
+  const parentRunId = requireString(v.parentRunId, "parentRunId").trim()
+  if (!parentRunId) throw new Error("parentRunId must be a non-empty string")
+  if (parentRunId.length > 200) throw new Error("parentRunId is too long")
+  return { parentRunId }
 }
 ```
+
+**Tightened during review**: the first draft accepted an array (`[]` is
+`typeof "object"` in JS), silently ignored a typo'd key like
+`parentRunID` (falling through to `{}`, returning all 500 records instead
+of erroring), and accepted a whitespace-only `parentRunId`. The version
+above rejects arrays explicitly, rejects any key other than
+`parentRunId`, and rejects blank/whitespace-only values after
+`requireString` — a typo or malformed payload now fails loudly instead of
+silently widening the query.
 
 Two channels, both read-only, both behind the existing trusted-sender
 `guard()` pattern every other `register*Ipc` function in this codebase
@@ -220,10 +420,9 @@ uses:
   below for why) or `{ parentRunId }` (returns every direct child of that
   run, for the Observatory's own parent/child correlation view).
   `normalizeRunListQuery()` validates the payload before it reaches
-  `listRuns()`; an omitted/malformed `parentRunId` never reaches the
-  store layer with a `.trim()`-free free-form string.
-- **`runs:get(runId)`** — `requireString(runId, "runId")` (the same
-  helper `ai.ts` already uses) validates the argument is a non-empty
+  `listRuns()`.
+- **`runs:get(runId)`** — `requireString(runId, "runId")` (now imported
+  from the shared `validation.ts`) validates the argument is a non-empty
   string before it's handed to `getRunTrace()`, which independently
   enforces its own `isSafeRunId()` filename-safety check
   (`run-trace-store.ts:48-52`) — two layers, matching this codebase's
@@ -273,13 +472,23 @@ the dataset is capped at 500 rows):
     rather than a dead link).
   - `parentRunId` — a link that calls `runs:get(parentRunId)` and switches
     the detail pane to that run. **If it resolves nothing, the pane shows
-    "This run's history has aged out of the 500-run retention window,"
-    not a generic not-found state** — the distinction is derivable
-    without any new backend capability: the *current* run's own
-    `parentRunId` field is proof the parent run existed at some point (the
-    child could only have recorded that id if the parent run really ran),
-    so a failed lookup for a value we already know was real is safely
-    attributable to retention, not "never existed."
+    "Parent run trace is unavailable. It may have aged out of retention or
+    failed to persist," not a bare "not found."** **Softened during
+    review**: the first draft claimed a missing parent could be confidently
+    attributed to retention, reasoning that the current run's own
+    `parentRunId` field proves the parent run existed. That's true — but it
+    doesn't prove the parent's *trace file* was ever successfully written.
+    `recordRun()` is deliberately best-effort (`run-trace-store.ts:54-66`'s
+    own comment: "a disk error must never fail the agent turn") — a parent
+    trace can be missing because it aged out of the 500-run cap, *or*
+    because the write failed, the JSON was corrupted and silently dropped
+    by `readAll()`'s catch-and-skip (`run-trace-store.ts:113-115`), the
+    file was deleted outside the app, or the process crashed before the
+    parent's `recordRun()` call ran at all. None of these are
+    distinguishable from a missing-file lookup today — the message says
+    "unavailable, possibly one of several reasons," not a specific,
+    unverifiable claim. (A future spec could add a prune tombstone to make
+    "aged out of retention" a real, checkable fact — out of scope here.)
   - **Child runs** — a `runs:list({ parentRunId: currentRunId })` call
     lists every run whose `parentRunId` equals the currently-viewed run
     (subagent runs spawned by this one), each entry linking to switch the
@@ -311,30 +520,47 @@ the dataset is capped at 500 rows):
   `workspaceId`/`triggerInstanceId` filters, individually and combined
   with the existing `conversationId`/`parentRunId`; a filter matching zero
   records returns `[]`, not undefined/throw.
-- **`runs.test.ts`** (new): `toRunSummary()` — exact field mapping,
-  `toolCallCount`/`failedToolCallCount` computed correctly from a
-  `toolCalls` array with a mix of `ok`/not-`ok` entries, `hasPlan` false
-  for an absent or empty `plan`. `toSafeRunTrace()` — an `error` value
-  outside the four-item allowlist (simulating a legacy file) is mapped to
-  `"legacy-error"`; an allowed value passes through unchanged;
-  `undefined` stays `undefined`. `normalizeRunListQuery()` — accepts
-  `undefined` and `{}`; accepts a well-formed `parentRunId`; rejects a
-  non-string, empty, or over-200-char `parentRunId`; rejects a non-object
-  payload.
+- **`runs.test.ts`** (new):
+  - `normalizeRunTraceForRenderer()` — a well-formed value round-trips
+    with every field intact; a value with `toolCalls: null` normalizes to
+    `toolCalls: []` rather than throwing (**the malformed-but-valid-JSON
+    regression test called out in review** — `{"runId":"x","toolCalls":null}`
+    is syntactically valid JSON that would have crashed the first draft's
+    `.length` access); an unrecognized `origin`/`outcome` value resolves
+    `undefined` for the whole trace; an extra unrecognized top-level field
+    (e.g. `{"runId":"x", "origin":"interactive", ..., "secretField":"leak"}`)
+    is silently dropped, not present anywhere on the returned object —
+    proving the field-by-field reconstruction, not a spread, is what's
+    actually running; one malformed `toolCalls[]` entry among several valid
+    ones is dropped individually, the rest still normalize.
+  - `toRunSummary()` — exact field mapping, `toolCallCount`/
+    `failedToolCallCount` computed correctly from a `toolCalls` array with
+    a mix of `ok`/not-`ok` entries, `hasPlan` false for an absent or empty
+    `plan`.
+  - `normalizeRunListQuery()` — accepts `undefined` and `{}`; accepts a
+    well-formed `parentRunId`; rejects a non-string, empty-after-trim, or
+    over-200-char `parentRunId`; rejects a non-object payload; **rejects an
+    array** (`[]`); **rejects a payload with an unrecognized key**
+    (`{ parentRunID: "x" }`, the typo case — must throw, not silently
+    return `{}`).
 - **IPC registration tests**: both channels reject an untrusted sender via
   the existing `guard()` pattern (matching how other `register*Ipc` tests
   in this codebase already assert this); `runs:get` with a
   path-traversal-shaped runId (`"../escape"`) resolves `undefined`, not a
   thrown error or a read outside the runs directory — proving the
   IPC-level `requireString` and the store's own `isSafeRunId` both apply
-  independently.
+  independently; `runs:list` against a `runs/` directory containing one
+  malformed-but-parseable JSON file among several valid ones returns every
+  valid `RunSummary` and silently omits only the bad one — the call itself
+  never throws.
 - **`run-observatory-page.test.tsx`** (new): renders a list from a mocked
   `runs:list()` response; client-side origin/outcome/workspace filtering
   narrows the visible list without triggering a second `runs:list` call;
   selecting a run calls `runs:get` and renders its detail; a `parentRunId`
-  that fails to resolve renders the retention-aged-out message, not a
-  generic not-found state; a `conversationId` link for a conversation that
-  no longer exists renders as plain text with the "no longer exists" note.
+  that fails to resolve renders the "Parent run trace is unavailable..."
+  message, not a bare not-found state; a `conversationId` link for a
+  conversation that no longer exists renders as plain text with the "no
+  longer exists" note.
 
 ## Non-goals
 
@@ -357,9 +583,19 @@ the dataset is capped at 500 rows):
   review (raw exception text in `toolCalls[].error`) is fixed at its
   source (the writer) plus a legacy-value allowlist at the IPC projection
   layer — this is not a general-purpose redaction/scrubbing system for
-  arbitrary future fields, and no other field needed one (every other
-  `RunTrace` field is already structured metadata: ids, timestamps, an
-  outcome enum, tool names).
+  arbitrary future fields. **Precision added during review**: this is not
+  the same claim as "every other field is inert." `plan[].title`
+  (`PlanStep.title`) is model-generated free text, not a closed enum like
+  `origin`/`outcome` — it can legitimately be arbitrary content, and
+  `normalizeRunTraceForRenderer()` caps it at 500 characters as a sanity
+  bound, not a redaction. It's safe to *display* precisely because the
+  renderer only ever renders it as plain, React-escaped text — no
+  `dangerouslySetInnerHTML`, no Markdown rendering of trace content — so
+  it can't inject markup regardless of what a plugin or the model put in
+  it. That's a display-safety guarantee (markup-injection-proof by
+  construction), not a content-redaction one; the two are being
+  deliberately kept distinct rather than conflated as "safe" in one
+  blanket sense.
 - **No index/cache layer for `RunTraceStore`.** `readAll()`'s full
   directory scan on every call is unchanged — the dataset is small enough
   (≤500 small JSON files) that this is not a real performance concern at
@@ -380,8 +616,8 @@ the dataset is capped at 500 rows):
   `src/main/ipc/runs.ts` → registration → preload → `lib/electron.ts`),
   both behind the existing trusted-sender guard, both read-only.
   `runs:list` returns `RunSummary[]` (never a full `RunTrace[]`);
-  `runs:get` returns a `toSafeRunTrace()`-projected single trace or
-  `undefined`.
+  `runs:get` returns a `normalizeRunTraceForRenderer()`-projected
+  `RendererRunTrace` or `undefined`.
 - `normalizeRunListQuery()` validates `runs:list`'s optional
   `{ parentRunId }` payload; `runs:get`'s `runId` argument goes through
   `requireString` before reaching the store's own independent
@@ -390,9 +626,20 @@ the dataset is capped at 500 rows):
   list with client-side origin/outcome/workspace filtering (single
   `runs:list()` call, no per-filter-change IPC traffic), detail pane
   showing every `RunTrace` field including `conversationId`/
-  `invocationId`/`parentRunId`, a working parent-run link with a
-  retention-aware empty state, and a child-runs list via
-  `runs:list({ parentRunId })`.
+  `invocationId`/`parentRunId`, a working parent-run link with an
+  "unavailable" empty state that doesn't overclaim a specific cause, and a
+  child-runs list via `runs:list({ parentRunId })`.
+- `normalizeRunTraceForRenderer()` validates every field of a value read
+  off disk before any of it reaches the renderer — never `{ ...value }` —
+  and a single malformed trace file is skipped (list) or resolves
+  `undefined` (get), never fails the whole call. `RunTraceToolCall.error`
+  is typed as a closed `RunTraceErrorCategory` union at the write side, not
+  a plain `string`.
+- `requireString` lives in one place (`src/main/ipc/validation.ts`),
+  imported by both `ai.ts` and `runs.ts`; `runTraceDir(userDataDir)` is the
+  one function that computes the runs directory path, used by both
+  `main/index.ts`'s existing `AgentService` wiring and the new
+  `registerRunsIpc(...)` call.
 - `pnpm typecheck`, `pnpm lint`, `pnpm test` all pass.
 
 ## Parked questions
