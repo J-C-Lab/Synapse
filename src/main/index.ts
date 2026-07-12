@@ -59,7 +59,7 @@ import {
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/catalog"
 import { ResilientToolHost } from "./ai/resilient-tool-host"
 import { RunBudgetRegistry } from "./ai/run-budget-registry"
-import { getLatestPlan, recordRun as persistRunTrace } from "./ai/run-trace-store"
+import { getLatestPlan, recordRun as persistRunTrace, runTraceDir } from "./ai/run-trace-store"
 import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
@@ -89,6 +89,7 @@ import { LauncherService } from "./ipc/launcher-service"
 import { registerMarketplaceIpc } from "./ipc/marketplace"
 import { registerMemoryIpc } from "./ipc/memory"
 import { registerPluginIpc } from "./ipc/plugins"
+import { registerRunsIpc } from "./ipc/runs"
 import { registerTriggersIpc, TriggerIpcService } from "./ipc/triggers"
 import { registerUpdatesIpc } from "./ipc/updates"
 import { readJsonFile } from "./lan/atomic-json-store"
@@ -432,6 +433,9 @@ function registerIpc(): void {
     isTrustedSender: isTrustedIpcSender,
   })
   registerAiIpc(ipcMain, agent, { isTrustedSender: isTrustedIpcSender })
+  registerRunsIpc(ipcMain, runTraceDir(app.getPath("userData")), {
+    isTrustedSender: isTrustedIpcSender,
+  })
   if (memoryService)
     registerMemoryIpc(ipcMain, memoryService, { isTrustedSender: isTrustedIpcSender })
   updateService = setupAutoUpdates()
@@ -879,7 +883,7 @@ async function createAgentService(): Promise<AgentService> {
   await executionSource.refresh()
   const executionApprovalResolver = new ExecutionApprovalResolver({ log: executionLog })
 
-  const runsDir = path.join(userDataDir, "logs", "runs")
+  const runsDir = runTraceDir(userDataDir)
   const recordRun = (trace: RunTrace): void => persistRunTrace(runsDir, trace)
   runTraceRecorder = recordRun
 
