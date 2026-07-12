@@ -12,18 +12,20 @@ import { credentialBrokerAdapter } from "./credential-scope"
 import { fsPathAdapter } from "./fs-path-scope"
 
 describe("capability registry", () => {
-  it("exposes the fifteen known capabilities", () => {
+  it("exposes the seventeen known capabilities", () => {
     expect(capabilityIds().sort()).toEqual(
       [
         "clipboard:read",
         "clipboard:watch",
         "clipboard:write",
         "credentials:broker",
+        "execution:read",
         "fs:read",
         "fs:resolvePath",
         "fs:watch",
         "fs:write",
         "hotkey:global",
+        "memory:read",
         "network:https",
         "notification",
         "storage:plugin",
@@ -170,5 +172,32 @@ describe("capability descriptors", () => {
   it("normalizedCapability is structurally { id, scope? }", () => {
     const cap: NormalizedCapability = { id: "storage:plugin" }
     expect(cap.id).toBe("storage:plugin")
+  })
+})
+
+describe("memory:read / execution:read", () => {
+  it("are registered as consent-tier, unscoped, requiring explicit trigger confirmation", () => {
+    const memoryRead = getCapability("memory:read")
+    expect(memoryRead).toMatchObject({
+      id: "memory:read",
+      tier: "consent",
+      scopeEnforced: false,
+      requiresExplicitTriggerConfirmation: true,
+    })
+
+    const executionRead = getCapability("execution:read")
+    expect(executionRead).toMatchObject({
+      id: "execution:read",
+      tier: "consent",
+      scopeEnforced: false,
+      requiresExplicitTriggerConfirmation: true,
+    })
+  })
+
+  it("the other 14 existing capabilities do not carry requiresExplicitTriggerConfirmation", () => {
+    const notificationCap = getCapability("notification")
+    expect(notificationCap?.requiresExplicitTriggerConfirmation).toBeUndefined()
+    const networkCap = getCapability("network:https")
+    expect(networkCap?.requiresExplicitTriggerConfirmation).toBeUndefined()
   })
 })

@@ -251,6 +251,8 @@ let capabilityService!: CapabilityIpcService
 let hostResourceIpcService!: HostResourceIpcService
 let lan: LanService
 let agent: AgentService
+let sharedMemoryTools: MemoryToolSource | undefined
+let sharedExecutionTools: ExecutionToolHostSource | undefined
 let runTraceRecorder: (trace: RunTrace) => void = () => {}
 let emitPlanForRun: (
   runId: string,
@@ -784,6 +786,8 @@ function initPluginHost(): PluginHost {
       approve: capabilityService.capabilityApprover,
     },
     backgroundAgentProvider: () => agent.createBackgroundAgentProvider(),
+    memoryTools: () => sharedMemoryTools,
+    executionTools: () => sharedExecutionTools,
     recordRun: (trace) => runTraceRecorder(trace),
     runBudgetRegistry,
     workspaceRoots: workspaceRootStore,
@@ -881,6 +885,7 @@ async function createAgentService(): Promise<AgentService> {
     isAllowed: () => launcher.getSettings().allowAgentShell,
   })
   await executionSource.refresh()
+  sharedExecutionTools = executionSource
   const executionApprovalResolver = new ExecutionApprovalResolver({ log: executionLog })
 
   const runsDir = runTraceDir(userDataDir)
@@ -918,6 +923,8 @@ async function createAgentService(): Promise<AgentService> {
   // long-running, so they opt out of the timeout; everything else uses the
   // configured timeout. Held in a variable so its health snapshots can be
   // surfaced to the renderer.
+  const memoryToolSource = new MemoryToolSource(memory)
+  sharedMemoryTools = memoryToolSource
   const resilientToolHost = new ResilientToolHost(
     new CompositeToolHost([
       introspectionSource,
@@ -935,7 +942,7 @@ async function createAgentService(): Promise<AgentService> {
           fqName.startsWith(SUBAGENT_FQ_PREFIX)
       ),
       manager,
-      new MemoryToolSource(memory),
+      memoryToolSource,
     ]),
     {
       breaker: () => ({

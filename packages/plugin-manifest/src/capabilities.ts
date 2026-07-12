@@ -60,6 +60,11 @@ export interface CapabilityDescriptor {
    * of this capability has no way to be constrained and is rejected.
    */
   scopeAdapter?: CapabilityScopeAdapter
+  /** True only for capabilities the automatic trigger-enable grant sweep
+   *  (`grantTriggerUses`) must never silently grant — the user must confirm
+   *  explicitly through a dedicated flow instead. Absent (falsy) for every
+   *  existing capability; only set on capabilities new enough to need it. */
+  requiresExplicitTriggerConfirmation?: boolean
 }
 
 const ALL: CapabilityDescriptor[] = [
@@ -86,6 +91,24 @@ const ALL: CapabilityDescriptor[] = [
     tier: "elevated",
     scopeEnforced: true,
     scopeAdapter: credentialBrokerAdapter,
+  },
+  // Background-agent-only read capabilities (S07). Consent tier, unscoped —
+  // the workspace boundary comes from the trigger instance's own workspaceId,
+  // not a declared scope. Silently auto-granting these on plugin install/
+  // restart would defeat the point (unattended file/memory reads), so they
+  // are excluded from grantTriggerUses()'s automatic sweep and require an
+  // explicit confirmation flow instead — see trigger-grants.ts.
+  {
+    id: "memory:read",
+    tier: "consent",
+    scopeEnforced: false,
+    requiresExplicitTriggerConfirmation: true,
+  },
+  {
+    id: "execution:read",
+    tier: "consent",
+    scopeEnforced: false,
+    requiresExplicitTriggerConfirmation: true,
   },
 ]
 

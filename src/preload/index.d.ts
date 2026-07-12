@@ -201,6 +201,16 @@ declare global {
     loadedAt?: number
   }
 
+  interface SynapsePendingTriggerCapability {
+    capabilityId: string
+    triggerIds: string[]
+  }
+
+  interface SynapsePendingTriggerCapabilityConfirmation {
+    pluginId: string
+    capabilities: SynapsePendingTriggerCapability[]
+  }
+
   interface SynapsePluginCapabilityRow {
     id: string
     tier: "auto" | "consent" | "elevated"
@@ -576,6 +586,17 @@ declare global {
       setPluginEnabled: (
         pluginId: string,
         enabled: boolean
+      ) => Promise<SynapsePluginIpcResult<SynapsePluginRegistryEntry>>
+      listPendingTriggerCapabilities: () => Promise<
+        SynapsePluginIpcResult<SynapsePendingTriggerCapabilityConfirmation[]>
+      >
+      confirmTriggerCapabilities: (
+        pluginId: string,
+        capabilityIds: string[]
+      ) => Promise<SynapsePluginIpcResult<SynapsePendingTriggerCapability[]>>
+      confirmAndEnablePlugin: (
+        pluginId: string,
+        capabilityIds: string[]
       ) => Promise<SynapsePluginIpcResult<SynapsePluginRegistryEntry>>
       setPluginPreference: (
         pluginId: string,

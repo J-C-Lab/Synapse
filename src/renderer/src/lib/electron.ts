@@ -369,6 +369,29 @@ export async function setPluginEnabled(
   return unwrapIpcResult(await api().setPluginEnabled(pluginId, enabled))
 }
 
+export type PendingTriggerCapability = SynapsePendingTriggerCapability
+export type PendingTriggerCapabilityConfirmation = SynapsePendingTriggerCapabilityConfirmation
+
+export async function listPendingTriggerCapabilities(): Promise<
+  PendingTriggerCapabilityConfirmation[]
+> {
+  return unwrapIpcResult(await api().listPendingTriggerCapabilities())
+}
+
+export async function confirmTriggerCapabilities(
+  pluginId: string,
+  capabilityIds: string[]
+): Promise<PendingTriggerCapability[]> {
+  return unwrapIpcResult(await api().confirmTriggerCapabilities(pluginId, capabilityIds))
+}
+
+export async function confirmAndEnablePlugin(
+  pluginId: string,
+  capabilityIds: string[]
+): Promise<PluginRegistryEntry> {
+  return unwrapIpcResult(await api().confirmAndEnablePlugin(pluginId, capabilityIds))
+}
+
 export async function setPluginPreference(
   pluginId: string,
   key: string,

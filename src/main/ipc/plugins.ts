@@ -63,6 +63,9 @@ export interface PluginIpcHandlers {
   searchCommands: (query: unknown) => unknown
   invoke: (payload: unknown) => Promise<unknown>
   disposeCommand: (payload: unknown) => Promise<void>
+  listPendingTriggerCapabilities: () => Promise<unknown>
+  confirmTriggerCapabilities: (payload: unknown) => Promise<unknown>
+  confirmAndEnable: (payload: unknown) => Promise<unknown>
   marketplaceList: () => unknown[] | Promise<unknown[]>
   marketplaceInstall: (payload: unknown) => Promise<unknown>
   marketplaceSearch: (query: unknown) => Promise<unknown>
@@ -149,6 +152,33 @@ export function createPluginIpcHandlers(
       )
     },
 
+    listPendingTriggerCapabilities: () => host.listPendingTriggerCapabilityConfirmations(),
+    confirmTriggerCapabilities: (payload) => {
+      const value = requireRecord(payload, "plugin:confirm-trigger-capabilities payload")
+      const pluginId = requireString(value.pluginId, "pluginId")
+      if (
+        !Array.isArray(value.capabilityIds) ||
+        !value.capabilityIds.every((id) => typeof id === "string")
+      ) {
+        throw new TypeError("capabilityIds must be an array of strings.")
+      }
+      return host.confirmTriggerCapabilities({
+        pluginId,
+        capabilityIds: value.capabilityIds as string[],
+      })
+    },
+    confirmAndEnable: (payload) => {
+      const value = requireRecord(payload, "plugin:confirm-and-enable payload")
+      const pluginId = requireString(value.pluginId, "pluginId")
+      if (
+        !Array.isArray(value.capabilityIds) ||
+        !value.capabilityIds.every((id) => typeof id === "string")
+      ) {
+        throw new TypeError("capabilityIds must be an array of strings.")
+      }
+      return host.confirmAndEnablePlugin(pluginId, value.capabilityIds as string[])
+    },
+
     marketplaceList: () => host.listMarketplacePlugins(),
 
     marketplaceInstall(payload) {
@@ -200,6 +230,30 @@ export function registerPluginIpc(
       "plugin:set-enabled",
       event,
       () => handlers.setEnabled(payload),
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("plugin:list-pending-trigger-capabilities", (event) =>
+    invokePluginIpcHandler(
+      "plugin:list-pending-trigger-capabilities",
+      event,
+      () => handlers.listPendingTriggerCapabilities(),
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("plugin:confirm-trigger-capabilities", (event, payload: unknown) =>
+    invokePluginIpcHandler(
+      "plugin:confirm-trigger-capabilities",
+      event,
+      () => handlers.confirmTriggerCapabilities(payload),
+      options.isTrustedSender
+    )
+  )
+  ipcMain.handle("plugin:confirm-and-enable", (event, payload: unknown) =>
+    invokePluginIpcHandler(
+      "plugin:confirm-and-enable",
+      event,
+      () => handlers.confirmAndEnable(payload),
       options.isTrustedSender
     )
   )

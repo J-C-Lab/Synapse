@@ -259,6 +259,37 @@ export class PluginBridge {
     })
   }
 
+  /** Authorizer for host-native (non-sandboxed) tool calls made on a
+   *  background-agent's behalf — memory:read/execution:read (S07). Reuses
+   *  the exact same CapabilityGate a plugin's own capability calls go
+   *  through (gateFor()), so grant checks, uses[] budget debits, and audit
+   *  entries all come from the one real mechanism, not a parallel one.
+   *  `confirmedCapabilities()` is a separate, narrow, pure read (no audit,
+   *  no budget debit) used only to decide tool *visibility* — `ensure()`
+   *  remains the authoritative, audited check at invoke time. */
+  createBackgroundHostToolAuthorizer(
+    pluginId: string,
+    manifest: PluginManifest
+  ): {
+    ensure: (request: CapabilityRequest) => Promise<void>
+    confirmedCapabilities: (candidateIds: readonly string[]) => Promise<Set<string>>
+  } {
+    const gate = this.gateFor(pluginId, manifest)
+    const sourceKind = this.sourceKindFor(pluginId)
+    const identity = buildGrantIdentity(pluginId, manifest, sourceKind)
+    return {
+      ensure: (request) => gate.ensure(request),
+      confirmedCapabilities: async (candidateIds) => {
+        const entries = await Promise.all(
+          candidateIds.map(
+            async (id) => [id, await this.governance.grants.isGranted(identity, id)] as const
+          )
+        )
+        return new Set(entries.filter(([, granted]) => granted).map(([id]) => id))
+      },
+    }
+  }
+
   private resolvePreferences(pluginId: string, manifest: PluginManifest): Record<string, unknown> {
     return {
       ...preferencesFromManifest(manifest),

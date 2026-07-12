@@ -66,6 +66,12 @@ const electronAPI = {
   getPlugin: (pluginId: string) => ipcRenderer.invoke("plugin:get", pluginId),
   setPluginEnabled: (pluginId: string, enabled: boolean) =>
     ipcRenderer.invoke("plugin:set-enabled", { pluginId, enabled }),
+  listPendingTriggerCapabilities: () =>
+    ipcRenderer.invoke("plugin:list-pending-trigger-capabilities"),
+  confirmTriggerCapabilities: (pluginId: string, capabilityIds: string[]) =>
+    ipcRenderer.invoke("plugin:confirm-trigger-capabilities", { pluginId, capabilityIds }),
+  confirmAndEnablePlugin: (pluginId: string, capabilityIds: string[]) =>
+    ipcRenderer.invoke("plugin:confirm-and-enable", { pluginId, capabilityIds }),
   setPluginPreference: (pluginId: string, key: string, value: unknown) =>
     ipcRenderer.invoke("plugin:set-preference", { pluginId, key, value }),
   installPluginFolder: (folderPath: string) =>
