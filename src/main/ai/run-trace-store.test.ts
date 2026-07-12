@@ -178,4 +178,36 @@ describe("runTraceStore", () => {
       expect(getLatestPlan(dir, "c1")).toBeUndefined()
     })
   })
+
+  describe("legacy trace compatibility", () => {
+    it("reads a pre-S04 trace missing principal/workspaceId without crashing", () => {
+      const legacy = {
+        runId: "legacy-1",
+        origin: "interactive",
+        startedAt: 1000,
+        endedAt: 2000,
+        outcome: "end_turn",
+        toolCalls: [],
+        // no principal, no workspaceId — a record written before this spec's invariants existed
+      }
+      recordRun(dir, legacy as Parameters<typeof recordRun>[1])
+      expect(getRunTrace(dir, "legacy-1")).toEqual(legacy)
+    })
+
+    it("reads a pre-S04 background-agent trace missing triggerInstanceId without crashing", () => {
+      const legacy = {
+        runId: "legacy-2",
+        origin: "background-agent",
+        startedAt: 1000,
+        endedAt: 2000,
+        outcome: "end_turn",
+        toolCalls: [],
+        // no triggerInstanceId, no workspaceId — RunProvenance would require both for a
+        // NEW background-agent run, but this file predates that invariant
+      }
+      recordRun(dir, legacy as Parameters<typeof recordRun>[1])
+      const all = listRuns(dir)
+      expect(all.find((t) => t.runId === "legacy-2")).toEqual(legacy)
+    })
+  })
 })
