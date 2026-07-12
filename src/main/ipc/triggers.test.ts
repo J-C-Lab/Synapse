@@ -32,7 +32,8 @@ function fakeHostForInstances(
     identityForPlugin?: () => typeof identity | undefined
     isPluginActive?: boolean
     triggerExistsWithAgent?: boolean
-    workspaceExists?: boolean
+    workspaceIsActive?: boolean
+    workspaceIdForInstance?: string
     onCreate?: (...args: unknown[]) => void
     onReactivate?: () => void | Promise<void>
     onInstanceRemoved?: () => void | Promise<void>
@@ -59,7 +60,8 @@ function fakeHostForInstances(
     ),
     identityForPlugin: vi.fn(overrides.identityForPlugin ?? (() => identity)),
     getTriggerDeclaration: vi.fn(() => decl),
-    workspaceExists: vi.fn(async () => overrides.workspaceExists ?? true),
+    workspaceIsActive: vi.fn(async () => overrides.workspaceIsActive ?? true),
+    workspaceIdForInstance: vi.fn(async () => overrides.workspaceIdForInstance ?? "work"),
     createTriggerInstance: vi.fn(
       async (pluginId: string, triggerId: string, workspaceId: string) => {
         const resolvedIdentity = overrides.identityForPlugin?.() ?? identity
@@ -196,7 +198,7 @@ describe("triggerIpcService", () => {
       fakeHostForInstances({
         identityForPlugin: () => identity,
         triggerExistsWithAgent: true,
-        workspaceExists: true,
+        workspaceIsActive: true,
         onCreate: (...args) => created.push(args),
       })
     )
@@ -216,10 +218,12 @@ describe("triggerIpcService", () => {
       fakeHostForInstances({
         identityForPlugin: () => identity,
         triggerExistsWithAgent: true,
-        workspaceExists: false,
+        workspaceIsActive: false,
       })
     )
-    await expect(service.createInstance("p", "t", "nope")).rejects.toThrow()
+    await expect(service.createInstance("p", "t", "nope")).rejects.toThrow(
+      "Workspace is not active: nope"
+    )
   })
 
   it("create-instance rejects a trigger without agent", async () => {
@@ -227,7 +231,7 @@ describe("triggerIpcService", () => {
       fakeHostForInstances({
         identityForPlugin: () => identity,
         triggerExistsWithAgent: false,
-        workspaceExists: true,
+        workspaceIsActive: true,
       })
     )
     await expect(service.createInstance("p", "t", "work")).rejects.toThrow()
@@ -262,5 +266,48 @@ describe("triggerIpcService", () => {
     )
     await service.removeInstance("unknown-id")
     expect(onInstanceRemoved).not.toHaveBeenCalled()
+  })
+})
+
+describe("createInstance — archived workspace", () => {
+  it("rejects with a distinct message when the workspace is not active", async () => {
+    const service = new TriggerIpcService(() =>
+      fakeHostForInstances({
+        identityForPlugin: () => identity,
+        triggerExistsWithAgent: true,
+        workspaceIsActive: false,
+      })
+    )
+    await expect(
+      service.createInstance("com.synapse.github-inbox", "poll-inbox", "archived-ws")
+    ).rejects.toThrow("Workspace is not active: archived-ws")
+  })
+})
+
+describe("reactivateInstance — archived workspace", () => {
+  it("rejects reviving an instance whose workspace is not active", async () => {
+    const service = new TriggerIpcService(() =>
+      fakeHostForInstances({
+        identityForPlugin: () => identity,
+        workspaceIdForInstance: "archived-ws",
+        workspaceIsActive: false,
+      })
+    )
+    await expect(service.reactivateInstance("instance-1")).rejects.toThrow(
+      "Workspace is not active: archived-ws"
+    )
+  })
+
+  it("still reactivates when the workspace is active", async () => {
+    const onReactivate = vi.fn()
+    const service = new TriggerIpcService(() =>
+      fakeHostForInstances({
+        identityForPlugin: () => identity,
+        workspaceIsActive: true,
+        onReactivate,
+      })
+    )
+    await service.reactivateInstance("instance-1")
+    expect(onReactivate).toHaveBeenCalledTimes(1)
   })
 })

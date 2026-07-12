@@ -66,7 +66,8 @@ export interface AgentServiceOptions {
   credentials: AiCredentialStore
   tools: AiToolRegistry
   conversations: ConversationStore
-  workspaces?: Pick<WorkspaceStore, "exists"> & Partial<Pick<WorkspaceStore, "list" | "create">>
+  workspaces?: Pick<WorkspaceStore, "exists" | "isActive"> &
+    Partial<Pick<WorkspaceStore, "list" | "create" | "rename" | "archive" | "unarchive">>
   sendEvent: (event: AiChatEvent) => void
   /** Policy hook that can hard-deny or auto-allow before the annotation gate. */
   approvalResolver?: (context: ToolApprovalContext) => Promise<ApprovalDecision | undefined>
@@ -342,14 +343,29 @@ export class AgentService {
     return plan && plan.length > 0 ? { ...stored, plan } : stored
   }
 
-  listWorkspaces(): Promise<Workspace[]> {
+  listWorkspaces(options?: { includeArchived?: boolean }): Promise<Workspace[]> {
     if (!this.options.workspaces?.list) return Promise.resolve([DEFAULT_WORKSPACE])
-    return this.options.workspaces.list()
+    return this.options.workspaces.list(options)
   }
 
   createWorkspace(name: string): Promise<Workspace> {
     if (!this.options.workspaces?.create) throw new Error("Workspace store not configured")
     return this.options.workspaces.create(name)
+  }
+
+  renameWorkspace(id: string, name: string): Promise<Workspace> {
+    if (!this.options.workspaces?.rename) throw new Error("Workspace store not configured")
+    return this.options.workspaces.rename(id, name)
+  }
+
+  archiveWorkspace(id: string): Promise<Workspace> {
+    if (!this.options.workspaces?.archive) throw new Error("Workspace store not configured")
+    return this.options.workspaces.archive(id)
+  }
+
+  unarchiveWorkspace(id: string): Promise<Workspace> {
+    if (!this.options.workspaces?.unarchive) throw new Error("Workspace store not configured")
+    return this.options.workspaces.unarchive(id)
   }
 
   async listWorkspaceRoots(workspaceId: string): Promise<WorkspaceRootRecord[]> {
@@ -391,8 +407,9 @@ export class AgentService {
   }
 
   async createConversation(workspaceId: string): Promise<{ id: string; workspaceId: string }> {
-    const ok = (await this.options.workspaces?.exists(workspaceId)) ?? workspaceId === "default"
-    if (!ok) throw new Error(`Unknown workspace: ${workspaceId}`)
+    const active =
+      (await this.options.workspaces?.isActive(workspaceId)) ?? workspaceId === "default"
+    if (!active) throw new Error(`Workspace is not active: ${workspaceId}`)
     const id = randomUUID()
     await this.options.conversations.save({
       id,

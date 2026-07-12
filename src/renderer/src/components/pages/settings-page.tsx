@@ -4,6 +4,7 @@ import { AppearanceSettings } from "@/components/appearance-settings"
 import { FloatingBallSettings } from "@/components/floating-ball-settings"
 import { LauncherSettings } from "@/components/launcher-settings"
 import { TrustedSourceSettings } from "@/components/trusted-source-settings"
+import { WorkspaceSettings } from "@/components/workspace-settings"
 
 export function SettingsPage() {
   const { t } = useTranslation()
@@ -14,6 +15,7 @@ export function SettingsPage() {
         <p className="text-sm text-muted-foreground">{t("settings.subtitle")}</p>
       </header>
       <AppearanceSettings />
+      <WorkspaceSettings />
       <TrustedSourceSettings />
       <FloatingBallSettings />
       <LauncherSettings />

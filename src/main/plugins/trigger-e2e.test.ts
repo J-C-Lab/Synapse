@@ -142,6 +142,7 @@ async function makeHarness() {
     },
     instanceStore: { listForTrigger: async () => [] },
     identityForPlugin: () => undefined,
+    isWorkspaceArchived: async () => false,
   })
 
   registryRef.current = registry

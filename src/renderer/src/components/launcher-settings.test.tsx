@@ -142,6 +142,11 @@ function installElectronApi(settings: SynapseUserSettings): TestElectronApi {
     deleteAiConversation: vi.fn().mockResolvedValue(undefined),
     listAiWorkspaces: vi.fn().mockResolvedValue([{ id: "default", name: "Default", createdAt: 0 }]),
     createAiWorkspace: vi.fn().mockResolvedValue({ id: "work", name: "Work", createdAt: 1 }),
+    renameAiWorkspace: vi.fn().mockResolvedValue({ id: "work", name: "Work", createdAt: 1 }),
+    archiveAiWorkspace: vi
+      .fn()
+      .mockResolvedValue({ id: "work", name: "Work", createdAt: 1, archived: true }),
+    unarchiveAiWorkspace: vi.fn().mockResolvedValue({ id: "work", name: "Work", createdAt: 1 }),
     listWorkspaceRoots: vi.fn().mockResolvedValue([]),
     createWorkspaceRoot: vi.fn().mockResolvedValue({
       id: "r1",

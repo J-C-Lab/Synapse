@@ -72,6 +72,7 @@ function setup(
     dispatchAgent?: PluginAgentTriggerDispatch
     instanceStore?: ReturnType<typeof fakeInstanceStore>
     identityForPlugin?: (pluginId: string) => ReturnType<typeof pluginIdentity> | undefined
+    isWorkspaceArchived?: (workspaceId: string) => Promise<boolean>
     timerAdapter?: {
       register: (id: string, schedule: unknown, fire: (e: unknown) => void) => () => void
       registerCron: (id: string, cron: string, fire: (e: unknown) => void) => () => void
@@ -123,6 +124,7 @@ function setup(
   const instanceStore = options.instanceStore ?? fakeInstanceStore([])
   const identityForPlugin =
     options.identityForPlugin ?? ((pluginId: string) => pluginIdentity(pluginId))
+  const isWorkspaceArchived = options.isWorkspaceArchived ?? (async () => false)
   const registry = new TriggerRegistry({
     admission: new AdmissionBreaker(() => 0),
     invoker,
@@ -134,6 +136,7 @@ function setup(
     dispatchAgent,
     instanceStore,
     identityForPlugin,
+    isWorkspaceArchived,
   })
   return {
     registry,
@@ -149,6 +152,7 @@ function setup(
     dispatch,
     dispatchAgent,
     instanceStore,
+    isWorkspaceArchived,
   }
 }
 
@@ -420,6 +424,7 @@ describe("triggerRegistry", () => {
       dispatch: vi.fn(async () => {}),
       instanceStore: { listForTrigger: async () => [] },
       identityForPlugin: () => undefined,
+      isWorkspaceArchived: async () => false,
     })
     await registry.register("p", [
       {
@@ -766,5 +771,123 @@ describe("triggerRegistry — onFire fan-out", () => {
 
     unblockAgent?.()
     await flushMicrotasks()
+  })
+})
+
+describe("workspace-archived gating", () => {
+  it("resolves isWorkspaceArchived at most once per distinct workspaceId per fire", async () => {
+    const instanceStore = fakeInstanceStore([
+      instanceRecord({ id: "inst-1", workspaceId: "ws-shared" }),
+      instanceRecord({ id: "inst-2", workspaceId: "ws-shared" }),
+      instanceRecord({ id: "inst-3", workspaceId: "ws-other" }),
+    ])
+    const archivedCalls: string[] = []
+    const isWorkspaceArchived = async (workspaceId: string) => {
+      archivedCalls.push(workspaceId)
+      return false
+    }
+    const { registry, fires, dispatchAgent } = setup({
+      instanceStore,
+      identityForPlugin: () => githubIdentity,
+      dispatchAgent: async () => {},
+      isWorkspaceArchived,
+    })
+    await registry.register("com.synapse.github-inbox", [agentTimerDeclaration()])
+    fires["poll-inbox"]?.({ firedAt: 1 })
+
+    await vi.waitFor(() => expect(dispatchAgent).toHaveBeenCalledTimes(3))
+    expect(archivedCalls.sort()).toEqual(["ws-other", "ws-shared"])
+  })
+
+  it("excludes an archived instance from dispatchAgent fan-out while an active instance still dispatches", async () => {
+    const instanceStore = fakeInstanceStore([
+      instanceRecord({ id: "inst-archived", workspaceId: "ws-archived" }),
+      instanceRecord({ id: "inst-active", workspaceId: "ws-active" }),
+    ])
+    const { registry, fires, dispatch, dispatchAgent } = setup({
+      instanceStore,
+      identityForPlugin: () => githubIdentity,
+      dispatchAgent: async () => {},
+      isWorkspaceArchived: async (id) => id === "ws-archived",
+    })
+    await registry.register("com.synapse.github-inbox", [agentTimerDeclaration()])
+    fires["poll-inbox"]?.({ firedAt: 1 })
+
+    await vi.waitFor(() => expect(dispatchAgent).toHaveBeenCalledTimes(1))
+    expect(dispatchAgent?.mock.calls[0]?.[0]).toMatchObject({ instanceId: "inst-active" })
+    expect(dispatch).toHaveBeenCalledTimes(1) // base handler still ran — not all eligible archived
+  })
+
+  it("takes the trigger fully offline when every identity-eligible instance is archived", async () => {
+    const instanceStore = fakeInstanceStore([
+      instanceRecord({ id: "inst-1", workspaceId: "ws-archived" }),
+    ])
+    const { registry, fires, dispatch, dispatchAgent, invoker } = setup({
+      instanceStore,
+      identityForPlugin: () => githubIdentity,
+      dispatchAgent: async () => {},
+      isWorkspaceArchived: async () => true,
+    })
+    const mintSpy = vi.spyOn(invoker, "mint")
+    await registry.register("com.synapse.github-inbox", [agentTimerDeclaration()])
+    fires["poll-inbox"]?.({ firedAt: 1 })
+
+    // No async work is expected to happen at all — give the microtask queue
+    // a turn, then assert nothing fired.
+    await vi.waitFor(() => expect(mintSpy).not.toHaveBeenCalled(), { timeout: 100 })
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchAgent).not.toHaveBeenCalled()
+  })
+
+  it("a stale-identity instance in a non-archived workspace does not prevent the offline short-circuit", async () => {
+    const staleIdentity = pluginIdentity("com.synapse.github-inbox-old")
+    const instanceStore = fakeInstanceStore([
+      instanceRecord({ id: "inst-current", identity: githubIdentity, workspaceId: "ws-archived" }),
+      instanceRecord({ id: "inst-stale", identity: staleIdentity, workspaceId: "ws-active" }),
+    ])
+    const { registry, fires, dispatch } = setup({
+      instanceStore,
+      identityForPlugin: () => githubIdentity,
+      dispatchAgent: async () => {},
+      isWorkspaceArchived: async (id) => id === "ws-archived",
+    })
+    await registry.register("com.synapse.github-inbox", [agentTimerDeclaration()])
+    fires["poll-inbox"]?.({ firedAt: 1 })
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+
+  it("a trigger with decl.agent configured but zero instances yet still runs the base handler", async () => {
+    const instanceStore = fakeInstanceStore([instanceRecord()])
+    const { registry, fires, dispatch } = setup({
+      instanceStore,
+      identityForPlugin: () => githubIdentity,
+      dispatchAgent: async () => {},
+    })
+    await registry.register("com.synapse.github-inbox", [agentTimerDeclaration()])
+    instanceStore._remove("instance-1")
+    fires["poll-inbox"]?.({ firedAt: 1 })
+
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1))
+  })
+
+  it("i.paused and workspace-archived are independent gates on the fan-out filter", async () => {
+    const instanceStore = fakeInstanceStore([
+      instanceRecord({ id: "inst-paused", workspaceId: "ws-active", paused: true }),
+      instanceRecord({ id: "inst-archived", workspaceId: "ws-archived", paused: false }),
+      instanceRecord({ id: "inst-live", workspaceId: "ws-active-2", paused: false }),
+    ])
+    const { registry, fires, dispatchAgent } = setup({
+      instanceStore,
+      identityForPlugin: () => githubIdentity,
+      dispatchAgent: async () => {},
+      isWorkspaceArchived: async (id) => id === "ws-archived",
+    })
+    await registry.register("com.synapse.github-inbox", [agentTimerDeclaration()])
+    fires["poll-inbox"]?.({ firedAt: 1 })
+
+    await vi.waitFor(() => expect(dispatchAgent).toHaveBeenCalledTimes(1))
+    expect(dispatchAgent?.mock.calls[0]?.[0]).toMatchObject({ instanceId: "inst-live" })
   })
 })

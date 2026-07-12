@@ -212,6 +212,22 @@
       "primaryBadge": "主目录"
     }
   },
+  "workspaceSettings": {
+    "title": "工作区",
+    "subtitle": "重命名或归档工作区。归档会把工作区从切换器隐藏并暂停其后台触发器，不会删除任何数据。",
+    "nameLabel": "名称",
+    "statusActive": "活跃",
+    "statusArchived": "已归档",
+    "renameButton": "重命名",
+    "saveButton": "保存",
+    "cancelButton": "取消",
+    "archiveButton": "归档",
+    "unarchiveButton": "取消归档",
+    "defaultWorkspaceHint": "默认工作区不能重命名或归档。",
+    "renameSuccess": "工作区已重命名。",
+    "archiveSuccess": "工作区已归档。",
+    "unarchiveSuccess": "工作区已取消归档。"
+  },
   "trustedSources": {
     "title": "可信插件来源",
     "subtitle": "选择桌面端展示哪些插件包来源。",

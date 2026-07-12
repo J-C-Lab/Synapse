@@ -120,7 +120,7 @@ export interface PluginHostOptions {
     clear: (runId: string) => void
   }
   workspaceRoots: Pick<WorkspaceRootStore, "listForWorkspace">
-  workspaces?: Pick<WorkspaceStore, "get" | "exists">
+  workspaces?: Pick<WorkspaceStore, "get" | "exists" | "isActive" | "isArchived">
   safeStorage?: SafeStoragePort
   secretPrompt?: SecretPromptPort
   credentialBroker?: CredentialBroker
@@ -262,6 +262,8 @@ export class PluginHost {
       dispatchAgent: (req) => this.dispatchBackgroundAgent(req),
       instanceStore: this.triggerInstances,
       identityForPlugin: (pluginId) => this.identityForPlugin(pluginId),
+      isWorkspaceArchived: (workspaceId) =>
+        this.options.workspaces?.isArchived(workspaceId) ?? Promise.resolve(false),
     })
     this.bridge = new PluginBridge({
       userDataDir: options.userDataDir,
@@ -561,13 +563,18 @@ export class PluginHost {
     return rows
   }
 
-  async workspaceExists(workspaceId: string): Promise<boolean> {
-    return (await this.options.workspaces?.exists(workspaceId)) ?? false
+  async workspaceIsActive(workspaceId: string): Promise<boolean> {
+    return (await this.options.workspaces?.isActive(workspaceId)) ?? false
   }
 
   async pluginIdForInstance(instanceId: string): Promise<string | undefined> {
     const record = (await this.triggerInstances.listAll()).find((r) => r.id === instanceId)
     return record?.identity.pluginId
+  }
+
+  async workspaceIdForInstance(instanceId: string): Promise<string | undefined> {
+    const record = (await this.triggerInstances.listAll()).find((r) => r.id === instanceId)
+    return record?.workspaceId
   }
 
   getTriggerMigrationNotice(): TriggerMigrationNoticeState | undefined {

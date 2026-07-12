@@ -189,8 +189,13 @@ const electronAPI = {
   listAiConversations: () => ipcRenderer.invoke("ai:list-conversations"),
   getAiConversation: (id: string) => ipcRenderer.invoke("ai:get-conversation", id),
   deleteAiConversation: (id: string) => ipcRenderer.invoke("ai:delete-conversation", id),
-  listAiWorkspaces: () => ipcRenderer.invoke("ai:list-workspaces"),
+  listAiWorkspaces: (options?: { includeArchived?: boolean }) =>
+    ipcRenderer.invoke("ai:list-workspaces", options),
   createAiWorkspace: (name: string) => ipcRenderer.invoke("ai:create-workspace", { name }),
+  renameAiWorkspace: (id: string, name: string) =>
+    ipcRenderer.invoke("ai:rename-workspace", { id, name }),
+  archiveAiWorkspace: (id: string) => ipcRenderer.invoke("ai:archive-workspace", { id }),
+  unarchiveAiWorkspace: (id: string) => ipcRenderer.invoke("ai:unarchive-workspace", { id }),
   listWorkspaceRoots: (workspaceId: string) =>
     ipcRenderer.invoke("ai:list-workspace-roots", workspaceId),
   createWorkspaceRoot: (

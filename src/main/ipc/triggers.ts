@@ -83,8 +83,8 @@ export class TriggerIpcService {
     if (!host.isPluginActive(pluginId)) throw new Error(`Plugin "${pluginId}" is not active`)
     const decl = host.getTriggerDeclaration(pluginId, triggerId)
     if (!decl?.agent) throw new Error(`Trigger "${triggerId}" is not an agent-trigger`)
-    if (!(await host.workspaceExists(workspaceId))) {
-      throw new Error(`Unknown workspace: ${workspaceId}`)
+    if (!(await host.workspaceIsActive(workspaceId))) {
+      throw new Error(`Workspace is not active: ${workspaceId}`)
     }
     const record = await host.createTriggerInstance(pluginId, triggerId, workspaceId)
     return this.instanceRowFor(record, pluginId, triggerId)
@@ -95,6 +95,10 @@ export class TriggerIpcService {
     const pluginId = await host.pluginIdForInstance(instanceId)
     if (!pluginId) throw new Error(`Unknown trigger instance: ${instanceId}`)
     if (!host.isPluginActive(pluginId)) throw new Error(`Plugin "${pluginId}" is not active`)
+    const workspaceId = await host.workspaceIdForInstance(instanceId)
+    if (workspaceId && !(await host.workspaceIsActive(workspaceId))) {
+      throw new Error(`Workspace is not active: ${workspaceId}`)
+    }
     const record = await host.reactivateTriggerInstance(instanceId, pluginId)
     return this.instanceRowFor(record, pluginId, record.triggerId)
   }

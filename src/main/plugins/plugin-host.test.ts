@@ -78,6 +78,8 @@ function hostOptions(
             ? { id: "work", name: "Work", createdAt: 0 }
             : undefined,
       exists: async (id: string) => id === "default" || id === "work",
+      isActive: async (id: string) => id === "default" || id === "work",
+      isArchived: async () => false,
     },
     ...overrides,
   }
@@ -1121,5 +1123,67 @@ describe("github inbox bundled plugin", () => {
       destructiveHint: true,
       requiresConfirmation: true,
     })
+  })
+})
+
+describe("workspaceIsActive", () => {
+  it("delegates to options.workspaces.isActive", async () => {
+    const host = new PluginHost(
+      hostOptions({
+        workspaces: {
+          get: async (id) =>
+            id === "default"
+              ? { id: "default", name: "Default", createdAt: 0 }
+              : id === "work"
+                ? { id: "work", name: "Work", createdAt: 0, archived: true }
+                : undefined,
+          exists: async (id) => id === "default" || id === "work",
+          isActive: async (id) => id === "default",
+          isArchived: async (id) => id === "work",
+        },
+      })
+    )
+    expect(await host.workspaceIsActive("work")).toBe(false)
+    expect(await host.workspaceIsActive("default")).toBe(true)
+  })
+
+  it("returns false when options.workspaces is not configured", async () => {
+    const host = new PluginHost(hostOptions({ workspaces: undefined }))
+    expect(await host.workspaceIsActive("anything")).toBe(false)
+  })
+})
+
+describe("workspaceIdForInstance", () => {
+  it("returns the workspaceId of a known trigger instance", async () => {
+    const host = new PluginHost(hostOptions())
+    const pluginId = "com.synapse.agent-trigger"
+    await writeHostPlugin({
+      id: pluginId,
+      permissions: ["notification"],
+      triggers: [
+        {
+          id: "tick",
+          type: "timer",
+          schedule: { intervalMs: 60_000 },
+          handler: "triggers.onTick",
+          uses: [{ capability: "notification", budget: { maxCalls: 1, period: "1h" } }],
+          agent: {
+            maxRuns: 1,
+            period: "1d",
+            maxToolCallsPerRun: 1,
+            maxTokensPerRun: 100,
+            timeoutMs: 1000,
+          },
+        },
+      ],
+    })
+    await host.init()
+    const record = await host.createTriggerInstance(pluginId, "tick", "default")
+    expect(await host.workspaceIdForInstance(record.id)).toBe("default")
+  })
+
+  it("returns undefined for an unknown instance id", async () => {
+    const host = new PluginHost(hostOptions())
+    expect(await host.workspaceIdForInstance("nope")).toBeUndefined()
   })
 })

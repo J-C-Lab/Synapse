@@ -58,6 +58,7 @@ describe("createBudgetBreakerPort", () => {
       dispatch: async () => {},
       instanceStore: { listForTrigger: async () => [] },
       identityForPlugin: () => undefined,
+      isWorkspaceArchived: async () => false,
     })
     void registry.register("com.example.x", manifest.triggers!)
 
