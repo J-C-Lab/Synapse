@@ -227,7 +227,28 @@
     "defaultWorkspaceHint": "The default workspace can't be renamed or archived.",
     "renameSuccess": "Workspace renamed.",
     "archiveSuccess": "Workspace archived.",
-    "unarchiveSuccess": "Workspace unarchived."
+    "unarchiveSuccess": "Workspace unarchived.",
+    "idLabel": "ID",
+    "rootsLabel": "Roots",
+    "rootsSummaryEmpty": "No roots yet",
+    "rootsSummaryPrimary": "{{name}} (primary)",
+    "archiveConfirmTitle": "Archive this workspace?",
+    "archiveConfirmBody": "External MCP clients using this workspace ID will no longer be able to read its resources or call its tools. They'll need a different workspace ID, or you can unarchive this one later.",
+    "archiveConfirmButton": "Archive",
+    "archiveCancelButton": "Cancel"
+  },
+  "mcpOnboarding": {
+    "title": "Connect an MCP client",
+    "subtitle": "Generate a Claude Desktop configuration for this workspace, or test that the connection actually works.",
+    "generateButton": "Generate config",
+    "testButton": "Test connection",
+    "copyButton": "Copy",
+    "copiedLabel": "Copied",
+    "devNote": "Config generation and connection testing require a packaged build.",
+    "archivedNote": "This workspace is archived. Unarchive it to connect an MCP client.",
+    "testRunning": "Testing…",
+    "testSuccess": "Connected — {{toolCount}} tools, {{resourceCount}} resources.",
+    "testFailure": "Connection failed: {{message}}"
   },
   "trustedSources": {
     "title": "Trusted plugin sources",
