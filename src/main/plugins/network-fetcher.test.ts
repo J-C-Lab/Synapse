@@ -1,3 +1,5 @@
+import type * as https from "node:https"
+import type { AddressInfo } from "node:net"
 import type { ResolvedAddress } from "./network-dns"
 import type {
   NetworkFetcherConfig,
@@ -7,10 +9,355 @@ import type {
   TransportResult,
 } from "./network-fetcher"
 import { Buffer } from "node:buffer"
+import { createServer } from "node:net"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { CapabilityDenied } from "./capability-gate"
 import { actorOf } from "./invocation-context"
-import { BodyAlreadyConsumed, createNetworkFetcher } from "./network-fetcher"
+import {
+  armHeadersDeadline,
+  BodyAlreadyConsumed,
+  createNetworkFetcher,
+  defaultStreamTransport,
+  defaultTransport,
+  HeadersDeadlineExceededError,
+} from "./network-fetcher"
+import { startTlsLoopbackServer } from "./test-support/tls-loopback-server"
+
+// ---- armHeadersDeadline -----------------------------------------------------
+
+describe("armHeadersDeadline", () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("destroys the request with HeadersDeadlineExceededError after remainingMs of no response", () => {
+    vi.useFakeTimers()
+    const destroy = vi.fn()
+    const fakeRequest = { destroy } as unknown as ReturnType<typeof https.request>
+
+    armHeadersDeadline(fakeRequest, 500)
+    vi.advanceTimersByTime(499)
+    expect(destroy).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+
+    expect(destroy).toHaveBeenCalledTimes(1)
+    const err = destroy.mock.calls[0]![0]
+    expect(err).toBeInstanceOf(HeadersDeadlineExceededError)
+    expect((err as HeadersDeadlineExceededError).deadlineMs).toBe(500)
+  })
+
+  it("clear() prevents the timer from ever firing", () => {
+    vi.useFakeTimers()
+    const destroy = vi.fn()
+    const fakeRequest = { destroy } as unknown as ReturnType<typeof https.request>
+
+    const handle = armHeadersDeadline(fakeRequest, 500)
+    handle.clear()
+    vi.advanceTimersByTime(10_000)
+
+    expect(destroy).not.toHaveBeenCalled()
+  })
+})
+
+describe("defaultTransport — headers deadline", () => {
+  it("destroys the request with HeadersDeadlineExceededError if headers never arrive", async () => {
+    const server = createServer(() => {
+      /* never respond */
+    })
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const port = (server.address() as AddressInfo).port
+
+    try {
+      const controller = new AbortController()
+      await expect(
+        defaultTransport({
+          url: new URL(`https://127.0.0.1:${port}/`),
+          method: "GET",
+          headers: {},
+          pinnedAddress: { address: "127.0.0.1", family: 4 },
+          signal: controller.signal,
+          timeoutMs: 30_000,
+          headersDeadlineMs: 200,
+          maxResponseBytes: 1024,
+        })
+      ).rejects.toBeInstanceOf(HeadersDeadlineExceededError)
+    } finally {
+      server.close()
+    }
+  })
+})
+
+describe("defaultStreamTransport — headers deadline", () => {
+  it("destroys the request with HeadersDeadlineExceededError if headers never arrive", async () => {
+    const server = createServer(() => {
+      /* never respond */
+    })
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const port = (server.address() as AddressInfo).port
+
+    try {
+      const controller = new AbortController()
+      await expect(
+        defaultStreamTransport({
+          url: new URL(`https://127.0.0.1:${port}/`),
+          method: "GET",
+          headers: {},
+          pinnedAddress: { address: "127.0.0.1", family: 4 },
+          signal: controller.signal,
+          timeoutMs: 30_000,
+          headersDeadlineMs: 200,
+          maxResponseBytes: 1024,
+        })
+      ).rejects.toBeInstanceOf(HeadersDeadlineExceededError)
+    } finally {
+      server.close()
+    }
+  })
+})
+
+describe("connectTimeoutMs — hop-scoped failover budget", () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("passes the full connectTimeoutMs to the first address, and only the remaining budget to the second", async () => {
+    vi.useFakeTimers()
+    const receivedDeadlines: number[] = []
+    let callCount = 0
+    const transport = vi.fn(async (args: TransportArgs) => {
+      receivedDeadlines.push(args.headersDeadlineMs)
+      callCount += 1
+      if (callCount === 1) {
+        await vi.advanceTimersByTimeAsync(100)
+        throw new Error("connection refused")
+      }
+      return { status: 200, statusText: "OK", headers: {}, body: Buffer.from("ok") }
+    })
+    const fetcher = createNetworkFetcher(
+      makeConfig({
+        transport,
+        resolve: fakeResolve([
+          { address: "203.0.113.1", family: 4 },
+          { address: "203.0.113.2", family: 4 },
+        ]),
+        connectTimeoutMs: 400,
+      })
+    )
+
+    await fetcher.fetch("https://example.com/")
+
+    expect(receivedDeadlines[0]).toBe(400)
+    expect(receivedDeadlines[1]).toBeLessThanOrEqual(300)
+    expect(receivedDeadlines[1]).toBeGreaterThan(0)
+  })
+
+  it("never attempts a second address once the hop deadline is fully consumed", async () => {
+    vi.useFakeTimers()
+    const transport = vi.fn(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+      throw new Error("connection refused")
+    })
+    const fetcher = createNetworkFetcher(
+      makeConfig({
+        transport,
+        resolve: fakeResolve([
+          { address: "203.0.113.1", family: 4 },
+          { address: "203.0.113.2", family: 4 },
+        ]),
+        connectTimeoutMs: 400,
+      })
+    )
+
+    await expect(fetcher.fetch("https://example.com/")).rejects.toThrow()
+
+    expect(transport).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("connectTimeoutMs — excludes credential injection latency", () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("buffered: a slow injectCredential (vault read / OAuth refresh) does not shrink the headers-deadline budget", async () => {
+    vi.useFakeTimers()
+    let receivedDeadline: number | undefined
+    const transport = vi.fn(async (args: TransportArgs) => {
+      receivedDeadline = args.headersDeadlineMs
+      return { status: 200, statusText: "OK", headers: {}, body: Buffer.from("ok") }
+    })
+    const fetcher = createNetworkFetcher(
+      makeConfig({
+        transport,
+        connectTimeoutMs: 400,
+        injectCredential: async () => {
+          await vi.advanceTimersByTimeAsync(350)
+          return undefined
+        },
+      })
+    )
+
+    await fetcher.fetch("https://example.com/")
+
+    expect(receivedDeadline).toBe(400)
+  })
+
+  it("streaming: a slow injectCredential does not shrink the headers-deadline budget", async () => {
+    vi.useFakeTimers()
+    let receivedDeadline: number | undefined
+    const streamTransport = vi.fn(async (args: TransportArgs) => {
+      receivedDeadline = args.headersDeadlineMs
+      return {
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        stream: (async function* () {})(),
+      }
+    })
+    const fetcher = createNetworkFetcher(
+      makeConfig({
+        streamTransport,
+        connectTimeoutMs: 400,
+        injectCredential: async () => {
+          await vi.advanceTimersByTimeAsync(350)
+          return undefined
+        },
+      })
+    )
+
+    await fetcher.fetchStream("https://example.com/")
+
+    expect(receivedDeadline).toBe(400)
+  })
+})
+
+describe("defaultStreamTransport — real server regression: idle timeout, not old timeoutMs", () => {
+  it("headers arriving before the deadline clear it (no late firing)", async () => {
+    const server = await startTlsLoopbackServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" })
+      res.write("chunk-1")
+    })
+    try {
+      const controller = new AbortController()
+      const resultPromise = defaultStreamTransport({
+        url: new URL(`https://127.0.0.1:${server.port}/`),
+        method: "GET",
+        headers: {},
+        pinnedAddress: { address: "127.0.0.1", family: 4 },
+        signal: controller.signal,
+        timeoutMs: 30_000,
+        headersDeadlineMs: 300,
+        maxResponseBytes: 1024,
+        trustedCaPem: server.certPem,
+      })
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      const result = await resultPromise
+      expect(result.status).toBe(200)
+      controller.abort()
+    } finally {
+      await server.close()
+    }
+  })
+
+  it("a real body idling well past the old fixed timeoutMs is NOT torn down by defaultStreamTransport — this is the regression test for the bug this spec fixes", async () => {
+    let sendSecondChunk: (() => void) | undefined
+    const chunkSent = new Promise<void>((resolve) => {
+      sendSecondChunk = resolve
+    })
+    const server = await startTlsLoopbackServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" })
+      res.write("chunk-1")
+      void chunkSent.then(() => {
+        res.write("chunk-2")
+        res.end()
+      })
+    })
+    try {
+      const controller = new AbortController()
+      const result = await defaultStreamTransport({
+        url: new URL(`https://127.0.0.1:${server.port}/`),
+        method: "GET",
+        headers: {},
+        pinnedAddress: { address: "127.0.0.1", family: 4 },
+        signal: controller.signal,
+        // Deliberately small: under the old bug, defaultStreamTransport
+        // itself would install request.setTimeout(timeoutMs) after headers
+        // and destroy the socket ~200ms after the first chunk. This test
+        // waits well past that before the server sends the second chunk —
+        // if the old low-level timer were still installed, the body
+        // consumption below would throw/truncate instead of yielding both
+        // chunks.
+        timeoutMs: 200,
+        headersDeadlineMs: 5_000,
+        maxResponseBytes: 1024,
+        trustedCaPem: server.certPem,
+      })
+      expect(result.status).toBe(200)
+
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      sendSecondChunk?.()
+
+      const chunks: Buffer[] = []
+      for await (const chunk of result.stream) chunks.push(Buffer.from(chunk))
+      expect(Buffer.concat(chunks).toString()).toBe("chunk-1chunk-2")
+
+      controller.abort()
+    } finally {
+      await server.close()
+    }
+  })
+})
+
+describe("defaultTransport — real server: headers deadline", () => {
+  it("fires HeadersDeadlineExceededError when the server never sends a response", async () => {
+    const server = await startTlsLoopbackServer(() => {
+      /* never respond */
+    })
+    try {
+      const controller = new AbortController()
+      await expect(
+        defaultTransport({
+          url: new URL(`https://127.0.0.1:${server.port}/`),
+          method: "GET",
+          headers: {},
+          pinnedAddress: { address: "127.0.0.1", family: 4 },
+          signal: controller.signal,
+          timeoutMs: 30_000,
+          headersDeadlineMs: 300,
+          maxResponseBytes: 1024,
+          trustedCaPem: server.certPem,
+        })
+      ).rejects.toBeInstanceOf(HeadersDeadlineExceededError)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it("a full buffered response within the deadline succeeds normally", async () => {
+    const server = await startTlsLoopbackServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" })
+      res.end("hello")
+    })
+    try {
+      const controller = new AbortController()
+      const result = await defaultTransport({
+        url: new URL(`https://127.0.0.1:${server.port}/`),
+        method: "GET",
+        headers: {},
+        pinnedAddress: { address: "127.0.0.1", family: 4 },
+        signal: controller.signal,
+        timeoutMs: 30_000,
+        headersDeadlineMs: 5_000,
+        maxResponseBytes: 1024,
+        trustedCaPem: server.certPem,
+      })
+      expect(result.status).toBe(200)
+      expect(result.body.toString()).toBe("hello")
+    } finally {
+      await server.close()
+    }
+  })
+})
 
 // ---- Test doubles -----------------------------------------------------------
 

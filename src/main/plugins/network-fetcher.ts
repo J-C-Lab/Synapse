@@ -8,6 +8,13 @@ import * as https from "node:https"
 import { networkHttpsAdapter } from "@synapse/plugin-manifest"
 import { resolvePublicIps } from "./network-dns"
 
+export class HeadersDeadlineExceededError extends Error {
+  constructor(readonly deadlineMs: number) {
+    super(`headers not received within ${deadlineMs}ms`)
+    this.name = "HeadersDeadlineExceededError"
+  }
+}
+
 // network-fetcher — the ONLY host component that performs plugin network I/O.
 //
 // Every plugin HTTPS request flows through here. The chokepoint enforces, in a
@@ -78,7 +85,10 @@ export interface TransportArgs {
   pinnedAddress: ResolvedAddress
   signal: AbortSignal
   timeoutMs: number
+  headersDeadlineMs: number
   maxResponseBytes: number
+  /** PEM of a CA/cert to trust for this request (test harness only). */
+  trustedCaPem?: string
 }
 
 export type NetworkTransport = (args: TransportArgs) => Promise<TransportResult>
@@ -116,6 +126,7 @@ export interface NetworkFetcherConfig {
   maxResponseBytes?: number // default 25 MiB (buffered fetch)
   maxStreamBytes?: number // default 256 MiB (streamed fetch, hard total cap)
   timeoutMs?: number // default 30s
+  connectTimeoutMs?: number // default 30s (absolute headers-received deadline, hop-scoped, shared across address failover)
   maxRedirects?: number // default 5
   maxRedirectDrainBytes?: number // default 64 KiB (redirect body is not trusted to be small)
   maxRedirectDrainMs?: number // default 2s
@@ -137,6 +148,7 @@ const DEFAULT_MAX_REQUEST_BYTES = 10 * 1024 * 1024
 const DEFAULT_MAX_RESPONSE_BYTES = 25 * 1024 * 1024
 const DEFAULT_MAX_STREAM_BYTES = 256 * 1024 * 1024
 const DEFAULT_TIMEOUT_MS = 30_000
+const DEFAULT_CONNECT_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_REDIRECTS = 5
 const DEFAULT_MAX_REDIRECT_DRAIN_BYTES = 64 * 1024
 const DEFAULT_MAX_REDIRECT_DRAIN_MS = 2_000
@@ -295,6 +307,7 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
   const maxResponseBytes = config.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES
   const maxStreamBytes = config.maxStreamBytes ?? DEFAULT_MAX_STREAM_BYTES
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const connectTimeoutMs = config.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
   const maxRedirects = config.maxRedirects ?? DEFAULT_MAX_REDIRECTS
   const maxRedirectDrainBytes = config.maxRedirectDrainBytes ?? DEFAULT_MAX_REDIRECT_DRAIN_BYTES
   const maxRedirectDrainMs = config.maxRedirectDrainMs ?? DEFAULT_MAX_REDIRECT_DRAIN_MS
@@ -426,6 +439,13 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
       if (injected) hopHeaders = { ...args.headers, [injected.name]: injected.value }
     }
 
+    // The absolute headers-deadline clock starts here — after DNS resolution,
+    // consent, AND credential injection (which can itself involve an async
+    // vault read or OAuth refresh) have all completed. None of that latency
+    // is network connectivity, so none of it counts against "connect + TLS +
+    // headers-arrived."
+    const hopDeadline = Date.now() + connectTimeoutMs
+
     // 10. Raw round-trip with address failover: try each validated public IP in
     // turn until one yields a response. A connection-level failure rolls over to
     // the next address; an aborted request (timeout / revoke) stops immediately.
@@ -433,6 +453,11 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
     let result: TransportResult | undefined
     let lastError: unknown
     for (const pinnedAddress of addresses) {
+      const remainingMs = hopDeadline - Date.now()
+      if (remainingMs <= 0) {
+        lastError = new HeadersDeadlineExceededError(connectTimeoutMs)
+        break
+      }
       try {
         result = await transport({
           url: parsed,
@@ -442,6 +467,7 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
           pinnedAddress,
           signal: args.controller.signal,
           timeoutMs,
+          headersDeadlineMs: remainingMs,
           maxResponseBytes,
         })
         break
@@ -653,11 +679,20 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
       if (injected) hopHeaders = { ...args.headers, [injected.name]: injected.value }
     }
 
+    // See run()'s identical comment: the clock starts after credential
+    // injection, not before.
+    const hopDeadline = Date.now() + connectTimeoutMs
+
     // Round-trip with address failover, streaming the body. Connection-level
     // failure rolls over; abort stops immediately.
     let result: StreamTransportResult | undefined
     let lastError: unknown
     for (const pinnedAddress of addresses) {
+      const remainingMs = hopDeadline - Date.now()
+      if (remainingMs <= 0) {
+        lastError = new HeadersDeadlineExceededError(connectTimeoutMs)
+        break
+      }
       try {
         result = await streamTransport({
           url: parsed,
@@ -667,6 +702,7 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
           pinnedAddress,
           signal: args.controller.signal,
           timeoutMs,
+          headersDeadlineMs: remainingMs,
           maxResponseBytes: maxStreamBytes,
         })
         break
@@ -720,6 +756,22 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
   return { fetch, fetchStream, abortAll }
 }
 
+/** Absolute, non-resettable deadline for "headers received" — armed once,
+ *  never extended by subsequent socket activity (unlike Node's own
+ *  request.setTimeout(), which resets on any traffic). Caller is
+ *  responsible for calling clear() on every exit path: response received,
+ *  abort, or request error. */
+export function armHeadersDeadline(
+  request: ReturnType<typeof https.request>,
+  remainingMs: number
+): { clear: () => void } {
+  const timer = setTimeout(() => {
+    request.destroy(new HeadersDeadlineExceededError(remainingMs))
+  }, remainingMs)
+  if (typeof timer.unref === "function") timer.unref()
+  return { clear: () => clearTimeout(timer) }
+}
+
 /**
  * Default production transport over node:https.
  *
@@ -730,7 +782,7 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
  * The original hostname is preserved on the request (servername/Host) for TLS
  * SNI and virtual-host routing — we pin the IP, not the name.
  */
-function defaultTransport(args: TransportArgs): Promise<TransportResult> {
+export function defaultTransport(args: TransportArgs): Promise<TransportResult> {
   return new Promise<TransportResult>((resolve, reject) => {
     if (args.signal.aborted) {
       reject(new Error("aborted"))
@@ -743,13 +795,16 @@ function defaultTransport(args: TransportArgs): Promise<TransportResult> {
         // callback(err, address, family)
         callback(null, args.pinnedAddress.address, args.pinnedAddress.family)
       },
+      ...(args.trustedCaPem ? { ca: args.trustedCaPem } : {}),
     })
 
     let settled = false
     // Declared up front so every handler below can call it without a
     // use-before-define hazard; `request` is captured by closure.
     let request: ReturnType<typeof https.request> | undefined
+    let headersDeadline: { clear: () => void } | undefined
     const onAbort = (): void => {
+      headersDeadline?.clear()
       request?.destroy(new Error("aborted"))
     }
     const cleanup = (): void => {
@@ -780,6 +835,13 @@ function defaultTransport(args: TransportArgs): Promise<TransportResult> {
         servername: args.url.hostname, // TLS SNI uses the real name, not the pinned IP.
       },
       (response: IncomingMessage) => {
+        headersDeadline?.clear()
+        // Post-headers body-idle timeout starts fresh here — decoupled
+        // from the absolute pre-headers deadline that just cleared.
+        request?.setTimeout(args.timeoutMs, () => {
+          request?.destroy(new Error(`request timed out after ${args.timeoutMs}ms`))
+        })
+
         const chunks: Buffer[] = []
         let received = 0
 
@@ -812,10 +874,11 @@ function defaultTransport(args: TransportArgs): Promise<TransportResult> {
       }
     )
 
-    request.setTimeout(args.timeoutMs, () => {
-      request?.destroy(new Error(`request timed out after ${args.timeoutMs}ms`))
+    headersDeadline = armHeadersDeadline(request, args.headersDeadlineMs)
+    request.on("error", (err) => {
+      headersDeadline?.clear()
+      fail(err)
     })
-    request.on("error", fail)
 
     if (args.body) request.write(args.body)
     request.end()
@@ -829,7 +892,7 @@ function defaultTransport(args: TransportArgs): Promise<TransportResult> {
  * The agent is destroyed when the stream ends, errors, or the request aborts, so
  * a fully-drained (or torn-down) body releases the socket.
  */
-function defaultStreamTransport(args: TransportArgs): Promise<StreamTransportResult> {
+export function defaultStreamTransport(args: TransportArgs): Promise<StreamTransportResult> {
   return new Promise<StreamTransportResult>((resolve, reject) => {
     if (args.signal.aborted) {
       reject(new Error("aborted"))
@@ -840,10 +903,13 @@ function defaultStreamTransport(args: TransportArgs): Promise<StreamTransportRes
       lookup: (_hostname, _options, callback) => {
         callback(null, args.pinnedAddress.address, args.pinnedAddress.family)
       },
+      ...(args.trustedCaPem ? { ca: args.trustedCaPem } : {}),
     })
 
     let request: ReturnType<typeof https.request> | undefined
+    let headersDeadline: { clear: () => void } | undefined
     const onAbort = (): void => {
+      headersDeadline?.clear()
       request?.destroy(new Error("aborted"))
     }
     args.signal.addEventListener("abort", onAbort, { once: true })
@@ -862,7 +928,12 @@ function defaultStreamTransport(args: TransportArgs): Promise<StreamTransportRes
         servername: args.url.hostname,
       },
       (response: IncomingMessage) => {
-        // Release the socket/agent once the body is consumed or torn down.
+        headersDeadline?.clear()
+        // No request.setTimeout() here — body-phase timing is owned
+        // entirely by withStreamTimers() (streamIdleTimeoutMs,
+        // maxStreamDurationMs) in the outer closure, via controller.abort(),
+        // a mechanism independent of request.destroy(). Installing a second
+        // socket-level timer here is exactly the bug this task fixes.
         response.on("close", releaseAgent)
         response.on("error", releaseAgent)
 
@@ -880,10 +951,9 @@ function defaultStreamTransport(args: TransportArgs): Promise<StreamTransportRes
       }
     )
 
-    request.setTimeout(args.timeoutMs, () => {
-      request?.destroy(new Error(`request timed out after ${args.timeoutMs}ms`))
-    })
+    headersDeadline = armHeadersDeadline(request, args.headersDeadlineMs)
     request.on("error", (err) => {
+      headersDeadline?.clear()
       releaseAgent()
       reject(err)
     })

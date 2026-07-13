@@ -1,5 +1,12 @@
 import type { RegisteredToolDescriptor } from "../plugins/types"
-import type { ChatContentBlock, ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
+import type {
+  ChatContentBlock,
+  ChatMessage,
+  ChatProvider,
+  ProviderRequest,
+  ProviderStreamEvent,
+  TokenUsage,
+} from "./providers/types"
 import type { RunTrace } from "./run-trace-store"
 import type { ToolHostPort } from "./tool-registry"
 import { randomUUID } from "node:crypto"
@@ -9,6 +16,7 @@ import * as path from "node:path"
 import process from "node:process"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AgentRuntime, buildSystemPrompt } from "./agent-runtime"
+import { ProviderStreamDeadlineError } from "./provider-stream-deadlines"
 import { emptyUsage } from "./providers/types"
 import { buildBackgroundAgentRun, buildInteractiveRun, buildSubagentRun } from "./run-provenance"
 import { AiToolRegistry, modelToolName } from "./tool-registry"
@@ -955,5 +963,42 @@ describe("agentRuntime", () => {
     })
 
     expect(traces[0]?.toolCalls[0]?.error).toBe("aborted")
+  })
+})
+
+describe("agentRuntime.run — provider stream deadlines", () => {
+  it("surfaces ProviderStreamDeadlineError when the provider never responds within providerStreamDeadlines.headersDeadlineMs", async () => {
+    vi.useFakeTimers()
+    try {
+      const hangingProvider: ChatProvider = {
+        id: "fake",
+        async *stream(req: ProviderRequest): AsyncIterable<ProviderStreamEvent> {
+          await new Promise<void>((resolve) => {
+            req.signal?.addEventListener("abort", () => resolve(), { once: true })
+          })
+          throw new DOMException("aborted", "AbortError")
+        },
+      }
+
+      const runtime = new AgentRuntime({
+        provider: hangingProvider,
+        tools: new AiToolRegistry(fakeHost()),
+        providerStreamDeadlines: { headersDeadlineMs: 300 },
+      })
+
+      const runPromise = runtime
+        .run({
+          provenance: interactiveProvenance(),
+          messages: [userMessage("hi")],
+        })
+        .catch((err) => err)
+
+      await vi.advanceTimersByTimeAsync(300)
+
+      const result = await runPromise
+      expect(result).toBeInstanceOf(ProviderStreamDeadlineError)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

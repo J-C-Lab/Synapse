@@ -1,5 +1,5 @@
 import type { OpenAiChatClient, OpenAiStreamChunk } from "./openai-provider"
-import type { ProviderRequest } from "./types"
+import type { ProviderRequest, ProviderStreamEvent } from "./types"
 import { describe, expect, it, vi } from "vitest"
 import { buildCompletionParams, OpenAiProvider } from "./openai-provider"
 
@@ -111,5 +111,24 @@ describe("openAiProvider", () => {
     expect(messages[2]).toMatchObject({ role: "assistant", tool_calls: [{ id: "c1" }] })
     expect(messages[3]).toEqual({ role: "tool", tool_call_id: "c1", content: "ok" })
     expect(params.tools).toMatchObject([{ type: "function", function: { name: "act" } }])
+  })
+
+  it("calls onTransportProgress('headers') once create() resolves, then 'activity' per chunk", async () => {
+    const chunks: OpenAiStreamChunk[] = [
+      { choices: [{ delta: { content: "Hi" } }] },
+      { choices: [{ delta: {}, finish_reason: "stop" }] },
+    ]
+    const { client } = fakeClient(chunks)
+    const provider = new OpenAiProvider({ client })
+
+    const phases: string[] = []
+    const events: ProviderStreamEvent[] = []
+    for await (const event of provider.stream(
+      request({ onTransportProgress: (p) => phases.push(p) })
+    )) {
+      events.push(event)
+    }
+
+    expect(phases).toEqual(["headers", "activity", "activity"])
   })
 })

@@ -81,6 +81,7 @@ export class OpenAiProvider implements ChatProvider {
     const stream = await this.client.chat.completions.create(buildCompletionParams(req), {
       signal: req.signal,
     })
+    req.onTransportProgress?.("headers")
 
     let text = ""
     const toolCalls = new Map<number, { id: string; name: string; args: string }>()
@@ -88,6 +89,7 @@ export class OpenAiProvider implements ChatProvider {
     let usage: TokenUsage = { ...EMPTY_USAGE }
 
     for await (const chunk of stream) {
+      req.onTransportProgress?.("activity")
       const choice = chunk.choices[0]
       const delta = choice?.delta
       if (delta?.content) {
