@@ -174,6 +174,63 @@ describe("connectTimeoutMs — hop-scoped failover budget", () => {
   })
 })
 
+describe("connectTimeoutMs — excludes credential injection latency", () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("buffered: a slow injectCredential (vault read / OAuth refresh) does not shrink the headers-deadline budget", async () => {
+    vi.useFakeTimers()
+    let receivedDeadline: number | undefined
+    const transport = vi.fn(async (args: TransportArgs) => {
+      receivedDeadline = args.headersDeadlineMs
+      return { status: 200, statusText: "OK", headers: {}, body: Buffer.from("ok") }
+    })
+    const fetcher = createNetworkFetcher(
+      makeConfig({
+        transport,
+        connectTimeoutMs: 400,
+        injectCredential: async () => {
+          await vi.advanceTimersByTimeAsync(350)
+          return undefined
+        },
+      })
+    )
+
+    await fetcher.fetch("https://example.com/")
+
+    expect(receivedDeadline).toBe(400)
+  })
+
+  it("streaming: a slow injectCredential does not shrink the headers-deadline budget", async () => {
+    vi.useFakeTimers()
+    let receivedDeadline: number | undefined
+    const streamTransport = vi.fn(async (args: TransportArgs) => {
+      receivedDeadline = args.headersDeadlineMs
+      return {
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        stream: (async function* () {})(),
+      }
+    })
+    const fetcher = createNetworkFetcher(
+      makeConfig({
+        streamTransport,
+        connectTimeoutMs: 400,
+        injectCredential: async () => {
+          await vi.advanceTimersByTimeAsync(350)
+          return undefined
+        },
+      })
+    )
+
+    await fetcher.fetchStream("https://example.com/")
+
+    expect(receivedDeadline).toBe(400)
+  })
+})
+
 describe("defaultStreamTransport — real server regression: idle timeout, not old timeoutMs", () => {
   it("headers arriving before the deadline clear it (no late firing)", async () => {
     const server = await startTlsLoopbackServer((_req, res) => {
@@ -202,10 +259,18 @@ describe("defaultStreamTransport — real server regression: idle timeout, not o
     }
   })
 
-  it("body idling past streamIdleTimeoutMs is what tears the socket down, not the old fixed timeoutMs — this is the regression test for the bug this spec fixes", async () => {
+  it("a real body idling well past the old fixed timeoutMs is NOT torn down by defaultStreamTransport — this is the regression test for the bug this spec fixes", async () => {
+    let sendSecondChunk: (() => void) | undefined
+    const chunkSent = new Promise<void>((resolve) => {
+      sendSecondChunk = resolve
+    })
     const server = await startTlsLoopbackServer((_req, res) => {
       res.writeHead(200, { "content-type": "text/plain" })
       res.write("chunk-1")
+      void chunkSent.then(() => {
+        res.write("chunk-2")
+        res.end()
+      })
     })
     try {
       const controller = new AbortController()
@@ -215,12 +280,27 @@ describe("defaultStreamTransport — real server regression: idle timeout, not o
         headers: {},
         pinnedAddress: { address: "127.0.0.1", family: 4 },
         signal: controller.signal,
-        timeoutMs: 30_000,
+        // Deliberately small: under the old bug, defaultStreamTransport
+        // itself would install request.setTimeout(timeoutMs) after headers
+        // and destroy the socket ~200ms after the first chunk. This test
+        // waits well past that before the server sends the second chunk —
+        // if the old low-level timer were still installed, the body
+        // consumption below would throw/truncate instead of yielding both
+        // chunks.
+        timeoutMs: 200,
         headersDeadlineMs: 5_000,
         maxResponseBytes: 1024,
         trustedCaPem: server.certPem,
       })
       expect(result.status).toBe(200)
+
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      sendSecondChunk?.()
+
+      const chunks: Buffer[] = []
+      for await (const chunk of result.stream) chunks.push(Buffer.from(chunk))
+      expect(Buffer.concat(chunks).toString()).toBe("chunk-1chunk-2")
+
       controller.abort()
     } finally {
       await server.close()

@@ -424,7 +424,6 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
 
   async function run(args: RunArgs): Promise<NetworkResponse> {
     const { parsed, addresses } = await preflight(args.currentUrl, args.method, args.controller)
-    const hopDeadline = Date.now() + connectTimeoutMs
 
     // Credential injection for THIS hop. preflight already dropped Authorization
     // on redirects, so a hop outside the inject scope carries no credential and a
@@ -439,6 +438,13 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
       )
       if (injected) hopHeaders = { ...args.headers, [injected.name]: injected.value }
     }
+
+    // The absolute headers-deadline clock starts here — after DNS resolution,
+    // consent, AND credential injection (which can itself involve an async
+    // vault read or OAuth refresh) have all completed. None of that latency
+    // is network connectivity, so none of it counts against "connect + TLS +
+    // headers-arrived."
+    const hopDeadline = Date.now() + connectTimeoutMs
 
     // 10. Raw round-trip with address failover: try each validated public IP in
     // turn until one yields a response. A connection-level failure rolls over to
@@ -660,7 +666,6 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
     }
   > {
     const { parsed, addresses } = await preflight(args.currentUrl, args.method, args.controller)
-    const hopDeadline = Date.now() + connectTimeoutMs
 
     // Credential injection for THIS hop (same semantics as buffered fetch).
     let hopHeaders = args.headers
@@ -673,6 +678,10 @@ export function createNetworkFetcher(config: NetworkFetcherConfig): NetworkFetch
       )
       if (injected) hopHeaders = { ...args.headers, [injected.name]: injected.value }
     }
+
+    // See run()'s identical comment: the clock starts after credential
+    // injection, not before.
+    const hopDeadline = Date.now() + connectTimeoutMs
 
     // Round-trip with address failover, streaming the body. Connection-level
     // failure rolls over; abort stops immediately.
