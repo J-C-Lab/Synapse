@@ -61,7 +61,7 @@ export function createCapabilityGovernance(
     createCapabilityAudit(
       createFileSink(path.join(options.userDataDir, "logs"), { fileName: "audit.log" })
     )
-  const prompt = options.prompt ?? (async () => true)
-  const approve = options.approve ?? (async () => true)
+  const prompt = options.prompt ?? (async () => ({ allow: true }))
+  const approve = options.approve ?? (async () => ({ allow: true }))
   return { grants, prompt, approve, audit }
 }

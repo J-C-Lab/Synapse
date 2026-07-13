@@ -404,7 +404,9 @@
       "preauthorizeToggle": "Preauthorize for external MCP clients",
       "preauthorizeLabel": "Skip the approval prompt for external MCP calls",
       "preauthorizeWarning": "Allows any external MCP client able to launch Synapse's local MCP connection to call this capability without a per-call prompt.",
-      "reportedIdentity": "Reported identity: {{clientId}} (self-reported by the client, not verified)"
+      "reportedIdentity": "Reported identity: {{clientId}} (self-reported by the client, not verified)",
+      "requestCancelledTitle": "Request cancelled",
+      "requestCancelledBody": "The request behind this prompt was cancelled elsewhere, so there's nothing left to approve."
     },
     "hostResources": {
       "approvalTitle": "Allow this read?",

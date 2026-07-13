@@ -3,7 +3,7 @@ import type {
   HostResourceApprovalRequestEvent,
   HostResourceIpcServiceOptions,
 } from "./host-resources"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { HostResourceIpcService } from "./host-resources"
 
 function request(): HostResourceApprovalRequest {
@@ -25,7 +25,10 @@ function service(overrides: Partial<HostResourceIpcServiceOptions> = {}): {
   const events: HostResourceApprovalRequestEvent[] = []
   const auditEntries: unknown[] = []
   const svc = new HostResourceIpcService({
-    sendApprovalRequest: (event) => events.push(event),
+    sendApprovalRequest: (event) => {
+      events.push(event)
+      return []
+    },
     audit: (entry) => auditEntries.push(entry),
     ...overrides,
   })
@@ -39,15 +42,15 @@ describe("hostResourceIpcService", () => {
     expect(events).toHaveLength(1)
     expect(events[0]).toMatchObject({ workspaceId: "w1", rootId: "r1" })
     svc.resolve(events[0]!.promptId, true)
-    await expect(decision).resolves.toBe(true)
+    await expect(decision).resolves.toEqual({ allow: true })
     expect(auditEntries).toEqual([expect.objectContaining({ decision: "allow" })])
     expect("outcomeReason" in (auditEntries[0] as object)).toBe(false)
   })
 
-  it("prompt ids are prefixed host_res_apr_, distinct from capability's cap_apr_", async () => {
+  it("prompt ids are UUID-shaped, sourced from the shared ApprovalRegistry", async () => {
     const { service: svc, events } = service()
     void svc.hostResourceApprover({ request: request() })
-    expect(events[0]!.promptId).toMatch(/^host_res_apr_\d+$/)
+    expect(events[0]!.promptId).toMatch(/^[0-9a-f-]{36}$/)
   })
 
   it("resolve() is idempotent for an unknown promptId — no throw", () => {
@@ -68,8 +71,8 @@ describe("hostResourceIpcService", () => {
     const decisionA = svc.hostResourceApprover({ request: request() })
     const decisionB = svc.hostResourceApprover({ request: request() })
     svc.dispose()
-    await expect(decisionA).resolves.toBe(false)
-    await expect(decisionB).resolves.toBe(false)
+    await expect(decisionA).resolves.toEqual({ allow: false, outcomeReason: "gui-disposed" })
+    await expect(decisionB).resolves.toEqual({ allow: false, outcomeReason: "gui-disposed" })
     expect(auditEntries).toHaveLength(2)
     for (const entry of auditEntries) {
       expect(entry).toMatchObject({ decision: "deny", outcomeReason: "gui-disposed" })
@@ -81,7 +84,7 @@ describe("hostResourceIpcService", () => {
     const controller = new AbortController()
     controller.abort()
     const decision = svc.hostResourceApprover({ request: request(), signal: controller.signal })
-    await expect(decision).resolves.toBe(false)
+    await expect(decision).resolves.toEqual({ allow: false, outcomeReason: "cancelled" })
     expect(events).toHaveLength(0) // never even sent — resolved before dispatch
     expect(auditEntries).toEqual([
       expect.objectContaining({ decision: "deny", outcomeReason: "cancelled" }),
@@ -94,7 +97,7 @@ describe("hostResourceIpcService", () => {
     const decisionA = svc.hostResourceApprover({ request: request(), signal: controller.signal })
     const decisionB = svc.hostResourceApprover({ request: request() })
     controller.abort()
-    await expect(decisionA).resolves.toBe(false)
+    await expect(decisionA).resolves.toEqual({ allow: false, outcomeReason: "cancelled" })
     // decisionB is still pending — no assertion needed beyond it not resolving here.
     expect(decisionB).toBeInstanceOf(Promise)
   })
@@ -108,7 +111,7 @@ describe("hostResourceIpcService", () => {
       audit: (entry) => auditEntries.push(entry),
     })
     const decision = svc.hostResourceApprover({ request: request() })
-    await expect(decision).resolves.toBe(false)
+    await expect(decision).resolves.toEqual({ allow: false, outcomeReason: "send-failed" })
     expect(auditEntries).toEqual([
       expect.objectContaining({ decision: "deny", outcomeReason: "send-failed" }),
     ])
@@ -120,9 +123,42 @@ describe("hostResourceIpcService", () => {
     const { service: svc, events, auditEntries } = service()
     const decision = svc.hostResourceApprover({ request: request() })
     svc.resolve(events[0]!.promptId, false)
-    await expect(decision).resolves.toBe(false)
+    await expect(decision).resolves.toEqual({ allow: false })
     expect(auditEntries).toHaveLength(1)
     expect(auditEntries[0]).toMatchObject({ decision: "deny" })
     expect("outcomeReason" in (auditEntries[0] as object)).toBe(false)
+  })
+})
+
+describe("hostResourceIpcService — registry-backed cancellation", () => {
+  it("dispose() resolves every pending entry with outcomeReason gui-disposed", async () => {
+    const audit = vi.fn()
+    const svc = new HostResourceIpcService({
+      sendApprovalRequest: () => [],
+      audit,
+    })
+    const resultPromise = svc.hostResourceApprover({ request: request() })
+
+    svc.dispose()
+
+    expect(await resultPromise).toEqual({ allow: false, outcomeReason: "gui-disposed" })
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: "deny", outcomeReason: "gui-disposed" })
+    )
+  })
+
+  it("an already-aborted signal resolves false immediately without registering a pending entry", async () => {
+    const sendApprovalRequest = vi.fn()
+    const svc = new HostResourceIpcService({ sendApprovalRequest, audit: () => {} })
+    const controller = new AbortController()
+    controller.abort()
+
+    const result = await svc.hostResourceApprover({
+      request: request(),
+      signal: controller.signal,
+    })
+
+    expect(result).toEqual({ allow: false, outcomeReason: "cancelled" })
+    expect(sendApprovalRequest).not.toHaveBeenCalled()
   })
 })

@@ -175,7 +175,10 @@ describe("capabilityIpcService", () => {
   it("broadcasts a grant request and resolves via resolveGrantPrompt", async () => {
     const events: CapabilityGrantRequestEvent[] = []
     const service = createService(activeEntry(testManifest()), {
-      sendGrantRequest: (event) => events.push(event),
+      sendGrantRequest: (event) => {
+        events.push(event)
+        return []
+      },
     })
     const identity = buildGrantIdentity("com.synapse.test", testManifest(), "user")
 
@@ -205,13 +208,16 @@ describe("capabilityIpcService", () => {
     })
 
     service.resolveGrantPrompt(events[0]!.promptId, true)
-    await expect(decision).resolves.toBe(true)
+    await expect(decision).resolves.toEqual({ allow: true })
   })
 
   it("broadcasts an approval request and resolves via resolveApprovalPrompt", async () => {
     const events: CapabilityApprovalRequestEvent[] = []
     const service = createService(activeEntry(testManifest()), {
-      sendApprovalRequest: (event) => events.push(event),
+      sendApprovalRequest: (event) => {
+        events.push(event)
+        return []
+      },
     })
     const identity = buildGrantIdentity("com.synapse.test", testManifest(), "user")
 
@@ -239,13 +245,16 @@ describe("capabilityIpcService", () => {
     })
 
     service.resolveApprovalPrompt(events[0]!.promptId, true)
-    await expect(decision).resolves.toBe(true)
+    await expect(decision).resolves.toEqual({ allow: true })
   })
 
   it("includes clientId in the approval event when the request came from an external MCP caller", async () => {
     const events: CapabilityApprovalRequestEvent[] = []
     const service = createService(activeEntry(testManifest()), {
-      sendApprovalRequest: (event) => events.push(event),
+      sendApprovalRequest: (event) => {
+        events.push(event)
+        return []
+      },
     })
     const identity = buildGrantIdentity("com.synapse.test", testManifest(), "user")
 
@@ -267,13 +276,16 @@ describe("capabilityIpcService", () => {
 
     expect(events[0]).toMatchObject({ clientId: "Claude Desktop" })
     service.resolveApprovalPrompt(events[0]!.promptId, true)
-    await expect(decision).resolves.toBe(true)
+    await expect(decision).resolves.toEqual({ allow: true })
   })
 
   it("omits clientId when the request has no external-mcp principal", async () => {
     const events: CapabilityApprovalRequestEvent[] = []
     const service = createService(activeEntry(testManifest()), {
-      sendApprovalRequest: (event) => events.push(event),
+      sendApprovalRequest: (event) => {
+        events.push(event)
+        return []
+      },
     })
     const identity = buildGrantIdentity("com.synapse.test", testManifest(), "user")
 
@@ -292,13 +304,16 @@ describe("capabilityIpcService", () => {
 
     expect(events[0]!.clientId).toBeUndefined()
     service.resolveApprovalPrompt(events[0]!.promptId, true)
-    await expect(decision).resolves.toBe(true)
+    await expect(decision).resolves.toEqual({ allow: true })
   })
 
   it("resolves a denied grant prompt as false", async () => {
     const events: CapabilityGrantRequestEvent[] = []
     const service = createService(activeEntry(testManifest()), {
-      sendGrantRequest: (event) => events.push(event),
+      sendGrantRequest: (event) => {
+        events.push(event)
+        return []
+      },
     })
 
     const decision = service.grantPrompt({
@@ -316,30 +331,7 @@ describe("capabilityIpcService", () => {
     })
 
     service.resolveGrantPrompt(events[0]!.promptId, false)
-    await expect(decision).resolves.toBe(false)
-  })
-
-  it("denies unanswered grant prompts when cancelAllPendingGrants runs", async () => {
-    const service = createService(activeEntry(testManifest()))
-
-    const decision = service.grantPrompt({
-      identity: buildGrantIdentity("com.synapse.test", testManifest(), "user"),
-      request: {
-        capability: "clipboard:read",
-        invocation: {
-          source: "tool",
-          trigger: "command:run",
-          caller: { kind: "user", principal: { kind: "local-user" } },
-        },
-        operation: "read",
-      },
-      tier: "consent",
-    })
-
-    expect(service.pendingGrantCount()).toBe(1)
-    service.cancelAllPendingGrants()
-    await expect(decision).resolves.toBe(false)
-    expect(service.pendingGrantCount()).toBe(0)
+    await expect(decision).resolves.toEqual({ allow: false })
   })
 
   it("denies pending prompts when the request signal aborts", async () => {
@@ -362,8 +354,7 @@ describe("capabilityIpcService", () => {
     })
 
     controller.abort()
-    await expect(decision).resolves.toBe(false)
-    expect(service.pendingGrantCount()).toBe(0)
+    await expect(decision).resolves.toEqual({ allow: false, outcomeReason: "cancelled" })
   })
 
   it("dispose clears pending grants and approvals", async () => {
@@ -397,19 +388,23 @@ describe("capabilityIpcService", () => {
     })
 
     service.dispose()
-    await expect(grantDecision).resolves.toBe(false)
-    await expect(approvalDecision).resolves.toBe(false)
-    expect(service.pendingGrantCount()).toBe(0)
-    expect(service.pendingApprovalCount()).toBe(0)
+    await expect(grantDecision).resolves.toEqual({ allow: false, outcomeReason: "gui-disposed" })
+    await expect(approvalDecision).resolves.toEqual({
+      allow: false,
+      outcomeReason: "gui-disposed",
+    })
   })
 
-  it("ignores resolveGrantPrompt after cancelAllPendingGrants", async () => {
+  it("ignores resolveGrantPrompt after dispose (first-settle-wins)", async () => {
     const events: CapabilityGrantRequestEvent[] = []
     const service = createService(activeEntry(testManifest()), {
-      sendGrantRequest: (event) => events.push(event),
+      sendGrantRequest: (event) => {
+        events.push(event)
+        return []
+      },
     })
 
-    void service.grantPrompt({
+    const decision = service.grantPrompt({
       identity: buildGrantIdentity("com.synapse.test", testManifest(), "user"),
       request: {
         capability: "clipboard:read",
@@ -423,9 +418,86 @@ describe("capabilityIpcService", () => {
       tier: "consent",
     })
 
-    service.cancelAllPendingGrants()
+    service.dispose()
     service.resolveGrantPrompt(events[0]!.promptId, true)
-    expect(service.pendingGrantCount()).toBe(0)
+
+    await expect(decision).resolves.toEqual({ allow: false, outcomeReason: "gui-disposed" })
+  })
+})
+
+describe("capabilityIpcService — registry-backed cancellation", () => {
+  it("an already-aborted signal never triggers sendGrantRequest", async () => {
+    const sendGrantRequest = vi.fn()
+    const entry = activeEntry(testManifest({ permissions: ["clipboard:read"] }))
+    const service = createService(entry, { sendGrantRequest })
+    const controller = new AbortController()
+    controller.abort()
+
+    const result = await service.grantPrompt({
+      identity: buildGrantIdentity(entry.pluginId, entry.manifest!, entry.source.kind),
+      request: {
+        capability: "clipboard:read",
+        invocation: {
+          source: "tool",
+          trigger: "command:run",
+          caller: { kind: "agent", principal: { kind: "internal-agent" } },
+        },
+        operation: "read",
+        signal: controller.signal,
+      },
+      tier: "consent",
+    })
+
+    expect(sendGrantRequest).not.toHaveBeenCalled()
+    expect(result).toEqual({ allow: false, outcomeReason: "cancelled" })
+  })
+
+  it("resolveGrantPrompt resolves the matching registry entry to allow:true", async () => {
+    const sendGrantRequest = vi.fn((_event: CapabilityGrantRequestEvent) => [])
+    const entry = activeEntry(testManifest({ permissions: ["clipboard:read"] }))
+    const service = createService(entry, { sendGrantRequest })
+    const identity = buildGrantIdentity(entry.pluginId, entry.manifest!, entry.source.kind)
+
+    const resultPromise = service.grantPrompt({
+      identity,
+      request: {
+        capability: "clipboard:read",
+        invocation: {
+          source: "tool",
+          trigger: "command:run",
+          caller: { kind: "agent", principal: { kind: "internal-agent" } },
+        },
+        operation: "read",
+      },
+      tier: "consent",
+    })
+    const promptId = sendGrantRequest.mock.calls[0][0].promptId
+    service.resolveGrantPrompt(promptId, true)
+
+    await expect(resultPromise).resolves.toEqual({ allow: true })
+  })
+
+  it("dispose() cancels every pending grant/approval as gui-disposed", async () => {
+    const entry = activeEntry(testManifest({ permissions: ["clipboard:read"] }))
+    const service = createService(entry)
+    const identity = buildGrantIdentity(entry.pluginId, entry.manifest!, entry.source.kind)
+    const resultPromise = service.grantPrompt({
+      identity,
+      request: {
+        capability: "clipboard:read",
+        invocation: {
+          source: "tool",
+          trigger: "command:run",
+          caller: { kind: "agent", principal: { kind: "internal-agent" } },
+        },
+        operation: "read",
+      },
+      tier: "consent",
+    })
+
+    service.dispose()
+
+    await expect(resultPromise).resolves.toEqual({ allow: false, outcomeReason: "gui-disposed" })
   })
 })
 
@@ -493,8 +565,8 @@ function createService(
   host = fakeHost(entry)
 ): CapabilityIpcService {
   return new CapabilityIpcService(() => host, {
-    sendGrantRequest: vi.fn(),
-    sendApprovalRequest: vi.fn(),
+    sendGrantRequest: vi.fn(() => []),
+    sendApprovalRequest: vi.fn(() => []),
     ...options,
   })
 }

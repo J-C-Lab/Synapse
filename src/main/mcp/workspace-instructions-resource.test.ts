@@ -50,7 +50,7 @@ describe("workspaceInstructionsResourcePort", () => {
       const port = createWorkspaceInstructionsResourcePort({
         workspaces: fakeWorkspaces([{ id: "w1", name: "My Workspace", createdAt: 1 }]),
         workspaceRoots: fakeWorkspaceRoots([record({ root })]),
-        approve: vi.fn(async () => true),
+        approve: vi.fn(async () => ({ allow: true as const })),
         recordAccess: vi.fn(),
       })
 
@@ -66,7 +66,7 @@ describe("workspaceInstructionsResourcePort", () => {
       const port = createWorkspaceInstructionsResourcePort({
         workspaces: fakeWorkspaces([]),
         workspaceRoots: { listForWorkspace },
-        approve: vi.fn(async () => true),
+        approve: vi.fn(async () => ({ allow: true as const })),
         recordAccess: vi.fn(),
       })
 
@@ -78,7 +78,7 @@ describe("workspaceInstructionsResourcePort", () => {
       const port = createWorkspaceInstructionsResourcePort({
         workspaces: fakeWorkspaces([{ id: "w1", name: "W", createdAt: 1 }]),
         workspaceRoots: fakeWorkspaceRoots([]),
-        approve: vi.fn(async () => true),
+        approve: vi.fn(async () => ({ allow: true as const })),
         recordAccess: vi.fn(),
       })
       expect(await port.list("w1")).toEqual([])
@@ -89,7 +89,7 @@ describe("workspaceInstructionsResourcePort", () => {
       const port = createWorkspaceInstructionsResourcePort({
         workspaces: fakeWorkspaces([{ id: "w1", name: "W", createdAt: 1 }]),
         workspaceRoots: fakeWorkspaceRoots([record({ root })]),
-        approve: vi.fn(async () => true),
+        approve: vi.fn(async () => ({ allow: true as const })),
         recordAccess: vi.fn(),
       })
       expect(await port.list("w1")).toEqual([])
@@ -99,7 +99,7 @@ describe("workspaceInstructionsResourcePort", () => {
   describe("read()", () => {
     it("resolves the primary root, requests approval with the real workspace/root names, and returns content when approved", async () => {
       const root = await makeRootDir({ "AGENTS.md": "Run tests before committing.\n" })
-      const approve = vi.fn(async () => true)
+      const approve = vi.fn(async () => ({ allow: true as const }))
       const recordAccess = vi.fn()
       const port = createWorkspaceInstructionsResourcePort({
         workspaces: fakeWorkspaces([{ id: "w1", name: "My Workspace", createdAt: 1 }]),
@@ -142,7 +142,7 @@ describe("workspaceInstructionsResourcePort", () => {
     })
 
     it("returns undefined without calling approve() when there's no primary root", async () => {
-      const approve = vi.fn(async () => true)
+      const approve = vi.fn(async () => ({ allow: true as const }))
       const port = createWorkspaceInstructionsResourcePort({
         workspaces: fakeWorkspaces([{ id: "w1", name: "W", createdAt: 1 }]),
         workspaceRoots: fakeWorkspaceRoots([]),
@@ -165,7 +165,7 @@ describe("workspaceInstructionsResourcePort", () => {
       const port = createWorkspaceInstructionsResourcePort({
         workspaces: fakeWorkspaces([{ id: "w1", name: "W", createdAt: 1 }]),
         workspaceRoots: fakeWorkspaceRoots([record({ root })]),
-        approve: vi.fn(async () => false),
+        approve: vi.fn(async () => ({ allow: false as const })),
         recordAccess,
       })
 
@@ -191,7 +191,7 @@ describe("workspaceInstructionsResourcePort", () => {
       const port = createWorkspaceInstructionsResourcePort({
         workspaces: fakeWorkspaces([{ id: "w1", name: "W", createdAt: 1 }]),
         workspaceRoots,
-        approve: vi.fn(async () => true),
+        approve: vi.fn(async () => ({ allow: true as const })),
         recordAccess,
       })
 
@@ -209,7 +209,7 @@ describe("workspaceInstructionsResourcePort", () => {
       const port = createWorkspaceInstructionsResourcePort({
         workspaces: fakeWorkspaces([{ id: "w1", name: "W", createdAt: 1 }]),
         workspaceRoots: fakeWorkspaceRoots([record({ root })]),
-        approve: vi.fn(async () => true),
+        approve: vi.fn(async () => ({ allow: true as const })),
         recordAccess: vi.fn(),
       })
 
@@ -225,7 +225,7 @@ describe("workspaceInstructionsResourcePort", () => {
       const port = createWorkspaceInstructionsResourcePort({
         workspaces: fakeWorkspaces([{ id: "w1", name: "W", createdAt: 1 }]),
         workspaceRoots: fakeWorkspaceRoots([record()]),
-        approve: vi.fn(async () => true),
+        approve: vi.fn(async () => ({ allow: true as const })),
         recordAccess: vi.fn(),
       })
       expect(await port.read({ workspaceId: "w1", uri: "not-a-synapse-uri" })).toBeUndefined()

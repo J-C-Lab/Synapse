@@ -88,7 +88,7 @@ async function makeHarness() {
     identity,
     declared: DECLARED,
     grants,
-    prompt: async () => true,
+    prompt: async () => ({ allow: true }),
     approve: async () => {
       throw new Error("approve() must NOT be called for trigger origin")
     },

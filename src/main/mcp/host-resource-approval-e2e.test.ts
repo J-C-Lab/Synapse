@@ -32,12 +32,15 @@ describe("host-resource approval, end to end through the real transport", () => 
     const auditEntries: unknown[] = []
     const events: HostResourceApprovalRequestEvent[] = []
     const service = new HostResourceIpcService({
-      sendApprovalRequest: (event) => events.push(event),
+      sendApprovalRequest: (event) => {
+        events.push(event)
+        return []
+      },
       audit: (entry) => auditEntries.push(entry),
     })
 
     const server = await startHeadlessApprovalServer({
-      approveCapability: async () => false, // unused in this test — proves the dispatch didn't cross kinds
+      approveCapability: async () => ({ allow: false }), // unused in this test — proves the dispatch didn't cross kinds
       approveHostResource: service.hostResourceApprover,
       portFilePath,
     })
@@ -52,7 +55,7 @@ describe("host-resource approval, end to end through the real transport", () => 
       service.resolve(events[0]!.promptId, true)
 
       const result = await resultPromise
-      expect(result).toBe(true)
+      expect(result).toEqual({ allow: true })
       expect(auditEntries).toEqual([expect.objectContaining({ decision: "allow" })])
     } finally {
       await server.close()
@@ -62,12 +65,15 @@ describe("host-resource approval, end to end through the real transport", () => 
   it("a denied request round-trips false end to end", async () => {
     const events: HostResourceApprovalRequestEvent[] = []
     const service = new HostResourceIpcService({
-      sendApprovalRequest: (event) => events.push(event),
+      sendApprovalRequest: (event) => {
+        events.push(event)
+        return []
+      },
       audit: () => {},
     })
 
     const server = await startHeadlessApprovalServer({
-      approveCapability: async () => true,
+      approveCapability: async () => ({ allow: true }),
       approveHostResource: service.hostResourceApprover,
       portFilePath,
     })
@@ -79,7 +85,7 @@ describe("host-resource approval, end to end through the real transport", () => 
       await new Promise((resolve) => setTimeout(resolve, 50))
       service.resolve(events[0]!.promptId, false)
 
-      expect(await resultPromise).toBe(false)
+      expect(await resultPromise).toEqual({ allow: false })
     } finally {
       await server.close()
     }
@@ -88,12 +94,15 @@ describe("host-resource approval, end to end through the real transport", () => 
   it("fails closed when the GUI process side disposes with the request still pending", async () => {
     const events: HostResourceApprovalRequestEvent[] = []
     const service = new HostResourceIpcService({
-      sendApprovalRequest: (event) => events.push(event),
+      sendApprovalRequest: (event) => {
+        events.push(event)
+        return []
+      },
       audit: () => {},
     })
 
     const server = await startHeadlessApprovalServer({
-      approveCapability: async () => true,
+      approveCapability: async () => ({ allow: true }),
       approveHostResource: service.hostResourceApprover,
       portFilePath,
     })
@@ -105,7 +114,7 @@ describe("host-resource approval, end to end through the real transport", () => 
       await new Promise((resolve) => setTimeout(resolve, 50))
       service.dispose() // simulates the window closing before the human answers
 
-      expect(await resultPromise).toBe(false)
+      expect(await resultPromise).toEqual({ allow: false, outcomeReason: "gui-disposed" })
     } finally {
       await server.close()
     }

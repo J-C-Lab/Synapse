@@ -120,6 +120,7 @@ function installElectronApi(settings: SynapseUserSettings): TestElectronApi {
     onCapabilityGrantRequest: vi.fn(() => () => undefined),
     onCapabilityApprovalRequest: vi.fn(() => () => undefined),
     onHostResourceApprovalRequest: vi.fn(() => () => undefined),
+    onApprovalSettled: vi.fn(() => () => undefined),
     onSettingsChanged: vi.fn(() => () => undefined),
     onLanDevicesChanged: vi.fn(() => () => undefined),
     onLanStatusChanged: vi.fn(() => () => undefined),

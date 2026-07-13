@@ -27,26 +27,29 @@ afterEach(() => {
 })
 
 describe("capabilityPromptRouter", () => {
-  it("delivers prompts to the active IPC target", async () => {
+  it("delivers prompts to the active IPC target and returns it as the sole recipient", async () => {
     const launcher = mockWebContents("app://app/index.html#search")
     const broadcast = vi.fn()
     const sender = createCapabilityPromptSender(broadcast)
+    let recipients: unknown
 
     await withCapabilityPromptTarget(launcher, async () => {
-      sender.sendGrantRequest({ promptId: "cap_1" })
+      recipients = sender.sendGrantRequest({ promptId: "cap_1" })
     })
 
     expect(launcher.send).toHaveBeenCalledWith("capabilities:grant-request", { promptId: "cap_1" })
     expect(broadcast).not.toHaveBeenCalled()
+    expect(recipients).toEqual([launcher])
   })
 
-  it("falls back to broadcast when no target is registered", () => {
+  it("falls back to broadcast when no target is registered, returning the prompt-capable windows reached", () => {
     const broadcast = vi.fn()
     const sender = createCapabilityPromptSender(broadcast)
 
-    sender.sendApprovalRequest({ promptId: "cap_2" })
+    const recipients = sender.sendApprovalRequest({ promptId: "cap_2" })
 
     expect(broadcast).toHaveBeenCalledWith("capabilities:approval-request", { promptId: "cap_2" })
+    expect(recipients).toEqual([])
   })
 
   it("restores the previous target after nested calls", async () => {
@@ -54,44 +57,51 @@ describe("capabilityPromptRouter", () => {
     const inner = mockWebContents("app://app/index.html#search")
     const broadcast = vi.fn()
     const sender = createCapabilityPromptSender(broadcast)
+    let innerRecipients: unknown
+    let outerRecipients: unknown
 
     await withCapabilityPromptTarget(outer, async () => {
       await withCapabilityPromptTarget(inner, async () => {
-        sender.sendGrantRequest({ promptId: "inner" })
+        innerRecipients = sender.sendGrantRequest({ promptId: "inner" })
       })
-      sender.sendGrantRequest({ promptId: "outer" })
+      outerRecipients = sender.sendGrantRequest({ promptId: "outer" })
     })
 
     expect(inner.send).toHaveBeenCalledWith("capabilities:grant-request", { promptId: "inner" })
     expect(outer.send).toHaveBeenCalledWith("capabilities:grant-request", { promptId: "outer" })
     expect(broadcast).not.toHaveBeenCalled()
+    expect(innerRecipients).toEqual([inner])
+    expect(outerRecipients).toEqual([outer])
   })
 })
 
 describe("createHostResourcePromptSender", () => {
-  it("delivers to the active IPC target", async () => {
+  it("delivers to the active IPC target and returns it as the sole recipient", async () => {
     const target = mockWebContents("app://app/index.html#search")
     const broadcast = vi.fn()
     const sender = createHostResourcePromptSender(broadcast)
+    let recipients: unknown
 
     await withCapabilityPromptTarget(target, async () => {
-      sender.sendApprovalRequest({ promptId: "host_res_apr_1" })
+      recipients = sender.sendApprovalRequest({ promptId: "host_res_apr_1" })
     })
 
     expect(target.send).toHaveBeenCalledWith("host-resources:approval-request", {
       promptId: "host_res_apr_1",
     })
     expect(broadcast).not.toHaveBeenCalled()
+    expect(recipients).toEqual([target])
   })
 
-  it("falls back to broadcast when no target is registered", () => {
+  it("falls back to broadcast when no target is registered, returning the prompt-capable windows reached", () => {
     const broadcast = vi.fn()
     const sender = createHostResourcePromptSender(broadcast)
 
-    sender.sendApprovalRequest({ promptId: "host_res_apr_2" })
+    const recipients = sender.sendApprovalRequest({ promptId: "host_res_apr_2" })
 
     expect(broadcast).toHaveBeenCalledWith("host-resources:approval-request", {
       promptId: "host_res_apr_2",
     })
+    expect(recipients).toEqual([])
   })
 })

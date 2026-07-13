@@ -403,8 +403,8 @@ describe("createBackgroundHostToolAuthorizer", () => {
           grant: vi.fn(),
           isExternalMcpPreauthorized: async () => false,
         },
-        prompt: async () => true,
-        approve: async () => true,
+        prompt: async () => ({ allow: true }),
+        approve: async () => ({ allow: true }),
         audit,
       },
     })
@@ -431,8 +431,8 @@ describe("createBackgroundHostToolAuthorizer", () => {
           grant: vi.fn(),
           isExternalMcpPreauthorized: async () => false,
         },
-        prompt: async () => false,
-        approve: async () => true,
+        prompt: async () => ({ allow: false }),
+        approve: async () => ({ allow: true }),
         audit,
       },
     })

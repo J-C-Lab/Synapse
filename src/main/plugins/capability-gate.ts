@@ -1,5 +1,6 @@
 import type { NormalizedCapability } from "@synapse/plugin-manifest"
 import type { ToolPrincipal } from "@synapse/plugin-sdk"
+import type { ApprovalOutcomeReason, ApprovalResult } from "../approvals/types"
 import type { GrantIdentity, GrantStore } from "./grant-store"
 import type { CapabilityActor, InvocationContext } from "./invocation-context"
 import { createHash } from "node:crypto"
@@ -45,11 +46,15 @@ export class CapabilityDenied extends Error {
 }
 
 export interface GrantPromptPort {
-  (input: { identity: GrantIdentity; request: CapabilityRequest; tier: string }): Promise<boolean>
+  (input: {
+    identity: GrantIdentity
+    request: CapabilityRequest
+    tier: string
+  }): Promise<ApprovalResult>
 }
 
 export interface CapabilityApprover {
-  (input: { identity: GrantIdentity; request: CapabilityRequest }): Promise<boolean>
+  (input: { identity: GrantIdentity; request: CapabilityRequest }): Promise<ApprovalResult>
 }
 
 export interface CapabilityAuditEntry {
@@ -67,6 +72,7 @@ export interface CapabilityAuditEntry {
   decision: "allow" | "deny"
   grantedNow: boolean
   why: string
+  outcomeReason?: ApprovalOutcomeReason
   /** The agent run this decision belongs to; absent for out-of-run decisions. */
   runId?: string
   principal?: ToolPrincipal
@@ -120,8 +126,12 @@ export class CapabilityGate implements CapabilityGatePort {
       throw new CapabilityDenied(this.options.identity.pluginId, request.capability, "not declared")
     }
 
-    const deny = (why: string, grantedNow = false): never => {
-      this.emit(request, "deny", grantedNow, why, cap.tier)
+    const deny = (
+      why: string,
+      grantedNow = false,
+      outcomeReason?: ApprovalOutcomeReason
+    ): never => {
+      this.emit(request, "deny", grantedNow, why, cap.tier, outcomeReason)
       throw new CapabilityDenied(this.options.identity.pluginId, request.capability, why)
     }
 
@@ -159,8 +169,14 @@ export class CapabilityGate implements CapabilityGatePort {
       if (debit === "exhausted") deny("budget exhausted")
 
       if (cap.tier === "elevated" && request.reversible === false) {
-        const ok = await this.options.approve({ identity: this.options.identity, request })
-        if (!ok) deny("irreversible operation: per-call approval refused")
+        const result = await this.options.approve({ identity: this.options.identity, request })
+        if (!result.allow) {
+          deny(
+            "irreversible operation: per-call approval refused",
+            false,
+            "outcomeReason" in result ? result.outcomeReason : undefined
+          )
+        }
       }
 
       this.emit(request, "allow", false, "permitted", cap.tier)
@@ -175,12 +191,14 @@ export class CapabilityGate implements CapabilityGatePort {
         request.requestedScope
       )
       if (!granted) {
-        const ok = await this.options.prompt({
+        const result = await this.options.prompt({
           identity: this.options.identity,
           request,
           tier: cap.tier,
         })
-        if (!ok) deny("grant refused")
+        if (!result.allow) {
+          deny("grant refused", false, "outcomeReason" in result ? result.outcomeReason : undefined)
+        }
         await this.options.grants.grant(
           this.options.identity,
           request.capability,
@@ -212,8 +230,14 @@ export class CapabilityGate implements CapabilityGatePort {
           request.capability
         ))
       if (!preauthorized) {
-        const ok = await this.options.approve({ identity: this.options.identity, request })
-        if (!ok) deny("per-call approval refused", grantedNow)
+        const result = await this.options.approve({ identity: this.options.identity, request })
+        if (!result.allow) {
+          deny(
+            "per-call approval refused",
+            grantedNow,
+            "outcomeReason" in result ? result.outcomeReason : undefined
+          )
+        }
       }
     }
 
@@ -225,7 +249,8 @@ export class CapabilityGate implements CapabilityGatePort {
     decision: "allow" | "deny",
     grantedNow: boolean,
     why: string,
-    tier = "unknown"
+    tier = "unknown",
+    outcomeReason?: ApprovalOutcomeReason
   ): void {
     const identity = auditIdentityOf(request.invocation)
     this.options.audit({
@@ -242,6 +267,7 @@ export class CapabilityGate implements CapabilityGatePort {
       decision,
       grantedNow,
       why,
+      ...(outcomeReason !== undefined ? { outcomeReason } : {}),
       ...(identity.runId !== undefined ? { runId: identity.runId } : {}),
       ...(identity.principal !== undefined ? { principal: identity.principal } : {}),
       ...(identity.workspaceId !== undefined ? { workspaceId: identity.workspaceId } : {}),

@@ -1,4 +1,5 @@
 import type { NormalizedCapability } from "@synapse/plugin-manifest"
+import type { ApprovalResult } from "../approvals/types"
 import type { CapabilityAuditEntry } from "./capability-gate"
 import type { GrantIdentity } from "./grant-store"
 import type { ResolvedAddress } from "./network-dns"
@@ -63,7 +64,7 @@ interface HarnessOptions {
   /** Override the transport seam (default: 200 OK with empty JSON). */
   transport?: ReturnType<typeof vi.fn>
   /** JIT consent prompt answer (default: true — auto-allow). */
-  prompt?: () => Promise<boolean>
+  prompt?: () => Promise<ApprovalResult>
 }
 
 async function makeHarness(options: HarnessOptions = {}): Promise<Harness> {
@@ -94,8 +95,8 @@ async function makeHarness(options: HarnessOptions = {}): Promise<Harness> {
     identity,
     declared: DECLARED,
     grants,
-    prompt: options.prompt ?? (async () => true),
-    approve: async () => true,
+    prompt: options.prompt ?? (async () => ({ allow: true })),
+    approve: async () => ({ allow: true }),
     audit: (entry) => {
       auditLog.push(entry)
       writeAudit(entry)
@@ -212,7 +213,7 @@ describe("network capability end-to-end (real gate + adapter + grant store)", ()
     })
     // After a revoke the next call JIT-re-prompts; a user who just revoked
     // declines, so the gate must deny rather than silently re-grant.
-    const h = await harness({ transport, prompt: async () => false })
+    const h = await harness({ transport, prompt: async () => ({ allow: false }) })
     await h.grants.grant(h.identity, "network:https", "user", DECLARED_SCOPE)
 
     const inFlight = h.fetcher.fetch("https://api.github.com/repos/x")

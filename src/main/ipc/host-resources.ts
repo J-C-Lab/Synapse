@@ -1,9 +1,11 @@
-import type { IpcMain, IpcMainInvokeEvent } from "electron"
+import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron"
+import type { ApprovalOutcomeReason } from "../approvals/types"
 import type {
   HostResourceApprovalRequest,
   HostResourceApprover,
 } from "../mcp/host-resource-approval"
 import type { HostResourceAuditEntry } from "../mcp/host-resource-audit"
+import { ApprovalRegistry } from "../approvals/approval-registry"
 import { invokePluginIpcHandler, PluginIpcInvalidPayloadError } from "./plugins"
 
 export interface HostResourceApprovalRequestEvent extends HostResourceApprovalRequest {
@@ -11,15 +13,8 @@ export interface HostResourceApprovalRequestEvent extends HostResourceApprovalRe
 }
 
 export interface HostResourceIpcServiceOptions {
-  sendApprovalRequest: (event: HostResourceApprovalRequestEvent) => void
+  sendApprovalRequest: (event: HostResourceApprovalRequestEvent) => readonly WebContents[]
   audit: (entry: HostResourceAuditEntry) => void
-}
-
-interface PendingResult {
-  allow: boolean
-  /** Absent means a human answered (allow or deny) via resolve(). Set
-   *  means the promise settled some other way. */
-  outcomeReason?: "cancelled" | "gui-disposed"
 }
 
 /**
@@ -29,76 +24,64 @@ interface PendingResult {
  *
  * Unanswered prompts must be cleared via {@link dispose} (window close /
  * host shutdown) — mirrors CapabilityIpcService's deny-safe semantics.
+ * Pending-request lifecycle (registration, first-settle-wins resolution,
+ * app-quit disposal) is owned by the shared {@link ApprovalRegistry}.
  */
 export class HostResourceIpcService {
-  private readonly pending = new Map<string, { resolve: (result: PendingResult) => void }>()
-  private counter = 0
+  private readonly registry: ApprovalRegistry
 
-  constructor(private readonly options: HostResourceIpcServiceOptions) {}
+  constructor(
+    private readonly options: HostResourceIpcServiceOptions,
+    registry: ApprovalRegistry = new ApprovalRegistry()
+  ) {
+    this.registry = registry
+  }
 
   readonly hostResourceApprover: HostResourceApprover = async ({ request, signal }) => {
-    if (signal?.aborted) {
+    const outcome = this.registry.register("host-resource", { signal })
+    if (outcome.status !== "registered") {
       this.record(request, "deny", "cancelled")
-      return false
+      return { allow: false, outcomeReason: "cancelled" }
     }
-    // Prefix "host_res_apr_" is deliberately distinct from capabilities.ts's
-    // "cap_apr_"/"cap_grant_" so logs, tests, and stack traces are never
-    // ambiguous about which domain a prompt id belongs to.
-    const promptId = `host_res_apr_${++this.counter}`
-    const decisionPromise = this.registerPending(promptId, signal)
     try {
-      this.options.sendApprovalRequest({ promptId, ...request })
+      const recipients = this.options.sendApprovalRequest({
+        promptId: outcome.handle.id,
+        ...request,
+      })
+      outcome.handle.markDelivered(recipients)
     } catch {
-      this.pending.delete(promptId)
-      this.record(request, "deny", "send-failed")
-      return false
+      outcome.handle.cancel("send-failed")
+      const result = await outcome.handle.result
+      this.record(request, "deny", "outcomeReason" in result ? result.outcomeReason : undefined)
+      return result
     }
-    // Every path through registerPending's Promise — human resolve(),
+    // Every path through the registry's result Promise — human resolve(),
     // dispose(), or an abort — settles exactly once here, so recording the
-    // audit entry in this one place (rather than duplicated in resolve()/
-    // dispose()/the abort listener) guarantees exactly one entry per
-    // decision.
-    const result = await decisionPromise
-    this.record(request, result.allow ? "allow" : "deny", result.outcomeReason)
-    return result.allow
+    // audit entry in this one place (rather than duplicated across
+    // resolve()/dispose()/the abort listener) guarantees exactly one entry
+    // per decision.
+    const result = await outcome.handle.result
+    this.record(
+      request,
+      result.allow ? "allow" : "deny",
+      "outcomeReason" in result ? result.outcomeReason : undefined
+    )
+    return result
   }
 
   resolve(promptId: string, allow: boolean): void {
-    // Idempotent: an unknown or already-resolved promptId is a silent
-    // no-op, not an error — the renderer/IPC boundary can legitimately
-    // deliver a stale resolve (double-click, reload race).
-    const entry = this.pending.get(promptId)
-    if (!entry) return
-    this.pending.delete(promptId)
-    entry.resolve({ allow }) // no outcomeReason: a human answered
+    this.registry.resolveByHuman(promptId, "host-resource", allow)
   }
 
   /** Deny-safe cleanup: window close, reload, crash, app quit. */
   dispose(): void {
-    for (const entry of [...this.pending.values()]) {
-      entry.resolve({ allow: false, outcomeReason: "gui-disposed" })
-    }
-    this.pending.clear()
-  }
-
-  private registerPending(promptId: string, signal?: AbortSignal): Promise<PendingResult> {
-    if (signal?.aborted) return Promise.resolve({ allow: false, outcomeReason: "cancelled" })
-    return new Promise((resolve) => {
-      this.pending.set(promptId, { resolve })
-      signal?.addEventListener(
-        "abort",
-        () => {
-          if (this.pending.delete(promptId)) resolve({ allow: false, outcomeReason: "cancelled" })
-        },
-        { once: true }
-      )
-    })
+    this.registry.disposeAll()
   }
 
   private record(
     request: HostResourceApprovalRequest,
     decision: "allow" | "deny",
-    outcomeReason?: "cancelled" | "gui-disposed" | "send-failed"
+    outcomeReason?: ApprovalOutcomeReason
   ): void {
     const entry: HostResourceAuditEntry = { ...request, decision, timestamp: Date.now() }
     if (outcomeReason) entry.outcomeReason = outcomeReason

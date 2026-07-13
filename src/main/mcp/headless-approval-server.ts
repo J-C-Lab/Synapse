@@ -1,11 +1,13 @@
 import type { Server, Socket } from "node:net"
+import type { ApprovalResult } from "../approvals/types"
 import type { CapabilityApprover, CapabilityRequest } from "../plugins/capability-gate"
 import type { GrantIdentity } from "../plugins/grant-store"
 import type { HostResourceApprovalRequest, HostResourceApprover } from "./host-resource-approval"
 import { randomBytes } from "node:crypto"
 import { promises as fs } from "node:fs"
 import { createServer } from "node:net"
-import { readJsonLine, writeJsonLine } from "./line-delimited-socket"
+import { parseCancelFrame } from "./approval-cancel-frame"
+import { createJsonLineReader, writeJsonLine } from "./line-delimited-socket"
 
 // Listens on a loopback-only, OS-assigned TCP port and forwards each
 // approval request to the matching approver — in production, the exact
@@ -74,21 +76,72 @@ async function handleConnection(
   token: string,
   options: HeadlessApprovalServerOptions
 ): Promise<void> {
+  const reader = createJsonLineReader(socket)
   try {
-    const payload = await readJsonLine(socket, options.requestTimeoutMs ?? 10_000)
+    const payload = await reader.next(options.requestTimeoutMs ?? 10_000)
     const parsed = parsePayload(payload)
     if (!parsed || parsed.token !== token) {
       writeJsonLine(socket, { allow: false, error: "unauthorized" })
       return
     }
-    const allow =
+
+    const connectionController = new AbortController()
+    const onSocketEnd = (): void => connectionController.abort("client-disconnected")
+    socket.once("error", onSocketEnd)
+    socket.once("close", onSocketEnd)
+
+    const approverPromise =
       parsed.kind === "plugin-capability"
-        ? await options.approveCapability({ identity: parsed.identity, request: parsed.request })
-        : await options.approveHostResource({ request: parsed.request })
-    writeJsonLine(socket, { allow })
+        ? options.approveCapability({
+            identity: parsed.identity,
+            request: { ...parsed.request, signal: connectionController.signal },
+          })
+        : options.approveHostResource({
+            request: parsed.request,
+            signal: connectionController.signal,
+          })
+
+    const cancelWatchPromise = (async (): Promise<"cancel" | undefined> => {
+      let line: unknown
+      try {
+        line = await reader.next()
+      } catch {
+        connectionController.abort("client-disconnected")
+        return undefined
+      }
+      const frame = parseCancelFrame(line, parsed.requestId)
+      if (frame) {
+        connectionController.abort(frame.reason)
+        return "cancel"
+      }
+      // Any other line on this connection is a protocol error — tear down.
+      connectionController.abort("client-disconnected")
+      return undefined
+    })()
+
+    const winner = await Promise.race([
+      approverPromise.then((result) => ({ kind: "approved" as const, result })),
+      cancelWatchPromise.then((outcome) => ({ kind: "cancel" as const, outcome })),
+    ])
+
+    socket.off("error", onSocketEnd)
+    socket.off("close", onSocketEnd)
+
+    if (winner.kind === "approved") {
+      // Cast anticipates approvers returning the richer ApprovalResult shape
+      // (Task 10) — today both approvers only ever resolve `boolean`.
+      const result = winner.result as boolean | ApprovalResult
+      const allow = typeof result === "boolean" ? result : result.allow
+      const outcomeReason =
+        typeof result !== "boolean" && !result.allow && "outcomeReason" in result
+          ? result.outcomeReason
+          : undefined
+      writeJsonLine(socket, { allow, ...(outcomeReason ? { outcomeReason } : {}) })
+    }
   } catch (err) {
     writeJsonLine(socket, { allow: false, error: err instanceof Error ? err.message : String(err) })
   } finally {
+    reader.dispose()
     socket.end()
   }
 }
@@ -97,15 +150,22 @@ type ParsedPayload =
   | {
       token: string
       kind: "plugin-capability"
+      requestId: string
       identity: GrantIdentity
       request: CapabilityRequest
     }
-  | { token: string; kind: "host-resource"; request: HostResourceApprovalRequest }
+  | {
+      token: string
+      kind: "host-resource"
+      requestId: string
+      request: HostResourceApprovalRequest
+    }
 
 function parsePayload(value: unknown): ParsedPayload | undefined {
   if (!value || typeof value !== "object") return undefined
   const v = value as Record<string, unknown>
   if (typeof v.token !== "string") return undefined
+  if (typeof v.requestId !== "string" || v.requestId.length === 0) return undefined
   if (v.kind === "plugin-capability") return parseCapabilityPayload(v)
   if (v.kind === "host-resource") return parseHostResourcePayload(v)
   return undefined
@@ -132,6 +192,7 @@ function parseCapabilityPayload(
   return {
     token: v.token as string,
     kind: "plugin-capability",
+    requestId: v.requestId as string,
     identity: v.identity as GrantIdentity,
     request: request as unknown as CapabilityRequest,
   }
@@ -162,6 +223,7 @@ function parseHostResourcePayload(
   return {
     token: v.token as string,
     kind: "host-resource",
+    requestId: v.requestId as string,
     request: r as unknown as HostResourceApprovalRequest,
   }
 }

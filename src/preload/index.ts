@@ -306,6 +306,12 @@ const electronAPI = {
     return () => ipcRenderer.removeListener("host-resources:approval-request", listener)
   },
 
+  onApprovalSettled: (handler: (event: unknown) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
+    ipcRenderer.on("approvals:settled", listener)
+    return () => ipcRenderer.removeListener("approvals:settled", listener)
+  },
+
   // Pushed by main after any settings:update so that windows other than
   // the one that initiated the change (notably the long-lived launcher
   // window) can re-apply theme/hotkey state without a reload.
