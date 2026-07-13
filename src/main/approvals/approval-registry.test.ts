@@ -172,9 +172,9 @@ describe("approvalRegistry — deliveredTo / markDelivered / retireRecipient", (
   })
 
   it("markDelivered on an already-settled registration immediately pushes a settled callback for the just-learned recipients", async () => {
-    const settled: Array<{ id: string; recipients: readonly unknown[] }> = []
+    const settled: Array<{ id: string; kind: string; recipients: readonly unknown[] }> = []
     const registry = new ApprovalRegistry({
-      onSettled: (id, _outcome, recipients) => settled.push({ id, recipients }),
+      onSettled: (id, kind, _outcome, recipients) => settled.push({ id, kind, recipients }),
     })
     const outcome = registry.register("capability-grant", {})
     if (outcome.status !== "registered") throw new Error("unreachable")
@@ -183,7 +183,7 @@ describe("approvalRegistry — deliveredTo / markDelivered / retireRecipient", (
 
     registry.markDelivered(outcome.handle.id, [wc as never])
 
-    expect(settled).toEqual([{ id: outcome.handle.id, recipients: [wc] }])
+    expect(settled).toEqual([{ id: outcome.handle.id, kind: "capability-grant", recipients: [wc] }])
   })
 
   it("cancel() settles only the one registration it targets", async () => {

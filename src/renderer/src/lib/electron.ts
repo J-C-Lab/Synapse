@@ -43,6 +43,7 @@ export type TriggerMigrationNoticeState = SynapseTriggerMigrationNoticeState
 export type CapabilityGrantRequestEvent = SynapseCapabilityGrantRequestEvent
 export type CapabilityApprovalRequestEvent = SynapseCapabilityApprovalRequestEvent
 export type HostResourceApprovalRequestEvent = SynapseHostResourceApprovalRequestEvent
+export type ApprovalSettledEvent = SynapseApprovalSettledEvent
 export type MarketplaceEntry = SynapseMarketplaceEntry
 export type MarketplaceSummary = PluginSummary
 export type MarketplaceDetail = PluginDetailResponse
@@ -301,6 +302,10 @@ export function onHostResourceApprovalRequest(
   handler: (event: HostResourceApprovalRequestEvent) => void
 ): () => void {
   return api().onHostResourceApprovalRequest(handler)
+}
+
+export function onApprovalSettled(handler: (event: ApprovalSettledEvent) => void): () => void {
+  return api().onApprovalSettled(handler)
 }
 
 export async function listTriggers(): Promise<PluginTriggerRow[]> {

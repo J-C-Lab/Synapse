@@ -751,13 +751,25 @@ function broadcastCredentialConnectPrompt(prompt: unknown): void {
   broadcast("credentials:connect-prompt", prompt)
 }
 
-// Placeholder — Task 15 replaces this with the real `approvals:settled`
-// broadcast (mapping outcome/recipients into the wire event shape).
 function broadcastApprovalSettled(
-  _id: string,
-  _outcome: import("./approvals/types").ApprovalResult,
-  _recipients: readonly import("electron").WebContents[]
-): void {}
+  id: string,
+  kind: import("./approvals/approval-registry").ApprovalKind,
+  outcome: import("./approvals/types").ApprovalResult,
+  recipients: readonly WebContents[]
+): void {
+  const payload = {
+    id,
+    kind,
+    outcome: outcome.allow
+      ? ("allowed" as const)
+      : "outcomeReason" in outcome
+        ? outcome.outcomeReason
+        : ("denied" as const),
+  }
+  for (const wc of recipients) {
+    if (!wc.isDestroyed()) wc.send("approvals:settled", payload)
+  }
+}
 
 function initPluginHost(): PluginHost {
   const userDataDir = app.getPath("userData")
@@ -772,7 +784,8 @@ function initPluginHost(): PluginHost {
   )
 
   approvalRegistry = new ApprovalRegistry({
-    onSettled: (id, outcome, recipients) => broadcastApprovalSettled(id, outcome, recipients),
+    onSettled: (id, kind, outcome, recipients) =>
+      broadcastApprovalSettled(id, kind, outcome, recipients),
   })
 
   capabilityService = new CapabilityIpcService(

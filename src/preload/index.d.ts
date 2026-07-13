@@ -293,6 +293,21 @@ declare global {
     reason?: string
   }
 
+  type SynapseApprovalKind = "capability-grant" | "capability-approval" | "host-resource"
+
+  interface SynapseApprovalSettledEvent {
+    id: string
+    kind: SynapseApprovalKind
+    outcome:
+      | "allowed"
+      | "denied"
+      | "cancelled"
+      | "gui-disposed"
+      | "send-failed"
+      | "timed-out"
+      | "client-disconnected"
+  }
+
   interface SynapseMarketplaceEntry {
     id: string
     name: string
@@ -799,6 +814,7 @@ declare global {
       onHostResourceApprovalRequest: (
         handler: (event: SynapseHostResourceApprovalRequestEvent) => void
       ) => () => void
+      onApprovalSettled: (handler: (event: SynapseApprovalSettledEvent) => void) => () => void
       onSettingsChanged: (handler: (settings: SynapseUserSettings) => void) => () => void
       onLanDevicesChanged: (handler: (devices: SynapseLanDevice[]) => void) => () => void
       onLanStatusChanged: (handler: (status: SynapseLanStatus) => void) => () => void

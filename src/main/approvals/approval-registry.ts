@@ -26,7 +26,12 @@ export interface ApprovalRegistryOptions {
    *  already recorded via markDelivered(). If settlement races ahead of
    *  delivery, finish() skips this callback and markDelivered()'s post-settle
    *  path notifies instead (so prompt hosts still learn about the race). */
-  onSettled?: (id: string, outcome: ApprovalResult, recipients: readonly WebContents[]) => void
+  onSettled?: (
+    id: string,
+    kind: ApprovalKind,
+    outcome: ApprovalResult,
+    recipients: readonly WebContents[]
+  ) => void
 }
 
 const WIRE_REASONS: readonly ApprovalOutcomeReason[] = [
@@ -53,6 +58,11 @@ interface PendingEntry {
 
 export class ApprovalRegistry {
   private readonly pending = new Map<string, PendingEntry>()
+  // Bridges finish() → markDelivered()'s post-settle path when settlement
+  // races ahead of delivery: finish() removes the pending entry (and its
+  // kind) before markDelivered() ever learns the recipients, so the kind
+  // is parked here just long enough for that one callback.
+  private readonly settledKinds = new Map<string, ApprovalKind>()
 
   constructor(private readonly options: ApprovalRegistryOptions = {}) {}
 
@@ -75,7 +85,9 @@ export class ApprovalRegistry {
       if (!entry || !this.pending.delete(id)) return
       settle(outcome)
       if (entry.deliveredTo.size > 0) {
-        this.options.onSettled?.(id, outcome, [...entry.deliveredTo])
+        this.options.onSettled?.(id, entry.kind, outcome, [...entry.deliveredTo])
+      } else {
+        this.settledKinds.set(id, entry.kind)
       }
     }
 
@@ -117,7 +129,14 @@ export class ApprovalRegistry {
     }
     // Already settled before any recipient was recorded — finish() skipped
     // onSettled; notify now with the recipients just learned about.
-    this.options.onSettled?.(id, { allow: false, outcomeReason: "cancelled" }, deliveredTo)
+    const kind = this.settledKinds.get(id)
+    this.settledKinds.delete(id)
+    this.options.onSettled?.(
+      id,
+      kind ?? "host-resource",
+      { allow: false, outcomeReason: "cancelled" },
+      deliveredTo
+    )
   }
 
   /** Settles exactly the one registration `id` refers to. */
