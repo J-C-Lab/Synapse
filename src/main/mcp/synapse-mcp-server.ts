@@ -12,8 +12,10 @@ import type { MemoryEntry } from "../ai/memory/memory-store"
 import type { RunProvenance } from "../ai/run-provenance"
 import type { RunTrace } from "../ai/run-trace-store"
 import type { ToolHostPort } from "../ai/tool-registry"
+import type { WorkspaceStore } from "../ai/workspace/workspace-store"
 import type { GrantIdentity } from "../plugins/grant-store"
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../plugins/types"
+import type { McpWorkspaceBinding } from "./mcp-workspace-binding"
 import type { WorkspaceInstructionsResourcePort } from "./workspace-instructions-resource"
 import { randomUUID } from "node:crypto"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
@@ -29,6 +31,7 @@ import { projectModelVisibleTool, sanitizeTitle, warnOnce } from "../ai/guardrai
 import { buildMcpRun, buildRunTrace, toToolCaller } from "../ai/run-provenance"
 import { modelToolName, uniqueName } from "../ai/tool-registry"
 import { logger } from "../logging"
+import { assertWorkspaceAdmitted, McpUnboundError } from "./mcp-workspace-admission"
 import { WORKSPACE_INSTRUCTIONS_PREFIX } from "./workspace-instructions-resource"
 
 const MEMORY_RESOURCE_PREFIX = "synapse://memory/"
@@ -80,6 +83,18 @@ export interface SynapseMcpToolServiceOptions {
    *  memory, so this never needs to be async. Returns undefined for an
    *  unknown pluginId (denies exposure). */
   identityForPlugin?: (pluginId: string) => GrantIdentity | undefined
+  /** The external caller's workspace binding, resolved once via
+   *  resolveMcpWorkspaceBinding() and threaded through unchanged for the
+   *  service's lifetime. Absent defaults to unbound (fail-closed) — every
+   *  construction site must make this an explicit choice, not an accident. */
+  workspaceBinding?: McpWorkspaceBinding
+  /** Read access for the admission check. Absent defaults to "nothing
+   *  resolves" (fail-closed, matches the unbound default above). */
+  workspaces?: Pick<WorkspaceStore, "get">
+  /** Called at most once per service instance, the first time an unbound
+   *  binding is actually rejected — lets the caller log the migration
+   *  message to stderr without flooding it on every poll. */
+  onUnboundWarning?: () => void
 }
 
 export interface SynapseMcpServerOptions extends SynapseMcpToolServiceOptions {
@@ -97,13 +112,30 @@ type McpObjectSchema = ListToolsResult["tools"][number]["inputSchema"]
 export class SynapseMcpToolService {
   private safeToEntry = new Map<string, McpToolEntry>()
   private exclusionWarnings = new Map<string, string>()
+  private unboundWarned = false
 
   constructor(
     private readonly host: ToolHostPort,
     private readonly options: SynapseMcpToolServiceOptions = {}
   ) {}
 
+  private async admit(): Promise<void> {
+    try {
+      await assertWorkspaceAdmitted(
+        this.options.workspaceBinding ?? { kind: "unbound" },
+        this.options.workspaces ?? { get: async () => undefined }
+      )
+    } catch (err) {
+      if (err instanceof McpUnboundError && !this.unboundWarned) {
+        this.unboundWarned = true
+        this.options.onUnboundWarning?.()
+      }
+      throw err
+    }
+  }
+
   async listTools(): Promise<ListToolsResult> {
+    await this.admit()
     const entries = this.refresh()
     const included = await Promise.all(
       entries.map(async (entry) =>
@@ -143,6 +175,7 @@ export class SynapseMcpToolService {
     input: unknown,
     options: Pick<ToolInvocationOptions, "signal" | "progress"> = {}
   ): Promise<CallToolResult> {
+    await this.admit()
     let entry = this.safeToEntry.get(safeName)
     if (!entry) {
       this.refresh()
@@ -192,6 +225,7 @@ export class SynapseMcpToolService {
   }
 
   async listResources(): Promise<ListResourcesResult> {
+    await this.admit()
     const provenance = buildMcpRun({
       runId: randomUUID(),
       workspaceId: this.options.workspaceId,
@@ -228,6 +262,7 @@ export class SynapseMcpToolService {
     uri: string,
     options: { signal?: AbortSignal } = {}
   ): Promise<ReadResourceResult> {
+    await this.admit()
     if (uri.startsWith(MEMORY_RESOURCE_PREFIX)) return this.readMemoryResource(uri)
     if (uri.startsWith(WORKSPACE_INSTRUCTIONS_PREFIX)) {
       return this.readWorkspaceInstructionsResource(uri, options.signal)

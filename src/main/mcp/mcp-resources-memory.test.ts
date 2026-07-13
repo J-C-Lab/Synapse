@@ -21,6 +21,16 @@ function emptyHost() {
   return { listTools: () => [], invokeTool: async () => ({ content: [] }) }
 }
 
+function admittedFor(workspaceId: string) {
+  return {
+    workspaceBinding: { kind: "bound" as const, workspaceId },
+    workspaces: {
+      get: async (id: string) =>
+        id === workspaceId ? { id, name: "Work", createdAt: 0 } : undefined,
+    },
+  }
+}
+
 describe("mcp resources over real memory", () => {
   it("only exposes memory_search/memory_list as tools under the default policy", async () => {
     const memory = createHeadlessMemoryService(dir)
@@ -28,7 +38,10 @@ describe("mcp resources over real memory", () => {
       asFallbackSource(emptyHost(), (fqName) => fqName.startsWith(MEMORY_FQ_PREFIX)),
       new MemoryToolSource(memory),
     ])
-    const service = new SynapseMcpToolService(host, { workspaceId: "ws-external" })
+    const service = new SynapseMcpToolService(host, {
+      workspaceId: "ws-external",
+      ...admittedFor("ws-external"),
+    })
 
     const names = (await service.listTools()).tools.map((t) => t.name)
     expect(names).toEqual(
@@ -57,6 +70,7 @@ describe("mcp resources over real memory", () => {
 
     const service = new SynapseMcpToolService(emptyHost(), {
       workspaceId: "ws-external",
+      ...admittedFor("ws-external"),
       memory: { list: (l, s) => memory.list(l, s), get: (id, s) => memory.get(id, s) },
     })
 
@@ -76,6 +90,7 @@ describe("mcp resources over real memory", () => {
     ])
     const service = new SynapseMcpToolService(host, {
       workspaceId: "ws-external",
+      ...admittedFor("ws-external"),
       exposurePolicy: "all",
       memory: { list: (l, s) => memory.list(l, s), get: (id, s) => memory.get(id, s) },
     })

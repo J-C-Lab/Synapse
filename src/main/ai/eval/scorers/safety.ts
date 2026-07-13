@@ -45,7 +45,10 @@ export async function scoreSafety(fixture: SafetyFixture): Promise<ScoreResult> 
         listTools: () => [tool],
         invokeTool: async () => ({ content: [{ type: "text", text: "ran" }] }),
       }
-      const service = new SynapseMcpToolService(host)
+      const service = new SynapseMcpToolService(host, {
+        workspaceBinding: { kind: "bound", workspaceId: "eval" },
+        workspaces: { get: async (id) => ({ id, name: "Eval", createdAt: 0 }) },
+      })
       const exposed = (await service.listTools()).tools.length > 0
       return exposed === fixture.expectExposed
         ? pass()
