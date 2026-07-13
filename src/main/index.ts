@@ -66,6 +66,7 @@ import { AiToolRegistry } from "./ai/tool-registry"
 import { migrateAgentShellRoots } from "./ai/workspace/workspace-migration"
 import { WorkspaceRootStore } from "./ai/workspace/workspace-root-store"
 import { WorkspaceStore } from "./ai/workspace/workspace-store"
+import { ApprovalRegistry } from "./approvals/approval-registry"
 import { ensureDevAppUserModelShortcut } from "./dev-app-shortcut"
 import {
   destroyFloatingBallWindow,
@@ -251,6 +252,7 @@ const launcher = new LauncherService()
 let plugins: PluginHost
 let capabilityService!: CapabilityIpcService
 let hostResourceIpcService!: HostResourceIpcService
+let approvalRegistry!: ApprovalRegistry
 let lan: LanService
 let agent: AgentService
 let sharedMemoryTools: MemoryToolSource | undefined
@@ -300,8 +302,7 @@ function bindCapabilityPromptLifecycle(win: BrowserWindow): void {
   if (capabilityPromptLifecycleBound.has(webContents)) return
   capabilityPromptLifecycleBound.add(webContents)
   attachCapabilityPromptLifecycle(webContents, () => {
-    capabilityService?.dispose()
-    hostResourceIpcService?.dispose()
+    approvalRegistry.retireRecipient(webContents)
   })
 }
 
@@ -750,6 +751,14 @@ function broadcastCredentialConnectPrompt(prompt: unknown): void {
   broadcast("credentials:connect-prompt", prompt)
 }
 
+// Placeholder — Task 15 replaces this with the real `approvals:settled`
+// broadcast (mapping outcome/recipients into the wire event shape).
+function broadcastApprovalSettled(
+  _id: string,
+  _outcome: import("./approvals/types").ApprovalResult,
+  _recipients: readonly import("electron").WebContents[]
+): void {}
+
 function initPluginHost(): PluginHost {
   const userDataDir = app.getPath("userData")
   const workspaceRootStore = new WorkspaceRootStore(path.join(userDataDir, "ai"))
@@ -762,15 +771,23 @@ function initPluginHost(): PluginHost {
     createFileSink(path.join(userDataDir, "logs"), { fileName: "host-resource-audit.log" })
   )
 
+  approvalRegistry = new ApprovalRegistry({
+    onSettled: (id, outcome, recipients) => broadcastApprovalSettled(id, outcome, recipients),
+  })
+
   capabilityService = new CapabilityIpcService(
     () => plugins,
-    createCapabilityPromptSender(broadcast)
+    createCapabilityPromptSender(broadcast),
+    approvalRegistry
   )
 
-  hostResourceIpcService = new HostResourceIpcService({
-    ...createHostResourcePromptSender(broadcast),
-    audit: hostResourceAudit,
-  })
+  hostResourceIpcService = new HostResourceIpcService(
+    {
+      ...createHostResourcePromptSender(broadcast),
+      audit: hostResourceAudit,
+    },
+    approvalRegistry
+  )
 
   return new PluginHost({
     fetch: (url, init) => net.fetch(url, init),
@@ -1335,8 +1352,7 @@ if (isMcpStdioMode) {
         .catch((err) => logger.child("synapse").error("failed to stop MCP clients", { err }))
       unbindGlobalShortcut()
       destroyTray()
-      capabilityService?.dispose()
-      hostResourceIpcService?.dispose()
+      approvalRegistry?.disposeAll()
       plugins?.dispose()
     })
 

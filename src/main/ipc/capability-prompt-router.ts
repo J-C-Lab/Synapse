@@ -27,8 +27,8 @@ export async function withCapabilityPromptTarget<T>(
 export function createCapabilityPromptSender(
   broadcast: (channel: string, payload: unknown) => void
 ): {
-  sendGrantRequest: (payload: unknown) => void
-  sendApprovalRequest: (payload: unknown) => void
+  sendGrantRequest: (payload: unknown) => WebContents[]
+  sendApprovalRequest: (payload: unknown) => WebContents[]
 } {
   return {
     sendGrantRequest: (payload) => deliverPrompt("capabilities:grant-request", payload, broadcast),
@@ -52,7 +52,7 @@ export function createCapabilityPromptSender(
 export function createHostResourcePromptSender(
   broadcast: (channel: string, payload: unknown) => void
 ): {
-  sendApprovalRequest: (payload: unknown) => void
+  sendApprovalRequest: (payload: unknown) => WebContents[]
 } {
   return {
     sendApprovalRequest: (payload) =>
@@ -60,30 +60,40 @@ export function createHostResourcePromptSender(
   }
 }
 
+/**
+ * Delivers a prompt and reports exactly which webContents actually received
+ * it, so callers can feed the result into `ApprovalHandle.markDelivered` —
+ * without that, a window that later reloads/crashes/closes has no recipient
+ * slot to retire and its prompt would never resolve. The broadcast branch
+ * has no per-send acknowledgement (`broadcast` is caller-supplied and
+ * returns nothing), so it reports every currently prompt-capable window —
+ * the same set `broadcast` is expected to reach.
+ */
 function deliverPrompt(
   channel: string,
   payload: unknown,
   broadcast: (channel: string, payload: unknown) => void
-): void {
+): WebContents[] {
   const targeted = currentPromptTarget()
   if (targeted) {
     targeted.send(channel, payload)
-    return
+    return [targeted]
   }
 
   const focused = BrowserWindow.getFocusedWindow()
   if (focused && isPromptCapableWebContents(focused.webContents)) {
     focused.webContents.send(channel, payload)
-    return
+    return [focused.webContents]
   }
 
   const visible = promptCapableWindows().filter((win) => win.isVisible())
   if (visible.length === 1) {
     visible[0]!.webContents.send(channel, payload)
-    return
+    return [visible[0]!.webContents]
   }
 
   broadcast(channel, payload)
+  return promptCapableWindows().map((win) => win.webContents)
 }
 
 function currentPromptTarget(): WebContents | undefined {

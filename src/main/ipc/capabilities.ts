@@ -3,7 +3,7 @@ import type {
   PluginCapabilityProfile,
   PluginManifest,
 } from "@synapse/plugin-manifest"
-import type { IpcMain, IpcMainInvokeEvent } from "electron"
+import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron"
 import type { CapabilityApprover, GrantPromptPort } from "../plugins/capability-gate"
 import type { PluginHost } from "../plugins/plugin-host"
 import { derivePluginProfile, getCapability, parseManifest } from "@synapse/plugin-manifest"
@@ -60,8 +60,8 @@ export interface CapabilityIpcHandlers {
 }
 
 export interface CapabilityIpcServiceOptions {
-  sendGrantRequest: (event: CapabilityGrantRequestEvent) => void
-  sendApprovalRequest: (event: CapabilityApprovalRequestEvent) => void
+  sendGrantRequest: (event: CapabilityGrantRequestEvent) => readonly WebContents[]
+  sendApprovalRequest: (event: CapabilityApprovalRequestEvent) => readonly WebContents[]
 }
 
 /**
@@ -92,7 +92,7 @@ export class CapabilityIpcService {
         ? { allow: false, outcomeReason: "cancelled" }
         : { allow: false }
     }
-    this.options.sendGrantRequest({
+    const recipients = this.options.sendGrantRequest({
       promptId: outcome.handle.id,
       pluginId: identity.pluginId,
       capability: request.capability,
@@ -101,6 +101,7 @@ export class CapabilityIpcService {
       operation: request.operation,
       reason: request.reason,
     })
+    outcome.handle.markDelivered(recipients)
     return outcome.handle.result
   }
 
@@ -112,7 +113,7 @@ export class CapabilityIpcService {
         ? { allow: false, outcomeReason: "cancelled" }
         : { allow: false }
     }
-    this.options.sendApprovalRequest({
+    const recipients = this.options.sendApprovalRequest({
       promptId: outcome.handle.id,
       pluginId: identity.pluginId,
       capability: request.capability,
@@ -125,6 +126,7 @@ export class CapabilityIpcService {
         return principal?.kind === "external-mcp" ? principal.clientId : undefined
       })(),
     })
+    outcome.handle.markDelivered(recipients)
     return outcome.handle.result
   }
 

@@ -25,7 +25,10 @@ function service(overrides: Partial<HostResourceIpcServiceOptions> = {}): {
   const events: HostResourceApprovalRequestEvent[] = []
   const auditEntries: unknown[] = []
   const svc = new HostResourceIpcService({
-    sendApprovalRequest: (event) => events.push(event),
+    sendApprovalRequest: (event) => {
+      events.push(event)
+      return []
+    },
     audit: (entry) => auditEntries.push(entry),
     ...overrides,
   })
@@ -131,7 +134,7 @@ describe("hostResourceIpcService — registry-backed cancellation", () => {
   it("dispose() resolves every pending entry with outcomeReason gui-disposed", async () => {
     const audit = vi.fn()
     const svc = new HostResourceIpcService({
-      sendApprovalRequest: () => {},
+      sendApprovalRequest: () => [],
       audit,
     })
     const resultPromise = svc.hostResourceApprover({ request: request() })

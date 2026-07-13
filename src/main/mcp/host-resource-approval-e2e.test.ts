@@ -32,7 +32,10 @@ describe("host-resource approval, end to end through the real transport", () => 
     const auditEntries: unknown[] = []
     const events: HostResourceApprovalRequestEvent[] = []
     const service = new HostResourceIpcService({
-      sendApprovalRequest: (event) => events.push(event),
+      sendApprovalRequest: (event) => {
+        events.push(event)
+        return []
+      },
       audit: (entry) => auditEntries.push(entry),
     })
 
@@ -62,7 +65,10 @@ describe("host-resource approval, end to end through the real transport", () => 
   it("a denied request round-trips false end to end", async () => {
     const events: HostResourceApprovalRequestEvent[] = []
     const service = new HostResourceIpcService({
-      sendApprovalRequest: (event) => events.push(event),
+      sendApprovalRequest: (event) => {
+        events.push(event)
+        return []
+      },
       audit: () => {},
     })
 
@@ -88,7 +94,10 @@ describe("host-resource approval, end to end through the real transport", () => 
   it("fails closed when the GUI process side disposes with the request still pending", async () => {
     const events: HostResourceApprovalRequestEvent[] = []
     const service = new HostResourceIpcService({
-      sendApprovalRequest: (event) => events.push(event),
+      sendApprovalRequest: (event) => {
+        events.push(event)
+        return []
+      },
       audit: () => {},
     })
 

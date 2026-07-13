@@ -175,7 +175,10 @@ describe("capabilityIpcService", () => {
   it("broadcasts a grant request and resolves via resolveGrantPrompt", async () => {
     const events: CapabilityGrantRequestEvent[] = []
     const service = createService(activeEntry(testManifest()), {
-      sendGrantRequest: (event) => events.push(event),
+      sendGrantRequest: (event) => {
+        events.push(event)
+        return []
+      },
     })
     const identity = buildGrantIdentity("com.synapse.test", testManifest(), "user")
 
@@ -211,7 +214,10 @@ describe("capabilityIpcService", () => {
   it("broadcasts an approval request and resolves via resolveApprovalPrompt", async () => {
     const events: CapabilityApprovalRequestEvent[] = []
     const service = createService(activeEntry(testManifest()), {
-      sendApprovalRequest: (event) => events.push(event),
+      sendApprovalRequest: (event) => {
+        events.push(event)
+        return []
+      },
     })
     const identity = buildGrantIdentity("com.synapse.test", testManifest(), "user")
 
@@ -245,7 +251,10 @@ describe("capabilityIpcService", () => {
   it("includes clientId in the approval event when the request came from an external MCP caller", async () => {
     const events: CapabilityApprovalRequestEvent[] = []
     const service = createService(activeEntry(testManifest()), {
-      sendApprovalRequest: (event) => events.push(event),
+      sendApprovalRequest: (event) => {
+        events.push(event)
+        return []
+      },
     })
     const identity = buildGrantIdentity("com.synapse.test", testManifest(), "user")
 
@@ -273,7 +282,10 @@ describe("capabilityIpcService", () => {
   it("omits clientId when the request has no external-mcp principal", async () => {
     const events: CapabilityApprovalRequestEvent[] = []
     const service = createService(activeEntry(testManifest()), {
-      sendApprovalRequest: (event) => events.push(event),
+      sendApprovalRequest: (event) => {
+        events.push(event)
+        return []
+      },
     })
     const identity = buildGrantIdentity("com.synapse.test", testManifest(), "user")
 
@@ -298,7 +310,10 @@ describe("capabilityIpcService", () => {
   it("resolves a denied grant prompt as false", async () => {
     const events: CapabilityGrantRequestEvent[] = []
     const service = createService(activeEntry(testManifest()), {
-      sendGrantRequest: (event) => events.push(event),
+      sendGrantRequest: (event) => {
+        events.push(event)
+        return []
+      },
     })
 
     const decision = service.grantPrompt({
@@ -383,7 +398,10 @@ describe("capabilityIpcService", () => {
   it("ignores resolveGrantPrompt after dispose (first-settle-wins)", async () => {
     const events: CapabilityGrantRequestEvent[] = []
     const service = createService(activeEntry(testManifest()), {
-      sendGrantRequest: (event) => events.push(event),
+      sendGrantRequest: (event) => {
+        events.push(event)
+        return []
+      },
     })
 
     const decision = service.grantPrompt({
@@ -435,7 +453,7 @@ describe("capabilityIpcService — registry-backed cancellation", () => {
   })
 
   it("resolveGrantPrompt resolves the matching registry entry to allow:true", async () => {
-    const sendGrantRequest = vi.fn()
+    const sendGrantRequest = vi.fn((_event: CapabilityGrantRequestEvent) => [])
     const entry = activeEntry(testManifest({ permissions: ["clipboard:read"] }))
     const service = createService(entry, { sendGrantRequest })
     const identity = buildGrantIdentity(entry.pluginId, entry.manifest!, entry.source.kind)
@@ -547,8 +565,8 @@ function createService(
   host = fakeHost(entry)
 ): CapabilityIpcService {
   return new CapabilityIpcService(() => host, {
-    sendGrantRequest: vi.fn(),
-    sendApprovalRequest: vi.fn(),
+    sendGrantRequest: vi.fn(() => []),
+    sendApprovalRequest: vi.fn(() => []),
     ...options,
   })
 }

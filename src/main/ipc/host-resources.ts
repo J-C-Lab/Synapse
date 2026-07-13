@@ -1,4 +1,4 @@
-import type { IpcMain, IpcMainInvokeEvent } from "electron"
+import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron"
 import type { ApprovalOutcomeReason } from "../approvals/types"
 import type {
   HostResourceApprovalRequest,
@@ -13,7 +13,7 @@ export interface HostResourceApprovalRequestEvent extends HostResourceApprovalRe
 }
 
 export interface HostResourceIpcServiceOptions {
-  sendApprovalRequest: (event: HostResourceApprovalRequestEvent) => void
+  sendApprovalRequest: (event: HostResourceApprovalRequestEvent) => readonly WebContents[]
   audit: (entry: HostResourceAuditEntry) => void
 }
 
@@ -44,7 +44,11 @@ export class HostResourceIpcService {
       return { allow: false, outcomeReason: "cancelled" }
     }
     try {
-      this.options.sendApprovalRequest({ promptId: outcome.handle.id, ...request })
+      const recipients = this.options.sendApprovalRequest({
+        promptId: outcome.handle.id,
+        ...request,
+      })
+      outcome.handle.markDelivered(recipients)
     } catch {
       outcome.handle.cancel("send-failed")
       const result = await outcome.handle.result
