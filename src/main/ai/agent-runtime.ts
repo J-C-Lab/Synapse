@@ -2,16 +2,18 @@ import type { WorkspaceInstruction } from "./context/workspace-instructions"
 import type { WorkspaceRootRecord } from "./execution/types"
 import type { EnvelopeTier } from "./guardrails/untrusted-content"
 import type { PlanStep } from "./plan/plan-types"
+import type { ProviderStreamDeadlines } from "./provider-stream-deadlines"
 import type { ChatContentBlock, ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
 import type { RunProvenance } from "./run-provenance"
-import type { RunTrace, RunTraceErrorCategory, RunTraceToolCall } from "./run-trace-store"
 
+import type { RunTrace, RunTraceErrorCategory, RunTraceToolCall } from "./run-trace-store"
 import type { AiToolRegistry } from "./tool-registry"
 import process from "node:process"
 import { logger } from "../logging"
 import { truncateToolResultText } from "./context/tool-result-budget"
 import { loadWorkspaceInstructions } from "./context/workspace-instructions"
 import { labelUntrustedContent } from "./guardrails/untrusted-content"
+import { streamWithDeadlines } from "./provider-stream-deadlines"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
 import { addUsage, emptyUsage, totalTokens } from "./providers/types"
 import { buildRunTrace, toToolCaller } from "./run-provenance"
@@ -98,6 +100,10 @@ export interface AgentRuntimeOptions {
     system: string,
     messages: ChatMessage[]
   ) => Promise<{ messages: ChatMessage[]; summarizerTokens: number }>
+  /** Host-side absolute deadlines for each individual provider.stream()
+   *  call (one per tool-loop step, not once per whole run — see
+   *  streamWithDeadlines). Defaults: 30s headers, 60s idle, 10min duration. */
+  providerStreamDeadlines?: ProviderStreamDeadlines
 }
 
 export interface ApprovalRequest {
@@ -187,14 +193,11 @@ export class AgentRuntime {
           usage = addUsage(usage, { ...emptyUsage(), outputTokens: outgoing.summarizerTokens })
         }
 
-        for await (const event of this.options.provider.stream({
-          model,
-          system,
-          messages: outgoing.messages,
-          tools,
-          maxTokens,
-          signal: options.signal,
-        })) {
+        for await (const event of streamWithDeadlines(
+          this.options.provider,
+          { model, system, messages: outgoing.messages, tools, maxTokens, signal: options.signal },
+          this.options.providerStreamDeadlines
+        )) {
           if (event.type === "text") {
             options.onText?.(event.text)
           } else {
