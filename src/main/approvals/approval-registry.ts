@@ -20,9 +20,10 @@ export interface RegisterOptions {
 }
 
 export interface ApprovalRegistryOptions {
-  /** Called once per settlement, after the pending entry is removed, with
-   *  whatever recipients had been recorded for it via markDelivered() at
-   *  that point (possibly none, if settlement raced ahead of delivery). */
+  /** Called after a pending entry is removed when at least one recipient was
+   *  already recorded via markDelivered(). If settlement races ahead of
+   *  delivery, finish() skips this callback and markDelivered()'s post-settle
+   *  path notifies instead (so prompt hosts still learn about the race). */
   onSettled?: (id: string, outcome: ApprovalResult, recipients: readonly WebContents[]) => void
 }
 
@@ -106,8 +107,8 @@ export class ApprovalRegistry {
       for (const wc of deliveredTo) entry.deliveredTo.add(wc)
       return
     }
-    // Already settled — this can only happen if onSettled already fired
-    // with an empty recipient list. Re-notify with what we now know.
+    // Already settled before any recipient was recorded — finish() skipped
+    // onSettled; notify now with the recipients just learned about.
     this.options.onSettled?.(id, { allow: false, outcomeReason: "cancelled" }, deliveredTo)
   }
 
