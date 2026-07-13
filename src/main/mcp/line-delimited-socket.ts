@@ -109,12 +109,21 @@ export function createJsonLineReader(socket: Socket, maxBytes = DEFAULT_MAX_BYTE
     }
   }
 
+  function detachAndReject(err: Error): void {
+    if (disposed) return
+    disposed = true
+    socket.off("data", onData)
+    socket.off("error", onError)
+    socket.off("close", onClose)
+    rejectAll(err)
+  }
+
   function onData(chunk: Buffer): void {
     buffer += chunk.toString("utf-8")
     if (buffer.length > maxBytes) {
       const err = new Error(`line exceeded ${maxBytes} bytes`)
+      detachAndReject(err)
       socket.destroy()
-      rejectAll(err)
       return
     }
     while (buffer.includes("\n") && waiters.length > 0) settleNextWaiter()
@@ -149,12 +158,7 @@ export function createJsonLineReader(socket: Socket, maxBytes = DEFAULT_MAX_BYTE
       })
     },
     dispose(): void {
-      if (disposed) return
-      disposed = true
-      socket.off("data", onData)
-      socket.off("error", onError)
-      socket.off("close", onClose)
-      rejectAll(new Error("reader disposed"))
+      detachAndReject(new Error("reader disposed"))
     },
   }
 }

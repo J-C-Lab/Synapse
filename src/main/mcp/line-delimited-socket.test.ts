@@ -201,6 +201,7 @@ describe("createJsonLineReader", () => {
     pair.client.write(`${"x".repeat(100)}\n`)
 
     await expect(nextPromise).rejects.toThrow(/exceeded/)
+    await expect(reader.next()).rejects.toThrow(/disposed/)
   })
 
   it("error/close reject every outstanding next() call at once", async () => {
