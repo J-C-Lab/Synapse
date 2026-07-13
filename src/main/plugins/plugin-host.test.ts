@@ -1528,3 +1528,117 @@ describe("s07 lifecycle integration", () => {
     expect(await host.grants.isGranted(identity, "memory:read")).toBe(true)
   })
 })
+
+describe("mode: tools-only lifecycle", () => {
+  const timerAdapter: TimerAdapter = {
+    register: () => () => {},
+    registerCron: () => () => {},
+  }
+
+  it("init() skips trigger registration and OAuth timer arming in tools-only mode", async () => {
+    const host = new PluginHost(
+      hostOptions({
+        mode: "tools-only",
+        migrationMarker: migrationAlreadyDone(),
+        timerAdapter,
+      })
+    )
+    const armOAuthTimers = vi
+      .spyOn(host.credentialBroker, "armOAuthTimers")
+      .mockResolvedValue(undefined)
+    const registerSpy = vi.spyOn(host.triggerRegistry, "register")
+    await writeHostPlugin({
+      id: "com.synapse.agent-trigger",
+      permissions: ["notification"],
+      triggers: [
+        {
+          id: "tick",
+          type: "timer",
+          schedule: { intervalMs: 60_000 },
+          handler: "triggers.onTick",
+          uses: [{ capability: "notification", budget: { maxCalls: 1, period: "1h" } }],
+        },
+      ],
+    })
+
+    await host.init()
+
+    expect(registerSpy).not.toHaveBeenCalled()
+    expect(armOAuthTimers).not.toHaveBeenCalled()
+  })
+
+  it("init() still registers triggers and arms OAuth timers in full mode (default)", async () => {
+    const host = new PluginHost(
+      hostOptions({
+        migrationMarker: migrationAlreadyDone(),
+        timerAdapter,
+      })
+    )
+    const armOAuthTimers = vi
+      .spyOn(host.credentialBroker, "armOAuthTimers")
+      .mockResolvedValue(undefined)
+    const registerSpy = vi.spyOn(host.triggerRegistry, "register")
+    await writeHostPlugin({
+      id: "com.synapse.agent-trigger",
+      permissions: ["notification"],
+      triggers: [
+        {
+          id: "tick",
+          type: "timer",
+          schedule: { intervalMs: 60_000 },
+          handler: "triggers.onTick",
+          uses: [{ capability: "notification", budget: { maxCalls: 1, period: "1h" } }],
+        },
+      ],
+    })
+
+    await host.init()
+
+    expect(registerSpy).toHaveBeenCalled()
+    expect(armOAuthTimers).toHaveBeenCalled()
+  })
+
+  it("handleRegistryChanged (registry-changed events) does not sync the clipboard watcher in tools-only mode", async () => {
+    const registerContentListener = vi.fn(() => () => {})
+    const host = new PluginHost(
+      hostOptions({
+        mode: "tools-only",
+        clipboardAdapter: { registerContentListener } as never,
+      })
+    )
+    await writeHostPlugin({ id: "com.synapse.clipboard-watcher" })
+
+    await host.init()
+    registerContentListener.mockClear()
+    await host.init()
+
+    expect(registerContentListener).not.toHaveBeenCalledWith("legacy:activation", expect.anything())
+  })
+
+  it("setEnabled() does not register triggers in tools-only mode", async () => {
+    const host = new PluginHost(
+      hostOptions({ mode: "tools-only", migrationMarker: migrationAlreadyDone(), timerAdapter })
+    )
+    const registerSpy = vi.spyOn(host.triggerRegistry, "register")
+    await writeHostPlugin({
+      id: "com.synapse.agent-trigger",
+      permissions: ["notification"],
+      triggers: [
+        {
+          id: "tick",
+          type: "timer",
+          schedule: { intervalMs: 60_000 },
+          handler: "triggers.onTick",
+          uses: [{ capability: "notification", budget: { maxCalls: 1, period: "1h" } }],
+        },
+      ],
+    })
+    await host.init()
+    await host.setEnabled("com.synapse.agent-trigger", false)
+    registerSpy.mockClear()
+
+    await host.setEnabled("com.synapse.agent-trigger", true)
+
+    expect(registerSpy).not.toHaveBeenCalled()
+  })
+})
