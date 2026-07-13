@@ -422,6 +422,16 @@ declare global {
     createdAt: number
   }
 
+  interface SynapseMcpOnboardingAvailability {
+    available: boolean
+    reason?: "dev-build" | "archived" | "unknown-workspace"
+  }
+
+  interface SynapseMcpConnectionTestResult {
+    toolCount: number
+    resourceCount: number
+  }
+
   interface SynapseAiConversationSummary {
     id: string
     title?: string
@@ -818,6 +828,11 @@ declare global {
       listRuns: (query?: { parentRunId?: string }) => Promise<SynapseRunSummary[]>
       getRun: (runId: string) => Promise<SynapseRunDetail | undefined>
       listWorkspaceRoots: (workspaceId: string) => Promise<SynapseWorkspaceRoot[]>
+      getMcpOnboardingAvailability: (
+        workspaceId: string
+      ) => Promise<SynapseMcpOnboardingAvailability>
+      generateMcpOnboardingConfig: (workspaceId: string) => Promise<string>
+      testMcpOnboardingConnection: (workspaceId: string) => Promise<SynapseMcpConnectionTestResult>
       createWorkspaceRoot: (
         workspaceId: string,
         name: string,

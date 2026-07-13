@@ -206,6 +206,12 @@ const electronAPI = {
   getRun: (runId: string) => ipcRenderer.invoke("runs:get", runId),
   listWorkspaceRoots: (workspaceId: string) =>
     ipcRenderer.invoke("ai:list-workspace-roots", workspaceId),
+  getMcpOnboardingAvailability: (workspaceId: string) =>
+    ipcRenderer.invoke("mcp-onboarding:availability", workspaceId),
+  generateMcpOnboardingConfig: (workspaceId: string) =>
+    ipcRenderer.invoke("mcp-onboarding:generate-config", workspaceId),
+  testMcpOnboardingConnection: (workspaceId: string) =>
+    ipcRenderer.invoke("mcp-onboarding:test-connection", workspaceId),
   createWorkspaceRoot: (
     workspaceId: string,
     name: string,
