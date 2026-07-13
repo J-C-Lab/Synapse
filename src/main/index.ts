@@ -1159,7 +1159,11 @@ function reExecMcpStdioAsNode(): void {
   const entry = path.join(__dirname, "mcp-stdio.js")
   const child = spawn(process.execPath, [entry], {
     stdio: "inherit",
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: "1",
+      SYNAPSE_MCP_PARENT_PID: String(process.pid),
+    },
   })
   child.on("exit", (code) => app.exit(code ?? 0))
   child.on("error", (err) => {

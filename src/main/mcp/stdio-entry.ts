@@ -15,6 +15,8 @@ import { PluginHost } from "../plugins/plugin-host"
 import { createGuiApprovalPort } from "./gui-approval-client"
 import { createHeadlessMemoryService } from "./headless-memory"
 import { createHostResourceAccessAudit } from "./host-resource-audit"
+import { resolveMcpWorkspaceBinding } from "./mcp-workspace-binding"
+import { startParentWatchdog } from "./parent-watchdog"
 import { resolveStdioUserDataDir } from "./stdio-paths"
 import { runSynapseMcpStdioServer } from "./synapse-mcp-server"
 import { createWorkspaceInstructionsResourcePort } from "./workspace-instructions-resource"
@@ -97,6 +99,7 @@ async function main(): Promise<void> {
     runtime: () => ({ locale: "en", theme: { mode: "light", accent: "neutral" } }),
     capabilityGovernance: { userDataDir, approve },
     workspaceRoots: workspaceRootStore,
+    mode: "tools-only",
   })
 
   await pluginHost.init()
@@ -107,10 +110,20 @@ async function main(): Promise<void> {
   ])
 
   const runsDir = path.join(userDataDir, "logs", "runs")
+  const binding = resolveMcpWorkspaceBinding(process.env)
   const server = await runSynapseMcpStdioServer(host, {
     version: process.env.npm_package_version,
     recordRun: (trace) => recordRun(runsDir, trace),
-    workspaceId: process.env.SYNAPSE_MCP_WORKSPACE?.trim() || "external",
+    workspaceBinding: binding,
+    workspaces: workspaceStore,
+    workspaceId: binding.kind === "bound" ? binding.workspaceId : undefined,
+    onUnboundWarning: () => {
+      process.stderr.write(
+        "This Synapse MCP configuration is missing SYNAPSE_MCP_WORKSPACE.\n" +
+          "Open Synapse → Settings → Workspaces → Connect an MCP client,\n" +
+          "copy the generated configuration, then restart your MCP client.\n"
+      )
+    },
     memory: {
       list: (limit, scope) => memory.list(limit, scope),
       get: (id, scope) => memory.get(id, scope),
@@ -132,6 +145,11 @@ async function main(): Promise<void> {
     void Promise.resolve(pluginHost.dispose()).finally(() => process.exit(0))
   }
   server.onclose = shutdown
+  const parentPidEnv = process.env.SYNAPSE_MCP_PARENT_PID?.trim()
+  const parentPid = parentPidEnv ? Number(parentPidEnv) : undefined
+  if (parentPid !== undefined && Number.isInteger(parentPid) && parentPid > 0) {
+    startParentWatchdog({ parentPid, onParentGone: shutdown })
+  }
   process.on("SIGINT", shutdown)
   process.on("SIGTERM", shutdown)
 }
