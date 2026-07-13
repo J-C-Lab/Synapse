@@ -122,35 +122,61 @@ this spec's "Test connection" button would make it acute: every click
 would start-then-tear-down real timers/watchers/OAuth refresh cycles,
 repeatedly, as a side effect of a read-only diagnostic action.
 
-**Fix**: `PluginHost.init()` gains a mode parameter:
+**Fix, corrected during review to be a persistent lifecycle state, not a
+one-shot `init()` branch**: an `init()`-only flag would miss two other real
+background-runtime-activation entry points, confirmed by reading them
+directly:
+- `handleRegistryChanged` (`plugin-host.ts:216-218`) unconditionally calls
+  `this.syncClipboardWatcher()` on every registry-change event (install/
+  enable/disable/reload) — not just at startup.
+- `setEnabled(pluginId, true)` (`plugin-host.ts:395-402`) independently
+  calls `this.triggerRegistry.register(...)` — a plugin enabled *after*
+  `init()` ran would still get its triggers registered even if `init()`
+  itself skipped that step once.
+
+So `mode` is a `PluginHost` constructor/instance property, checked at
+**every** activation entry point, not an `init()` parameter:
 
 ```ts
-async init(options?: { mode?: "full" | "tools-only" }): Promise<void>
+export interface PluginHostOptions {
+  // ...
+  mode?: "full" | "tools-only"  // default "full"
+}
 ```
 
-`"tools-only"` (the new default for headless MCP contexts) skips
-`syncTriggerRegistrations()`, `armOAuthTimers()`, and
-`syncClipboardWatcher()` entirely, while still doing everything tool
-serving actually needs: `discoverPlugins()`, `registry.load()`, grant
-migration. `"full"` (the existing behavior, unchanged) stays the default
-for the GUI's own `PluginHost` construction — the interactive path still
-needs triggers and OAuth timers.
+`"tools-only"` makes `init()` skip `syncTriggerRegistrations()` and
+`armOAuthTimers()`; makes `handleRegistryChanged` skip its
+`syncClipboardWatcher()` call; and makes `setEnabled()` skip
+`triggerRegistry.register(...)` — while every other `init()`/`setEnabled()`
+behavior (`discoverPlugins()`, `registry.load()`, grant migration, the
+manifest/preferences bookkeeping) proceeds unchanged, since that's what
+tool serving actually needs. `"full"` (the existing behavior, unchanged)
+stays the default for the GUI's own `PluginHost` construction.
 
 Both real consumers switch to `"tools-only"`:
-- `stdio-entry.ts:102` — every external MCP connection, not just the
-  connection tester, since there's no legitimate reason a *tool-serving*
-  stdio process should be running background triggers at all. This
-  incidentally fixes the pre-existing duplicate-trigger-runtime issue
-  above as a side effect of this spec, not just for the new test button.
-- The connection tester (below) — for the same reason, doubly so, since
-  it's specifically meant to be a fast, side-effect-free, repeatable check.
+- `stdio-entry.ts:102`'s `new PluginHost({...})` — every external MCP
+  connection, not just the connection tester, since there's no legitimate
+  reason a *tool-serving* stdio process should be running background
+  triggers at all. This incidentally fixes the pre-existing duplicate-
+  trigger-runtime issue above as a side effect of this spec, not just for
+  the new test button.
+- The connection tester's short-lived `PluginHost` (below) — for the same
+  reason, doubly so, since it's specifically meant to be a fast, side-
+  effect-free, repeatable check.
 
-Whether `syncClipboardWatcher()` has any effect needed by an *on-demand*
-clipboard-adjacent tool call (as opposed to a *clipboard-change trigger*,
-which `"tools-only"` deliberately doesn't register) is an implementation-
-plan-level question to verify against `PluginBridge`'s clipboard read path
-before assuming it's safe to skip — flagged here, not resolved, since it
-requires reading code this spec doesn't need to settle its own scope.
+**Whether skipping `syncClipboardWatcher()`/OAuth timer arming breaks any
+on-demand tool call — resolved, not merely flagged, during this review
+round**: `syncClipboardWatcher()` (`plugin-host.ts:968-971`) exists purely
+to dispatch the *legacy clipboard-change trigger* path (gated on
+`this.registry.hasClipboardChangeListeners()`) — it has no relationship to
+an on-demand clipboard-*read* tool call, which goes through
+`PluginBridge`'s capability surface directly. And OAuth-backed tool calls
+don't depend on the pre-emptive timer at all:
+`credential-oauth-refresher.ts:95`'s `accessToken(identity, credentialId)`
+— *"Returns a usable access token, refreshing if needed"* — is an
+independent, call-time refresh path invoked whenever a token is actually
+needed, regardless of whether the background timer ever armed. Skipping
+both in `"tools-only"` mode is therefore correct, not a known gap.
 
 ### Workspace-bound MCP admission enforcement
 
@@ -282,16 +308,19 @@ instance resolved, immune to app-name or custom-data-dir drift between the
 GUI and a headless child process invoked days later by an external client.
 
 **Serialization is its own pure function**, unit-testable independent of
-IPC/clipboard plumbing (see the `synapse-<workspace-name-slug>` fix below
-for why a stable key matters here too):
+IPC/clipboard plumbing. It derives the server key from `workspaceId`
+itself — **corrected during review**: an earlier draft took an already-
+computed `serverKey` as a separate parameter, which let a caller pass a
+key that didn't actually match the descriptor's workspace; deriving it
+internally makes that impossible:
 
 ```ts
 export function serializeClaudeDesktopConfig(
   descriptor: McpLaunchDescriptor,
-  serverKey: string
+  workspaceId: string
 ): string {
   return JSON.stringify(
-    { mcpServers: { [serverKey]: descriptor } },
+    { mcpServers: { [`synapse-${workspaceId}`]: descriptor } },
     null,
     2
   )
@@ -329,17 +358,50 @@ today guarantees the **grandchild** also terminates — Windows processes
 have no implicit parent-child kill propagation without an explicit Job
 Object, which nothing here sets up.
 
-**Fix, required for this spec's "always kills the child" claim to be
-true, not just usually true**: `reExecMcpStdioAsNode()` gains explicit
-signal-forwarding — the outer process relays `SIGTERM`/`SIGKILL` (or the
-Windows-equivalent forced termination the Node `child_process` API maps
-these to) to the grandchild's PID before exiting, rather than relying
-solely on the inherited-stdio EOF path. A new integration test exercises
-the **real, public `--mcp-stdio` path** (not the SDK's abstraction over
-it) end-to-end: launch it, forcibly terminate the outer process, assert
-the grandchild's PID is no longer running shortly after — this is the
-only way to actually prove the fix, since a unit test against
-`reExecMcpStdioAsNode()` in isolation can't observe a real OS process tree.
+**The first-drafted fix was itself broken — corrected during this review
+round.** Signal-forwarding from the outer process doesn't work for
+exactly the scenario it exists to handle: `SIGKILL` cannot be caught or
+forwarded on POSIX (the kernel terminates the process immediately, no
+handler ever runs), and on Windows, Node's forced-termination path
+(`TerminateProcess` under the hood) does not reliably give a JS `process.on`
+handler a chance to run cleanup logic before the process dies either. A
+design whose entire job is "guarantee teardown when the SDK gives up and
+force-kills" cannot rely on the killed process cooperating.
+
+**Fix: a child-side parent-PID watchdog**, the standard cross-platform
+pattern for this exact problem (the same shape `nodemon`/dev-server child
+processes commonly use) — survival responsibility moves to the
+*grandchild*, which can act on its own, rather than depending on the
+*outer* process getting a chance to react while being killed:
+
+1. `reExecMcpStdioAsNode()` passes its own PID to the grandchild (e.g. an
+   env var, `SYNAPSE_MCP_PARENT_PID`).
+2. `stdio-entry.ts`'s startup registers an `unref()`'d interval (so it
+   never keeps the process alive on its own) that checks whether that PID
+   is still alive — `process.kill(parentPid, 0)` on POSIX throws if it
+   isn't; Windows needs the equivalent liveness check available via the
+   same API surface `child_process` already uses elsewhere in this file.
+3. **Clean shutdown is unaffected and stays the primary path** — the
+   existing stdin-EOF → `server.onclose` → `shutdown()` handshake
+   (`stdio-entry.ts:128-136`) still runs first in the common case; the
+   watchdog is a fallback, not a replacement.
+4. If the watchdog detects the parent is gone (whether from a clean exit
+   that somehow didn't propagate, or a forced kill that couldn't), the
+   grandchild shuts itself down within a bounded interval — no signal
+   from the outer process required at all.
+
+**Testing changes accordingly**: `pnpm test` (plain Vitest, no packaged
+build available) verifies the watchdog logic itself with a real Node
+child-process fixture (spawn a small test harness process, kill the
+*harness*, assert the watchdog-bearing process exits within the bounded
+interval) — this proves the mechanism without needing a packaged Synapse
+executable. **The real, public `--mcp-stdio` path end-to-end (launch the
+actual packaged binary, forcibly terminate the outer process, assert the
+grandchild is gone)** is explicitly *not* claimed as part of `pnpm test`
+— corrected during review, since Vitest runs against source, not a
+packaged artifact, and claiming otherwise would be untestable-as-written.
+That check moves to a packaged-build integration step (electron-builder
+output) or manual verification (see Testing and Completion criteria).
 
 ### Renderer — workspace id/root visibility
 
@@ -379,6 +441,31 @@ alone, without the dev server's own argv conventions, isn't guaranteed to
 behave like the packaged entrypoint) — so dev mode shows *nothing*
 copyable rather than a snippet that looks legitimate but likely isn't.
 
+**The renderer has no way to tell packaged from dev builds today —
+confirmed during review, not assumed.** `lib/electron.ts:17-19`'s
+`isElectron()` only checks whether `window.electronAPI` exists (true in
+both `pnpm dev` and a packaged build); there's no `app.isPackaged`-backed
+preload field anywhere in this codebase. The state matrix above needs a
+real data source, not a renderer-side guess. A third, read-only IPC
+channel supplies it:
+
+```ts
+// availability check — main process is the only place that can answer this
+mcp-onboarding:availability(workspaceId) →
+  { available: true } | { available: false; reason: "dev-build" | "archived" | "unknown-workspace" }
+```
+
+backed by `app.isPackaged` (main-process-only, genuinely unavailable to
+the renderer) plus a fresh `WorkspaceStore.get()` call — the same
+admission check the stdio server itself uses, so the UI's enabled/disabled
+state and the actual enforcement can never disagree about what "active"
+means. **Crucially, this is the renderer's *display* signal only — see
+"IPC security contract" below for why the main process independently
+re-checks the same conditions inside the generate-config and connection-
+test handlers themselves**, so directly invoking either IPC channel
+(bypassing the UI entirely) still can't generate a config or spawn a
+process for a dev build or an archived/unknown workspace.
+
 1. **Generate config** — calls a new IPC method that runs
    `buildMcpLaunchDescriptor(workspaceId, userDataDir)` in the main
    process and serializes it via `serializeClaudeDesktopConfig()`:
@@ -416,34 +503,56 @@ copyable rather than a snippet that looks legitimate but likely isn't.
    await client.close()              // always, in a finally
    ```
    wrapped in an overall timeout (e.g. 10s) that also closes the client/kills
-   the child on expiry (see "Process-tree teardown" above for why this
-   requires a fix to `reExecMcpStdioAsNode()`, not just calling
-   `client.close()`). **Success means the three protocol steps completed
-   without throwing — not that tool/resource counts are non-zero.** A
-   legitimate, active, rootless workspace with no enabled plugins can have
-   zero tools and zero resources; that must report success, not failure.
-   Failure surfaces the real thrown error (including this spec's new
-   `unbound`/unknown/archived admission errors verbatim, so "test
-   connection" doubles as the fastest way to see *why* a config doesn't
-   work).
+   the child on expiry (see "Process-tree teardown" above for the watchdog
+   this relies on, not just calling `client.close()`). **Success means the
+   three protocol steps completed without throwing — not that tool/
+   resource counts are non-zero.** A legitimate, active, rootless
+   workspace with no enabled plugins can have zero tools and zero
+   resources; that must report success, not failure. Failure surfaces the
+   real thrown error. **Corrected during review**: this does *not* mean
+   "test connection is how you diagnose an unbound/unknown/archived
+   workspace" — the generated `McpLaunchDescriptor` always carries a real,
+   currently-active `workspaceId` (the UI/IPC layer already refuses to
+   build one otherwise, per the state matrix and the availability check
+   above), so `unbound`/unknown-workspace errors from `assertWorkspaceAdmitted`
+   are not reachable through this button in the normal case. What it *can*
+   still catch is a narrow race — the workspace was archived in the
+   instant between the availability check and the process actually
+   connecting — which is a real, if rare, value, not the button's primary
+   purpose.
 
-### IPC security contract for the two new channels
+### IPC security contract for the three new channels
 
 **Corrected during review — the first draft only said "a new IPC
 method," which isn't precise enough for a feature that spawns real
-processes on the renderer's request.** Both channels live in a new
+processes on the renderer's request.** All three channels (availability,
+generate-config, test-connection) live in a new
 `src/main/ipc/mcp-onboarding.ts`, following this codebase's established
 `guard(event, channel)` + typed-argument-validation pattern:
 
-- **The renderer sends only `{ workspaceId: string }`.** `command`,
-  `args`, `env`, and the connection-test timeout are never accepted from
-  the renderer — both handlers call `buildMcpLaunchDescriptor()`
-  server-side using the main process's own resolved `userDataDir`, so a
-  compromised or buggy renderer cannot redirect either action into
-  spawning an arbitrary command.
-- Both handlers sit behind the existing trusted-sender guard, and reject
-  a non-string/empty `workspaceId` the same way every other `ai:*`/
-  `plugin:*` handler in this codebase does (`requireString`-equivalent).
+- **The renderer sends only `{ workspaceId: string }`** to all three.
+  `command`, `args`, `env`, and the connection-test timeout are never
+  accepted from the renderer — both action handlers call
+  `buildMcpLaunchDescriptor()` server-side using the main process's own
+  resolved `userDataDir`, so a compromised or buggy renderer cannot
+  redirect either action into spawning an arbitrary command.
+- All three handlers sit behind the existing trusted-sender guard, and
+  reject a non-string/empty `workspaceId` the same way every other
+  `ai:*`/`plugin:*` handler in this codebase does (`requireString`-
+  equivalent).
+- **The main process independently re-checks `app.isPackaged` and
+  workspace-active status inside the generate-config and test-connection
+  handlers themselves — not only inside the availability handler the
+  renderer uses to decide what to display.** This is the point of the
+  fix, not an optional hardening: a UI bug, a stale cached availability
+  response, or a direct IPC call from outside the normal UI flow must not
+  be able to generate a config or spawn a process for a dev build or an
+  archived/unknown workspace just because the renderer's button happened
+  to be enabled (or was bypassed entirely). Both action handlers re-derive
+  the same `{available, reason}` result the availability channel would
+  return and refuse to proceed on `available: false`, using the identical
+  `app.isPackaged` + `WorkspaceStore.get()` check — one shared function,
+  not three copies that could drift.
 - The main process re-resolves the workspace from `WorkspaceStore` itself
   (not trusting any workspace metadata the renderer might pass) before
   building the descriptor — the same freshness discipline S05/S07 already
@@ -456,9 +565,9 @@ processes on the renderer's request.** Both channels live in a new
   rejects immediately rather than spawning a second process. The renderer
   additionally disables the "Test connection" button while a request is
   in flight, so this is defense in depth, not the only guard.
-- Preload (`index.ts`/`index.d.ts`) exposes both channels with the exact
-  `{ workspaceId: string }` argument shape; `lib/electron.ts` wraps them
-  following the established `unwrapIpcResult()` pattern.
+- Preload (`index.ts`/`index.d.ts`) exposes all three channels with the
+  exact `{ workspaceId: string }` argument shape; `lib/electron.ts` wraps
+  them following the established `unwrapIpcResult()` pattern.
 
 ### Archive confirmation — deterministic consequence, not a guess
 
@@ -514,22 +623,33 @@ past.
   and is rejected — proving the check re-reads live state on every call
   rather than trusting whatever `listTools()` observed earlier.
 - **`headless-tools-only mode` regression** (new, `plugin-host.test.ts` or
-  a sibling): `PluginHost.init({ mode: "tools-only" })` never calls
-  `triggerRegistry.register`/an equivalent trigger-registration seam, and
-  never arms an OAuth refresh timer, for a plugin manifest that declares
-  both — asserted via spies on the relevant seams, not by waiting to see
-  if a timer fires. `PluginHost.init()` (no options, or `{mode: "full"}`)
-  continues to do both — regression proving the GUI's own interactive path
-  is unaffected.
-- **Process-tree teardown integration test** (new, real process spawn —
-  not mocked): launch the real public `--mcp-stdio` path via
-  `reExecMcpStdioAsNode()`'s actual mechanism, forcibly terminate the
-  outer process, assert the grandchild `mcp-stdio.js` process is no longer
-  running shortly after. This is the only way to prove the signal-
-  forwarding fix actually closes the gap — a unit test mocking
-  `child_process.spawn` cannot observe a real OS process tree.
+  a sibling): a `PluginHost` constructed with `{ mode: "tools-only" }`
+  never calls `triggerRegistry.register`/an equivalent trigger-
+  registration seam and never arms an OAuth refresh timer during `init()`,
+  for a plugin manifest that declares both — asserted via spies on the
+  relevant seams, not by waiting to see if a timer fires. **Two more
+  cases, corrected during review to match `mode` being a persistent
+  lifecycle property, not an `init()`-only branch**: (1) after a
+  `"tools-only"` `init()`, a subsequent registry-changed event (e.g.
+  installing another plugin) still does not call
+  `syncClipboardWatcher()`'s registration seam; (2) after a `"tools-only"`
+  `init()`, calling `setEnabled(pluginId, true)` for a plugin with
+  triggers still does not call `triggerRegistry.register(...)`. A
+  `PluginHost` constructed without `mode` (or `"full"`) continues to do
+  all of the above in all three cases — regression proving the GUI's own
+  interactive path is completely unaffected.
+- **Parent-PID watchdog test** (new, real Node child-process fixture, no
+  packaged build required): spawn a small test harness process that
+  itself spawns a child running the watchdog logic with the harness's PID
+  as its "parent"; kill the harness process; assert the watchdog-bearing
+  child exits within the bounded check interval. This proves the
+  mechanism itself inside `pnpm test`. **The real, public `--mcp-stdio`
+  path's end-to-end process-tree teardown is explicitly a packaged-build
+  integration check or manual verification, not a `pnpm test` case** —
+  corrected during review, since Vitest has no packaged Synapse executable
+  to launch.
 - **`mcp-onboarding.ts` IPC handler tests** (new): rejects an untrusted
-  sender for both channels; rejects a non-string/empty `workspaceId`;
+  sender for all three channels; rejects a non-string/empty `workspaceId`;
   **the renderer cannot influence `command`/`args`/`env`** — a test
   submits a payload with extra fields (`{workspaceId, command: "evil"}`)
   and asserts the resulting `McpLaunchDescriptor` used to spawn the test
@@ -537,23 +657,31 @@ past.
   realUserDataDir)`, never reading the injected `command` field; a second
   connection-test call while one is already in flight for any workspace
   is rejected without spawning a second process (asserted via a spy on
-  the spawn seam counting exactly one invocation).
+  the spawn seam counting exactly one invocation). **The main-process
+  defense-in-depth re-check, corrected during review to be an explicit
+  test, not just a design claim**: a test calls the generate-config and
+  test-connection handlers directly (bypassing any renderer-side disabled
+  state) with `app.isPackaged` mocked `false`, and separately with a
+  workspace id that resolves archived — both are rejected by the handler
+  itself, proving the enforcement doesn't live only in the availability
+  channel the UI happens to consult.
 - **`serializeClaudeDesktopConfig()` test** (new): a descriptor whose
   `command` contains a Windows-style path with backslashes
   (`C:\Program Files\Synapse\Synapse.exe`) round-trips through
   `JSON.parse(serializeClaudeDesktopConfig(...))` back to the exact
   original string — the explicit regression for "don't reintroduce broken
   escaping via a future template-string refactor." The server key is
-  asserted to be exactly `synapse-<workspace id>`, not derived from
-  `name`.
+  asserted to be exactly `synapse-<workspace id>`, derived internally from
+  the `workspaceId` argument, not passed in separately.
 - **Renderer state-matrix test** (`workspace-settings.test.tsx` or the new
   panel's own test file): all three rows of the Build/workspace-state
-  table above are exercised — packaged+active enables both buttons,
-  packaged+archived disables both with the unarchive prompt, dev-mode
-  (mocked via whatever seam the renderer already uses to detect packaged
-  vs. dev, e.g. an existing `isElectron()`/environment flag) disables both
-  with the informational note, never rendering a copyable snippet in that
-  state.
+  table above are exercised, driven by a mocked
+  `mcp-onboarding:availability` IPC response (not a renderer-side
+  `isElectron()`-style guess, which cannot actually distinguish these
+  states) — packaged+active enables both buttons, packaged+archived
+  disables both with the unarchive prompt, dev-mode (`available: false,
+  reason: "dev-build"`) disables both with the informational note, never
+  rendering a copyable snippet in that state.
 - **`stdio-entry` integration** (if this file has a test harness; if not,
   covered at the `synapse-mcp-server.ts` unit level and via manual
   verification — see Completion criteria): a headless server constructed
@@ -619,11 +747,14 @@ past.
   are updated to the new `McpWorkspaceBinding` type — no remaining
   reference to the literal string `"external"` as a workspace id anywhere
   in `src/main/mcp`.
-- `PluginHost.init()` accepts `{ mode?: "full" | "tools-only" }`;
-  `"tools-only"` skips trigger registration, OAuth timer arming, and
-  clipboard watching, verified by spy-based regression tests; both
-  `stdio-entry.ts` and the new connection tester use `"tools-only"`; the
-  GUI's own construction is unaffected and keeps using `"full"`.
+- `PluginHostOptions` accepts `mode?: "full" | "tools-only"` as a
+  persistent instance property, not an `init()`-only flag — checked at
+  all three real activation entry points (`init()`'s trigger sync + OAuth
+  arming, `handleRegistryChanged`'s clipboard-watcher sync, `setEnabled()`'s
+  trigger registration), verified by spy-based regression tests covering
+  all three; both `stdio-entry.ts` and the new connection tester construct
+  their `PluginHost` with `"tools-only"`; the GUI's own construction is
+  unaffected and keeps using the default `"full"`.
 - All four `SynapseMcpToolService` entry points (`listTools`, `callTool`,
   `listResources`, `readResource`) independently reject `unbound`/unknown/
   archived workspace bindings with the three distinct, actionable
@@ -647,14 +778,25 @@ past.
   Linux).
 - "Test connection" uses the real `@modelcontextprotocol/sdk` `Client`/
   `StdioClientTransport`, reports success purely on protocol completion
-  (never on tool/resource count), and genuinely always terminates the
-  full process tree it started — success, failure, or timeout — verified
-  by a real-process integration test against the public `--mcp-stdio`
-  path, not just a unit test of the SDK call.
-- The new `src/main/ipc/mcp-onboarding.ts` channels accept only
-  `{ workspaceId }` from the renderer, re-resolve the workspace server-
-  side, sit behind the trusted-sender guard, and reject a second
-  concurrent connection test rather than spawning a second process.
+  (never on tool/resource count), and the grandchild process it starts is
+  protected by a parent-PID watchdog (not a signal-forwarding scheme,
+  which is impossible for `SIGKILL` on POSIX and unreliable on Windows —
+  corrected during review) — the watchdog mechanism itself is verified in
+  `pnpm test` via a real Node child-process fixture; the real packaged
+  `--mcp-stdio` path's end-to-end teardown is a packaged-build integration
+  check or manual verification, explicitly not claimed as part of
+  `pnpm test`.
+- The new `src/main/ipc/mcp-onboarding.ts` channels (availability,
+  generate-config, test-connection) accept only `{ workspaceId }` from the
+  renderer, re-resolve the workspace server-side, sit behind the trusted-
+  sender guard, and reject a second concurrent connection test rather than
+  spawning a second process. **The generate-config and test-connection
+  handlers independently re-check `app.isPackaged` and workspace-active
+  status themselves** (the same check the availability channel exposes for
+  display) — verified by tests that call these handlers directly with a
+  mocked unpackaged/archived state and confirm rejection, proving the
+  renderer's disabled button isn't the only thing preventing a dev-build
+  or archived-workspace config/spawn.
 - `workspace-settings.tsx` shows each workspace's id and a root summary
   (count plus names/primary indicator); the archive action requires
   confirmation, whose copy states the guaranteed post-S08 consequence for
