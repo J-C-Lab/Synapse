@@ -11,20 +11,29 @@
 
 Verified against the real repo, not assumed.
 
-- **Nothing in the renderer shows a workspace's id, or its root count/
-  status.** `workspace-settings.tsx` (the only workspace-related Settings
-  UI, mounted at `settings-page.tsx:18`) renders `w.name` and archived/
-  active status with rename/archive/unarchive controls — the workspace
-  `id` itself, and `WorkspaceRootRecord`s bound to it, are never displayed
-  anywhere. A user connecting an external MCP client has no way to look up
-  the exact id `SYNAPSE_MCP_WORKSPACE` needs.
-- **No config generation, no example config exists anywhere.** Repo-wide
-  search for `Claude Desktop`/`claude_desktop_config`/`SYNAPSE_MCP_
-  WORKSPACE` across `src/renderer`, `docs/`, and both READMEs turns up
-  nothing but a checklist bullet in `TESTING.md:110-114` ("Configure an
-  external client ... to launch `Synapse --mcp-stdio`") — no JSON snippet,
-  no documented executable path, no env-var example. A user must currently
-  discover all of this by reading source.
+- **Nothing in the renderer's workspace *list* shows a workspace's id, and
+  root status isn't summarized there either — corrected during review.**
+  `workspace-settings.tsx` (the only workspace-related Settings UI,
+  mounted at `settings-page.tsx:18`) renders `w.name` and archived/active
+  status with rename/archive/unarchive controls — the workspace `id`
+  itself is never displayed anywhere. Root status is a narrower gap than
+  first drafted: `workspace-root-manager.tsx:90-106` is a real, existing
+  per-workspace dialog that already lists each root's name, path, and
+  primary badge — but nothing in `workspace-settings.tsx`'s row-per-
+  workspace list *summarizes* that (a count, or an inline "no roots yet")
+  without the user opening that separate dialog first. A user connecting
+  an external MCP client has no way to look up the exact id
+  `SYNAPSE_MCP_WORKSPACE` needs without leaving the app entirely.
+- **No config generation, no user-visible example config exists
+  anywhere — corrected during review.** `TESTING.md:110-114` has a
+  checklist bullet ("Configure an external client ... to launch `Synapse
+  --mcp-stdio`") with no JSON snippet, no documented executable path, no
+  env-var example — that part of the original claim holds. But a broader
+  search shows `SYNAPSE_MCP_WORKSPACE`/`--mcp-stdio` referenced across
+  numerous internal `docs/superpowers/specs|plans/*.md` design documents —
+  those aren't user-facing, but the original "found nothing but TESTING.md"
+  framing overstated the gap. The accurate claim: no README, no docs-site
+  page, and no in-app surface shows a real, copyable config example.
 - **The stdio entrypoint performs zero workspace validation, ever.**
   `src/main/mcp/stdio-entry.ts:113`:
   ```ts
@@ -89,6 +98,60 @@ Verified against the real repo, not assumed.
 
 ## Architecture
 
+### Headless tool-serving mode — a real P0 found during review
+
+**Confirmed during review, not assumed: both the real external-MCP path
+and this spec's own connection tester would otherwise start a second full
+background-trigger runtime as a side effect of just serving tools.**
+`stdio-entry.ts:102`'s `await pluginHost.init()` runs the *entire* normal
+`PluginHost.init()` (`plugin-host.ts:316-363`), which unconditionally:
+- calls `this.syncTriggerRegistrations()` (line 349), registering every
+  active plugin's timer/cron/fs-watch/hotkey/clipboard triggers into a
+  live `TriggerRegistry` — real OS-level watchers and timers start firing;
+- calls `this.credentialBroker.armOAuthTimers(...)` for every plugin with
+  a manifest (lines 350-358) — real OAuth token-refresh timers start;
+- calls `this.syncClipboardWatcher()` in a `finally` block (line 361).
+
+None of this is needed to serve `tools/list`/`tools/call`/`resources/list`/
+`resources/read` to an external MCP client — it's the *interactive-agent*
+plugin lifecycle, pulled in incidentally because `stdio-entry.ts` reuses
+the same `PluginHost.init()` the GUI uses. This is a real, pre-existing
+gap for every long-lived external MCP connection today (each one silently
+runs a second, redundant trigger engine for its entire lifetime) — but
+this spec's "Test connection" button would make it acute: every click
+would start-then-tear-down real timers/watchers/OAuth refresh cycles,
+repeatedly, as a side effect of a read-only diagnostic action.
+
+**Fix**: `PluginHost.init()` gains a mode parameter:
+
+```ts
+async init(options?: { mode?: "full" | "tools-only" }): Promise<void>
+```
+
+`"tools-only"` (the new default for headless MCP contexts) skips
+`syncTriggerRegistrations()`, `armOAuthTimers()`, and
+`syncClipboardWatcher()` entirely, while still doing everything tool
+serving actually needs: `discoverPlugins()`, `registry.load()`, grant
+migration. `"full"` (the existing behavior, unchanged) stays the default
+for the GUI's own `PluginHost` construction — the interactive path still
+needs triggers and OAuth timers.
+
+Both real consumers switch to `"tools-only"`:
+- `stdio-entry.ts:102` — every external MCP connection, not just the
+  connection tester, since there's no legitimate reason a *tool-serving*
+  stdio process should be running background triggers at all. This
+  incidentally fixes the pre-existing duplicate-trigger-runtime issue
+  above as a side effect of this spec, not just for the new test button.
+- The connection tester (below) — for the same reason, doubly so, since
+  it's specifically meant to be a fast, side-effect-free, repeatable check.
+
+Whether `syncClipboardWatcher()` has any effect needed by an *on-demand*
+clipboard-adjacent tool call (as opposed to a *clipboard-change trigger*,
+which `"tools-only"` deliberately doesn't register) is an implementation-
+plan-level question to verify against `PluginBridge`'s clipboard read path
+before assuming it's safe to skip — flagged here, not resolved, since it
+requires reading code this spec doesn't need to settle its own scope.
+
 ### Workspace-bound MCP admission enforcement
 
 A new, explicit binding type, computed once at stdio-entry startup:
@@ -116,14 +179,35 @@ Non-goals) for the narrow population of pre-S08 configs that omit
 `SYNAPSE_MCP_WORKSPACE` — there is no officially-documented config example
 before this spec, so that population should be small.
 
-A new `assertWorkspaceAdmitted(binding, workspaceStore)` is called
-**independently at all four `SynapseMcpToolService` entry points** —
-`listTools()`, `callTool()`, `listResources()`, `readResource()`
+A new `assertWorkspaceAdmitted(binding, port)` is called **independently
+at all four `SynapseMcpToolService` entry points** — `listTools()`,
+`callTool()`, `listResources()`, `readResource()`
 (`synapse-mcp-server.ts:106,141,194,227`) — not layered only onto the
 resource handlers, and not skipped for `tools/list` on the theory that
 `tools/call` will catch it: a client may cache its tool list before a
 workspace is archived mid-session, so `tools/call` must re-check
 independently even if `tools/list` already did.
+
+**`port` is `Pick<WorkspaceStore, "get">`, not `isActive()`/`exists()`**
+— corrected during review: `WorkspaceStore.isActive(id): Promise<boolean>`
+alone can't distinguish "unknown" from "archived" (both resolve `false`),
+which this spec needs to produce two different error messages. `get(id):
+Promise<Workspace | undefined>` (`workspace-store.ts:31-33`, already
+resolves archived workspaces, confirmed in "Why this is needed") is the
+right shape — one call per entry-point invocation, no second read, no
+TOCTOU window between an existence check and an active check:
+
+```ts
+async function assertWorkspaceAdmitted(
+  binding: McpWorkspaceBinding,
+  workspaces: Pick<WorkspaceStore, "get">
+): Promise<void> {
+  if (binding.kind === "unbound") throw new McpUnboundError()
+  const workspace = await workspaces.get(binding.workspaceId)
+  if (!workspace) throw new McpWorkspaceNotFoundError(binding.workspaceId)
+  if (workspace.archived) throw new McpWorkspaceArchivedError(binding.workspaceId)
+}
+```
 
 | Binding state | Behavior |
 |---|---|
@@ -132,9 +216,10 @@ independently even if `tools/list` already did.
 | `bound`, workspace archived | Reject: `Workspace "<id>" is archived. Unarchive it in Synapse, or update SYNAPSE_MCP_WORKSPACE to a different workspace.` |
 | `bound`, workspace active | Proceed normally — unchanged from today |
 
-The `unbound` migration error (also written to stderr, since Claude
-Desktop surfaces child-process stderr in its own MCP connection logs for
-exactly this kind of diagnosis):
+The `unbound` migration error is also written to stderr **at most once
+per process**, not on every rejected request — an MCP client that polls
+`tools/list` on an unbound connection would otherwise flood its own log
+with an identical message on every poll:
 
 ```
 This Synapse MCP configuration is missing SYNAPSE_MCP_WORKSPACE.
@@ -196,29 +281,111 @@ config to the *exact* `app.getPath("userData")` the currently-running GUI
 instance resolved, immune to app-name or custom-data-dir drift between the
 GUI and a headless child process invoked days later by an external client.
 
+**Serialization is its own pure function**, unit-testable independent of
+IPC/clipboard plumbing (see the `synapse-<workspace-name-slug>` fix below
+for why a stable key matters here too):
+
+```ts
+export function serializeClaudeDesktopConfig(
+  descriptor: McpLaunchDescriptor,
+  serverKey: string
+): string {
+  return JSON.stringify(
+    { mcpServers: { [serverKey]: descriptor } },
+    null,
+    2
+  )
+}
+```
+
+`JSON.stringify` on a Windows path (e.g. `C:\Program Files\Synapse\
+Synapse.exe`) already produces correctly-escaped `\\` sequences inside the
+resulting string — no manual escaping needed, only a test asserting that
+property explicitly (see Testing), since a naive future refactor to
+template-string interpolation could silently reintroduce broken escaping.
+
+### Process-tree teardown — a real gap found during review
+
+**Confirmed during review**: launching `command: resolveMcpExecutablePath()`
+(the packaged app binary) with `args: ["--mcp-stdio"]` does not directly
+start the MCP server — it starts a *second* level of indirection.
+`index.ts:1158-1169`'s `reExecMcpStdioAsNode()` (triggered by the packaged
+binary detecting its own `--mcp-stdio` flag) `spawn()`s a **grandchild**
+Node process running `mcp-stdio.js`, with `stdio: "inherit"` — the
+grandchild inherits the *outer* process's stdin/stdout, and only the outer
+process's `exit` event (line 1164) triggers `app.exit()`. The SDK's
+`StdioClientTransport`/`Client.close()` (used by both `mcp-stdio-client.ts`
+today and this spec's connection tester) only ever holds a handle on the
+**outer** process — it spawned that one, not the grandchild.
+
+In the common case (clean shutdown: the transport closes stdin, the
+grandchild's MCP `server.onclose` fires, `stdio-entry.ts:128-136`'s
+`shutdown()` runs, the grandchild exits, the outer process's `exit`
+handler relays that into `app.exit()`) this already works correctly
+end-to-end. **The gap is the forced-kill path**: if the connection test's
+overall timeout expires and the SDK sends a termination signal to the
+*outer* process directly (bypassing the clean-shutdown handshake), nothing
+today guarantees the **grandchild** also terminates — Windows processes
+have no implicit parent-child kill propagation without an explicit Job
+Object, which nothing here sets up.
+
+**Fix, required for this spec's "always kills the child" claim to be
+true, not just usually true**: `reExecMcpStdioAsNode()` gains explicit
+signal-forwarding — the outer process relays `SIGTERM`/`SIGKILL` (or the
+Windows-equivalent forced termination the Node `child_process` API maps
+these to) to the grandchild's PID before exiting, rather than relying
+solely on the inherited-stdio EOF path. A new integration test exercises
+the **real, public `--mcp-stdio` path** (not the SDK's abstraction over
+it) end-to-end: launch it, forcibly terminate the outer process, assert
+the grandchild's PID is no longer running shortly after — this is the
+only way to actually prove the fix, since a unit test against
+`reExecMcpStdioAsNode()` in isolation can't observe a real OS process tree.
+
 ### Renderer — workspace id/root visibility
 
 `workspace-settings.tsx`'s per-workspace row gains: the `id` (monospace,
-copyable), and root count (`0 roots` renders plainly — rootless is a
+copyable), and a **root summary** — count plus root names and which one is
+primary (restoring the original brainstorming intent; an earlier draft of
+this spec narrowed this to a bare count without saying so, which
+undersold `workspace-root-manager.tsx`'s existing per-root detail without
+actually reusing it). `0 roots` renders plainly — rootless is a
 first-class, tested, intentional state per
 `docs/superpowers/specs/2026-07-10-workspace-root-unification-design.md:85-88`
 and `workspace-instructions-resource.test.ts:77-85`, not an error state to
-warn about).
+warn about. The existing `workspace-root-manager.tsx` dialog remains the
+place to actually add/remove/reprioritize roots — this summary is a
+read-only preview in the list row, not a replacement for it.
 
 ### Renderer — "Connect an MCP client" panel
 
 A new per-workspace panel (new component, composed into `workspace-
 settings.tsx`'s row or a details expansion — exact placement is an
-implementation-plan decision, not a spec-level one) with two actions:
+implementation-plan decision, not a spec-level one) with two actions,
+gated by an explicit state matrix rather than one branch per action —
+**corrected during review**, since the first draft's "dev mode still
+generates something, with a caveat" and the Completion criteria's "don't
+present an unstable path as usable" were pulling in different directions:
+
+| Build / workspace state | Generate config | Test connection |
+|---|---|---|
+| Packaged, workspace active | Enabled | Enabled |
+| Packaged, workspace archived | Disabled — row shows id/roots, with a prompt to unarchive first | Disabled, same prompt |
+| Unpackaged dev build | Disabled entirely — informational note only ("config generation and connection testing require a packaged build") | Disabled entirely, same note |
+
+A dev build's `resolveMcpExecutablePath()` would resolve the dev Electron
+binary's path, which is neither stable across runs nor what launching
+`--mcp-stdio` against it actually does in a dev harness (`--mcp-stdio`
+alone, without the dev server's own argv conventions, isn't guaranteed to
+behave like the packaged entrypoint) — so dev mode shows *nothing*
+copyable rather than a snippet that looks legitimate but likely isn't.
 
 1. **Generate config** — calls a new IPC method that runs
    `buildMcpLaunchDescriptor(workspaceId, userDataDir)` in the main
-   process and serializes it into a `claude_desktop_config.json`
-   `mcpServers` snippet:
+   process and serializes it via `serializeClaudeDesktopConfig()`:
    ```json
    {
      "mcpServers": {
-       "synapse-<workspace-name-slug>": {
+       "synapse-<workspace id>": {
          "command": "<resolved executable path>",
          "args": ["--mcp-stdio"],
          "env": {
@@ -229,14 +396,15 @@ implementation-plan decision, not a spec-level one) with two actions:
      }
    }
    ```
-   Rendered in a read-only code block with a copy-to-clipboard button.
-   **Never written to any file on disk** — Claude Desktop's own config
-   file is a different application's data; reading or writing it is out of
-   scope (see Non-goals). In an unpackaged dev build, `resolveMcpExecutablePath()`
-   still resolves *something* (the dev Electron binary), but the panel
-   shows an informational note that the generated command is only valid
-   for a packaged install, since a dev-mode path is neither stable nor
-   what an end user would actually configure.
+   **The server key is `synapse-<workspace id>`, not a name-derived
+   slug** — corrected during review: `Workspace.rename()` (S05) means a
+   name-based slug isn't stable, and two differently-named workspaces
+   could collide on the same slugified string; `id` is already the one
+   value this codebase guarantees unique per workspace. Rendered in a
+   read-only code block with a copy-to-clipboard button. **Never written
+   to any file on disk** — Claude Desktop's own config file is a
+   different application's data; reading or writing it is out of scope
+   (see Non-goals).
 2. **Test connection** — calls a new IPC method that builds the same
    `McpLaunchDescriptor`, spawns it via the real SDK
    (`Client` + `StdioClientTransport`, mirroring `mcp-stdio-client.ts`'s
@@ -248,7 +416,9 @@ implementation-plan decision, not a spec-level one) with two actions:
    await client.close()              // always, in a finally
    ```
    wrapped in an overall timeout (e.g. 10s) that also closes the client/kills
-   the child on expiry. **Success means the three protocol steps completed
+   the child on expiry (see "Process-tree teardown" above for why this
+   requires a fix to `reExecMcpStdioAsNode()`, not just calling
+   `client.close()`). **Success means the three protocol steps completed
    without throwing — not that tool/resource counts are non-zero.** A
    legitimate, active, rootless workspace with no enabled plugins can have
    zero tools and zero resources; that must report success, not failure.
@@ -256,6 +426,39 @@ implementation-plan decision, not a spec-level one) with two actions:
    `unbound`/unknown/archived admission errors verbatim, so "test
    connection" doubles as the fastest way to see *why* a config doesn't
    work).
+
+### IPC security contract for the two new channels
+
+**Corrected during review — the first draft only said "a new IPC
+method," which isn't precise enough for a feature that spawns real
+processes on the renderer's request.** Both channels live in a new
+`src/main/ipc/mcp-onboarding.ts`, following this codebase's established
+`guard(event, channel)` + typed-argument-validation pattern:
+
+- **The renderer sends only `{ workspaceId: string }`.** `command`,
+  `args`, `env`, and the connection-test timeout are never accepted from
+  the renderer — both handlers call `buildMcpLaunchDescriptor()`
+  server-side using the main process's own resolved `userDataDir`, so a
+  compromised or buggy renderer cannot redirect either action into
+  spawning an arbitrary command.
+- Both handlers sit behind the existing trusted-sender guard, and reject
+  a non-string/empty `workspaceId` the same way every other `ai:*`/
+  `plugin:*` handler in this codebase does (`requireString`-equivalent).
+- The main process re-resolves the workspace from `WorkspaceStore` itself
+  (not trusting any workspace metadata the renderer might pass) before
+  building the descriptor — the same freshness discipline S05/S07 already
+  established for other host-owned mutating/spawning operations.
+- **At most one connection test may be in flight at a time**, tracked by
+  a main-process module-level flag (or a small in-memory registry keyed
+  by workspaceId, if testing two different workspaces concurrently is
+  judged worth allowing — an implementation-plan decision); a second
+  `plugin:test-mcp-connection`-equivalent call while one is running
+  rejects immediately rather than spawning a second process. The renderer
+  additionally disables the "Test connection" button while a request is
+  in flight, so this is defense in depth, not the only guard.
+- Preload (`index.ts`/`index.d.ts`) exposes both channels with the exact
+  `{ workspaceId: string }` argument shape; `lib/electron.ts` wraps them
+  following the established `unwrapIpcResult()` pattern.
 
 ### Archive confirmation — deterministic consequence, not a guess
 
@@ -294,16 +497,63 @@ past.
   for the test, not read live).
 - **`synapse-mcp-server.test.ts`**: for each of `listTools`, `callTool`,
   `listResources`, `readResource` independently — `unbound` rejects with
-  the migration message; an unknown workspace id rejects with the
-  not-found message; an archived workspace id rejects with the archived
-  message; an active workspace id behaves exactly as it does today
-  (regression — the existing pre-S08 tests for these four methods must
-  keep passing unchanged once a `workspaceStore` fake resolving `isActive:
-  true` is threaded through). A dedicated test asserts `callTool()`
-  targeting `memory_search` is rejected for an archived workspace **even
-  when `listTools()` was called first and returned successfully** — the
-  cached-tool-list regression the "re-check independently at every entry
-  point" design exists to close.
+  the migration message; an unknown workspace id (fake `get()` resolving
+  `undefined`) rejects with the not-found message; an archived workspace
+  id (fake `get()` resolving `{id, archived: true}`) rejects with the
+  archived message; an active workspace id (fake `get()` resolving
+  `{id, archived: undefined}`) behaves exactly as it does today —
+  regression, the existing pre-S08 tests for these four methods must keep
+  passing unchanged once a `Pick<WorkspaceStore, "get">` fake is threaded
+  through (not an `isActive` fake — corrected during review, see
+  Architecture). **The cached-tool-list regression, precise sequence**
+  (corrected during review — the first draft's wording contradicted the
+  four-independent-checks design it was supposed to test): (1) the fake
+  store resolves the workspace as active; (2) `listTools()` is called and
+  succeeds; (3) the *same fake store* is mutated to resolve the workspace
+  as archived; (4) `callTool()` targeting `memory_search` is called next
+  and is rejected — proving the check re-reads live state on every call
+  rather than trusting whatever `listTools()` observed earlier.
+- **`headless-tools-only mode` regression** (new, `plugin-host.test.ts` or
+  a sibling): `PluginHost.init({ mode: "tools-only" })` never calls
+  `triggerRegistry.register`/an equivalent trigger-registration seam, and
+  never arms an OAuth refresh timer, for a plugin manifest that declares
+  both — asserted via spies on the relevant seams, not by waiting to see
+  if a timer fires. `PluginHost.init()` (no options, or `{mode: "full"}`)
+  continues to do both — regression proving the GUI's own interactive path
+  is unaffected.
+- **Process-tree teardown integration test** (new, real process spawn —
+  not mocked): launch the real public `--mcp-stdio` path via
+  `reExecMcpStdioAsNode()`'s actual mechanism, forcibly terminate the
+  outer process, assert the grandchild `mcp-stdio.js` process is no longer
+  running shortly after. This is the only way to prove the signal-
+  forwarding fix actually closes the gap — a unit test mocking
+  `child_process.spawn` cannot observe a real OS process tree.
+- **`mcp-onboarding.ts` IPC handler tests** (new): rejects an untrusted
+  sender for both channels; rejects a non-string/empty `workspaceId`;
+  **the renderer cannot influence `command`/`args`/`env`** — a test
+  submits a payload with extra fields (`{workspaceId, command: "evil"}`)
+  and asserts the resulting `McpLaunchDescriptor` used to spawn the test
+  process is built purely from `buildMcpLaunchDescriptor(workspaceId,
+  realUserDataDir)`, never reading the injected `command` field; a second
+  connection-test call while one is already in flight for any workspace
+  is rejected without spawning a second process (asserted via a spy on
+  the spawn seam counting exactly one invocation).
+- **`serializeClaudeDesktopConfig()` test** (new): a descriptor whose
+  `command` contains a Windows-style path with backslashes
+  (`C:\Program Files\Synapse\Synapse.exe`) round-trips through
+  `JSON.parse(serializeClaudeDesktopConfig(...))` back to the exact
+  original string — the explicit regression for "don't reintroduce broken
+  escaping via a future template-string refactor." The server key is
+  asserted to be exactly `synapse-<workspace id>`, not derived from
+  `name`.
+- **Renderer state-matrix test** (`workspace-settings.test.tsx` or the new
+  panel's own test file): all three rows of the Build/workspace-state
+  table above are exercised — packaged+active enables both buttons,
+  packaged+archived disables both with the unarchive prompt, dev-mode
+  (mocked via whatever seam the renderer already uses to detect packaged
+  vs. dev, e.g. an existing `isElectron()`/environment flag) disables both
+  with the informational note, never rendering a copyable snippet in that
+  state.
 - **`stdio-entry` integration** (if this file has a test harness; if not,
   covered at the `synapse-mcp-server.ts` unit level and via manual
   verification — see Completion criteria): a headless server constructed
@@ -317,9 +567,10 @@ past.
   success" case explicitly (a regression test for the "count > 0" pitfall
   called out in Architecture).
 - **`workspace-settings.test.tsx`**: gains a case asserting the workspace
-  `id` renders per row (it doesn't today); a companion asserts the archive
-  button now opens a confirmation dialog before calling `archiveAiWorkspace`
-  (today it's a bare, unconfirmed click).
+  `id` and a root summary (count + names/primary indicator, not a bare
+  count) render per row (neither does today); a companion asserts the
+  archive button now opens a confirmation dialog before calling
+  `archiveAiWorkspace` (today it's a bare, unconfirmed click).
 
 ## Non-goals
 
@@ -368,27 +619,46 @@ past.
   are updated to the new `McpWorkspaceBinding` type — no remaining
   reference to the literal string `"external"` as a workspace id anywhere
   in `src/main/mcp`.
+- `PluginHost.init()` accepts `{ mode?: "full" | "tools-only" }`;
+  `"tools-only"` skips trigger registration, OAuth timer arming, and
+  clipboard watching, verified by spy-based regression tests; both
+  `stdio-entry.ts` and the new connection tester use `"tools-only"`; the
+  GUI's own construction is unaffected and keeps using `"full"`.
 - All four `SynapseMcpToolService` entry points (`listTools`, `callTool`,
   `listResources`, `readResource`) independently reject `unbound`/unknown/
   archived workspace bindings with the three distinct, actionable
-  messages in Architecture — verified by tests that exercise each method
-  directly, including the cached-tool-list-then-archived regression.
+  messages in Architecture, using a single `Pick<WorkspaceStore, "get">`
+  read per call (not `isActive()`/`exists()`) — verified by tests that
+  exercise each method directly, including the cached-tool-list-then-
+  archived regression's exact four-step sequence.
 - `buildMcpLaunchDescriptor()` is the single function both the config-
   generation IPC handler and the connection-test IPC handler call —
   verified by there being exactly one call site for `resolveMcpExecutablePath()`
-  in the codebase.
+  in the codebase. `serializeClaudeDesktopConfig()` produces a
+  `synapse-<workspace id>` server key and correctly escapes Windows paths
+  through a real `JSON.parse` round-trip test.
+- The Build/workspace-state matrix (packaged+active, packaged+archived,
+  dev) gates both "Generate config" and "Test connection" exactly as
+  specified — never showing a copyable snippet in dev mode, never enabling
+  either action for an archived workspace.
 - The generated Claude Desktop config snippet is copyable from a new
   Settings panel, never auto-written to any file; a packaged build
   resolves a real, stable executable path (including the AppImage case on
-  Linux); a dev build shows the informational "packaged install only"
-  note instead of presenting an unstable path as usable.
+  Linux).
 - "Test connection" uses the real `@modelcontextprotocol/sdk` `Client`/
-  `StdioClientTransport`, always closes the client/kills the child
-  process (success, failure, or timeout), and reports success purely on
-  protocol completion, never on tool/resource count.
-- `workspace-settings.tsx` shows each workspace's id and root count; the
-  archive action requires confirmation, whose copy states the guaranteed
-  post-S08 consequence for MCP access.
+  `StdioClientTransport`, reports success purely on protocol completion
+  (never on tool/resource count), and genuinely always terminates the
+  full process tree it started — success, failure, or timeout — verified
+  by a real-process integration test against the public `--mcp-stdio`
+  path, not just a unit test of the SDK call.
+- The new `src/main/ipc/mcp-onboarding.ts` channels accept only
+  `{ workspaceId }` from the renderer, re-resolve the workspace server-
+  side, sit behind the trusted-sender guard, and reject a second
+  concurrent connection test rather than spawning a second process.
+- `workspace-settings.tsx` shows each workspace's id and a root summary
+  (count plus names/primary indicator); the archive action requires
+  confirmation, whose copy states the guaranteed post-S08 consequence for
+  MCP access.
 - `pnpm typecheck`, `pnpm lint`, `pnpm test` all pass.
 - Manual verification: a real Claude Desktop (or another real MCP client)
   configured via the generated snippet against a real active workspace
