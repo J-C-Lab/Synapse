@@ -20,6 +20,7 @@ export const DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8"
 /** Minimal slice of the SDK the provider uses — lets tests inject a fake. */
 export interface AnthropicMessageStream extends AsyncIterable<Anthropic.RawMessageStreamEvent> {
   finalMessage: () => Promise<Anthropic.Message>
+  on: (event: "connect" | "streamEvent", listener: () => void) => void
 }
 export interface AnthropicMessagesClient {
   messages: {
@@ -32,6 +33,9 @@ export interface AnthropicMessagesClient {
 
 export interface AnthropicProviderOptions {
   apiKey?: string
+  /** OpenAI-compatible-style override for tests — points the SDK at a
+   *  local server instead of the real Anthropic API. */
+  baseURL?: string
   /** Inject a client for tests; in production it's built from `apiKey`. */
   client?: AnthropicMessagesClient
 }
@@ -41,11 +45,14 @@ export class AnthropicProvider implements ChatProvider {
   private readonly client: AnthropicMessagesClient
 
   constructor(options: AnthropicProviderOptions) {
-    this.client = options.client ?? new Anthropic({ apiKey: options.apiKey })
+    this.client =
+      options.client ?? new Anthropic({ apiKey: options.apiKey, baseURL: options.baseURL })
   }
 
   async *stream(req: ProviderRequest): AsyncIterable<ProviderStreamEvent> {
     const stream = this.client.messages.stream(buildMessageParams(req), { signal: req.signal })
+    stream.on("connect", () => req.onTransportProgress?.("headers"))
+    stream.on("streamEvent", () => req.onTransportProgress?.("activity"))
 
     for await (const event of stream) {
       if (event.type === "content_block_delta" && event.delta.type === "text_delta") {

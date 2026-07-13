@@ -117,11 +117,16 @@ describe("anthropicProvider.stream", () => {
       stop_reason: "end_turn",
     } as unknown as Anthropic.Message
 
+    const onListeners: Record<string, (() => void)[]> = {}
     const fakeStream: AnthropicMessageStream = {
       async *[Symbol.asyncIterator]() {
         for (const event of deltaEvents) yield event
       },
       finalMessage: async () => finalMessage,
+      on: (event, listener) => {
+        onListeners[event] = onListeners[event] ?? []
+        onListeners[event]!.push(listener)
+      },
     }
     const client: AnthropicMessagesClient = { messages: { stream: () => fakeStream } }
 
@@ -144,5 +149,49 @@ describe("anthropicProvider.stream", () => {
         stopReason: "end_turn",
       },
     ])
+  })
+
+  it("wires onTransportProgress to the SDK's connect and streamEvent listeners", async () => {
+    const deltaEvents = [
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hi" } },
+    ] as unknown as Anthropic.RawMessageStreamEvent[]
+    const finalMessage = {
+      content: [{ type: "text", text: "Hi" }],
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      stop_reason: "end_turn",
+    } as unknown as Anthropic.Message
+
+    const onListeners: Record<string, (() => void)[]> = {}
+    const fakeStream: AnthropicMessageStream = {
+      async *[Symbol.asyncIterator]() {
+        onListeners.connect?.forEach((fn) => fn())
+        for (const event of deltaEvents) {
+          onListeners.streamEvent?.forEach((fn) => fn())
+          yield event
+        }
+      },
+      finalMessage: async () => finalMessage,
+      on: (event, listener) => {
+        onListeners[event] = onListeners[event] ?? []
+        onListeners[event]!.push(listener)
+      },
+    }
+    const client: AnthropicMessagesClient = { messages: { stream: () => fakeStream } }
+
+    const provider = new AnthropicProvider({ client })
+    const phases: string[] = []
+    const events: ProviderStreamEvent[] = []
+    for await (const event of provider.stream(
+      request({ onTransportProgress: (p) => phases.push(p) })
+    )) {
+      events.push(event)
+    }
+
+    expect(phases).toEqual(["headers", "activity"])
   })
 })
