@@ -89,7 +89,11 @@ async function main(): Promise<void> {
     recordAccess: hostResourceAccessAudit,
   })
   const approve: CapabilityApprover = ({ identity, request }) =>
-    guiApprovalPort.requestApproval({ identity, request: stripSignal(request) })
+    guiApprovalPort.requestApproval({
+      identity,
+      request: stripSignal(request),
+      signal: request.signal,
+    })
 
   const pluginHost = new PluginHost({
     userDataDir,
