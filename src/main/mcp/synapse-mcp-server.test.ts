@@ -8,7 +8,26 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { describe, expect, it, vi } from "vitest"
 import { modelToolName } from "../ai/tool-registry"
+import {
+  McpUnboundError,
+  McpWorkspaceArchivedError,
+  McpWorkspaceNotFoundError,
+} from "./mcp-workspace-admission"
 import { createSynapseMcpServer, SynapseMcpToolService } from "./synapse-mcp-server"
+
+function activeWorkspaces(id = "work") {
+  return {
+    get: async (queried: string) =>
+      queried === id ? { id, name: "Work", createdAt: 0 } : undefined,
+  }
+}
+
+function admittedFor(workspaceId = "work") {
+  return {
+    workspaceBinding: { kind: "bound" as const, workspaceId },
+    workspaces: activeWorkspaces(workspaceId),
+  }
+}
 
 function descriptor(
   fqName: string,
@@ -67,7 +86,8 @@ describe("synapseMcpToolService", () => {
         descriptor("com.example.safe/greet", { readOnlyHint: true }),
         descriptor("com.example.risky/delete", { destructiveHint: true }),
         descriptor("com.example.ask/mutate"),
-      ])
+      ]),
+      admittedFor()
     )
 
     expect((await service.listTools()).tools.map((tool) => tool.name)).toEqual([SAFE_GREET_NAME])
@@ -80,7 +100,8 @@ describe("synapseMcpToolService", () => {
 
   it("forwards title only for host-provenance tools", async () => {
     const service = new SynapseMcpToolService(
-      host([descriptor("execution:host/run", { readOnlyHint: true }, "host")])
+      host([descriptor("execution:host/run", { readOnlyHint: true }, "host")]),
+      admittedFor()
     )
     const [tool] = (await service.listTools()).tools
     expect(tool?.title).toBe("Title execution:host/run")
@@ -88,7 +109,8 @@ describe("synapseMcpToolService", () => {
 
   it("frames a plugin-provenance description with the trust header", async () => {
     const service = new SynapseMcpToolService(
-      host([descriptor("com.example.safe/greet", { readOnlyHint: true })])
+      host([descriptor("com.example.safe/greet", { readOnlyHint: true })]),
+      admittedFor()
     )
     const [tool] = (await service.listTools()).tools
     expect(tool?.description).toContain("[Third-party tool metadata")
@@ -101,7 +123,8 @@ describe("synapseMcpToolService", () => {
       properties: { x: { const: "a".repeat(10_000) } },
     }
     const service = new SynapseMcpToolService(
-      host([descriptor("com.example.safe/ok", { readOnlyHint: true }), bad])
+      host([descriptor("com.example.safe/ok", { readOnlyHint: true }), bad]),
+      admittedFor()
     )
     const names = (await service.listTools()).tools.map((tool) => tool.name)
     expect(names).toEqual([SAFE_OK_NAME])
@@ -114,7 +137,7 @@ describe("synapseMcpToolService", () => {
       properties: { x: { const: "a".repeat(10_000) } },
     }
     const h = host([bad])
-    const service = new SynapseMcpToolService(h)
+    const service = new SynapseMcpToolService(h, admittedFor())
     const result = await service.callTool(SAFE_BAD_NAME, {})
     expect(result.isError).toBe(true)
     expect(h.invokeTool).not.toHaveBeenCalled()
@@ -122,7 +145,7 @@ describe("synapseMcpToolService", () => {
 
   it("routes a read-only tool call through the plugin host as an mcp caller", async () => {
     const h = host([descriptor("com.example.safe/greet", { readOnlyHint: true })])
-    const service = new SynapseMcpToolService(h)
+    const service = new SynapseMcpToolService(h, admittedFor())
 
     const result = await service.callTool(SAFE_GREET_NAME, { name: "Ada" })
 
@@ -142,7 +165,7 @@ describe("synapseMcpToolService", () => {
 
   it("denies direct calls to tools hidden by the default policy", async () => {
     const h = host([descriptor("com.example.risky/delete", { destructiveHint: true })])
-    const service = new SynapseMcpToolService(h)
+    const service = new SynapseMcpToolService(h, admittedFor())
 
     const result = await service.callTool(RISKY_DELETE_NAME, {})
 
@@ -153,7 +176,7 @@ describe("synapseMcpToolService", () => {
 
   it("can opt in to exposing every enabled plugin tool", async () => {
     const h = host([descriptor("com.example.risky/delete", { destructiveHint: true })])
-    const service = new SynapseMcpToolService(h, { exposurePolicy: "all" })
+    const service = new SynapseMcpToolService(h, { exposurePolicy: "all", ...admittedFor() })
 
     expect((await service.listTools()).tools.map((tool) => tool.name)).toEqual([RISKY_DELETE_NAME])
 
@@ -167,7 +190,7 @@ describe("synapseMcpToolService", () => {
 
   it("excludes a non-read-only tool when exposure/identityForPlugin are omitted", async () => {
     const h = host([descriptor("com.example.a/write", { destructiveHint: true })])
-    const service = new SynapseMcpToolService(h)
+    const service = new SynapseMcpToolService(h, admittedFor())
 
     expect((await service.listTools()).tools).toEqual([])
   })
@@ -183,6 +206,7 @@ describe("synapseMcpToolService", () => {
     const service = new SynapseMcpToolService(h, {
       exposure: { isNonReadOnlyExposed: vi.fn(async () => true) },
       identityForPlugin: (pluginId) => (pluginId === "com.example.a" ? identity : undefined),
+      ...admittedFor(),
     })
 
     expect((await service.listTools()).tools.map((tool) => tool.name)).toEqual([WRITE_NAME])
@@ -193,6 +217,7 @@ describe("synapseMcpToolService", () => {
     const service = new SynapseMcpToolService(h, {
       exposure: { isNonReadOnlyExposed: vi.fn(async () => true) },
       identityForPlugin: () => undefined,
+      ...admittedFor(),
     })
 
     expect((await service.listTools()).tools).toEqual([])
@@ -200,7 +225,7 @@ describe("synapseMcpToolService", () => {
 
   it("serves list and call requests through the MCP protocol", async () => {
     const h = host([descriptor("com.example.safe/greet", { readOnlyHint: true })])
-    const server = createSynapseMcpServer(h)
+    const server = createSynapseMcpServer(h, admittedFor())
     const client = new Client({ name: "test-client", version: "1.0.0" })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
 
@@ -230,6 +255,7 @@ describe("synapseMcpToolService", () => {
 
   it("serves resources/list and resources/read through the MCP protocol", async () => {
     const server = createSynapseMcpServer(host([]), {
+      ...admittedFor("ws-external"),
       workspaceId: "ws-external",
       memory: fakeMemory([memoryEntry({ id: "m1", text: "hello from memory" })]),
     })
@@ -255,7 +281,7 @@ describe("synapseMcpToolService", () => {
   })
 
   it("advertises the resources capability", async () => {
-    const server = createSynapseMcpServer(host([]))
+    const server = createSynapseMcpServer(host([]), admittedFor())
     const client = new Client({ name: "test-client", version: "1.0.0" })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
 
@@ -279,6 +305,7 @@ describe("synapseMcpToolService", () => {
       recordRun: (trace) => traces.push(trace),
       workspaceId: "ws-external",
       clientId: "claude-desktop",
+      ...admittedFor("ws-external"),
     })
 
     await service.callTool(SAFE_GREET_NAME, { name: "Ada" })
@@ -340,6 +367,7 @@ function memoryEntry(overrides: Partial<MemoryEntry> = {}): MemoryEntry {
 describe("synapseMcpToolService resources", () => {
   it("lists memory entries visible to the bound workspace as resources", async () => {
     const service = new SynapseMcpToolService(host([]), {
+      ...admittedFor("ws-external"),
       workspaceId: "ws-external",
       memory: fakeMemory([
         memoryEntry({ id: "m1", text: "in scope" }),
@@ -362,6 +390,7 @@ describe("synapseMcpToolService resources", () => {
 
   it("excludes global memories by default (includeGlobal defaults false)", async () => {
     const service = new SynapseMcpToolService(host([]), {
+      ...admittedFor("ws-external"),
       workspaceId: "ws-external",
       memory: fakeMemory([memoryEntry({ id: "m1", scope: { visibility: "global" } })]),
     })
@@ -370,6 +399,7 @@ describe("synapseMcpToolService resources", () => {
 
   it("includes global memories when memoryIncludeGlobal is explicitly true", async () => {
     const service = new SynapseMcpToolService(host([]), {
+      ...admittedFor("ws-external"),
       workspaceId: "ws-external",
       memory: fakeMemory([memoryEntry({ id: "m1", scope: { visibility: "global" } })]),
       memoryIncludeGlobal: true,
@@ -379,6 +409,7 @@ describe("synapseMcpToolService resources", () => {
 
   it("reads a visible resource's text by uri", async () => {
     const service = new SynapseMcpToolService(host([]), {
+      ...admittedFor("ws-external"),
       workspaceId: "ws-external",
       memory: fakeMemory([memoryEntry({ id: "m1", text: "the actual text" })]),
     })
@@ -391,6 +422,7 @@ describe("synapseMcpToolService resources", () => {
 
   it("throws for a resource outside the bound scope, even with a guessed valid id", async () => {
     const service = new SynapseMcpToolService(host([]), {
+      ...admittedFor("ws-external"),
       workspaceId: "ws-external",
       memory: fakeMemory([
         memoryEntry({ id: "m1", scope: { visibility: "workspace", workspaceId: "ws-other" } }),
@@ -400,13 +432,17 @@ describe("synapseMcpToolService resources", () => {
   })
 
   it("throws for an unknown uri shape", async () => {
-    const service = new SynapseMcpToolService(host([]), { memory: fakeMemory([]) })
+    const service = new SynapseMcpToolService(host([]), {
+      ...admittedFor(),
+      memory: fakeMemory([]),
+    })
     await expect(service.readResource("not-a-synapse-uri")).rejects.toThrow()
   })
 
   it("records an mcp RunTrace for both listResources and readResource", async () => {
     const traces: RunTrace[] = []
     const service = new SynapseMcpToolService(host([]), {
+      ...admittedFor("ws-external"),
       recordRun: (trace) => traces.push(trace),
       workspaceId: "ws-external",
       clientId: "claude-desktop",
@@ -428,12 +464,15 @@ describe("synapseMcpToolService resources", () => {
   })
 
   it("returns an empty resource list when no memory port is configured", async () => {
-    const service = new SynapseMcpToolService(host([]))
+    const service = new SynapseMcpToolService(host([]), admittedFor())
     expect(await service.listResources()).toEqual({ resources: [] })
   })
 
   it("treats a memory URI with an invalid %-encoding as unknown rather than throwing", async () => {
-    const service = new SynapseMcpToolService(host([]), { memory: fakeMemory([]) })
+    const service = new SynapseMcpToolService(host([]), {
+      ...admittedFor(),
+      memory: fakeMemory([]),
+    })
     await expect(service.readResource("synapse://memory/%zz")).rejects.toThrow(
       "Unknown Synapse resource: synapse://memory/%zz"
     )
@@ -454,6 +493,7 @@ function fakeWorkspaceInstructions(
 describe("synapseMcpToolService workspace-instructions resources", () => {
   it("lists workspace-instructions entries alongside memory ones", async () => {
     const service = new SynapseMcpToolService(host([]), {
+      ...admittedFor("w1"),
       workspaceId: "w1",
       memory: fakeMemory([
         memoryEntry({ id: "m1", scope: { visibility: "workspace", workspaceId: "w1" } }),
@@ -475,6 +515,7 @@ describe("synapseMcpToolService workspace-instructions resources", () => {
 
   it("still returns workspace-instructions entries when memory is not configured", async () => {
     const service = new SynapseMcpToolService(host([]), {
+      ...admittedFor("w1"),
       workspaceId: "w1",
       workspaceInstructions: fakeWorkspaceInstructions([
         { uri: "synapse://workspace-instructions/w1/AGENTS.md", fileName: "AGENTS.md" },
@@ -495,6 +536,7 @@ describe("synapseMcpToolService workspace-instructions resources", () => {
   it("records exactly one resources/list trace per call, not one per source", async () => {
     const traces: RunTrace[] = []
     const service = new SynapseMcpToolService(host([]), {
+      ...admittedFor("w1"),
       workspaceId: "w1",
       recordRun: (trace) => traces.push(trace),
       memory: fakeMemory([memoryEntry({ id: "m1" })]),
@@ -511,6 +553,7 @@ describe("synapseMcpToolService workspace-instructions resources", () => {
   it("reads a workspace-instructions resource's text by uri", async () => {
     const uri = "synapse://workspace-instructions/w1/AGENTS.md"
     const service = new SynapseMcpToolService(host([]), {
+      ...admittedFor("w1"),
       workspaceId: "w1",
       workspaceInstructions: fakeWorkspaceInstructions([{ uri, fileName: "AGENTS.md" }], {
         [uri]: "Run tests before committing.",
@@ -527,6 +570,7 @@ describe("synapseMcpToolService workspace-instructions resources", () => {
   it("throws the same Unknown Synapse resource message for a denied workspace-instructions read as for a nonexistent memory one", async () => {
     const uri = "synapse://workspace-instructions/w1/AGENTS.md"
     const service = new SynapseMcpToolService(host([]), {
+      ...admittedFor("w1"),
       workspaceId: "w1",
       workspaceInstructions: fakeWorkspaceInstructions([{ uri, fileName: "AGENTS.md" }]),
     })
@@ -538,6 +582,7 @@ describe("synapseMcpToolService workspace-instructions resources", () => {
     const uri = "synapse://workspace-instructions/w1/AGENTS.md"
     const readSpy = vi.fn(async () => ({ uri, text: "content" }))
     const service = new SynapseMcpToolService(host([]), {
+      ...admittedFor("w1"),
       workspaceId: "w1",
       workspaceInstructions: { list: async () => [], read: readSpy },
     })
@@ -548,5 +593,92 @@ describe("synapseMcpToolService workspace-instructions resources", () => {
     expect(readSpy).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: "w1", uri, signal: controller.signal })
     )
+  })
+})
+
+describe("synapseMcpToolService — workspace admission", () => {
+  it("listTools rejects an unbound service", async () => {
+    const service = new SynapseMcpToolService(host([descriptor("com.example.safe/greet")]), {
+      workspaceBinding: { kind: "unbound" },
+      workspaces: activeWorkspaces(),
+    })
+    await expect(service.listTools()).rejects.toBeInstanceOf(McpUnboundError)
+  })
+
+  it("callTool rejects an unknown workspace", async () => {
+    const service = new SynapseMcpToolService(host([descriptor("com.example.safe/greet")]), {
+      workspaceBinding: { kind: "bound", workspaceId: "ghost" },
+      workspaces: { get: async () => undefined },
+    })
+    await expect(service.callTool(SAFE_GREET_NAME, {})).rejects.toBeInstanceOf(
+      McpWorkspaceNotFoundError
+    )
+  })
+
+  it("listResources rejects an archived workspace", async () => {
+    const service = new SynapseMcpToolService(host([]), {
+      workspaceBinding: { kind: "bound", workspaceId: "work" },
+      workspaces: {
+        get: async () => ({ id: "work", name: "Work", createdAt: 0, archived: true }),
+      },
+    })
+    await expect(service.listResources()).rejects.toBeInstanceOf(McpWorkspaceArchivedError)
+  })
+
+  it("readResource rejects an archived workspace", async () => {
+    const service = new SynapseMcpToolService(host([]), {
+      workspaceBinding: { kind: "bound", workspaceId: "work" },
+      workspaces: {
+        get: async () => ({ id: "work", name: "Work", createdAt: 0, archived: true }),
+      },
+    })
+    await expect(service.readResource("synapse://memory/x")).rejects.toBeInstanceOf(
+      McpWorkspaceArchivedError
+    )
+  })
+
+  it("an active workspace behaves exactly as before admission was added", async () => {
+    const service = new SynapseMcpToolService(
+      host([descriptor("com.example.safe/greet", { readOnlyHint: true })]),
+      { workspaceBinding: { kind: "bound", workspaceId: "work" }, workspaces: activeWorkspaces() }
+    )
+    expect((await service.listTools()).tools.map((tool) => tool.name)).toEqual([SAFE_GREET_NAME])
+  })
+
+  it("cached-tool-list regression: callTool re-checks admission even after a successful listTools()", async () => {
+    let archived = false
+    const workspaces = {
+      get: async (id: string) => ({
+        id,
+        name: "Work",
+        createdAt: 0,
+        archived: archived || undefined,
+      }),
+    }
+    const toolHost = host([descriptor("com.example.safe/greet", { readOnlyHint: true })])
+    const service = new SynapseMcpToolService(toolHost, {
+      workspaceBinding: { kind: "bound", workspaceId: "work" },
+      workspaces,
+    })
+
+    await expect(service.listTools()).resolves.toBeDefined()
+    archived = true
+    await expect(service.callTool(SAFE_GREET_NAME, {})).rejects.toBeInstanceOf(
+      McpWorkspaceArchivedError
+    )
+  })
+
+  it("the unbound migration message is written via onUnboundWarning at most once across multiple rejected calls", async () => {
+    const onUnboundWarning = vi.fn()
+    const service = new SynapseMcpToolService(host([descriptor("com.example.safe/greet")]), {
+      workspaceBinding: { kind: "unbound" },
+      workspaces: activeWorkspaces(),
+      onUnboundWarning,
+    })
+
+    await expect(service.listTools()).rejects.toBeInstanceOf(McpUnboundError)
+    await expect(service.listResources()).rejects.toBeInstanceOf(McpUnboundError)
+
+    expect(onUnboundWarning).toHaveBeenCalledTimes(1)
   })
 })

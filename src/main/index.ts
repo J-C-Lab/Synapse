@@ -87,6 +87,7 @@ import { HostResourceIpcService, registerHostResourcesIpc } from "./ipc/host-res
 import { registerLanIpc } from "./ipc/lan"
 import { LauncherService } from "./ipc/launcher-service"
 import { registerMarketplaceIpc } from "./ipc/marketplace"
+import { registerMcpOnboardingIpc } from "./ipc/mcp-onboarding"
 import { registerMemoryIpc } from "./ipc/memory"
 import { registerPluginIpc } from "./ipc/plugins"
 import { registerRunsIpc } from "./ipc/runs"
@@ -107,6 +108,7 @@ import { MarketplaceAccountService } from "./marketplace/account-service"
 import { marketplaceTokenFilePath, MarketplaceTokenStore } from "./marketplace/token-store"
 import { startHeadlessApprovalServer } from "./mcp/headless-approval-server"
 import { createHostResourceAudit } from "./mcp/host-resource-audit"
+import { runMcpConnectionTest } from "./mcp/mcp-connection-test"
 import { defaultNotificationIcon, showStartupNotification } from "./notifications"
 import { createCapabilityAudit } from "./plugins/capability-audit"
 import { createElectronSecretPrompt, CredentialBroker } from "./plugins/credential-broker"
@@ -435,6 +437,13 @@ function registerIpc(): void {
     isTrustedSender: isTrustedIpcSender,
   })
   registerAiIpc(ipcMain, agent, { isTrustedSender: isTrustedIpcSender })
+  registerMcpOnboardingIpc(ipcMain, {
+    isTrustedSender: isTrustedIpcSender,
+    isPackaged: () => app.isPackaged,
+    userDataDir: () => app.getPath("userData"),
+    workspaces: new WorkspaceStore(path.join(app.getPath("userData"), "ai")),
+    spawnConnectionTest: (descriptor) => runMcpConnectionTest(descriptor, 10_000),
+  })
   registerRunsIpc(ipcMain, runTraceDir(app.getPath("userData")), {
     isTrustedSender: isTrustedIpcSender,
   })
@@ -1159,7 +1168,11 @@ function reExecMcpStdioAsNode(): void {
   const entry = path.join(__dirname, "mcp-stdio.js")
   const child = spawn(process.execPath, [entry], {
     stdio: "inherit",
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: "1",
+      SYNAPSE_MCP_PARENT_PID: String(process.pid),
+    },
   })
   child.on("exit", (code) => app.exit(code ?? 0))
   child.on("error", (err) => {

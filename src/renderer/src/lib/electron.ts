@@ -702,6 +702,25 @@ export async function listWorkspaceRoots(workspaceId: string): Promise<Workspace
   return api().listWorkspaceRoots(workspaceId)
 }
 
+export type McpOnboardingAvailability = SynapseMcpOnboardingAvailability
+export type McpConnectionTestResult = SynapseMcpConnectionTestResult
+
+export async function getMcpOnboardingAvailability(
+  workspaceId: string
+): Promise<McpOnboardingAvailability> {
+  return api().getMcpOnboardingAvailability(workspaceId)
+}
+
+export async function generateMcpOnboardingConfig(workspaceId: string): Promise<string> {
+  return api().generateMcpOnboardingConfig(workspaceId)
+}
+
+export async function testMcpOnboardingConnection(
+  workspaceId: string
+): Promise<McpConnectionTestResult> {
+  return api().testMcpOnboardingConnection(workspaceId)
+}
+
 export async function createWorkspaceRoot(
   workspaceId: string,
   name: string,

@@ -227,7 +227,28 @@
     "defaultWorkspaceHint": "默认工作区不能重命名或归档。",
     "renameSuccess": "工作区已重命名。",
     "archiveSuccess": "工作区已归档。",
-    "unarchiveSuccess": "工作区已取消归档。"
+    "unarchiveSuccess": "工作区已取消归档。",
+    "idLabel": "ID",
+    "rootsLabel": "根目录",
+    "rootsSummaryEmpty": "暂无根目录",
+    "rootsSummaryPrimary": "{{name}}（主目录）",
+    "archiveConfirmTitle": "归档这个工作区？",
+    "archiveConfirmBody": "归档后，使用此工作区 ID 的外部 MCP 客户端将无法继续读取其资源或调用其工具。它们需要改用其他工作区 ID，或者你可以稍后取消归档。",
+    "archiveConfirmButton": "归档",
+    "archiveCancelButton": "取消"
+  },
+  "mcpOnboarding": {
+    "title": "连接 MCP 客户端",
+    "subtitle": "为这个工作区生成 Claude Desktop 配置，或者测试连接是否真的可用。",
+    "generateButton": "生成配置",
+    "testButton": "测试连接",
+    "copyButton": "复制",
+    "copiedLabel": "已复制",
+    "devNote": "生成配置和测试连接需要打包后的正式安装版本。",
+    "archivedNote": "这个工作区已归档。取消归档后才能连接 MCP 客户端。",
+    "testRunning": "测试中…",
+    "testSuccess": "连接成功 — {{toolCount}} 个工具，{{resourceCount}} 个资源。",
+    "testFailure": "连接失败：{{message}}"
   },
   "trustedSources": {
     "title": "可信插件来源",

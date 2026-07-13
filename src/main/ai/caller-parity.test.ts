@@ -80,6 +80,11 @@ describe("caller parity", () => {
       recordRun: (trace) => traces.push(trace),
       workspaceId: "ws-external",
       clientId: "claude-desktop",
+      workspaceBinding: { kind: "bound", workspaceId: "ws-external" },
+      workspaces: {
+        get: async (id) =>
+          id === "ws-external" ? { id, name: "External", createdAt: 0 } : undefined,
+      },
     }).callTool(SAFE, {})
 
     const internal = traces.find((t) => t.origin === "interactive")!

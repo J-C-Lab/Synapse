@@ -146,6 +146,13 @@ export interface PluginHostOptions {
   safeStorage?: SafeStoragePort
   secretPrompt?: SecretPromptPort
   credentialBroker?: CredentialBroker
+  /** "tools-only" skips trigger registration, OAuth timer arming, and
+   *  clipboard-change-trigger watching — everything a tool-serving-only
+   *  context (the external MCP stdio path, or a short-lived connection
+   *  test) doesn't need and shouldn't start as a side effect of just
+   *  listing/calling tools. Default "full" — the GUI's own PluginHost
+   *  construction is unaffected. */
+  mode?: "full" | "tools-only"
 }
 
 /**
@@ -213,11 +220,14 @@ export class PluginHost {
   private readonly triggerInstances: TriggerInstanceStore
   private readonly triggerRegistry: TriggerRegistry
   private triggerMigrationNotice: TriggerMigrationNoticeState | undefined
+  private readonly mode: "full" | "tools-only"
   private readonly handleRegistryChanged = (): void => {
+    if (this.mode !== "full") return
     void this.syncClipboardWatcher()
   }
 
   constructor(private readonly options: PluginHostOptions) {
+    this.mode = options.mode ?? "full"
     this.builtinDir = path.join(options.resourcesDir, "builtin-plugins")
     this.userDir = path.join(options.userDataDir, "plugins")
     this.devFilePath = path.join(options.userDataDir, "dev-plugins.json")
@@ -346,14 +356,16 @@ export class PluginHost {
             ),
       })
       await migrateGrants(this.registry.list(), this.grants, this.migrationMarker)
-      await this.syncTriggerRegistrations()
-      for (const entry of this.registry.list()) {
-        if (entry.manifest) {
-          await this.credentialBroker.armOAuthTimers(
-            entry.pluginId,
-            entry.manifest,
-            entry.source.kind
-          )
+      if (this.mode === "full") {
+        await this.syncTriggerRegistrations()
+        for (const entry of this.registry.list()) {
+          if (entry.manifest) {
+            await this.credentialBroker.armOAuthTimers(
+              entry.pluginId,
+              entry.manifest,
+              entry.source.kind
+            )
+          }
         }
       }
     } finally {
@@ -397,7 +409,7 @@ export class PluginHost {
     const entry = await this.withPreferences(await this.registry.setEnabled(pluginId, enabled))
     if (enabled) {
       await this.ensureTriggerUseGrants(entry)
-      if (entry.manifest?.triggers?.length) {
+      if (this.mode === "full" && entry.manifest?.triggers?.length) {
         await this.triggerRegistry.register(pluginId, entry.manifest.triggers)
       }
     } else {
