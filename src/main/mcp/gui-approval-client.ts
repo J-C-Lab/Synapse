@@ -1,25 +1,35 @@
 import type { Socket } from "node:net"
+import type { ApprovalOutcomeReason, ApprovalResult } from "../approvals/types"
 import type { CapabilityRequest } from "../plugins/capability-gate"
 import type { GrantIdentity } from "../plugins/grant-store"
 import type { HostResourceApprovalRequest } from "./host-resource-approval"
+import { randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
 import { connect } from "node:net"
-import { readJsonLine, writeJsonLine } from "./line-delimited-socket"
+import { createJsonLineReader, writeJsonLine } from "./line-delimited-socket"
 
 export interface GuiApprovalRequest {
   identity: GrantIdentity
   request: Omit<CapabilityRequest, "signal">
+  /** Local to this process only — never serialized. Watched to decide
+   *  when to write a cancel frame on the already-open socket. AbortSignal
+   *  is not JSON-serializable; the request body stays signal-free
+   *  (stripSignal() at the call site is correct and stays). */
+  signal?: AbortSignal
 }
 
 export interface GuiApprovalPort {
-  requestApproval: (input: GuiApprovalRequest) => Promise<boolean>
+  requestApproval: (input: GuiApprovalRequest) => Promise<ApprovalResult>
   requestHostResourceApproval: (input: {
     request: HostResourceApprovalRequest
-    /** Aborts this process's own connect/retry/wait loop early. Does NOT
-     *  reach the GUI process — a request already sent and already showing
-     *  a dialog is unaffected. */
+    /** Local to this process only — never serialized. Watched to decide
+     *  when to write a cancel frame on the already-open socket, or (if
+     *  still connecting) to give up on the connect/retry/wait loop
+     *  early. Does NOT itself reach the GUI process — a request already
+     *  sent and already showing a dialog is unaffected until the cancel
+     *  frame arrives. */
     signal?: AbortSignal
-  }) => Promise<boolean>
+  }) => Promise<ApprovalResult>
 }
 
 export interface GuiApprovalClientOptions {
@@ -48,12 +58,11 @@ export function createGuiApprovalPort(options: GuiApprovalClientOptions): GuiApp
     requestApproval: (input) =>
       sendPayload(
         { kind: "plugin-capability", identity: input.identity, request: input.request },
-        options
+        options,
+        input.signal
       ),
-    requestHostResourceApproval: (input) => {
-      if (input.signal?.aborted) return Promise.resolve(false)
-      return sendPayload({ kind: "host-resource", request: input.request }, options, input.signal)
-    },
+    requestHostResourceApproval: (input) =>
+      sendPayload({ kind: "host-resource", request: input.request }, options, input.signal),
   }
 }
 
@@ -69,7 +78,9 @@ async function sendPayload(
   payload: OutgoingPayload,
   options: GuiApprovalClientOptions,
   signal?: AbortSignal
-): Promise<boolean> {
+): Promise<ApprovalResult> {
+  if (signal?.aborted) return { allow: false, outcomeReason: "cancelled" }
+
   const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
   const responseTimeoutMs = options.responseTimeoutMs ?? DEFAULT_RESPONSE_TIMEOUT_MS
   const retryIntervalMs = options.retryIntervalMs ?? DEFAULT_RETRY_INTERVAL_MS
@@ -78,7 +89,7 @@ async function sendPayload(
   let spawned = false
   let connected: { socket: Socket; token: string } | undefined
   for (;;) {
-    if (signal?.aborted) return false
+    if (signal?.aborted) return { allow: false, outcomeReason: "cancelled" }
     const endpoint = await readEndpoint(options.portFilePath)
     if (endpoint) {
       try {
@@ -93,24 +104,60 @@ async function sendPayload(
       spawned = true
       options.spawnGui()
     }
-    if (Date.now() >= deadline) return false
+    if (Date.now() >= deadline) return { allow: false, outcomeReason: "send-failed" }
     await sleep(Math.min(retryIntervalMs, Math.max(0, deadline - Date.now())))
   }
 
-  // Connected: from here on, any failure (including a response timeout) is
-  // fail-closed directly — never loop back into spawn/retry, which would
-  // either double-prompt the user or hang further.
+  // Connected: from here on, any failure is fail-closed directly — never
+  // loop back into spawn/retry, which would either double-prompt the user
+  // or hang further. A response timeout or caller abort at this point
+  // writes a best-effort cancel frame on the still-open socket so the GUI
+  // side can drop its own pending prompt instead of leaving it hanging.
+  const requestId = randomUUID()
+  const reader = createJsonLineReader(connected.socket)
+  let timeoutTimer: ReturnType<typeof setTimeout> | undefined
   try {
-    writeJsonLine(connected.socket, { token: connected.token, ...payload })
-    const response = (await readJsonLine(connected.socket, responseTimeoutMs)) as {
-      allow?: unknown
-    }
-    return response.allow === true
+    writeJsonLine(connected.socket, { token: connected.token, requestId, ...payload })
+
+    // reader.next() waits indefinitely here — the response timeout below
+    // is the sole timeout authority, so there is exactly one setTimeout
+    // race decision (not two racing timers on the same delay).
+    const responsePromise = reader.next()
+    const timeoutPromise = new Promise<{ kind: "timed-out" }>((resolve) => {
+      timeoutTimer = setTimeout(resolve, responseTimeoutMs, { kind: "timed-out" })
+    })
+    const abortPromise = signal
+      ? new Promise<{ kind: "cancelled" }>((resolve) => {
+          signal.addEventListener("abort", () => resolve({ kind: "cancelled" }), { once: true })
+        })
+      : new Promise<never>(() => {})
+
+    const winner = await Promise.race([
+      responsePromise.then((value) => ({ kind: "response" as const, value })),
+      timeoutPromise,
+      abortPromise,
+    ])
+
+    if (winner.kind === "response") return parseResponse(winner.value)
+
+    writeJsonLine(connected.socket, { type: "cancel", requestId, reason: winner.kind })
+    return { allow: false, outcomeReason: winner.kind }
   } catch {
-    return false
+    return { allow: false, outcomeReason: "send-failed" }
   } finally {
+    clearTimeout(timeoutTimer)
+    reader.dispose()
     connected.socket.end()
   }
+}
+
+function parseResponse(value: unknown): ApprovalResult {
+  const response = (value ?? {}) as { allow?: unknown; outcomeReason?: unknown }
+  if (response.allow === true) return { allow: true }
+  if (typeof response.outcomeReason === "string") {
+    return { allow: false, outcomeReason: response.outcomeReason as ApprovalOutcomeReason }
+  }
+  return { allow: false }
 }
 
 function perAttemptTimeoutMs(deadline: number): number {

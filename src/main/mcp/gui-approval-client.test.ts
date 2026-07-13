@@ -8,7 +8,7 @@ import { tmpdir } from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createGuiApprovalPort } from "./gui-approval-client"
-import { readJsonLine, writeJsonLine } from "./line-delimited-socket"
+import { createJsonLineReader, readJsonLine, writeJsonLine } from "./line-delimited-socket"
 
 let dir: string
 let portFilePath: string
@@ -73,13 +73,37 @@ async function startFakeGui(answer: boolean): Promise<void> {
   await fs.writeFile(portFilePath, JSON.stringify({ port, token: "tok" }))
 }
 
+/** Starts a fake "GUI approval server" that accepts the connection,
+ *  records every line it receives into `receivedLines`, but never writes
+ *  a response — used to prove the client can give up locally (abort or
+ *  response timeout) without waiting on a GUI answer that never arrives,
+ *  and to observe the cancel frame the client writes in the process. */
+async function startSilentFakeGui(receivedLines: unknown[]): Promise<void> {
+  server = createServer((socket) => {
+    openSockets.push(socket)
+    const reader = createJsonLineReader(socket)
+    void (async () => {
+      for (;;) {
+        try {
+          receivedLines.push(await reader.next())
+        } catch {
+          return
+        }
+      }
+    })()
+  })
+  await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve))
+  const port = (server!.address() as AddressInfo).port
+  await fs.writeFile(portFilePath, JSON.stringify({ port, token: "tok" }))
+}
+
 describe("createGuiApprovalPort", () => {
   it("resolves true when the GUI is already listening and answers true", async () => {
     await startFakeGui(true)
     const spawnGui = vi.fn()
     const port = createGuiApprovalPort({ portFilePath, spawnGui })
     const result = await port.requestApproval({ identity: identity(), request: request() })
-    expect(result).toBe(true)
+    expect(result).toEqual({ allow: true })
     expect(spawnGui).not.toHaveBeenCalled()
   })
 
@@ -87,7 +111,7 @@ describe("createGuiApprovalPort", () => {
     await startFakeGui(false)
     const port = createGuiApprovalPort({ portFilePath, spawnGui: vi.fn() })
     const result = await port.requestApproval({ identity: identity(), request: request() })
-    expect(result).toBe(false)
+    expect(result).toEqual({ allow: false })
   })
 
   it("spawns the GUI and retries until a server appears, then succeeds", async () => {
@@ -102,7 +126,7 @@ describe("createGuiApprovalPort", () => {
       retryIntervalMs: 50,
     })
     const result = await port.requestApproval({ identity: identity(), request: request() })
-    expect(result).toBe(true)
+    expect(result).toEqual({ allow: true })
     expect(spawnGui).toHaveBeenCalledOnce()
   })
 
@@ -115,7 +139,7 @@ describe("createGuiApprovalPort", () => {
       retryIntervalMs: 50,
     })
     const result = await port.requestApproval({ identity: identity(), request: request() })
-    expect(result).toBe(false)
+    expect(result).toEqual({ allow: false, outcomeReason: "send-failed" })
     expect(spawnGui).toHaveBeenCalledOnce()
   })
 
@@ -136,10 +160,64 @@ describe("createGuiApprovalPort", () => {
       responseTimeoutMs: 200,
     })
     const result = await clientPort.requestApproval({ identity: identity(), request: request() })
-    expect(result).toBe(false)
+    expect(result).toEqual({ allow: false, outcomeReason: "timed-out" })
     // Connected successfully on the first attempt — must not spawn/retry once
     // a connection is established, even though the response itself timed out.
     expect(spawnGui).not.toHaveBeenCalled()
+  })
+})
+
+describe("createGuiApprovalPort — cancel frame", () => {
+  it("aborting the caller signal after the request is sent resolves 'cancelled' locally, without waiting for a GUI response, and writes a cancel frame", async () => {
+    const receivedLines: unknown[] = []
+    await startSilentFakeGui(receivedLines)
+    const controller = new AbortController()
+
+    const resultPromise = createGuiApprovalPort({
+      portFilePath,
+      spawnGui: vi.fn(),
+    }).requestApproval({ identity: identity(), request: request(), signal: controller.signal })
+
+    // Give the request line time to actually reach the fake server before
+    // aborting, so this proves cancellation of an in-flight request — not
+    // just the already-covered "aborted before connecting" case.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    controller.abort()
+
+    const result = await resultPromise
+    expect(result).toEqual({ allow: false, outcomeReason: "cancelled" })
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(receivedLines).toHaveLength(2)
+    expect(receivedLines[1]).toMatchObject({ type: "cancel", reason: "cancelled" })
+  })
+
+  it("responseTimeoutMs elapsing resolves 'timed-out' locally, without a caller signal, and writes a cancel frame", async () => {
+    const receivedLines: unknown[] = []
+    await startSilentFakeGui(receivedLines)
+
+    const result = await createGuiApprovalPort({
+      portFilePath,
+      spawnGui: vi.fn(),
+      responseTimeoutMs: 100,
+    }).requestApproval({ identity: identity(), request: request() })
+
+    expect(result).toEqual({ allow: false, outcomeReason: "timed-out" })
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(receivedLines).toHaveLength(2)
+    expect(receivedLines[1]).toMatchObject({ type: "cancel", reason: "timed-out" })
+  })
+
+  it("resolves 'send-failed' when no port file ever appears and connectTimeoutMs elapses without ever reaching a server", async () => {
+    const result = await createGuiApprovalPort({
+      portFilePath: path.join(dir, "nonexistent-mcp-approval.json"),
+      spawnGui: vi.fn(),
+      connectTimeoutMs: 100,
+      retryIntervalMs: 20,
+    }).requestApproval({ identity: identity(), request: request() })
+
+    expect(result).toEqual({ allow: false, outcomeReason: "send-failed" })
   })
 })
 
@@ -148,14 +226,14 @@ describe("createGuiApprovalPort — requestHostResourceApproval", () => {
     await startFakeGui(true)
     const port = createGuiApprovalPort({ portFilePath, spawnGui: vi.fn() })
     const result = await port.requestHostResourceApproval({ request: hostResourceRequest() })
-    expect(result).toBe(true)
+    expect(result).toEqual({ allow: true })
   })
 
   it("resolves false when the GUI is already listening and answers false", async () => {
     await startFakeGui(false)
     const port = createGuiApprovalPort({ portFilePath, spawnGui: vi.fn() })
     const result = await port.requestHostResourceApproval({ request: hostResourceRequest() })
-    expect(result).toBe(false)
+    expect(result).toEqual({ allow: false })
   })
 
   it("fails closed when nothing ever starts listening before connectTimeoutMs", async () => {
@@ -167,7 +245,7 @@ describe("createGuiApprovalPort — requestHostResourceApproval", () => {
       retryIntervalMs: 50,
     })
     const result = await port.requestHostResourceApproval({ request: hostResourceRequest() })
-    expect(result).toBe(false)
+    expect(result).toEqual({ allow: false, outcomeReason: "send-failed" })
     expect(spawnGui).toHaveBeenCalledOnce()
   })
 
@@ -180,7 +258,7 @@ describe("createGuiApprovalPort — requestHostResourceApproval", () => {
       request: hostResourceRequest(),
       signal: controller.signal,
     })
-    expect(result).toBe(false)
+    expect(result).toEqual({ allow: false, outcomeReason: "cancelled" })
     expect(spawnGui).not.toHaveBeenCalled()
   })
 })
