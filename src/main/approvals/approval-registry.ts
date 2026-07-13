@@ -12,6 +12,8 @@ export type RegisterOutcome =
 export interface ApprovalHandle {
   readonly id: string
   readonly result: Promise<ApprovalResult>
+  markDelivered: (deliveredTo: readonly WebContents[]) => void
+  cancel: (reason: ApprovalOutcomeReason) => void
 }
 
 export interface RegisterOptions {
@@ -87,7 +89,13 @@ export class ApprovalRegistry {
       )
     }
 
-    return { status: "registered", handle: { id, result } }
+    const handle: ApprovalHandle = {
+      id,
+      result,
+      markDelivered: (deliveredTo) => this.markDelivered(id, deliveredTo),
+      cancel: (reason) => this.cancel(id, reason),
+    }
+    return { status: "registered", handle }
   }
 
   resolveByHuman(id: string, expectedKind: ApprovalKind, allow: boolean): void {

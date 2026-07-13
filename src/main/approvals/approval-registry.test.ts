@@ -262,3 +262,18 @@ describe("approvalRegistry — deliveredTo / markDelivered / retireRecipient", (
     })
   })
 })
+
+describe("approvalRegistry — handle-bound markDelivered/cancel", () => {
+  it("handle.markDelivered and handle.cancel delegate to the same registry-level behavior", async () => {
+    const registry = new ApprovalRegistry()
+    const outcome = registry.register("host-resource", {})
+    if (outcome.status !== "registered") throw new Error("unreachable")
+
+    outcome.handle.cancel("send-failed")
+
+    await expect(outcome.handle.result).resolves.toEqual({
+      allow: false,
+      outcomeReason: "send-failed",
+    })
+  })
+})
