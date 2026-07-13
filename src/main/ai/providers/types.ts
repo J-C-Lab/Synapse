@@ -72,6 +72,13 @@ export interface ProviderRequest {
   tools: ProviderToolSchema[]
   maxTokens: number
   signal?: AbortSignal
+  /** Host-only lifecycle signal, independent of ProviderStreamEvent yields —
+   *  "headers" fires once when the server has responded at all (before any
+   *  event necessarily gets yielded to the normalized stream — a tool-only
+   *  turn can yield zero ProviderStreamEvents until it's fully done), and
+   *  "activity" fires on every subsequent raw provider event. Never
+   *  forwarded to the renderer or persisted — purely for deadline timers. */
+  onTransportProgress?: (phase: "headers" | "activity") => void
 }
 
 /**
@@ -90,6 +97,8 @@ export type ProviderStreamEvent =
 
 export interface ChatProvider {
   readonly id: string
-  /** Stream one assistant turn. Implementations must honour `req.signal`. */
+  /** Stream one assistant turn. Implementations must honour `req.signal`
+   *  and call `req.onTransportProgress` at the raw-SDK-event level if
+   *  provided — see ProviderRequest. */
   stream: (req: ProviderRequest) => AsyncIterable<ProviderStreamEvent>
 }
