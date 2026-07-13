@@ -61,3 +61,6 @@ Synapse/
 
 # superpowers brainstorming scratch
 .superpowers/
+
+# local git worktrees
+.worktrees/
