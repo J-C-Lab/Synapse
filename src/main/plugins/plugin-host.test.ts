@@ -667,7 +667,7 @@ describe("pluginHost clipboard watcher", () => {
         },
         capabilityGovernance: {
           userDataDir: dir,
-          prompt: async () => false,
+          prompt: async () => ({ allow: false }),
           audit,
         },
       })
@@ -718,7 +718,7 @@ describe("pluginHost clipboard watcher", () => {
         capabilityGovernance: {
           userDataDir: dir,
           grants,
-          approve: async () => false,
+          approve: async () => ({ allow: false }),
           audit,
         },
       })
@@ -1102,8 +1102,8 @@ describe("github inbox bundled plugin", () => {
       workspaceRoots: { listForWorkspace: async () => [] },
       capabilityGovernance: {
         userDataDir: dir,
-        approve: async () => true,
-        prompt: async () => true,
+        approve: async () => ({ allow: true }),
+        prompt: async () => ({ allow: true }),
       },
     })
 

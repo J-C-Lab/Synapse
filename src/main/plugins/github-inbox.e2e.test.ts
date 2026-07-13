@@ -68,8 +68,8 @@ describe("github inbox plugin", () => {
       },
       capabilityGovernance: {
         userDataDir: dir,
-        approve: async () => true,
-        prompt: async () => true,
+        approve: async () => ({ allow: true }),
+        prompt: async () => ({ allow: true }),
       },
       backgroundAgentProvider: async () => ({ provider, model: "fake-model" }),
     })

@@ -1,3 +1,4 @@
+import type { ApprovalResult } from "../approvals/types"
 import type { CapabilityAuditEntry, CapabilityRequest } from "./capability-gate"
 import type { GrantIdentity } from "./grant-store"
 import type { InvocationContext } from "./invocation-context"
@@ -23,8 +24,8 @@ function makeGate(opts: {
   declaredEntries?: { id: string; scope?: unknown }[]
   granted?: string[]
   preauthorizedExternalMcp?: string[]
-  prompt?: () => Promise<boolean>
-  approve?: () => Promise<boolean>
+  prompt?: () => Promise<ApprovalResult>
+  approve?: () => Promise<ApprovalResult>
 }) {
   const granted = new Set(opts.granted ?? [])
   const preauthorized = new Set(opts.preauthorizedExternalMcp ?? [])
@@ -37,8 +38,8 @@ function makeGate(opts: {
       preauthorized.has(cap)
     ),
   }
-  const prompt = vi.fn(opts.prompt ?? (async () => true))
-  const approve = vi.fn(opts.approve ?? (async () => true))
+  const prompt = vi.fn(opts.prompt ?? (async (): Promise<ApprovalResult> => ({ allow: true })))
+  const approve = vi.fn(opts.approve ?? (async (): Promise<ApprovalResult> => ({ allow: true })))
   const audit: CapabilityAuditEntry[] = []
   const declared = opts.declaredEntries ?? (opts.declared ?? []).map((id) => ({ id }))
   const gate = new CapabilityGate({
@@ -109,7 +110,10 @@ describe("capabilityGate.ensure", () => {
   })
 
   it("denies when the consent prompt is refused", async () => {
-    const { gate } = makeGate({ declared: ["clipboard:read"], prompt: async () => false })
+    const { gate } = makeGate({
+      declared: ["clipboard:read"],
+      prompt: async () => ({ allow: false }),
+    })
     await expect(gate.ensure(req())).rejects.toBeInstanceOf(CapabilityDenied)
   })
 
@@ -131,7 +135,7 @@ describe("capabilityGate.ensure", () => {
     const { gate, approve } = makeGate({
       declared: ["clipboard:watch"],
       granted: ["clipboard:watch"],
-      approve: async () => false,
+      approve: async () => ({ allow: false }),
     })
     await expect(
       gate.ensure(
@@ -178,7 +182,7 @@ describe("capabilityGate.ensure", () => {
       declared: ["clipboard:watch"],
       granted: ["clipboard:watch"],
       preauthorizedExternalMcp: ["clipboard:watch"],
-      approve: async () => false,
+      approve: async () => ({ allow: false }),
     })
     await expect(
       gate.ensure(
@@ -231,7 +235,7 @@ describe("capabilityGate.ensure", () => {
     const { gate, approve } = makeGate({
       declared: ["clipboard:watch"],
       granted: ["clipboard:watch"],
-      approve: async () => false,
+      approve: async () => ({ allow: false }),
     })
     await expect(
       gate.ensure(
@@ -250,7 +254,7 @@ describe("capabilityGate.ensure", () => {
     const { gate, approve } = makeGate({
       declared: ["clipboard:watch"],
       granted: ["clipboard:watch"],
-      approve: async () => false,
+      approve: async () => ({ allow: false }),
     })
     await expect(
       gate.ensure(
@@ -362,8 +366,8 @@ describe("capabilityGate.ensure", () => {
         grant: async () => {},
         isExternalMcpPreauthorized: async () => false,
       },
-      prompt: async () => true,
-      approve: async () => true,
+      prompt: async () => ({ allow: true }),
+      approve: async () => ({ allow: true }),
       audit: (entry) => audited.push(entry),
     })
 
@@ -389,6 +393,64 @@ describe("capabilityGate.ensure", () => {
   })
 })
 
+describe("capabilityGate — outcomeReason threading", () => {
+  it("a prompt() denial with outcomeReason 'cancelled' is audited with that reason", async () => {
+    const { gate, audit } = makeGate({
+      declared: ["clipboard:read"],
+      prompt: async () => ({ allow: false, outcomeReason: "cancelled" }),
+    })
+
+    await expect(gate.ensure(req())).rejects.toThrow(/grant refused/)
+
+    expect(audit).toHaveLength(1)
+    expect(audit[0].outcomeReason).toBe("cancelled")
+  })
+
+  it("a plain {allow:false} denial (human clicked Deny) is audited with no outcomeReason", async () => {
+    const { gate, audit } = makeGate({
+      declared: ["clipboard:read"],
+      prompt: async () => ({ allow: false }),
+    })
+
+    await expect(gate.ensure(req())).rejects.toThrow(/grant refused/)
+
+    expect(audit[0].outcomeReason).toBeUndefined()
+  })
+
+  it("{allow:true} still permits and audits normally", async () => {
+    const { gate, audit } = makeGate({
+      declared: ["clipboard:read"],
+      prompt: async () => ({ allow: true }),
+    })
+
+    await gate.ensure(req())
+
+    expect(audit[0].decision).toBe("allow")
+    expect(audit[0].outcomeReason).toBeUndefined()
+  })
+
+  it("an approve() denial with outcomeReason 'timed-out' is audited with that reason", async () => {
+    const { gate, audit } = makeGate({
+      declared: ["clipboard:watch"],
+      granted: ["clipboard:watch"],
+      approve: async () => ({ allow: false, outcomeReason: "timed-out" }),
+    })
+
+    await expect(
+      gate.ensure(
+        req({
+          capability: "clipboard:watch",
+          invocation: toolInvocation({
+            caller: { kind: "agent", principal: { kind: "internal-agent" } },
+          }),
+        })
+      )
+    ).rejects.toThrow(/per-call approval refused/)
+
+    expect(audit.at(-1)?.outcomeReason).toBe("timed-out")
+  })
+})
+
 describe("capabilityGate.assertDeclared", () => {
   it("throws synchronously for an undeclared capability and passes a declared one", () => {
     const { gate } = makeGate({ declared: ["clipboard:read"] })
@@ -402,8 +464,8 @@ function gateWithBudget(
   opts: {
     declared?: { id: string; scope?: unknown }[]
     granted?: boolean
-    prompt?: () => Promise<boolean>
-    approve?: () => Promise<boolean>
+    prompt?: () => Promise<ApprovalResult>
+    approve?: () => Promise<ApprovalResult>
   } = {}
 ) {
   const audit: CapabilityAuditEntry[] = []
@@ -420,7 +482,7 @@ function gateWithBudget(
       grant: async () => {},
       isExternalMcpPreauthorized: async () => false,
     },
-    prompt: opts.prompt ?? (async () => true),
+    prompt: opts.prompt ?? (async (): Promise<ApprovalResult> => ({ allow: true })),
     approve:
       opts.approve ??
       (async () => {
@@ -490,7 +552,7 @@ describe("capabilityGate budget breaker", () => {
   })
 
   it("denies trigger-origin consent calls without JIT prompt when not granted at enable", async () => {
-    const prompt = vi.fn(async () => true)
+    const prompt = vi.fn(async (): Promise<ApprovalResult> => ({ allow: true }))
     const { gate } = gateWithBudget(() => "debited", {
       declared: [{ id: "clipboard:read" }],
       granted: false,
@@ -512,7 +574,7 @@ describe("capabilityGate budget breaker", () => {
   })
 
   it("allows a reversible elevated fs:write trigger-origin call without per-call approval", async () => {
-    const approve = vi.fn(async () => true)
+    const approve = vi.fn(async (): Promise<ApprovalResult> => ({ allow: true }))
     const { gate } = gateWithBudget(() => "debited", {
       declared: [{ id: "fs:write", scope: { paths: ["~/Downloads/**"] } }],
       approve,
@@ -535,7 +597,7 @@ describe("capabilityGate budget breaker", () => {
   })
 
   it("allows a reversible elevated fs:write background-agent call without per-call approval", async () => {
-    const approve = vi.fn(async () => true)
+    const approve = vi.fn(async (): Promise<ApprovalResult> => ({ allow: true }))
     const { gate } = gateWithBudget(() => "debited", {
       declared: [{ id: "fs:write", scope: { paths: ["~/Downloads/**"] } }],
       approve,
@@ -560,7 +622,7 @@ describe("capabilityGate budget breaker", () => {
   })
 
   it("escalates an irreversible elevated fs:write trigger-origin call to per-call approval", async () => {
-    const approve = vi.fn(async () => true)
+    const approve = vi.fn(async (): Promise<ApprovalResult> => ({ allow: true }))
     const { gate } = gateWithBudget(() => "debited", {
       declared: [{ id: "fs:write", scope: { paths: ["~/Downloads/**"] } }],
       approve,
@@ -583,7 +645,7 @@ describe("capabilityGate budget breaker", () => {
   })
 
   it("denies an irreversible trigger-origin write when approval is refused", async () => {
-    const approve = vi.fn(async () => false)
+    const approve = vi.fn(async (): Promise<ApprovalResult> => ({ allow: false }))
     const { gate } = gateWithBudget(() => "debited", {
       declared: [{ id: "fs:write", scope: { paths: ["~/Downloads/**"] } }],
       approve,
