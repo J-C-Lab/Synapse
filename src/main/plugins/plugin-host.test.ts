@@ -2,6 +2,7 @@ import type { ClipboardContent } from "@synapse/plugin-sdk"
 import type { ChatContentBlock, ChatProvider } from "../ai/providers/types"
 import type { FsWatchAdapter } from "./fs-watch-adapter"
 import type { TimerAdapter } from "./timer-adapter"
+import type { TriggerRegistry } from "./trigger-registry"
 import type { PluginCommandResult, PluginManifest, PluginRegistryEntry } from "./types"
 import { createHash } from "node:crypto"
 import { promises as fs } from "node:fs"
@@ -1546,7 +1547,10 @@ describe("mode: tools-only lifecycle", () => {
     const armOAuthTimers = vi
       .spyOn(host.credentialBroker, "armOAuthTimers")
       .mockResolvedValue(undefined)
-    const registerSpy = vi.spyOn(host.triggerRegistry, "register")
+    const registerSpy = vi.spyOn(
+      (host as unknown as { triggerRegistry: TriggerRegistry }).triggerRegistry,
+      "register"
+    )
     await writeHostPlugin({
       id: "com.synapse.agent-trigger",
       permissions: ["notification"],
@@ -1577,7 +1581,10 @@ describe("mode: tools-only lifecycle", () => {
     const armOAuthTimers = vi
       .spyOn(host.credentialBroker, "armOAuthTimers")
       .mockResolvedValue(undefined)
-    const registerSpy = vi.spyOn(host.triggerRegistry, "register")
+    const registerSpy = vi.spyOn(
+      (host as unknown as { triggerRegistry: TriggerRegistry }).triggerRegistry,
+      "register"
+    )
     await writeHostPlugin({
       id: "com.synapse.agent-trigger",
       permissions: ["notification"],
@@ -1619,7 +1626,10 @@ describe("mode: tools-only lifecycle", () => {
     const host = new PluginHost(
       hostOptions({ mode: "tools-only", migrationMarker: migrationAlreadyDone(), timerAdapter })
     )
-    const registerSpy = vi.spyOn(host.triggerRegistry, "register")
+    const registerSpy = vi.spyOn(
+      (host as unknown as { triggerRegistry: TriggerRegistry }).triggerRegistry,
+      "register"
+    )
     await writeHostPlugin({
       id: "com.synapse.agent-trigger",
       permissions: ["notification"],
