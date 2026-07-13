@@ -153,6 +153,11 @@ function installElectronApi(settings: SynapseUserSettings): TestElectronApi {
     listRuns: vi.fn().mockResolvedValue([]),
     getRun: vi.fn().mockResolvedValue(undefined),
     listWorkspaceRoots: vi.fn().mockResolvedValue([]),
+    getMcpOnboardingAvailability: vi
+      .fn()
+      .mockResolvedValue({ available: false, reason: "dev-build" }),
+    generateMcpOnboardingConfig: vi.fn().mockResolvedValue("{}"),
+    testMcpOnboardingConnection: vi.fn().mockResolvedValue({ toolCount: 0, resourceCount: 0 }),
     createWorkspaceRoot: vi.fn().mockResolvedValue({
       id: "r1",
       workspaceId: "default",
