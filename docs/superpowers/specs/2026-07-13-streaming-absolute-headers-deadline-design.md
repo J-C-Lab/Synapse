@@ -65,15 +65,27 @@ No test file for either provider (`anthropic-provider.test.ts`, `openai-provider
 New `NetworkFetcherConfig.connectTimeoutMs` (default 30s, matching the originally-specified-but-never-shipped value from the 2026-06-27 doc). Semantics:
 
 - Computed once per hop as `hopDeadline = Date.now() + connectTimeoutMs`, **after** address resolution (`resolvePublicIps`) and **before** the `for (const pinnedAddress of addresses)` failover loop begins. DNS resolution and capability-gate approval (`gate.ensure`) happen before this clock starts and are not counted against it.
-- Each iteration of the failover loop passes `remainingMs = hopDeadline - Date.now()` into the transport call, not a fresh full `connectTimeoutMs`. If `remainingMs <= 0` before a given address is attempted, that address is not attempted; the hop fails immediately with the deadline error.
+- Each iteration of the failover loop passes `remainingMs = hopDeadline - Date.now()` into the transport call **as a new, separate `headersDeadlineMs` field, not the existing `timeoutMs` field** (see "A genuinely separate transport parameter" below — reusing `timeoutMs` for this would leak a shrinking failover-budget value into what is supposed to be a fixed post-headers body-idle duration for the buffered path). If `remainingMs <= 0` before a given address is attempted, that address is not attempted; the hop fails immediately with the deadline error.
 - Each redirect hop (`run()` recursing) computes a fresh `hopDeadline` — this already falls out naturally from the existing recursive structure, since the deadline is a local variable inside `run()`, not global state.
 - Cleared the instant the transport's response callback fires (headers received) — this is the exact boundary between "connect+TLS+headers" and "body."
 
-### Splitting the two timer phases inside the transports
+### A genuinely separate transport parameter, and a clean pre/post-headers split (no `request.setTimeout(0)` hack)
 
-`defaultStreamTransport`: on the response callback (headers received), immediately call `request.setTimeout(0)` to fully cancel Node's automatic socket-inactivity timer. From that point, body-phase timing is governed exclusively by the existing `withStreamTimers()` (`streamIdleTimeoutMs`, `maxStreamDurationMs`), which already operates via `controller.abort()` — a mechanism independent of `request.destroy()`. This removes the fight described above.
+An earlier draft of this section proposed reusing the existing `timeoutMs` field for the new deadline and calling `request.setTimeout(0)` post-headers to cancel it on the streaming path — both ideas are dropped. `TransportArgs` ([network-fetcher.ts:73-82](../../../src/main/plugins/network-fetcher.ts)) gains a genuinely new field instead of overloading the existing one:
 
-`defaultTransport` (buffered): the response callback re-arms `request.setTimeout(timeoutMs)` fresh, now serving purely as a post-headers body-idle timeout, decoupled from the new pre-headers absolute `connectTimeoutMs` timer. Two distinct timers, two distinct concerns, in the same function — never one timer doing both jobs.
+```ts
+export interface TransportArgs {
+  // ...existing fields unchanged...
+  timeoutMs: number          // unchanged meaning: post-headers buffered body-idle timeout only
+  headersDeadlineMs: number  // new: absolute, hop-scoped, this attempt's remaining budget
+}
+```
+
+The split is now clean by construction, not by cancellation:
+
+- **Before headers arrive**: only the absolute `headersDeadlineMs` timer runs, in both transports. Node's `request.setTimeout()` is never called during this phase at all.
+- **`defaultTransport` (buffered)**: the response callback clears the headers-deadline timer, then calls `request.setTimeout(args.timeoutMs, ...)` for the **first time**, starting the existing (unchanged) post-headers body-idle behavior fresh from zero.
+- **`defaultStreamTransport`**: the response callback clears the headers-deadline timer and calls `request.setTimeout(...)` **never** — body-phase timing is entirely owned by the existing `withStreamTimers()` (`streamIdleTimeoutMs`, `maxStreamDurationMs`), which already operates via `controller.abort()`, independent of `request.destroy()`. There is no longer a moment where two timers compete for the same phase, so no cancellation call is needed anywhere.
 
 ### Shared headers-deadline helper
 
@@ -100,11 +112,11 @@ Minimum coverage:
 3. Streaming: headers arrive, then the server stops sending body bytes → the error that surfaces is attributable to `streamIdleTimeoutMs`, not the old `timeoutMs` path (this is the regression test for the bug this spec fixes).
 4. Abort/error mid-request leaves no live timer behind.
 5. Both buffered and streaming transports covered for cases 1-2.
-6. Failover-budget test, split into two non-contradictory scenarios (an earlier draft of this section described one scenario that was self-contradictory — "first address hangs past its share of the deadline" and "second address still gets attempted" cannot both be true under the hop-scoped-budget design above):
-   - **6a. Partial consumption**: first pinned address fails fast but consumes some real time (e.g., a quick connection-refused after 100ms of a 400ms test deadline); confirm the second address is attempted with only the *remaining* ~300ms budget, not a fresh 400ms.
-   - **6b. Full consumption**: first pinned address hangs until the entire hop deadline is exhausted; confirm the second address is **never attempted at all** (the hop fails on the first address's timeout, per "if `remainingMs <= 0`, that address is not attempted").
+6. Failover-budget test — this is a pure orchestration-layer concern (how `run()`'s failover loop splits and passes down `headersDeadlineMs`), not a transport/socket concern, so it belongs with the fake-transport + fake-clock layer below, not the real loopback server. An earlier draft of this section proposed asserting it against real elapsed time (e.g. "connection-refused after 100ms of a 400ms deadline") — dropped, since that's exactly the kind of non-deterministic real-time assertion this spec's own testing principle (§ CI-safe timing, below) says to avoid. Split into two scenarios, both against an injected fake `transport` and `vi.useFakeTimers()`:
+   - **6a. Partial consumption**: fake transport's first call records the `headersDeadlineMs` it received, then (after advancing the fake clock by, say, 100ms of a 400ms hop deadline) rejects with a connection error; assert the fake transport's *second* call receives `headersDeadlineMs` ≈ 300ms, not a fresh 400ms.
+   - **6b. Full consumption**: fake transport's first call never resolves/rejects on its own; advance the fake clock the full 400ms so the hop deadline is exhausted; assert the fake transport is **never called a second time** (per "if `remainingMs <= 0`, that address is not attempted").
 
-Two complementary layers, not one: a shared-helper-level unit test using fake/injectable timers asserts precise `clearTimeout` call behavior on every exit path (success, error, abort) — "no dangling timer" is asserted directly, not inferred from the absence of a warning. The real-loopback-server tests above are for verifying actual socket/TLS behavior end-to-end, not for re-proving the timer bookkeeping fake timers already cover more precisely.
+Three complementary layers, not one: (a) a shared-helper-level unit test using fake/injectable timers asserts precise `clearTimeout` call behavior on every exit path (success, error, abort) — "no dangling timer" is asserted directly, not inferred from the absence of a warning; (b) the failover-budget test above, also fake-transport/fake-clock, proves the orchestration-layer budget-splitting logic deterministically; (c) the real-loopback-server tests (1-5 above) prove actual socket/TLS transport behavior end-to-end. Each layer tests what it's actually suited to test — none of them assert real elapsed-time windows.
 
 CI-safe timing: deadlines in the ~200-500ms range, with a materially larger surrounding test timeout; assertions target error type and resource cleanup (e.g., socket/agent destroyed), never exact elapsed-time windows.
 
@@ -136,36 +148,52 @@ This means **both provider files change** — the original claim that "no change
 
 ### Where the timers actually live, and how they survive both SDKs' abort handling
 
-Given P0-2, the wrapper cannot trust `controller.abort(reason)` to make `reason` observable downstream through either SDK — it must **track its own state** and re-assert it regardless of what the SDK actually throws (or fails to throw):
+Given P0-2, the wrapper cannot trust `controller.abort(reason)` to make `reason` observable downstream through either SDK — it must **track its own state** and re-assert it regardless of what the SDK actually throws (or fails to throw). A first draft of this tracking (a single `deadlineError` variable, unconditionally overwritten by whichever timer fires) had three real races, found in review:
+
+1. If headers/idle/duration timers fire close together, whichever one's callback happens to run last silently overwrites the "true" first cause with a different `kind`.
+2. If the caller cancels (`options.signal` aborts) but a deadline timer independently fires afterward — nothing in the first draft stopped the deadline timers from continuing to run once the caller had already cancelled — a user cancel could be misreported as a deadline.
+3. A late-arriving `onTransportProgress` call (e.g. a queued microtask that resolves after cleanup has already started) could re-arm the idle timer after the call is already over.
+
+Fixed with an explicit **first-terminal-cause-wins** state machine, not a bare overwritable variable:
 
 ```ts
-let deadlineError: ProviderStreamDeadlineError | undefined
+type TerminalCause =
+  | { type: "caller" }
+  | { type: "deadline"; error: ProviderStreamDeadlineError }
 
-// on any timer firing:
-deadlineError = new ProviderStreamDeadlineError(kind, ms)
-controller.abort(deadlineError) // still abort — this is what actually stops the request / frees resources
+let terminalCause: TerminalCause | undefined
+let closed = false
 
-// wrapping the normalized event stream in AgentRuntime.run():
-try {
-  for await (const event of source) {
-    if (deadlineError) throw deadlineError
-    yield event
-  }
-  if (deadlineError) throw deadlineError
-} catch (error) {
-  if (deadlineError) throw deadlineError
-  throw error
+function fireDeadline(kind: DeadlineKind, ms: number): void {
+  if (closed || terminalCause || options.signal?.aborted) return
+  const error = new ProviderStreamDeadlineError(kind, ms)
+  terminalCause = { type: "deadline", error }
+  clearAllTimers()
+  controller.abort(error)
 }
+
+function onCallerAbort(): void {
+  if (closed || terminalCause) return
+  terminalCause = { type: "caller" }
+  clearAllTimers()
+}
+
+options.signal?.addEventListener("abort", onCallerAbort, { once: true })
 ```
 
-This closes both P0s at once: regardless of whether the underlying SDK throws its own `APIUserAbortError` (Anthropic) or returns cleanly with a partial accumulated message (OpenAI), the wrapper's own tracked `deadlineError` always wins and is what the caller actually sees — the SDK's own behavior on abort becomes irrelevant to correctness.
+- Every timer callback calls `fireDeadline(kind, ms)` rather than setting `deadlineError` directly — the `closed || terminalCause || options.signal?.aborted` guard at the top makes the first cause to reach this function authoritative; every later call (whether a second timer or a stale caller-abort race) is a no-op.
+- `onTransportProgress`'s handlers (both the headers-clear and the idle-rearm logic) must equally check `closed || terminalCause` before acting — a late signal after termination must not resurrect a timer.
+- The wrapper's `finally` sets `closed = true`, clears every timer unconditionally (belt-and-suspenders against any timer that `clearAllTimers()` in `fireDeadline`/`onCallerAbort` might have missed), and removes the `onCallerAbort` listener from `options.signal`.
+- Consuming the wrapped stream (in `AgentRuntime.run()`) checks `terminalCause` the same way the earlier draft checked the bare `deadlineError`: `if (terminalCause?.type === "deadline") throw terminalCause.error` at each yield point and after the loop, in both the `try` and `catch` branches — a caller-cancel `terminalCause` is deliberately *not* force-thrown here, since that path already relies on whatever the SDK naturally does with a caller-aborted signal (unchanged from today).
+
+This closes both P0s and the three races above at once: regardless of whether the underlying SDK throws its own `APIUserAbortError` (Anthropic) or returns cleanly with a partial accumulated message (OpenAI), the wrapper's own `terminalCause` — set exactly once, by whichever cause genuinely reaches it first — is what the caller actually sees.
 
 Timer semantics, driven by `onTransportProgress` calls rather than by watching yielded events:
 
-- **headers-deadline** (default 30s, absolute): armed when the wrapper starts consuming `provider.stream(...)`; cleared the moment `onTransportProgress("headers")` fires.
-- **idle-timeout** (default 60s): armed once headers-deadline clears; re-armed on every subsequent `onTransportProgress("activity")` call — this correctly fires on a "responded, then went silent" turn (e.g. `message_start` then nothing) even though that scenario produces zero normalized `ProviderStreamEvent`s, since `'streamEvent'`/per-chunk activity signals are independent of what gets yielded.
+- **headers-deadline** (default 30s, absolute): armed when the wrapper starts consuming `provider.stream(...)`; cleared the moment `onTransportProgress("headers")` fires (guarded by `closed || terminalCause` as above).
+- **idle-timeout** (default 60s): armed once headers-deadline clears; re-armed on every subsequent `onTransportProgress("activity")` call (same guard) — this correctly fires on a "responded, then went silent" turn (e.g. `message_start` then nothing) even though that scenario produces zero normalized `ProviderStreamEvent`s, since `'streamEvent'`/per-chunk activity signals are independent of what gets yielded.
 - **max-duration** (default 10min, matching Work Stream A's default; confirmed acceptable by the user for now — revisit if real usage shows legitimate single-`stream()`-call turns routinely exceed it): one absolute timer for the whole call's lifetime, started alongside the headers-deadline timer.
-- All three timers cleared in a `finally` around the whole wrapped call (normal completion, thrown error, early `return`/`break`), `.unref()`'d.
+- All three timers cleared unconditionally in the wrapper's `finally` (normal completion, thrown error, early `return`/`break`), `.unref()`'d.
 
 ### Signal combination
 
@@ -176,7 +204,7 @@ const combinedSignal = options.signal
   : controller.signal
 ```
 
-Mirrors the existing `ResilientToolHost.withTimeout()` pattern ([resilient-tool-host.ts:176](../../../src/main/ai/resilient-tool-host.ts)) rather than inventing a new combining idiom. `combinedSignal` — not the raw `options.signal` — is what's passed into `provider.stream({..., signal: combinedSignal, onTransportProgress})`. Keeping `controller` separate from the caller's own `options.signal` preserves the ability to distinguish "the caller cancelled" (no `deadlineError` ever gets set; whatever the SDK naturally throws for a caller-initiated abort propagates unchanged, since the `if (deadlineError)` checks above are no-ops in that case) from "our deadline fired."
+Mirrors the existing `ResilientToolHost.withTimeout()` pattern ([resilient-tool-host.ts:176](../../../src/main/ai/resilient-tool-host.ts)) rather than inventing a new combining idiom. `combinedSignal` — not the raw `options.signal` — is what's passed into `provider.stream({..., signal: combinedSignal, onTransportProgress})`. Keeping `controller` separate from the caller's own `options.signal` preserves the ability to distinguish "the caller cancelled" from "our deadline fired," now formalized by the `terminalCause` state machine above rather than a single overwritable variable.
 
 ### Configuration entry point
 
@@ -184,14 +212,18 @@ New optional `AgentRuntimeOptions` field (exact name TBD at plan time, e.g. `pro
 
 ### Testing
 
-**Loopback servers are plain HTTP, not HTTPS/TLS** — an earlier draft of this section required `https`/`tls` loopback servers for provider tests, which doesn't actually work without also solving self-signed-certificate trust (a `baseURL` override alone does not make Node/undici trust an untrusted CA), and would require either a custom fetch/dispatcher/CA seam or weakening TLS validation — the latter explicitly forbidden by Non-goals. What Work Stream B's tests actually verify is SDK/lifecycle/deadline behavior, not certificate validation — Work Stream A already owns the real-TLS test coverage. Both providers' `baseURL` construction option (`OpenAIProvider` already has one at [openai-provider.ts:118](../../../src/main/ai/providers/openai-provider.ts); `AnthropicProvider` needs one added) is pointed at a plain local `http://127.0.0.1:PORT` server for these tests. (Confirm at implementation time that both SDKs accept an `http://` `baseURL` without complaint — expected to work, since these are general-purpose OpenAI-compatible-endpoint clients already reused in this codebase for third-party vendors, but not yet directly grep-verified against the SDK source the way the abort-handling claims above were.)
+**Loopback servers are plain HTTP, not HTTPS/TLS, and this is now a confirmed-working choice, not an assumption.** An earlier draft of this section required `https`/`tls` loopback servers for provider tests, which doesn't actually work without also solving self-signed-certificate trust (a `baseURL` override alone does not make Node/undici trust an untrusted CA), and would require either a custom fetch/dispatcher/CA seam or weakening TLS validation — the latter explicitly forbidden by Non-goals. What Work Stream B's tests actually verify is SDK/lifecycle/deadline behavior, not certificate validation — Work Stream A already owns the real-TLS test coverage. Verified directly in the installed SDK source that plain HTTP is safe to use: `node_modules/openai/client.js:285` and `node_modules/@anthropic-ai/sdk/client.js` both build the request URL via plain string concatenation into `new URL(baseURL + path)`, with no scheme restriction anywhere in that path — neither SDK enforces HTTPS, and Node's global `fetch` (which both SDKs use internally) handles `http://` URLs identically to `https://` ones. Both providers' `baseURL` construction option (`OpenAIProvider` already has one at [openai-provider.ts:118](../../../src/main/ai/providers/openai-provider.ts); `AnthropicProvider` needs one added) is pointed at a plain local `http://127.0.0.1:PORT` server for these tests.
+
+**`AnthropicMessageStream`'s minimal test-seam interface needs a real type extension, not just a provider-file change.** The current interface ([anthropic-provider.ts:21-23](../../../src/main/ai/providers/anthropic-provider.ts)) is `AsyncIterable<Anthropic.RawMessageStreamEvent> & { finalMessage: () => Promise<Anthropic.Message> }` — no `on`/`off`. Since the provider now calls `stream.on('connect', ...)` and `stream.on('streamEvent', ...)` (see above), this interface must gain an `on` method (mirroring the real SDK `MessageStream`'s event-emitter surface for at least the `'connect'` and `'streamEvent'` events used here). The existing fake in `anthropic-provider.test.ts` (`const fakeStream: AnthropicMessageStream = { async *[Symbol.asyncIterator]() {...}, finalMessage: async () => finalMessage }`, [anthropic-provider.test.ts:120-125](../../../src/main/ai/providers/anthropic-provider.test.ts)) has no `on` method today and will fail to type-check against the extended interface unless it's updated alongside — this is a required, explicit part of the implementation plan, not an incidental fallout to discover mid-implementation.
 
 1. **Headers-deadline**: server accepts the connection and sends nothing at all — no protocol knowledge required, generic to both SDKs. Confirms `ProviderStreamDeadlineError` with `kind: "headers"`.
 2. **Idle-timeout**: server sends one minimal, protocol-valid preamble (Anthropic: a `message_start` SSE event; OpenAI: one valid `data: {...}` chunk), then goes silent. Confirms `kind: "idle"` — this is the scenario an earlier draft of this spec got wrong (it would have produced `kind: "headers"` under the old "first yielded event = headers" design, since `message_start` never yields a `ProviderStreamEvent`; under the `onTransportProgress`-driven design above, `'connect'`/post-`create()` fires the headers signal correctly before the preamble even needs to be parsed as a normalized event).
 3. **Max-duration**: server keeps sending valid minimal events past a test-scaled-down duration limit. Confirms `kind: "duration"`.
 4. **Regression — OpenAI must never produce a partial "success"**: drive an idle-timeout or max-duration abort mid-stream after some `delta.content`/`delta.tool_calls` have already accumulated; assert the caller receives `ProviderStreamDeadlineError`, never a `{type:"message"}` event assembled from the partial accumulation.
 5. **Regression — Anthropic's `APIUserAbortError` must not leak past the wrapper**: same abort-mid-stream scenario; assert the caller receives `ProviderStreamDeadlineError`, not `Anthropic.APIUserAbortError`.
-6. **Regression — user cancel must not be misreported as a deadline**: caller aborts `options.signal` directly (not a timer firing); assert no `ProviderStreamDeadlineError` is ever constructed and whatever the SDK naturally throws/returns for that path is what propagates, unchanged from today's behavior.
+6. **Regression — user cancel must not be misreported as a deadline**: caller aborts `options.signal` directly (not a timer firing); assert `terminalCause` resolves to `{type:"caller"}`, never `{type:"deadline"}`, and whatever the SDK naturally throws/returns for that path is what propagates, unchanged from today's behavior.
+7. **Regression — near-simultaneous timers don't clobber each other**: fire two timers (e.g. idle and max-duration) within the same microtask/tick of each other; assert exactly one `ProviderStreamDeadlineError` is ever constructed and it reflects whichever `fireDeadline()` call actually won the `closed || terminalCause` race, not "whichever timer's callback happened to run last."
+8. **Regression — a late `onTransportProgress` call after termination is a no-op**: terminate the wrapper (either cause), then invoke `onTransportProgress("activity")` once more; assert no timer is re-armed and no new state transition occurs.
 
 **Resolved during this review, not an open risk**: both `node_modules/openai/client.js` (lines 357, 366-368: `if (options.signal?.aborted) { throw new Errors.APIUserAbortError(); }`, checked before the retry decision at line 375) and `node_modules/@anthropic-ai/sdk/client.js` (lines 467-468, 475-476: identical pattern) already check the external signal before ever considering a retry — an externally-aborted request is terminal in both SDKs today, confirmed by reading the installed source, not assumed. This is no longer a Parked Question. The real, now-fixed problem was never "the SDK might retry past our abort" — it was "the SDK transforms or swallows the abort's identity" (P0-2 above).
 
@@ -203,18 +235,19 @@ agent-service.ts (interactive) ──┐
 background-agent-runner.ts ──────┘                                     signal: combinedSignal,
                                                                          onTransportProgress,
                                                                        }) ──→ wrapper tracks
-                                                                               deadlineError,
-                                                                               re-asserts it
-                                                                               over whatever the
+                                                                               terminalCause
+                                                                               (first-wins state
+                                                                               machine), re-asserts
+                                                                               it over whatever the
                                                                                SDK itself throws/returns
 ```
-No change to either caller's own signal-construction code. `AgentRuntime.run()` changes to wire the timers, signal combination, and `deadlineError` tracking; both provider files change to call `onTransportProgress` at the raw-SDK-event level (see Work Stream B above — the original "no provider file changes" claim was wrong).
+No change to either caller's own signal-construction code. `AgentRuntime.run()` changes to wire the timers, signal combination, and `terminalCause` tracking; both provider files change to call `onTransportProgress` at the raw-SDK-event level (see Work Stream B above — the original "no provider file changes" claim was wrong).
 
 ## Crash / cancel / restart
 
-- **User-initiated cancel** (`agent-service.ts:524-525`, `.abort()` on the per-turn controller): fires `options.signal`, which is part of `combinedSignal`. `deadlineError` is never set (no timer fired), so the `if (deadlineError) throw deadlineError` checks are no-ops and whatever the SDK naturally throws/returns for a caller-initiated abort propagates unchanged from today's behavior. No behavior change for the existing cancel path (regression-tested — see Work Stream B Testing, item 6).
+- **User-initiated cancel** (`agent-service.ts:524-525`, `.abort()` on the per-turn controller): fires `options.signal`, which triggers `onCallerAbort()` and sets `terminalCause = {type:"caller"}` — this also blocks any deadline timer that fires afterward from overwriting it (`fireDeadline`'s `closed || terminalCause` guard), and the wrapper does not force-throw a caller-cause termination, so whatever the SDK naturally throws/returns for a caller-initiated abort propagates unchanged from today's behavior. No behavior change for the existing cancel path (regression-tested — see Work Stream B Testing, item 6).
 - **Background-run budget exceeded** (`background-agent-runner.ts:75`, `:80-83`): same as above — that abort flows in via `options.signal`, independent of the new deadline timers, no interaction beyond both eventually reaching the same `combinedSignal`.
-- **Deadline fires mid-stream**: the timer sets `deadlineError` and calls `controller.abort(deadlineError)` (which actually stops the request/frees resources, even though its `reason` argument is not what ultimately surfaces through either SDK — see P0-2). The wrapper's own `deadlineError` tracking, not the SDK's abort propagation, is what guarantees `ProviderStreamDeadlineError` is what the caller sees, regardless of whether the SDK throws its own error (Anthropic) or returns cleanly with a partial result (OpenAI) — both regression-tested (see Work Stream B Testing, items 4-5).
+- **Deadline fires mid-stream**: `fireDeadline()` sets `terminalCause = {type:"deadline", error}` (only if no cause has already been set) and calls `controller.abort(error)` (which actually stops the request/frees resources, even though its `reason` argument is not what ultimately surfaces through either SDK — see P0-2). The wrapper's own `terminalCause` tracking, not the SDK's abort propagation, is what guarantees `ProviderStreamDeadlineError` is what the caller sees, regardless of whether the SDK throws its own error (Anthropic) or returns cleanly with a partial result (OpenAI) — both regression-tested (see Work Stream B Testing, items 4-5), and regardless of whether multiple timers or a caller-abort race close together (regression-tested, items 7-8).
 - **Process restart mid-stream**: out of scope — no persisted deadline state; a restarted process starts every timer fresh, matching how every other in-memory timer in this codebase already behaves.
 
 ## Observability
@@ -236,7 +269,9 @@ No change to either caller's own signal-construction code. `AgentRuntime.run()` 
 | Provider streams valid events past duration cap | B | Max-duration (`kind: "duration"`) |
 | Deadline fires after OpenAI has partial `text`/`toolCalls` accumulated | B | Caller receives `ProviderStreamDeadlineError`, never a partial "success" `message` event |
 | Deadline fires on the Anthropic path | B | Caller receives `ProviderStreamDeadlineError`, not `Anthropic.APIUserAbortError` |
-| User cancels mid-stream (not a timer) | B | No `ProviderStreamDeadlineError` constructed; existing cancel behavior unchanged |
+| User cancels mid-stream (not a timer) | B | `terminalCause` is `{type:"caller"}`, never `{type:"deadline"}`; existing cancel behavior unchanged |
+| Two timers fire close together | B | Exactly one `ProviderStreamDeadlineError`, from whichever `fireDeadline()` call wins the race — not "whichever ran last" |
+| Late `onTransportProgress` call after termination | B | No-op; no timer re-armed |
 
 ## Migration / backward compatibility
 
@@ -252,6 +287,7 @@ No change to either caller's own signal-construction code. `AgentRuntime.run()` 
 - At least one test suite exercises the real `defaultTransport`/`defaultStreamTransport` functions against a real loopback TLS server, closing the gap the 2026-06-27 doc explicitly deferred and never closed.
 - `AgentRuntime.run()`'s provider-stream consumption has host-side headers-deadline, idle-timeout, and max-duration enforcement, driven by the new `onTransportProgress` lifecycle signal (not by watching normalized `ProviderStreamEvent`s), verified against real loopback HTTP servers for both `AnthropicProvider` and `OpenAIProvider`.
 - A deadline firing surfaces as `ProviderStreamDeadlineError` regardless of what either underlying SDK does internally on abort (Anthropic's `APIUserAbortError` substitution, OpenAI's silent-return-with-partial-accumulation) — regression-tested for both.
+- `terminalCause` resolves to exactly one value regardless of timer race timing or a caller-abort/deadline race — regression-tested (near-simultaneous timers, late `onTransportProgress` after termination).
 - Existing user-cancel and background-run-budget cancellation paths are unaffected (regression-tested, not just assumed).
 - `pnpm typecheck`, `pnpm lint`, `pnpm test` all clean.
 
@@ -260,4 +296,3 @@ No change to either caller's own signal-construction code. `AgentRuntime.run()` 
 - Should buffered `fetch()` eventually get an absolute `maxResponseDurationMs`, closing the "trickle forever within the byte cap" gap? Deliberately out of scope for this spec (see Non-goals); revisit if real-world abuse or a future security review flags it as live risk rather than theoretical.
 - Is `maxDurationMs: 10min` actually right for Work Stream B once real usage data exists (long extended-thinking turns, large code-generation completions)? Shipped as-is per explicit user confirmation; flagged for revisit if real turns are observed hitting it.
 - `network-dns.ts`'s public-IP resolution itself has no explicit timeout in the current code (not investigated in depth for this spec, since Work Stream A's `connectTimeoutMs` clock starts only after resolution completes per the Non-goals boundary) — worth a future look if DNS resolution itself is ever suspected of hanging indefinitely.
-- Both SDKs' `baseURL` option is expected to accept a plain `http://` loopback URL for Work Stream B's tests (matching how this codebase already reuses `OpenAiProvider` against non-OpenAI HTTP endpoints), but this has not been directly verified against the SDK source the way the abort-handling and retry-guard claims in this spec were — confirm at implementation time.
