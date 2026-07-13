@@ -1,5 +1,5 @@
 // src/main/approvals/approval-registry.test.ts
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import { ApprovalRegistry } from "./approval-registry"
 
 describe("approvalRegistry — register / resolveByHuman", () => {
@@ -147,5 +147,118 @@ describe("approvalRegistry — register / resolveByHuman", () => {
     controller.abort()
 
     await expect(outcome.handle.result).resolves.toEqual({ allow: true })
+  })
+})
+
+function fakeWebContents(): { id: number; isDestroyed: () => boolean; destroy: () => void } {
+  let destroyed = false
+  return {
+    id: Math.random(),
+    isDestroyed: () => destroyed,
+    destroy: () => {
+      destroyed = true
+    },
+  }
+}
+
+describe("approvalRegistry — deliveredTo / markDelivered / retireRecipient", () => {
+  it("markDelivered backfills the recipients a still-pending registration was sent to", () => {
+    const registry = new ApprovalRegistry()
+    const outcome = registry.register("capability-grant", {})
+    if (outcome.status !== "registered") throw new Error("unreachable")
+    const wc = fakeWebContents()
+
+    expect(() => registry.markDelivered(outcome.handle.id, [wc as never])).not.toThrow()
+  })
+
+  it("markDelivered on an already-settled registration immediately pushes a settled callback for the just-learned recipients", async () => {
+    const settled: Array<{ id: string; recipients: readonly unknown[] }> = []
+    const registry = new ApprovalRegistry({
+      onSettled: (id, _outcome, recipients) => settled.push({ id, recipients }),
+    })
+    const outcome = registry.register("capability-grant", {})
+    if (outcome.status !== "registered") throw new Error("unreachable")
+    registry.resolveByHuman(outcome.handle.id, "capability-grant", true)
+    const wc = fakeWebContents()
+
+    registry.markDelivered(outcome.handle.id, [wc as never])
+
+    expect(settled).toEqual([{ id: outcome.handle.id, recipients: [wc] }])
+  })
+
+  it("cancel() settles only the one registration it targets", async () => {
+    const registry = new ApprovalRegistry()
+    const a = registry.register("host-resource", {})
+    const b = registry.register("host-resource", {})
+    if (a.status !== "registered" || b.status !== "registered") throw new Error("unreachable")
+
+    registry.cancel(a.handle.id, "send-failed")
+
+    await expect(a.handle.result).resolves.toEqual({ allow: false, outcomeReason: "send-failed" })
+    registry.resolveByHuman(b.handle.id, "host-resource", true)
+    await expect(b.handle.result).resolves.toEqual({ allow: true })
+  })
+
+  it("retireRecipient leaves an entry pending while at least one other recipient survives", async () => {
+    const registry = new ApprovalRegistry()
+    const outcome = registry.register("capability-approval", {})
+    if (outcome.status !== "registered") throw new Error("unreachable")
+    const wcA = fakeWebContents()
+    const wcB = fakeWebContents()
+    registry.markDelivered(outcome.handle.id, [wcA as never, wcB as never])
+
+    registry.retireRecipient(wcA as never)
+
+    let settled = false
+    void outcome.handle.result.then(() => {
+      settled = true
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(settled).toBe(false)
+  })
+
+  it("retireRecipient settles 'gui-disposed' once every delivered recipient has been retired", async () => {
+    const registry = new ApprovalRegistry()
+    const outcome = registry.register("capability-approval", {})
+    if (outcome.status !== "registered") throw new Error("unreachable")
+    const wcA = fakeWebContents()
+    const wcB = fakeWebContents()
+    registry.markDelivered(outcome.handle.id, [wcA as never, wcB as never])
+
+    registry.retireRecipient(wcA as never)
+    registry.retireRecipient(wcB as never)
+
+    await expect(outcome.handle.result).resolves.toEqual({
+      allow: false,
+      outcomeReason: "gui-disposed",
+    })
+  })
+
+  it("retireRecipient on a webContents not in any deliveredTo set is a harmless no-op", () => {
+    const registry = new ApprovalRegistry()
+    registry.register("capability-grant", {})
+    const unrelated = fakeWebContents()
+
+    expect(() => registry.retireRecipient(unrelated as never)).not.toThrow()
+  })
+
+  it("disposeAll cancels every pending entry as 'gui-disposed' regardless of deliveredTo", async () => {
+    const registry = new ApprovalRegistry()
+    const a = registry.register("capability-grant", {})
+    const b = registry.register("host-resource", {})
+    if (a.status !== "registered" || b.status !== "registered") throw new Error("unreachable")
+    registry.markDelivered(a.handle.id, [fakeWebContents() as never])
+
+    registry.disposeAll()
+
+    await expect(a.handle.result).resolves.toEqual({
+      allow: false,
+      outcomeReason: "gui-disposed",
+    })
+    await expect(b.handle.result).resolves.toEqual({
+      allow: false,
+      outcomeReason: "gui-disposed",
+    })
   })
 })
