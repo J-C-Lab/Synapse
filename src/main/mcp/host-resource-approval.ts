@@ -1,3 +1,5 @@
+import type { ApprovalResult } from "../approvals/types"
+
 export interface HostResourceApprovalRequest {
   /** String union so a second resource type is additive, not breaking.
    *  Only "workspace-instructions" exists today. */
@@ -27,4 +29,4 @@ export type HostResourceApprover = (input: {
    *  headless<->GUI socket (a pre-existing gap shared with plugin-
    *  capability approval, not solved by this type). */
   signal?: AbortSignal
-}) => Promise<boolean>
+}) => Promise<ApprovalResult>

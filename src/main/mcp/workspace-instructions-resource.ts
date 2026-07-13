@@ -1,7 +1,7 @@
 import type { WorkspaceRootRecord } from "../ai/execution/types"
 import type { WorkspaceRootStore } from "../ai/workspace/workspace-root-store"
 import type { WorkspaceStore } from "../ai/workspace/workspace-store"
-import type { HostResourceApprovalRequest } from "./host-resource-approval"
+import type { HostResourceApprover } from "./host-resource-approval"
 import type { HostResourceAccessAuditEntry } from "./host-resource-audit"
 import { loadWorkspaceInstructions } from "../ai/context/workspace-instructions"
 
@@ -28,10 +28,7 @@ export interface WorkspaceInstructionsResourcePort {
 export interface WorkspaceInstructionsResourcePortOptions {
   workspaces: Pick<WorkspaceStore, "get">
   workspaceRoots: Pick<WorkspaceRootStore, "listForWorkspace">
-  approve: (input: {
-    request: HostResourceApprovalRequest
-    signal?: AbortSignal
-  }) => Promise<boolean>
+  approve: HostResourceApprover
   recordAccess: (entry: HostResourceAccessAuditEntry) => void
 }
 
@@ -108,7 +105,7 @@ async function read(
     return undefined
   }
 
-  const approved = await options.approve({
+  const result = await options.approve({
     request: {
       resourceType: "workspace-instructions",
       workspaceId: input.workspaceId,
@@ -120,7 +117,7 @@ async function read(
     },
     signal: input.signal,
   })
-  if (!approved) return undefined
+  if (!result.allow) return undefined
 
   // Binding constraint (spec ②): require the SAME root id AND that it's
   // still primary — WorkspaceRootStore.setPrimary() demotes the previous

@@ -37,7 +37,7 @@ describe("host-resource approval, end to end through the real transport", () => 
     })
 
     const server = await startHeadlessApprovalServer({
-      approveCapability: async () => false, // unused in this test — proves the dispatch didn't cross kinds
+      approveCapability: async () => ({ allow: false }), // unused in this test — proves the dispatch didn't cross kinds
       approveHostResource: service.hostResourceApprover,
       portFilePath,
     })
@@ -52,7 +52,7 @@ describe("host-resource approval, end to end through the real transport", () => 
       service.resolve(events[0]!.promptId, true)
 
       const result = await resultPromise
-      expect(result).toBe(true)
+      expect(result).toEqual({ allow: true })
       expect(auditEntries).toEqual([expect.objectContaining({ decision: "allow" })])
     } finally {
       await server.close()
@@ -67,7 +67,7 @@ describe("host-resource approval, end to end through the real transport", () => 
     })
 
     const server = await startHeadlessApprovalServer({
-      approveCapability: async () => true,
+      approveCapability: async () => ({ allow: true }),
       approveHostResource: service.hostResourceApprover,
       portFilePath,
     })
@@ -79,7 +79,7 @@ describe("host-resource approval, end to end through the real transport", () => 
       await new Promise((resolve) => setTimeout(resolve, 50))
       service.resolve(events[0]!.promptId, false)
 
-      expect(await resultPromise).toBe(false)
+      expect(await resultPromise).toEqual({ allow: false })
     } finally {
       await server.close()
     }
@@ -93,7 +93,7 @@ describe("host-resource approval, end to end through the real transport", () => 
     })
 
     const server = await startHeadlessApprovalServer({
-      approveCapability: async () => true,
+      approveCapability: async () => ({ allow: true }),
       approveHostResource: service.hostResourceApprover,
       portFilePath,
     })
@@ -105,7 +105,7 @@ describe("host-resource approval, end to end through the real transport", () => 
       await new Promise((resolve) => setTimeout(resolve, 50))
       service.dispose() // simulates the window closing before the human answers
 
-      expect(await resultPromise).toBe(false)
+      expect(await resultPromise).toEqual({ allow: false, outcomeReason: "gui-disposed" })
     } finally {
       await server.close()
     }

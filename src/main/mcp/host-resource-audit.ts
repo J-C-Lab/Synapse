@@ -1,3 +1,4 @@
+import type { ApprovalOutcomeReason } from "../approvals/types"
 import type { LogSink } from "../logging"
 import { Logger } from "../logging"
 import { scrubText } from "../logging/audit-sanitize"
@@ -14,8 +15,12 @@ export interface HostResourceAuditEntry {
   /** Only set when the deny wasn't a direct human answer — distinguishes
    *  "the request was cancelled", "the window was disposed mid-prompt",
    *  and "the send to the renderer itself failed" from an explicit human
-   *  "no" (which leaves this unset). */
-  outcomeReason?: "cancelled" | "gui-disposed" | "send-failed"
+   *  "no" (which leaves this unset). Sourced from the shared
+   *  {@link ApprovalRegistry}, so the full {@link ApprovalOutcomeReason}
+   *  union applies (e.g. a headless-side signal aborting with
+   *  "client-disconnected"/"timed-out"), not just the in-process subset
+   *  this file previously produced on its own. */
+  outcomeReason?: ApprovalOutcomeReason
   reason?: string
   timestamp: number
 }
