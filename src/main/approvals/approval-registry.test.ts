@@ -171,10 +171,15 @@ describe("approvalRegistry — deliveredTo / markDelivered / retireRecipient", (
     expect(() => registry.markDelivered(outcome.handle.id, [wc as never])).not.toThrow()
   })
 
-  it("markDelivered on an already-settled registration immediately pushes a settled callback for the just-learned recipients", async () => {
-    const settled: Array<{ id: string; kind: string; recipients: readonly unknown[] }> = []
+  it("markDelivered on an already-settled registration reports the real outcome it settled with, not a guess", async () => {
+    const settled: Array<{
+      id: string
+      kind: string
+      outcome: unknown
+      recipients: readonly unknown[]
+    }> = []
     const registry = new ApprovalRegistry({
-      onSettled: (id, kind, _outcome, recipients) => settled.push({ id, kind, recipients }),
+      onSettled: (id, kind, outcome, recipients) => settled.push({ id, kind, outcome, recipients }),
     })
     const outcome = registry.register("capability-grant", {})
     if (outcome.status !== "registered") throw new Error("unreachable")
@@ -183,7 +188,48 @@ describe("approvalRegistry — deliveredTo / markDelivered / retireRecipient", (
 
     registry.markDelivered(outcome.handle.id, [wc as never])
 
-    expect(settled).toEqual([{ id: outcome.handle.id, kind: "capability-grant", recipients: [wc] }])
+    expect(settled).toEqual([
+      {
+        id: outcome.handle.id,
+        kind: "capability-grant",
+        outcome: { allow: true },
+        recipients: [wc],
+      },
+    ])
+  })
+
+  it("markDelivered on an already-settled registration that settled 'denied' reports 'denied', not 'cancelled'", async () => {
+    const settled: Array<{ outcome: unknown }> = []
+    const registry = new ApprovalRegistry({
+      onSettled: (_id, _kind, outcome) => settled.push({ outcome }),
+    })
+    const outcome = registry.register("host-resource", {})
+    if (outcome.status !== "registered") throw new Error("unreachable")
+    registry.resolveByHuman(outcome.handle.id, "host-resource", false)
+
+    registry.markDelivered(outcome.handle.id, [fakeWebContents() as never])
+
+    expect(settled).toEqual([{ outcome: { allow: false } }])
+  })
+
+  it("a second markDelivered call for an id already reported stays silent instead of re-notifying or guessing", async () => {
+    const settled: unknown[] = []
+    const registry = new ApprovalRegistry({
+      onSettled: (...args) => settled.push(args),
+    })
+    const outcome = registry.register("capability-approval", {})
+    if (outcome.status !== "registered") throw new Error("unreachable")
+    registry.resolveByHuman(outcome.handle.id, "capability-approval", true)
+    registry.markDelivered(outcome.handle.id, [fakeWebContents() as never])
+
+    registry.markDelivered(outcome.handle.id, [fakeWebContents() as never])
+
+    expect(settled).toHaveLength(1)
+  })
+
+  it("markDelivered for an id that was never registered is a harmless no-op", () => {
+    const registry = new ApprovalRegistry()
+    expect(() => registry.markDelivered("nonexistent", [fakeWebContents() as never])).not.toThrow()
   })
 
   it("cancel() settles only the one registration it targets", async () => {

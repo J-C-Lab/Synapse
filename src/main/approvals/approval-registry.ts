@@ -59,10 +59,12 @@ interface PendingEntry {
 export class ApprovalRegistry {
   private readonly pending = new Map<string, PendingEntry>()
   // Bridges finish() → markDelivered()'s post-settle path when settlement
-  // races ahead of delivery: finish() removes the pending entry (and its
-  // kind) before markDelivered() ever learns the recipients, so the kind
-  // is parked here just long enough for that one callback.
-  private readonly settledKinds = new Map<string, ApprovalKind>()
+  // races ahead of delivery: finish() removes the pending entry before
+  // markDelivered() ever learns the recipients, so the kind and the real
+  // outcome are parked here just long enough for that one callback — the
+  // late notification must report what actually happened (allowed/denied/
+  // cancelled/etc.), not a guess.
+  private readonly settledFor = new Map<string, { kind: ApprovalKind; outcome: ApprovalResult }>()
 
   constructor(private readonly options: ApprovalRegistryOptions = {}) {}
 
@@ -87,7 +89,7 @@ export class ApprovalRegistry {
       if (entry.deliveredTo.size > 0) {
         this.options.onSettled?.(id, entry.kind, outcome, [...entry.deliveredTo])
       } else {
-        this.settledKinds.set(id, entry.kind)
+        this.settledFor.set(id, { kind: entry.kind, outcome })
       }
     }
 
@@ -128,15 +130,15 @@ export class ApprovalRegistry {
       return
     }
     // Already settled before any recipient was recorded — finish() skipped
-    // onSettled; notify now with the recipients just learned about.
-    const kind = this.settledKinds.get(id)
-    this.settledKinds.delete(id)
-    this.options.onSettled?.(
-      id,
-      kind ?? "host-resource",
-      { allow: false, outcomeReason: "cancelled" },
-      deliveredTo
-    )
+    // onSettled; notify now with the recipients just learned about, using
+    // the real outcome finish() parked here (never a guessed one). No
+    // entry means either an unknown id or a second markDelivered() call
+    // for the same id — either way there is nothing truthful left to
+    // report, so this stays silent rather than re-notifying or guessing.
+    const settled = this.settledFor.get(id)
+    if (!settled) return
+    this.settledFor.delete(id)
+    this.options.onSettled?.(id, settled.kind, settled.outcome, deliveredTo)
   }
 
   /** Settles exactly the one registration `id` refers to. */
