@@ -16,6 +16,7 @@ import { CapabilityIpcService } from "../ipc/capabilities"
 import { buildGrantIdentity } from "./capability-governance"
 import { createMigrationMarker } from "./grant-migration"
 import { GrantStore, grantStoreFilePath } from "./grant-store"
+import { createHeadlessHotkeyAdapter } from "./headless-trigger-adapters"
 import {
   PluginHost,
   PluginHostNotImplementedError,
@@ -72,6 +73,7 @@ function hostOptions(
     resourcesDir: path.join(dir, "resources"),
     storageFlushMs: 0,
     adapters: noopAdapters,
+    hotkeyAdapter: createHeadlessHotkeyAdapter(),
     workspaceRoots: { listForWorkspace: async () => [] },
     workspaces: {
       get: async (id: string) =>
@@ -1137,6 +1139,7 @@ describe("github inbox bundled plugin", () => {
       userDataDir: dir,
       resourcesDir: path.resolve("resources"),
       adapters: noopAdapters,
+      hotkeyAdapter: createHeadlessHotkeyAdapter(),
       fsWatchAdapter: noopFsWatchAdapter,
       workspaceRoots: { listForWorkspace: async () => [] },
       capabilityGovernance: {

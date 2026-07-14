@@ -105,6 +105,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: pnpm exec electron-builder --win --x64 --publish=never
 
+      # Prove the ACTUAL packaged binary boots: renderer readiness over app://,
+      # a real getSettings() IPC round-trip, a ~12s post-readiness liveness
+      # window, clean diagnostic collectors, and a packaged `Synapse.exe
+      # --mcp-stdio` handshake. A failure here blocks artifact upload.
+      - name: Prove packaged renderer + MCP readiness
+        run: pnpm test:e2e:packaged
+
       - name: Upload Windows artifacts (NSIS)
         uses: actions/upload-artifact@v7
         with:
