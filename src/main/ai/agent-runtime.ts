@@ -1,4 +1,3 @@
-import type { WorkspaceInstruction } from "./context/workspace-instructions"
 import type { WorkspaceRootRecord } from "./execution/types"
 import type { EnvelopeTier } from "./guardrails/untrusted-content"
 import type { PlanStep } from "./plan/plan-types"
@@ -11,12 +10,12 @@ import type { AiToolRegistry } from "./tool-registry"
 import process from "node:process"
 import { logger } from "../logging"
 import { truncateToolResultText } from "./context/tool-result-budget"
-import { loadWorkspaceInstructions } from "./context/workspace-instructions"
 import { labelUntrustedContent } from "./guardrails/untrusted-content"
 import { streamWithDeadlines } from "./provider-stream-deadlines"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
 import { addUsage, emptyUsage, totalTokens } from "./providers/types"
 import { buildRunTrace, toToolCaller } from "./run-provenance"
+import { assembleFromContextSnapshot, buildContextSnapshot } from "./runs/context-snapshot"
 import { renderToolResultText } from "./tool-registry"
 
 // The agent loop: stream a turn → if the model called tools, run them through
@@ -157,7 +156,6 @@ export class AgentRuntime {
     const base = options.system ?? this.options.defaultSystem ?? DEFAULT_SYSTEM_PROMPT
     const executionWorkspaces = this.options.executionWorkspaces?.() ?? []
     const instructionRoots = this.options.workspaceInstructionRoots?.() ?? executionWorkspaces
-    const instructionContext = await this.workspaceInstructionContext(instructionRoots)
     // Every tool result is labeled via labelUntrustedContent in runOneTool,
     // unconditionally — not just when workspace instructions happen to also be
     // configured. The notice must therefore always be present on any run that
@@ -165,7 +163,19 @@ export class AgentRuntime {
     // explanation of what it means (a real, keyed-eval-confirmed gap: a run
     // with no workspace instructions gave the model zero indication that a
     // labeled tool result should be treated as data, not instructions).
-    const system = buildSystemPrompt(base, { executionWorkspaces }) + UNTRUSTED_CONTEXT_NOTICE
+    const baseSystemText =
+      buildSystemPrompt(base, { executionWorkspaces }) + UNTRUSTED_CONTEXT_NOTICE
+    // Freezes the base prompt and every workspace-instruction source (already
+    // envelope-wrapped) exactly once, in stable order — see runs/context-snapshot.ts.
+    // A future durable run persists this snapshot instead of recomputing it;
+    // today's caller still assembles from it immediately, so a fresh run's
+    // bytes are unchanged.
+    const contextSnapshot = await buildContextSnapshot({
+      baseSystemText,
+      instructionWorkspaces: instructionRoots,
+    })
+    const { system, instructionContextText: instructionContext } =
+      assembleFromContextSnapshot(contextSnapshot)
     let usage = emptyUsage()
 
     const finish = (stopReason: AgentRunResult["stopReason"]): AgentRunResult => {
@@ -311,15 +321,6 @@ export class AgentRuntime {
   private resolveToolName(safeName: string): string {
     return this.options.tools.describe(safeName)?.fqName ?? safeName
   }
-
-  private async workspaceInstructionContext(
-    workspaces: readonly WorkspaceRootRecord[]
-  ): Promise<string> {
-    const primaryOnly = workspaces.filter((workspace) => workspace.role === "primary")
-    const instructions = await loadWorkspaceInstructions([...primaryOnly])
-    if (instructions.length === 0) return ""
-    return instructions.map((instruction) => renderWorkspaceInstruction(instruction)).join("\n\n")
-  }
 }
 
 function isToolUse(
@@ -330,11 +331,6 @@ function isToolUse(
 
 function toolResult(toolUseId: string, content: string, isError: boolean): ChatContentBlock {
   return { type: "tool_result", toolUseId, content, isError }
-}
-
-function renderWorkspaceInstruction(instruction: WorkspaceInstruction): string {
-  const source = `workspace:${instruction.workspaceId}/${instruction.fileName}`
-  return labelUntrustedContent(source, instruction.text)
 }
 
 function injectUntrustedContext(messages: ChatMessage[], contextText: string): ChatMessage[] {
