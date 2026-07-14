@@ -687,13 +687,43 @@ function main() {
     `${JSON.stringify(signingStatus, null, 2)}\n`
   )
 
-  const manifestFiles = readdirSync(assetsDir)
+  // The independently-known expected file set — everything just copied or
+  // written into assetsDir above — never derived from a directory listing.
+  // Comparing this against the real on-disk contents (next) is what actually
+  // catches an unexpected extra/missing file; hashing and verifying against
+  // the same readdir() result would be a tautology.
+  const expectedAssetNames = [
+    ...nsisFiles,
+    ...msiFiles,
+    "release-profile.json",
+    "release-context.json",
+    "signing-status.json",
+  ]
+  const onDiskNames = readdirSync(assetsDir).filter((f) => f !== "manifest.json")
+  const missingOnDisk = expectedAssetNames.filter((n) => !onDiskNames.includes(n))
+  const unexpectedOnDisk = onDiskNames.filter((n) => !expectedAssetNames.includes(n))
+  if (missingOnDisk.length > 0 || unexpectedOnDisk.length > 0) {
+    return fail(
+      `assets/ file set does not match what was written (missing: [${missingOnDisk}], unexpected: [${unexpectedOnDisk}])`
+    )
+  }
+
+  const manifestFiles = expectedAssetNames.map((name) => ({
+    name,
+    sha512: sha512Of(join(assetsDir, name)),
+  }))
+  const manifest = buildManifest(manifestFiles)
+  writeFileSync(join(assetsDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`)
+
+  // Defense in depth: re-read every asset from disk a second time,
+  // independently of the hashes just used to build the manifest, and verify
+  // against the manifest.json file that was actually written.
+  const writtenManifest = JSON.parse(readFileSync(join(assetsDir, "manifest.json"), "utf8"))
+  const reReadFiles = readdirSync(assetsDir)
     .filter((f) => f !== "manifest.json")
     .map((name) => ({ name, sha512: sha512Of(join(assetsDir, name)) }))
-  const manifest = buildManifest(manifestFiles)
-  const selfVerify = verifyManifest(manifest, manifestFiles)
+  const selfVerify = verifyManifest(writtenManifest, reReadFiles)
   if (!selfVerify.ok) return fail(`manifest self-check failed: ${selfVerify.reason}`)
-  writeFileSync(join(assetsDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`)
 
   console.log(`release-admission-gate: assets/ assembled and manifest verified at ${assetsDir}`)
 }
@@ -715,6 +745,25 @@ function formatReleaseTargets(releaseProfile) {
 }
 
 /**
+ * Exhaustive, fail-closed rendering of a platform's `releaseClaim` into the
+ * prose actually shown in the published release body. An unrecognized claim
+ * must never fall through to the strongest ("signed and verified") wording —
+ * that would let a future third signing state silently ship an optimistic
+ * security claim it never earned.
+ */
+function renderReleaseClaim(platform, releaseClaim) {
+  if (releaseClaim === "unsigned-unverified") {
+    return "CI has neither a configured platform code-signing credential nor has it performed a platform signature verification on this artifact."
+  }
+  if (releaseClaim === "signed-and-verified") {
+    return "This artifact was signed with a configured platform credential, and CI verified the signature."
+  }
+  throw new Error(
+    `buildReleaseBody: unrecognized releaseClaim "${releaseClaim}" for platform "${platform}" — refusing to render an unverified security claim`
+  )
+}
+
+/**
  * Renders the release body from explicit `releaseProfile`/`releaseContext`
  * arguments rather than reading `RELEASE_PROFILE` or a global mode off the
  * environment — that keeps this function unit-testable and makes a
@@ -731,10 +780,7 @@ export function buildReleaseBody({
 }) {
   const platformLines = Object.entries(signingStatus.platformCodeSigning).map(
     ([platform, info]) => {
-      const claim =
-        info.releaseClaim === "unsigned-unverified"
-          ? "CI has neither a configured platform code-signing credential nor has it performed a platform signature verification on this artifact."
-          : "This artifact was signed with a configured platform credential, and CI verified the signature."
+      const claim = renderReleaseClaim(platform, info.releaseClaim)
       return `- **${platform}**: ${claim}`
     }
   )

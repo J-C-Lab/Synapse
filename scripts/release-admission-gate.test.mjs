@@ -758,6 +758,44 @@ describe("buildReleaseBody", () => {
     expect(body).not.toContain("macos")
     expect(body).not.toContain("**macOS**")
   })
+
+  it("renders the signed-and-verified claim wording, not the unsigned wording", () => {
+    const verifiedSigningStatus = buildSigningStatus({
+      credentialsConfigured: true,
+      verification: "verified",
+      releaseClaim: "signed-and-verified",
+    })
+    const body = buildReleaseBody({
+      releaseProfile: RELEASE_PROFILE,
+      releaseContext,
+      signingStatus: verifiedSigningStatus,
+      attestationUrl: "https://example.com/attestation",
+      repoOwner: "acme",
+    })
+    expect(body).toContain(
+      "This artifact was signed with a configured platform credential, and CI verified the signature."
+    )
+    expect(body).not.toContain(
+      "CI has neither a configured platform code-signing credential nor has it performed a platform signature verification on this artifact."
+    )
+  })
+
+  it("fails closed on an unrecognized releaseClaim instead of rendering an optimistic claim", () => {
+    const bogusSigningStatus = buildSigningStatus({
+      credentialsConfigured: true,
+      verification: "verified",
+      releaseClaim: "some-future-claim",
+    })
+    expect(() =>
+      buildReleaseBody({
+        releaseProfile: RELEASE_PROFILE,
+        releaseContext,
+        signingStatus: bogusSigningStatus,
+        attestationUrl: "https://example.com/attestation",
+        repoOwner: "acme",
+      })
+    ).toThrow(/unrecognized releaseClaim/)
+  })
 })
 
 describe("approved-bundle manifest coverage", () => {
