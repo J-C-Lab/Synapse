@@ -97,6 +97,40 @@ async function startSilentFakeGui(receivedLines: unknown[]): Promise<void> {
   await fs.writeFile(portFilePath, JSON.stringify({ port, token: "tok" }))
 }
 
+/** Starts a fake "GUI approval server" that accepts the connection, reads
+ *  the request line, then destroys the socket without ever writing a
+ *  response — simulates the GUI process crashing/closing mid-request,
+ *  after the request was already successfully delivered. */
+async function startDisconnectingFakeGui(): Promise<void> {
+  server = createServer((socket) => {
+    openSockets.push(socket)
+    void readJsonLine(socket, 2000).then(() => socket.destroy())
+  })
+  await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve))
+  const port = (server!.address() as AddressInfo).port
+  await fs.writeFile(portFilePath, JSON.stringify({ port, token: "tok" }))
+}
+
+describe("createGuiApprovalPort — client-disconnected", () => {
+  it("a socket that closes after the request was sent resolves 'client-disconnected', not 'send-failed'", async () => {
+    await startDisconnectingFakeGui()
+    const port = createGuiApprovalPort({ portFilePath, spawnGui: vi.fn() })
+
+    const result = await port.requestApproval({ identity: identity(), request: request() })
+
+    expect(result).toEqual({ allow: false, outcomeReason: "client-disconnected" })
+  })
+
+  it("requestHostResourceApproval: a socket that closes after the request was sent resolves 'client-disconnected'", async () => {
+    await startDisconnectingFakeGui()
+    const port = createGuiApprovalPort({ portFilePath, spawnGui: vi.fn() })
+
+    const result = await port.requestHostResourceApproval({ request: hostResourceRequest() })
+
+    expect(result).toEqual({ allow: false, outcomeReason: "client-disconnected" })
+  })
+})
+
 describe("createGuiApprovalPort", () => {
   it("resolves true when the GUI is already listening and answers true", async () => {
     await startFakeGui(true)
