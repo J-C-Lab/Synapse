@@ -34,7 +34,15 @@ export class AiToolRegistry {
 
   /** Current tools as model-facing schemas. Rebuilds the reverse map. */
   list(): ProviderToolSchema[] {
-    return this.refresh().map(({ schema }) => schema)
+    return this.listWithDescriptors().map(({ schema }) => schema)
+  }
+
+  /** Same as {@link list}, paired with the descriptor each schema came from —
+   *  what run-authority freezing (see runs/authority-snapshot.ts) needs to
+   *  derive owner identity, required capabilities, and adapter metadata per
+   *  visible tool. */
+  listWithDescriptors(): { schema: ProviderToolSchema; descriptor: RegisteredToolDescriptor }[] {
+    return this.refresh()
   }
 
   /** The plugin descriptor behind a model-facing name (for approval/annotations). */

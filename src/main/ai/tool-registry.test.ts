@@ -131,6 +131,19 @@ describe("aiToolRegistry", () => {
     expect(names).toEqual([modelToolName(descriptor("com.example.demo/ok"))])
   })
 
+  it("exposes the schema alongside its originating descriptor for authority freezing", () => {
+    const original = descriptor("com.example.demo/greet")
+    const registry = new AiToolRegistry(host([original]))
+    const [entry] = registry.listWithDescriptors()
+    expect(entry?.schema.name).toBe(modelToolName(original))
+    expect(entry?.descriptor).toBe(original)
+  })
+
+  it("keeps list() as a projection of listWithDescriptors()", () => {
+    const registry = new AiToolRegistry(host([descriptor("com.example.demo/greet")]))
+    expect(registry.list()).toEqual(registry.listWithDescriptors().map((e) => e.schema))
+  })
+
   it("never gains a title field on ProviderToolSchema", () => {
     const registry = new AiToolRegistry(host([descriptor("com.example.demo/greet")]))
     expect(Object.keys(registry.list()[0] ?? {})).not.toContain("title")
