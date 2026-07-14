@@ -92,16 +92,20 @@ export class CapabilityIpcService {
         ? { allow: false, outcomeReason: "cancelled" }
         : { allow: false }
     }
-    const recipients = this.options.sendGrantRequest({
-      promptId: outcome.handle.id,
-      pluginId: identity.pluginId,
-      capability: request.capability,
-      tier,
-      trigger: request.invocation.trigger,
-      operation: request.operation,
-      reason: request.reason,
-    })
-    outcome.handle.markDelivered(recipients)
+    try {
+      const recipients = this.options.sendGrantRequest({
+        promptId: outcome.handle.id,
+        pluginId: identity.pluginId,
+        capability: request.capability,
+        tier,
+        trigger: request.invocation.trigger,
+        operation: request.operation,
+        reason: request.reason,
+      })
+      outcome.handle.markDelivered(recipients)
+    } catch {
+      outcome.handle.cancel("send-failed")
+    }
     return outcome.handle.result
   }
 
@@ -113,20 +117,24 @@ export class CapabilityIpcService {
         ? { allow: false, outcomeReason: "cancelled" }
         : { allow: false }
     }
-    const recipients = this.options.sendApprovalRequest({
-      promptId: outcome.handle.id,
-      pluginId: identity.pluginId,
-      capability: request.capability,
-      actor: actorOf(request.invocation),
-      trigger: request.invocation.trigger,
-      operation: request.operation,
-      reason: request.reason,
-      clientId: (() => {
-        const principal = principalOf(request.invocation)
-        return principal?.kind === "external-mcp" ? principal.clientId : undefined
-      })(),
-    })
-    outcome.handle.markDelivered(recipients)
+    try {
+      const recipients = this.options.sendApprovalRequest({
+        promptId: outcome.handle.id,
+        pluginId: identity.pluginId,
+        capability: request.capability,
+        actor: actorOf(request.invocation),
+        trigger: request.invocation.trigger,
+        operation: request.operation,
+        reason: request.reason,
+        clientId: (() => {
+          const principal = principalOf(request.invocation)
+          return principal?.kind === "external-mcp" ? principal.clientId : undefined
+        })(),
+      })
+      outcome.handle.markDelivered(recipients)
+    } catch {
+      outcome.handle.cancel("send-failed")
+    }
     return outcome.handle.result
   }
 
