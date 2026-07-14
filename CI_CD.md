@@ -198,7 +198,16 @@ git push origin vX.Y.Z
 ## Auto-update (electron-updater)
 
 The app checks for updates on startup and surfaces an in-app banner: the user clicks **Download**,
-then **Restart to update**. It never restarts itself. The flow lives in
+then **Restart to update**. The Windows flow is:
+
+```text
+GitHub Release → latest.yml → download unsigned NSIS installer
+→ verify SHA-512 → quit Synapse → run the installer in place → reopen Synapse
+```
+
+`electron-updater` performs the SHA-512 check against the value in `latest.yml`; a missing or
+mismatched checksum fails before installation. `quitAndInstall(false, true)` explicitly requests
+that NSIS reopen the upgraded app after installation. The flow lives in
 [src/main/updates/update-service.ts](src/main/updates/update-service.ts) (state machine, unit-tested),
 wired to electron-updater in [src/main/index.ts](src/main/index.ts) and shown by
 [update-banner.tsx](src/renderer/src/components/update-banner.tsx).

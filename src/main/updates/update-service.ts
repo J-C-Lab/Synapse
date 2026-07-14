@@ -31,18 +31,16 @@ export interface AutoUpdaterPort {
   on: (event: string, handler: (...args: unknown[]) => void) => void
   checkForUpdates: () => Promise<unknown>
   downloadUpdate: () => Promise<unknown>
-  quitAndInstall: () => void
+  quitAndInstall: (isSilent?: boolean, isForceRunAfter?: boolean) => void
 }
 
 /**
- * Whether to run the startup update check on this platform. macOS auto-update
- * needs a Developer ID signature (Squirrel.Mac rejects unsigned packages), and
- * we ship macOS unsigned — so we never offer updates there rather than surface a
- * banner for an update that cannot install. Dev (unpackaged) never checks.
+ * Whether to run the startup update check. The published update feed contains
+ * only a Windows NSIS installer, so unsupported platforms and unpackaged dev
+ * builds must never query it.
  */
 export function shouldAutoCheckOnStartup(platform: NodeJS.Platform, isPackaged: boolean): boolean {
-  if (!isPackaged) return false
-  return platform !== "darwin"
+  return isPackaged && platform === "win32"
 }
 
 export interface UpdateServiceOptions {
@@ -84,7 +82,9 @@ export class UpdateService {
   }
 
   install(): void {
-    this.options.updater.quitAndInstall()
+    // NSIS updater flags: show the normal installer UI, then relaunch Synapse
+    // after the in-place update completes.
+    this.options.updater.quitAndInstall(false, true)
   }
 
   private subscribe(): void {
