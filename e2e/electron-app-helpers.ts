@@ -40,18 +40,8 @@ export interface DiagnosticEvent {
   detail: string
 }
 
-/** Integrity failures that mean the packaged renderer/preload is actually
- *  broken (blank screen, missing/mis-served assets, preload not injected,
- *  renderer process gone or crashed). These deterministically fail the shell
- *  readiness proof.
- *
- *  Renderer `pageerror`/`console.error` are still collected (and surfaced in
- *  the failure report), but are NOT treated as integrity failures on their
- *  own: they are routinely driven by environmental conditions a headless CI
- *  runner cannot satisfy (marketplace server or GitHub release feed
- *  unreachable → net::ERR_CONNECTION_REFUSED). A shell whose JS truly failed
- *  to mount would already fail the positive [data-testid="app-shell"] /
- *  getSettings() assertions. Sub-windows (launcher #search, floating ball) are
+/** Main-process / renderer integrity failures: broken assets, preload, or
+ *  renderer process gone. Sub-windows (launcher #search, floating ball) are
  *  matched by full URL including hash, so their noise never counts against the
  *  no-hash main shell. */
 const INTEGRITY_TYPES = new Set([
@@ -60,6 +50,64 @@ const INTEGRITY_TYPES = new Set([
   "render-process-gone",
   "crash",
 ])
+
+/** console.error on the main shell: fatal by default; narrow allowlist for proven
+ *  CI noise only (exact or prefix match). Every entry needs a comment citing why. */
+const MAIN_SHELL_CONSOLE_ERROR_ALLOWLIST: ReadonlyArray<{
+  pattern: string
+  prefix?: boolean
+  reason: string
+}> = [
+  {
+    pattern: "Failed to fetch",
+    prefix: true,
+    reason: "marketplace or GitHub release feed unreachable in local smoke",
+  },
+  {
+    pattern: "net::ERR_CONNECTION_REFUSED",
+    prefix: true,
+    reason: "network endpoints unavailable in headless CI/local smoke",
+  },
+]
+
+/** pageerror on the main shell is always fatal. Only proven CI-noise patterns that
+ *  currently surface as uncaught rejections (not console.error) may be exempt. */
+const MAIN_SHELL_PAGEERROR_ALLOWLIST: ReadonlyArray<{
+  pattern: string
+  prefix?: boolean
+  reason: string
+}> = [
+  // plugins-status-card fire-and-forgets searchMarketplace(); unreachable backend
+  // in headless smoke becomes an uncaught ElectronIpcError rejection.
+  {
+    pattern: "ElectronIpcError: Could not reach the marketplace:",
+    prefix: true,
+    reason: "marketplace server unavailable in local/CI smoke (net::ERR_CONNECTION_REFUSED)",
+  },
+]
+
+function matchesAllowlist(
+  detail: string,
+  allowlist: ReadonlyArray<{ pattern: string; prefix?: boolean }>
+): boolean {
+  for (const entry of allowlist) {
+    if (entry.prefix ? detail.startsWith(entry.pattern) : detail === entry.pattern) {
+      return true
+    }
+  }
+  return false
+}
+
+/** True when a diagnostic on the main shell must fail the packaged smoke proof. */
+function isFatalShellEvent(event: DiagnosticEvent): boolean {
+  if (INTEGRITY_TYPES.has(event.type)) return true
+  if (event.type === "pageerror")
+    return !matchesAllowlist(event.detail, MAIN_SHELL_PAGEERROR_ALLOWLIST)
+  if (event.type === "console.error") {
+    return !matchesAllowlist(event.detail, MAIN_SHELL_CONSOLE_ERROR_ALLOWLIST)
+  }
+  return false
+}
 
 export interface LaunchedApp {
   app: ElectronApplication
@@ -350,21 +398,20 @@ export async function assertProcessAliveAfterReadiness(
   expect(launched.app.process().exitCode).toBeNull()
 }
 
-/** Fail if the main shell suffered a renderer/preload INTEGRITY failure
- *  (did-fail-load main frame, preload-error, render-process-gone, crash).
+/** Fail if the main shell suffered any fatal diagnostic: integrity failures
+ *  (did-fail-load main frame, preload-error, render-process-gone, crash),
+ *  pageerror, or console.error (except narrowly allowlisted CI noise).
  *  Matching is by full URL INCLUDING hash, so sub-windows that share the
  *  bundle (launcher #search, floating ball #floating-ball) never count against
- *  the no-hash main shell. Advisory renderer errors on the shell are surfaced
- *  in the failure message for context but are not, by themselves, fatal (see
- *  INTEGRITY_TYPES). */
+ *  the no-hash main shell. */
 export async function assertNoShellDiagnostics(launched: LaunchedApp, shell: Page): Promise<void> {
   const shellHref = fullHref(shell.url())
   const diagnostics = await launched.readDiagnostics()
   const onShell = diagnostics.filter((event) => fullHref(event.url) === shellHref)
-  const fatal = onShell.filter((event) => INTEGRITY_TYPES.has(event.type))
+  const fatal = onShell.filter(isFatalShellEvent)
   if (fatal.length > 0) {
     throw new Error(
-      `Main shell (${shellHref}) suffered ${fatal.length} integrity failure(s).\n${formatFailure(
+      `Main shell (${shellHref}) suffered ${fatal.length} fatal diagnostic(s).\n${formatFailure(
         onShell,
         launched
       )}`

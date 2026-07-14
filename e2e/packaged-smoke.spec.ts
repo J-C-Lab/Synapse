@@ -32,8 +32,8 @@ test("packaged shell is ready, alive, and diagnostically clean", async () => {
     // Liveness AFTER readiness — a shell that renders then dies must fail.
     await assertProcessAliveAfterReadiness(launched)
 
-    // No did-fail-load / preload-error / render-process-gone / pageerror /
-    // crash / console.error touched the main shell.
+    // No fatal main-shell diagnostics: integrity failures, pageerror, crash,
+    // or unallowlisted console.error.
     await assertNoShellDiagnostics(launched, shell)
   } finally {
     await launched.dispose()
