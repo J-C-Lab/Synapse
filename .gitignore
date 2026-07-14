@@ -18,6 +18,7 @@ junit.xml
 # electron-vite build output
 /out/
 /release/
+/.tmp/
 
 # workspace package build output
 /packages/*/dist/

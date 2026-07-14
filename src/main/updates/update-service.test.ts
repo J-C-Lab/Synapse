@@ -103,17 +103,18 @@ describe("updateService", () => {
     const { svc } = service(updater)
     svc.install()
     expect(updater.quitAndInstall).toHaveBeenCalledOnce()
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true)
   })
 })
 
 describe("shouldAutoCheckOnStartup", () => {
-  it("checks on packaged Windows and Linux", () => {
+  it("checks on packaged Windows", () => {
     expect(shouldAutoCheckOnStartup("win32", true)).toBe(true)
-    expect(shouldAutoCheckOnStartup("linux", true)).toBe(true)
   })
 
-  it("never checks on macOS (we ship it unsigned, so updates can't install)", () => {
+  it("never checks on platforms without a published update feed", () => {
     expect(shouldAutoCheckOnStartup("darwin", true)).toBe(false)
+    expect(shouldAutoCheckOnStartup("linux", true)).toBe(false)
   })
 
   it("never checks in dev (unpackaged)", () => {
