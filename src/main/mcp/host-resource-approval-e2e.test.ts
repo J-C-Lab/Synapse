@@ -3,7 +3,7 @@ import type { HostResourceApprovalRequest } from "./host-resource-approval"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { HostResourceIpcService } from "../ipc/host-resources"
 import { createGuiApprovalPort } from "./gui-approval-client"
 import { startHeadlessApprovalServer } from "./headless-approval-server"
@@ -49,9 +49,11 @@ describe("host-resource approval, end to end through the real transport", () => 
       const client = createGuiApprovalPort({ portFilePath, spawnGui: () => {} })
       const resultPromise = client.requestHostResourceApproval({ request: request() })
 
-      // Give the request a moment to land, then answer it as a human would.
-      await new Promise((resolve) => setTimeout(resolve, 50))
-      expect(events).toHaveLength(1)
+      // Wait for the request to actually land, then answer it as a human
+      // would — a fixed sleep here is a race under CPU contention (the
+      // full suite can starve this event loop for well over 50ms); wait
+      // on the real predicate instead.
+      await vi.waitFor(() => expect(events).toHaveLength(1))
       service.resolve(events[0]!.promptId, true)
 
       const result = await resultPromise
@@ -82,7 +84,7 @@ describe("host-resource approval, end to end through the real transport", () => 
       const client = createGuiApprovalPort({ portFilePath, spawnGui: () => {} })
       const resultPromise = client.requestHostResourceApproval({ request: request() })
 
-      await new Promise((resolve) => setTimeout(resolve, 50))
+      await vi.waitFor(() => expect(events).toHaveLength(1))
       service.resolve(events[0]!.promptId, false)
 
       expect(await resultPromise).toEqual({ allow: false })
@@ -111,7 +113,7 @@ describe("host-resource approval, end to end through the real transport", () => 
       const client = createGuiApprovalPort({ portFilePath, spawnGui: () => {} })
       const resultPromise = client.requestHostResourceApproval({ request: request() })
 
-      await new Promise((resolve) => setTimeout(resolve, 50))
+      await vi.waitFor(() => expect(events).toHaveLength(1))
       service.dispose() // simulates the window closing before the human answers
 
       expect(await resultPromise).toEqual({ allow: false, outcomeReason: "gui-disposed" })
