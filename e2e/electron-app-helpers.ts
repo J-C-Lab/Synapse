@@ -51,24 +51,13 @@ const INTEGRITY_TYPES = new Set([
   "crash",
 ])
 
-/** console.error on the main shell: fatal by default; narrow allowlist for proven
- *  CI noise only (exact or prefix match). Every entry needs a comment citing why. */
+/** console.error on the main shell is fatal by default; keep the allowlist empty
+ *  unless a proven CI-noise pattern needs a narrowly scoped exemption. */
 const MAIN_SHELL_CONSOLE_ERROR_ALLOWLIST: ReadonlyArray<{
   pattern: string
   prefix?: boolean
   reason: string
-}> = [
-  {
-    pattern: "Failed to fetch",
-    prefix: true,
-    reason: "marketplace or GitHub release feed unreachable in local smoke",
-  },
-  {
-    pattern: "net::ERR_CONNECTION_REFUSED",
-    prefix: true,
-    reason: "network endpoints unavailable in headless CI/local smoke",
-  },
-]
+}> = []
 
 /** pageerror on the main shell is always fatal. Only proven CI-noise patterns that
  *  currently surface as uncaught rejections (not console.error) may be exempt. */
@@ -76,15 +65,7 @@ const MAIN_SHELL_PAGEERROR_ALLOWLIST: ReadonlyArray<{
   pattern: string
   prefix?: boolean
   reason: string
-}> = [
-  // plugins-status-card fire-and-forgets searchMarketplace(); unreachable backend
-  // in headless smoke becomes an uncaught ElectronIpcError rejection.
-  {
-    pattern: "ElectronIpcError: Could not reach the marketplace:",
-    prefix: true,
-    reason: "marketplace server unavailable in local/CI smoke (net::ERR_CONNECTION_REFUSED)",
-  },
-]
+}> = []
 
 function matchesAllowlist(
   detail: string,
@@ -158,20 +139,25 @@ export async function launchSynapse(options: { mode: LaunchMode }): Promise<Laun
   const userDir = mkdtempSync(path.join(tmpdir(), "synapse-e2e-"))
 
   let app: ElectronApplication
-  if (options.mode === "packaged") {
-    assertPackagedHostSupported()
-    const executablePath = resolvePackagedExecutable()
-    app = await electron.launch({
-      executablePath,
-      args: [`--user-data-dir=${userDir}`],
-    })
-  } else {
-    // The repo root holds package.json (main → out/main/index.js). Launched
-    // unpacked, so `app.isPackaged === false`, but the renderer still comes up
-    // over `app://app` because ELECTRON_RENDERER_URL is unset outside dev.
-    app = await electron.launch({
-      args: [REPO_ROOT, `--user-data-dir=${userDir}`],
-    })
+  try {
+    if (options.mode === "packaged") {
+      assertPackagedHostSupported()
+      const executablePath = resolvePackagedExecutable()
+      app = await electron.launch({
+        executablePath,
+        args: [`--user-data-dir=${userDir}`],
+      })
+    } else {
+      // The repo root holds package.json (main → out/main/index.js). Launched
+      // unpacked, so `app.isPackaged === false`, but the renderer still comes up
+      // over `app://app` because ELECTRON_RENDERER_URL is unset outside dev.
+      app = await electron.launch({
+        args: [REPO_ROOT, `--user-data-dir=${userDir}`],
+      })
+    }
+  } catch (err) {
+    removeVerifiedTempDir(userDir)
+    throw err
   }
 
   const pid = app.process().pid

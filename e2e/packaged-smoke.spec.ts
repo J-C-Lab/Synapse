@@ -45,6 +45,8 @@ test("packaged MCP stdio handshake returns numeric tool/resource counts", async 
   try {
     const { shell } = await awaitShellReadiness(launched, { mode: "packaged" })
 
+    await assertNoShellDiagnostics(launched, shell)
+
     // Drives the real preload bridge → mcp-onboarding:test-connection, which
     // spawns packaged `Synapse.exe --mcp-stdio` (re-exec'd as plain Node via
     // ELECTRON_RUN_AS_NODE=1), performs initialize + tools/list +
@@ -67,6 +69,7 @@ test("packaged MCP stdio handshake returns numeric tool/resource counts", async 
     expect(result.toolCount).toBeGreaterThanOrEqual(0)
     expect(result.resourceCount).toBeGreaterThanOrEqual(0)
 
+    await assertProcessAliveAfterReadiness(launched, 3_000)
     await assertNoShellDiagnostics(launched, shell)
   } finally {
     await launched.dispose()

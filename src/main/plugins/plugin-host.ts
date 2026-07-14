@@ -370,7 +370,9 @@ export class PluginHost {
       }
     } finally {
       this.registry.on("changed", this.handleRegistryChanged)
-      await this.syncClipboardWatcher()
+      if (this.mode === "full") {
+        await this.syncClipboardWatcher()
+      }
     }
   }
 
@@ -997,6 +999,7 @@ export class PluginHost {
   }
 
   private async syncClipboardWatcher(): Promise<void> {
+    if (this.mode !== "full") return
     this.legacyClipboardUnlisten?.()
     this.legacyClipboardUnlisten = undefined
     if (!this.registry.hasClipboardChangeListeners()) return
