@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Synapse** — desktop productivity toolbox. Stack: **electron-vite** + **Electron 33** + **React 19** + **TypeScript 5 (strict)** + **Tailwind CSS v4** + **shadcn/ui** + **Zustand** + **i18next**.
+**Synapse** — desktop productivity toolbox. Stack: **electron-vite** + **Electron 43** + **React 19** + **TypeScript 5 (strict)** + **Tailwind CSS v4** + **shadcn/ui** + **Zustand** + **i18next**.
 
 The renderer is a single-page Vite-built React app loaded by the Electron main process. There is no web fallback — the renderer assumes Electron and uses IPC for OS-level work.
 

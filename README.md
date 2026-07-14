@@ -120,7 +120,7 @@ so it runs against in-process Postgres (PGlite/WASM) in tests with no real crede
 
 | Area            | Tools                                                                              |
 | --------------- | ---------------------------------------------------------------------------------- |
-| Desktop         | Electron 33 · electron-vite · electron-builder · electron-updater                  |
+| Desktop         | Electron 43 · electron-vite · electron-builder · electron-updater                  |
 | UI              | React 19 · TypeScript 5 (strict) · Tailwind CSS v4 · shadcn/ui · Zustand · i18next |
 | AI              | `@anthropic-ai/sdk` · `openai` · `@modelcontextprotocol/sdk`                       |
 | Backend         | Fastify 5 · Drizzle ORM · Postgres (Neon) · Cloudflare R2 (S3) · zod               |

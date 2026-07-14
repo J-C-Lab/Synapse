@@ -11,12 +11,13 @@ pnpm test:coverage
 pnpm eval                    # eval suite (vitest.eval.config.ts)
 pnpm test:e2e                # development project (no packaged build required)
 pnpm test:e2e:packaged       # packaged-smoke only — run after pnpm electron:build:win
+pnpm test:e2e:profile-compat # Electron 33<->43 profile compatibility rehearsal — see below
 ```
 
 ## Checkpoint R local gate
 
-Run this before opening a release PR or tagging. All commands must pass on **Electron 33.x** +
-**electron-builder 25.x** + **electron-updater 6.8.9**:
+Run this before opening a release PR or tagging. All commands must pass on **Electron 43.x** +
+**electron-builder 26.x** + **electron-updater 6.8.9**:
 
 ```bash
 pnpm format:check
@@ -26,6 +27,7 @@ pnpm test
 pnpm eval
 pnpm electron:build:win
 pnpm test:e2e:packaged
+pnpm test:e2e:profile-compat
 git diff --check
 ```
 
@@ -35,6 +37,38 @@ packaged readiness proof CI runs in `build-electron.yml`.
 
 Publication profile details, dry-run dispatch, and the tag-release checklist live in
 [CI_CD.md](CI_CD.md).
+
+### Electron 33 <-> 43 profile compatibility rehearsal
+
+`pnpm test:e2e:profile-compat` (Windows only) proves that a real user profile created under the
+retired Electron 33 runtime still reads correctly on Electron 43 (forward upgrade), and that a
+profile subsequently opened once by Electron 43 still reads correctly back on Electron 33
+(rollback), including a `safeStorage`-encrypted credential. It runs the full 8-step sequence
+described in `docs/superpowers/specs/2026-07-14-windows-electron-runtime-toolchain-refresh-design.md`
+("Electron 33 profile forward/rollback compatibility rehearsal"): create sentinel settings,
+workspaces, a conversation, and a dummy AI credential on a fresh Electron-33 profile; clone that
+profile twice; open one clone on Electron 43 and assert every record round-trips with the same
+identity/value, including a main-process-only `safeStorage.decryptString` check that returns a
+boolean rather than exposing the secret; open the other clone on Electron 43 then reopen it on
+Electron 33 and assert the same checks. Nothing is skipped or marked non-fatal — a missing
+executable or a failed assertion fails the run.
+
+It needs two absolute, existing paths to packaged `Synapse.exe` executables **on the same Windows
+host and OS user account** (a `safeStorage`/DPAPI profile is user+machine bound, so copying it
+elsewhere would test the wrong property):
+
+```powershell
+$env:SYNAPSE_ELECTRON33_EXE = '<path to a retained Electron-33 win-unpacked Synapse.exe>'
+$env:SYNAPSE_ELECTRON43_EXE = '<path to the current checkpoint win-unpacked Synapse.exe, e.g. release/win-unpacked/Synapse.exe>'
+pnpm test:e2e:profile-compat
+```
+
+The Electron-33 baseline comes from a retained CI artifact produced by dispatching
+`build-electron.yml` with `retain_unpacked=true`, named `compat-windows-x64-unpacked-<sha>`; it is
+not rebuilt locally since the whole point is testing against the previously shipped runtime. All
+temporary profile directories are created under the OS temp dir and removed in `finally`; only the
+logical assertion report and executable hashes are meant to be kept as evidence, never a
+credential-bearing profile archive.
 
 ## Layout
 
@@ -158,6 +192,8 @@ pnpm electron:build:win
   - Updater feed: `latest.yml` and `Synapse Setup X.Y.Z.exe.blockmap`
   - Unpacked tree: `release/win-unpacked/Synapse.exe` (local smoke input — not a GitHub Release asset)
 - [ ] `pnpm test:e2e:packaged` passes (renderer readiness, IPC round-trip, MCP stdio handshake)
+- [ ] `pnpm test:e2e:profile-compat` passes (Electron 33<->43 profile forward/rollback compatibility
+      — see "Electron 33 <-> 43 profile compatibility rehearsal" above for the required executables)
 
 ### Install and first launch (NSIS)
 
