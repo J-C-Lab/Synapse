@@ -1,5 +1,9 @@
 import { Buffer } from "node:buffer"
+import { readFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { gzipSync } from "node:zlib"
+import yaml from "js-yaml"
 import { describe, expect, it } from "vitest"
 import { buildStatusJson } from "./eval-nightly-report.mjs"
 import {
@@ -837,5 +841,89 @@ describe("approved-bundle manifest coverage", () => {
     const result = verifyManifest(manifest, tamperedFiles)
     expect(result.ok).toBe(false)
     expect(result.reason).toContain("Synapse-Setup-1.2.3.exe.blockmap")
+  })
+})
+
+describe("build-electron.yml contract (Windows-only, RELEASE_PROFILE)", () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
+  const WORKFLOW_PATH = join(REPO_ROOT, ".github/workflows/build-electron.yml")
+  const rawWorkflow = readFileSync(WORKFLOW_PATH, "utf8")
+  const workflow = yaml.load(rawWorkflow)
+  const jobs = Object.values(workflow.jobs)
+
+  function allSteps() {
+    return jobs.flatMap((job) => job.steps ?? [])
+  }
+
+  function uploadArtifactSteps() {
+    return allSteps().filter(
+      (step) => typeof step.uses === "string" && step.uses.startsWith("actions/upload-artifact")
+    )
+  }
+
+  it("defines exactly one job", () => {
+    expect(jobs).toHaveLength(1)
+  })
+
+  it("runs on windows-latest with no platform matrix/strategy", () => {
+    expect(jobs[0]["runs-on"]).toBe("windows-latest")
+    expect(jobs[0].strategy).toBeUndefined()
+  })
+
+  it("invokes electron-builder with --win --x64 --publish=never", () => {
+    const builderStep = allSteps().find(
+      (step) => typeof step.run === "string" && step.run.includes("electron-builder")
+    )
+    expect(builderStep).toBeDefined()
+    expect(builderStep.run).toContain("--win --x64 --publish=never")
+  })
+
+  it("uploads exactly the two electron-* containers named after RELEASE_PROFILE", () => {
+    const expectedNames = RELEASE_PROFILE.targets
+      .flatMap((target) =>
+        target.packages.map((pkg) => `electron-${target.platform}-${target.arch}-${pkg}`)
+      )
+      .sort()
+    expect(expectedNames).toEqual(["electron-windows-x64-msi", "electron-windows-x64-nsis"])
+
+    const electronUploads = uploadArtifactSteps().filter(
+      (step) => typeof step.with?.name === "string" && step.with.name.startsWith("electron-")
+    )
+    expect(electronUploads).toHaveLength(2)
+    expect(electronUploads.map((step) => step.with.name).sort()).toEqual(expectedNames)
+  })
+
+  it("every electron-* upload uses if-no-files-found: error", () => {
+    const electronUploads = uploadArtifactSteps().filter(
+      (step) => typeof step.with?.name === "string" && step.with.name.startsWith("electron-")
+    )
+    expect(electronUploads.length).toBeGreaterThan(0)
+    for (const step of electronUploads) {
+      expect(step.with["if-no-files-found"]).toBe("error")
+    }
+  })
+
+  it("contains no macOS/Linux platform remnants", () => {
+    for (const forbidden of [
+      "macos-latest",
+      "ubuntu-latest",
+      "--mac",
+      "--linux",
+      "latest-mac.yml",
+      "latest-linux.yml",
+    ]) {
+      expect(rawWorkflow).not.toContain(forbidden)
+    }
+  })
+
+  it("names any optional unpacked compatibility artifact compat-*, never electron-*", () => {
+    const unpackedUploads = uploadArtifactSteps().filter(
+      (step) =>
+        typeof step.with?.name === "string" && step.with.name.toLowerCase().includes("unpacked")
+    )
+    for (const step of unpackedUploads) {
+      expect(step.with.name.startsWith("compat-")).toBe(true)
+      expect(step.with.name.startsWith("electron-")).toBe(false)
+    }
   })
 })

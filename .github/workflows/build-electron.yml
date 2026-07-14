@@ -1,22 +1,15 @@
 name: Build Electron
 
 # ============================================================================
-# Electron Desktop Application Build
+# Electron Desktop Application Build (Windows x64)
 # ============================================================================
-# Builds the Electron desktop application for Windows and macOS.
-# This workflow works OUT-OF-THE-BOX without requiring any secrets.
+# Builds the Windows x64 Electron desktop application — the only platform
+# S11 Checkpoint R's release profile ships (see RELEASE_PROFILE in
+# scripts/release-admission-gate.mjs). This workflow works OUT-OF-THE-BOX
+# without requiring any secrets.
 #
-# OPTIONAL SECRETS (for code signing - DISABLED by default):
+# OPTIONAL SECRETS (for Windows code signing - DISABLED by default):
 # ----------------------------------------------------------------
-# For macOS Code Signing:
-#   - APPLE_CERTIFICATE: Base64-encoded .p12 certificate
-#   - APPLE_CERTIFICATE_PASSWORD: Certificate password
-#   - APPLE_SIGNING_IDENTITY: Developer ID Application identity
-#   - APPLE_ID: Apple ID email
-#   - APPLE_PASSWORD: App-specific password
-#   - APPLE_TEAM_ID: Apple Developer Team ID
-#
-# For Windows Code Signing:
 #   - WINDOWS_CERTIFICATE: Base64-encoded PFX certificate
 #   - WINDOWS_CERTIFICATE_PASSWORD: Certificate password
 #
@@ -25,30 +18,25 @@ name: Build Electron
 
 on:
   workflow_call:
+    inputs:
+      retain_unpacked:
+        description: "Also upload the unpacked win-unpacked/ tree as a short-retention compat-* artifact (never a release input/asset)."
+        type: boolean
+        required: false
+        default: false
   workflow_dispatch:
+    inputs:
+      retain_unpacked:
+        description: "Also upload the unpacked win-unpacked/ tree as a short-retention compat-* artifact (never a release input/asset)."
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   build-electron:
-    name: Build Electron App (${{ matrix.platform }} ${{ matrix.arch }})
+    name: Build Electron App (windows x64)
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: windows-latest
-            arch: x64
-            build_flag: --win
-          - platform: macos-latest
-            arch: x64
-            build_flag: --mac --x64
-          - platform: macos-latest
-            arch: arm64
-            build_flag: --mac --arm64
-          - platform: ubuntu-latest
-            arch: x64
-            build_flag: --linux
-
-    runs-on: ${{ matrix.platform }}
+    runs-on: windows-latest
 
     steps:
       - name: Checkout code
@@ -76,8 +64,8 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       # Cache Electron's downloaded Chromium binary and electron-builder's
-      # bundled NSIS / winCodeSign / WiX downloads so we don't re-fetch
-      # ~260 MB on every CI run.
+      # bundled NSIS / WiX downloads so we don't re-fetch ~260 MB on every
+      # CI run.
       #
       # NOTE: actions/cache uses minimatch internally, which requires forward
       # slashes even on Windows — backslash paths silently match nothing.
@@ -85,10 +73,6 @@ jobs:
         uses: actions/cache@v6
         with:
           path: |
-            ~/.cache/electron
-            ~/.cache/electron-builder
-            ~/Library/Caches/electron
-            ~/Library/Caches/electron-builder
             ~/AppData/Local/electron/Cache
             ~/AppData/Local/electron-builder/Cache
           key: ${{ runner.os }}-electron-${{ steps.electron-version.outputs.version }}-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -114,80 +98,17 @@ jobs:
       # For production releases with signing, populate the env block below.
       - name: Build Electron app
         # env:
-        #   # Optional: macOS code signing
-        #   APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-        #   APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        #   APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        #   APPLE_ID: ${{ secrets.APPLE_ID }}
-        #   APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-        #   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         #   # Optional: Windows code signing
         #   CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
         #   CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm exec electron-builder ${{ matrix.build_flag }} --publish=never
-
-      # Boots the unpacked Linux build under Xvfb to confirm the renderer
-      # actually loads. Catches regressions in main-process bootstrap code
-      # (CSP, custom protocol, preload path) that produce successful builds
-      # but blank-screen runtime — exactly the bug class the static-export +
-      # file:// path used to fall into.
-      - name: Smoke-test built app (Linux)
-        if: matrix.platform == 'ubuntu-latest'
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb libnss3 libatk-bridge2.0-0 libdrm2 libxkbcommon0 libgbm1 libasound2t64 libgtk-3-0
-          APP_NAME=$(node -p "require('./package.json').name")
-          BIN="release/linux-unpacked/$APP_NAME"
-          if [ ! -x "$BIN" ]; then
-            echo "::error::Expected app executable not found at $BIN"
-            ls -la release/linux-unpacked/ || true
-            find release/linux-unpacked -maxdepth 1 -type f -executable -print || true
-            exit 1
-          fi
-          echo "Smoke-testing $BIN"
-          # The smoke path is successful when the app stays alive long enough
-          # to render. Use SIGKILL at the timeout to avoid flaky headless
-          # Electron teardown crashes on Linux runners.
-          set +e
-          xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" \
-            timeout --preserve-status --signal=KILL 12s "$BIN" --no-sandbox --disable-dev-shm-usage --disable-gpu
-          code=$?
-          set -e
-          if [ "$code" != "124" ] && [ "$code" != "137" ] && [ "$code" != "143" ] && [ "$code" != "0" ]; then
-            echo "::error::App crashed during smoke test with exit code $code"
-            exit 1
-          fi
-          echo "Smoke test passed (exit code $code)"
-
-      - name: Upload Linux artifacts (AppImage)
-        if: matrix.platform == 'ubuntu-latest'
-        uses: actions/upload-artifact@v7
-        with:
-          name: electron-linux-${{ matrix.arch }}-appimage
-          # latest-linux.yml is the electron-updater feed metadata.
-          path: |
-            release/*.AppImage
-            release/latest-linux.yml
-          retention-days: 30
-          if-no-files-found: error
-
-      - name: Upload Linux artifacts (deb)
-        if: matrix.platform == 'ubuntu-latest'
-        uses: actions/upload-artifact@v7
-        with:
-          name: electron-linux-${{ matrix.arch }}-deb
-          path: release/*.deb
-          retention-days: 30
-          if-no-files-found: error
+        run: pnpm exec electron-builder --win --x64 --publish=never
 
       - name: Upload Windows artifacts (NSIS)
-        if: matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@v7
         with:
-          name: electron-windows-${{ matrix.arch }}-nsis
+          name: electron-windows-x64-nsis
           # latest.yml + .blockmap drive electron-updater (and delta downloads).
           path: |
             release/*.exe
@@ -197,32 +118,23 @@ jobs:
           if-no-files-found: error
 
       - name: Upload Windows artifacts (MSI)
-        if: matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@v7
         with:
-          name: electron-windows-${{ matrix.arch }}-msi
+          name: electron-windows-x64-msi
           path: release/*.msi
           retention-days: 30
           if-no-files-found: error
 
-      - name: Upload macOS artifacts (DMG)
-        if: matrix.platform == 'macos-latest'
+      # Opt-in only: a short-retention compatibility copy of the unpacked
+      # build tree, useful while Checkpoint R's packaged smoke test (Task 4)
+      # is still being built out. Named compat-* (never electron-*) so the
+      # release admission gate's `--pattern electron-*` download can never
+      # ingest it as a release input.
+      - name: Upload unpacked baseline (compat, opt-in)
+        if: inputs.retain_unpacked
         uses: actions/upload-artifact@v7
         with:
-          name: electron-macos-${{ matrix.arch }}-dmg
-          path: release/*.dmg
-          retention-days: 30
-          if-no-files-found: error
-
-      - name: Upload macOS artifacts (ZIP)
-        if: matrix.platform == 'macos-latest'
-        uses: actions/upload-artifact@v7
-        with:
-          name: electron-macos-${{ matrix.arch }}-zip
-          # The zip + latest-mac.yml (+ blockmap) are the macOS updater feed.
-          path: |
-            release/*.zip
-            release/*.blockmap
-            release/latest-mac.yml
+          name: compat-windows-x64-unpacked-${{ github.sha }}
+          path: release/win-unpacked/**
           retention-days: 30
           if-no-files-found: error
