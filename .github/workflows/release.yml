@@ -6,46 +6,74 @@ name: Release
 # Creates a GitHub release when a version tag is pushed.
 # Triggers on tags matching v* (e.g., v1.0.0, v2.1.0-beta).
 #
+# Manual workflow_dispatch is dry-run ONLY — it proves the Windows release
+# pipeline without publishing. Tag pushes remain the sole publication route.
+#
 # This workflow:
 # 1. Runs quality checks and tests
-# 2. Builds Electron desktop applications for all platforms
+# 2. Builds Electron desktop applications for Windows
 # 3. Runs the release admission gate (verify, assemble, attest)
-# 4. Creates a draft GitHub release from the approved bundle only
+# 4. Creates a draft GitHub release from the approved bundle only (tag push)
 # ============================================================================
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry-run proof only (must be true — manual dispatch never publishes)"
+        type: boolean
+        required: true
+        default: true
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: false
 
+env:
+  RELEASE_MODE: ${{ github.event_name == 'workflow_dispatch' && 'dry-run' || 'release' }}
+  BUNDLE_ARTIFACT_NAME: ${{ github.event_name == 'workflow_dispatch' && 'release-approved-bundle-dry-run' || 'release-approved-bundle' }}
+
 jobs:
+  validate-invocation:
+    name: Validate Invocation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject non-dry-run manual dispatch
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run != true
+        run: |
+          echo "::error::workflow_dispatch is dry-run only; set dry_run=true"
+          exit 1
+      - name: Invocation validated
+        run: echo "Invocation validated for ${{ github.event_name }}"
+
   # Run quality checks first
   quality:
     name: Quality Check
+    needs: [validate-invocation]
     uses: ./.github/workflows/quality.yml
 
   # Run tests
   test:
     name: Test Suite
+    needs: [validate-invocation]
     permissions:
       contents: read
       pull-requests: write
       checks: write
     uses: ./.github/workflows/test.yml
 
-  # Build Electron apps for all platforms
+  # Build Electron apps for Windows
   build-electron:
     name: Build Electron
-    needs: [quality, test]
+    needs: [validate-invocation, quality, test]
     uses: ./.github/workflows/build-electron.yml
 
   release-admission-gate:
     name: Release Admission Gate
-    needs: [build-electron]
+    needs: [validate-invocation, build-electron]
     runs-on: ubuntu-latest
     outputs:
       attestation-url: ${{ steps.attest.outputs.attestation-url }}
@@ -70,6 +98,7 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_MODE: ${{ env.RELEASE_MODE }}
           APPLE_CERT_CONFIGURED: ${{ secrets.APPLE_CERTIFICATE != '' }}
           WINDOWS_CERT_CONFIGURED: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
         run: node scripts/release-admission-gate.mjs
@@ -85,8 +114,13 @@ jobs:
           node -e "
             const { buildReleaseBody } = await import('./scripts/release-admission-gate.mjs');
             const fs = await import('node:fs');
-            const signingStatus = JSON.parse(fs.readFileSync('release-approved-bundle/assets/signing-status.json', 'utf8'));
+            const assetsDir = 'release-approved-bundle/assets';
+            const releaseProfile = JSON.parse(fs.readFileSync(assetsDir + '/release-profile.json', 'utf8'));
+            const releaseContext = JSON.parse(fs.readFileSync(assetsDir + '/release-context.json', 'utf8'));
+            const signingStatus = JSON.parse(fs.readFileSync(assetsDir + '/signing-status.json', 'utf8'));
             const body = buildReleaseBody({
+              releaseProfile,
+              releaseContext,
               signingStatus,
               attestationUrl: '${{ steps.attest.outputs.attestation-url }}',
               repoOwner: process.env.GITHUB_REPOSITORY_OWNER,
@@ -96,15 +130,29 @@ jobs:
       - name: Upload release-approved-bundle
         uses: actions/upload-artifact@v7
         with:
-          name: release-approved-bundle
+          name: ${{ env.BUNDLE_ARTIFACT_NAME }}
           path: release-approved-bundle/
           retention-days: 90
           if-no-files-found: error
+      - name: Dry-run workflow summary
+        if: env.RELEASE_MODE == 'dry-run'
+        run: |
+          {
+            echo "## Dry-run release proof"
+            echo ""
+            echo "- **Mode**: dry-run (no GitHub release will be created)"
+            echo "- **Commit SHA**: \`${{ github.sha }}\`"
+            echo "- **Workflow run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "- **Package version**: \`$(node -p "require('./package.json').version")\`"
+            echo "- **Attestation**: ${{ steps.attest.outputs.attestation-url }}"
+            echo "- **Proof artifact**: \`${{ env.BUNDLE_ARTIFACT_NAME }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-  # Create the GitHub release
+  # Create the GitHub release (tag push only — never workflow_dispatch)
   create-release:
     name: Create Release
-    needs: [quality, test, build-electron, release-admission-gate]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [validate-invocation, quality, test, build-electron, release-admission-gate]
     runs-on: ubuntu-latest
 
     permissions:

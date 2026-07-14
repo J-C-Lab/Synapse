@@ -927,3 +927,109 @@ describe("build-electron.yml contract (Windows-only, RELEASE_PROFILE)", () => {
     }
   })
 })
+
+describe("release.yml contract (dry-run dispatch, fail-closed)", () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
+  const WORKFLOW_PATH = join(REPO_ROOT, ".github/workflows/release.yml")
+  const rawWorkflow = readFileSync(WORKFLOW_PATH, "utf8")
+  const workflow = yaml.load(rawWorkflow)
+  const jobs = workflow.jobs
+
+  function jobSteps(jobName) {
+    return jobs[jobName]?.steps ?? []
+  }
+
+  function findStep(jobName, predicate) {
+    return jobSteps(jobName).find(predicate)
+  }
+
+  it("keeps push.tags v* trigger", () => {
+    expect(workflow.on.push.tags).toEqual(["v*"])
+  })
+
+  it("defines workflow_dispatch dry_run as required boolean defaulting true", () => {
+    const dryRun = workflow.on.workflow_dispatch.inputs.dry_run
+    expect(dryRun).toBeDefined()
+    expect(dryRun.type).toBe("boolean")
+    expect(dryRun.required).toBe(true)
+    expect(dryRun.default).toBe(true)
+  })
+
+  it("validate-invocation fails closed when manual dry_run is not true", () => {
+    const rejectStep = findStep(
+      "validate-invocation",
+      (step) =>
+        typeof step.name === "string" &&
+        step.name.toLowerCase().includes("reject") &&
+        typeof step.run === "string" &&
+        step.run.includes("exit 1")
+    )
+    expect(rejectStep).toBeDefined()
+    expect(rejectStep.if).toContain("workflow_dispatch")
+    expect(rejectStep.if).toContain("inputs.dry_run != true")
+  })
+
+  it("build and gate depend on validate-invocation", () => {
+    expect(jobs["build-electron"].needs).toContain("validate-invocation")
+    expect(jobs["release-admission-gate"].needs).toContain("validate-invocation")
+  })
+
+  it("create-release requires push event and refs/tags/v*", () => {
+    expect(jobs["create-release"].if).toContain("github.event_name == 'push'")
+    expect(jobs["create-release"].if).toContain("refs/tags/v")
+  })
+
+  it("release gate receives explicit RELEASE_MODE", () => {
+    const gateStep = findStep(
+      "release-admission-gate",
+      (step) =>
+        step.name === "Run release admission gate" && typeof step.env?.RELEASE_MODE === "string"
+    )
+    expect(gateStep).toBeDefined()
+    expect(gateStep.env.RELEASE_MODE).toContain("RELEASE_MODE")
+  })
+
+  it("attests release-approved-bundle/assets/* in the gate job", () => {
+    const attestStep = findStep(
+      "release-admission-gate",
+      (step) => typeof step.uses === "string" && step.uses.startsWith("actions/attest")
+    )
+    expect(attestStep).toBeDefined()
+    expect(attestStep.with["subject-path"]).toBe("release-approved-bundle/assets/*")
+  })
+
+  it("uses distinct proof artifact names for dry-run vs release", () => {
+    expect(workflow.env.BUNDLE_ARTIFACT_NAME).toContain("release-approved-bundle-dry-run")
+    expect(workflow.env.BUNDLE_ARTIFACT_NAME).toContain("release-approved-bundle")
+    expect(workflow.env.BUNDLE_ARTIFACT_NAME).not.toBe("release-approved-bundle")
+
+    const uploadStep = findStep(
+      "release-admission-gate",
+      (step) => typeof step.uses === "string" && step.uses.startsWith("actions/upload-artifact")
+    )
+    expect(uploadStep.with.name).toContain("BUNDLE_ARTIFACT_NAME")
+  })
+
+  it("create-release downloads only release-approved-bundle, never the dry-run artifact", () => {
+    const downloadStep = findStep(
+      "create-release",
+      (step) => typeof step.uses === "string" && step.uses.startsWith("actions/download-artifact")
+    )
+    expect(downloadStep).toBeDefined()
+    expect(downloadStep.with.name).toBe("release-approved-bundle")
+    expect(downloadStep.with.name).not.toContain("dry-run")
+  })
+
+  it("buildReleaseBody wiring reads profile, context, and signing status", () => {
+    const bodyStep = findStep(
+      "release-admission-gate",
+      (step) => step.name === "Write release body" && typeof step.run === "string"
+    )
+    expect(bodyStep).toBeDefined()
+    expect(bodyStep.run).toContain("release-profile.json")
+    expect(bodyStep.run).toContain("release-context.json")
+    expect(bodyStep.run).toContain("signing-status.json")
+    expect(bodyStep.run).toContain("releaseProfile")
+    expect(bodyStep.run).toContain("releaseContext")
+  })
+})

@@ -644,6 +644,11 @@ function main() {
   const evalSignalInputs = mode === "release" ? fetchEvalSignalInputs(releasedSha) : undefined
   const modeGateCheck = checkReleaseModeGate({ mode, tagVersion, packageVersion, evalSignalInputs })
   if (!modeGateCheck.ok) return fail(modeGateCheck.reason)
+  if (modeGateCheck.skipped?.length) {
+    for (const check of modeGateCheck.skipped) {
+      console.log(`release-admission-gate: ${check} check skipped (${mode} mode — inapplicable)`)
+    }
+  }
 
   // §6: Windows signing status (hardcoded not-performed today — §12 parks real verification).
   const windowsCertConfigured = process.env.WINDOWS_CERT_CONFIGURED === "true"
