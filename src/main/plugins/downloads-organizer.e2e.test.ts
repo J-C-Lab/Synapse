@@ -13,6 +13,7 @@ import { rootIdForPattern } from "@synapse/plugin-manifest"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { emptyUsage } from "../ai/providers/types"
 import { modelToolName } from "../ai/tool-registry"
+import { createHeadlessHotkeyAdapter } from "./headless-trigger-adapters"
 import { PluginHost } from "./plugin-host"
 
 let dir: string
@@ -76,6 +77,7 @@ describe("downloadsOrganizer", () => {
       userDataDir: dir,
       resourcesDir: path.resolve("resources"),
       adapters,
+      hotkeyAdapter: createHeadlessHotkeyAdapter(),
       fsWatchAdapter,
       storageFlushMs: 0,
       workspaceRoots: { listForWorkspace: async () => [] },

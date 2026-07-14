@@ -16,6 +16,7 @@ import { CapabilityIpcService } from "../ipc/capabilities"
 import { buildGrantIdentity } from "./capability-governance"
 import { createMigrationMarker } from "./grant-migration"
 import { GrantStore, grantStoreFilePath } from "./grant-store"
+import { createHeadlessHotkeyAdapter } from "./headless-trigger-adapters"
 import {
   PluginHost,
   PluginHostNotImplementedError,
@@ -72,6 +73,7 @@ function hostOptions(
     resourcesDir: path.join(dir, "resources"),
     storageFlushMs: 0,
     adapters: noopAdapters,
+    hotkeyAdapter: createHeadlessHotkeyAdapter(),
     workspaceRoots: { listForWorkspace: async () => [] },
     workspaces: {
       get: async (id: string) =>
@@ -1137,6 +1139,7 @@ describe("github inbox bundled plugin", () => {
       userDataDir: dir,
       resourcesDir: path.resolve("resources"),
       adapters: noopAdapters,
+      hotkeyAdapter: createHeadlessHotkeyAdapter(),
       fsWatchAdapter: noopFsWatchAdapter,
       workspaceRoots: { listForWorkspace: async () => [] },
       capabilityGovernance: {
@@ -1659,6 +1662,41 @@ describe("mode: tools-only lifecycle", () => {
     await host.init()
 
     expect(registerContentListener).not.toHaveBeenCalledWith("legacy:activation", expect.anything())
+  })
+
+  it("init() does not register or poll the clipboard adapter in tools-only mode", async () => {
+    vi.useFakeTimers()
+    const read = vi.fn(async () => ({ type: "text", text: "hello" }) as ClipboardContent)
+    const registerContentListener = vi.fn(() => () => {})
+    const host = new PluginHost(
+      hostOptions({
+        mode: "tools-only",
+        clipboardPollMs: 10,
+        clipboardAdapter: {
+          registerContentListener,
+          register: () => () => {},
+          drain: async () => {},
+        } as never,
+        adapters: {
+          ...noopAdapters,
+          clipboard: { read, write: async () => {} },
+        },
+      })
+    )
+    await writeHostPlugin({
+      activationEvents: ["clipboard:change"],
+      permissions: ["clipboard:watch", "storage:plugin"],
+    })
+
+    try {
+      await host.init()
+      expect(registerContentListener).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(50)
+      expect(read).not.toHaveBeenCalled()
+    } finally {
+      host.dispose()
+      vi.useRealTimers()
+    }
   })
 
   it("setEnabled() does not register triggers in tools-only mode", async () => {

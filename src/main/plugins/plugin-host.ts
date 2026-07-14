@@ -55,11 +55,10 @@ import { CapabilityDenied, CapabilityGate } from "./capability-gate"
 import { buildGrantIdentity, createCapabilityGovernance } from "./capability-governance"
 import { createClipboardAdapter } from "./clipboard-adapter"
 import { createFixedSecretPrompt, CredentialBroker } from "./credential-broker"
-import { createElectronPluginAdapters } from "./electron-adapters"
 import { createFsWatchAdapter } from "./fs-watch-adapter"
 import { createMigrationMarker, migrateGrants } from "./grant-migration"
 import { GrantStore, grantStoreFilePath, sameIdentity } from "./grant-store"
-import { createHotkeyAdapter } from "./hotkey-adapter"
+import { createHeadlessHotkeyAdapter } from "./headless-trigger-adapters"
 import { extractSynapsePackage } from "./install-from-package"
 import { loadPluginManifest } from "./manifest-loader"
 import { createMarketplaceApi } from "./marketplace-api"
@@ -268,18 +267,19 @@ export class PluginHost {
     const fsWatchAdapter = options.fsWatchAdapter ?? createFsWatchAdapter()
     const hotkeyAdapter =
       options.hotkeyAdapter ??
-      createHotkeyAdapter({
-        reservedAccelerators: options.reservedAccelerators,
-      })
-    const adapters =
-      options.adapters ??
-      createElectronPluginAdapters(options.userDataDir, {
-        onNotificationAction: (notificationId, actionId) => {
-          void this.bridge
-            ?.handleNotificationAction(notificationId, actionId)
-            .catch((err) => logger.child("plugin-host").warn("notification action failed", { err }))
-        },
-      })
+      (this.mode === "tools-only"
+        ? createHeadlessHotkeyAdapter()
+        : (() => {
+            throw new Error(
+              "PluginHost in full mode requires hotkeyAdapter (pass createHotkeyAdapter from the GUI bootstrap)."
+            )
+          })())
+    if (!options.adapters) {
+      throw new Error(
+        "PluginHost requires adapters (pass createElectronPluginAdapters from the GUI bootstrap or headless stubs for MCP stdio)."
+      )
+    }
+    const adapters = options.adapters
     this.triggerInstances = new TriggerInstanceStore(
       path.join(options.userDataDir, "plugins", "trigger-instances.json")
     )
@@ -370,7 +370,9 @@ export class PluginHost {
       }
     } finally {
       this.registry.on("changed", this.handleRegistryChanged)
-      await this.syncClipboardWatcher()
+      if (this.mode === "full") {
+        await this.syncClipboardWatcher()
+      }
     }
   }
 
@@ -997,6 +999,7 @@ export class PluginHost {
   }
 
   private async syncClipboardWatcher(): Promise<void> {
+    if (this.mode !== "full") return
     this.legacyClipboardUnlisten?.()
     this.legacyClipboardUnlisten = undefined
     if (!this.registry.hasClipboardChangeListeners()) return

@@ -1,15 +1,26 @@
-import { MacUpdater } from "electron-updater"
+import { Buffer } from "node:buffer"
+import { readFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
+import { gzipSync } from "node:zlib"
+import yaml from "js-yaml"
 import { describe, expect, it } from "vitest"
 import { buildStatusJson } from "./eval-nightly-report.mjs"
 import {
   buildManifest,
+  buildReleaseBody,
+  buildReleaseContext,
+  buildSigningStatus,
   checkArtifactManifest,
   checkEvalSignal,
-  checkFeedFiles,
-  checkVersionConsistency,
+  checkPackageVersionConsistency,
+  checkReleaseModeGate,
+  checkTagVersion,
   computeSigningStatus,
-  mergeMacFeeds,
+  parseReleaseMode,
+  RELEASE_PROFILE,
   validateSingleFileFeed,
+  validateWindowsBlockmap,
   verifyManifest,
 } from "./release-admission-gate.mjs"
 
@@ -168,26 +179,14 @@ describe("checkEvalSignal", () => {
   })
 })
 
-describe("checkVersionConsistency", () => {
+describe("checkPackageVersionConsistency", () => {
   const baseFeeds = {
     "latest.yml": { version: "1.2.3" },
-    "latest-linux.yml": { version: "1.2.3" },
-    "latest-mac.yml (merged)": { version: "1.2.3" },
   }
-  const baseFilenames = [
-    "Synapse-Setup-1.2.3.exe",
-    "Synapse-1.2.3.msi",
-    "Synapse-1.2.3-x64-mac.zip",
-    "Synapse-1.2.3-arm64-mac.zip",
-    "Synapse-1.2.3-x64.dmg",
-    "Synapse-1.2.3-arm64.dmg",
-    "Synapse-1.2.3.AppImage",
-    "Synapse-1.2.3.deb",
-  ]
+  const baseFilenames = ["Synapse-Setup-1.2.3.exe", "Synapse-1.2.3.msi"]
 
-  it("passes when tag, package.json, every feed, and every filename agree", () => {
-    const result = checkVersionConsistency({
-      tagVersion: "1.2.3",
+  it("passes when package.json, the Windows feed, and every installer filename agree", () => {
+    const result = checkPackageVersionConsistency({
       packageVersion: "1.2.3",
       feeds: baseFeeds,
       installerFilenames: baseFilenames,
@@ -195,22 +194,10 @@ describe("checkVersionConsistency", () => {
     expect(result).toEqual({ ok: true })
   })
 
-  it("fails when the tag does not match package.json", () => {
-    const result = checkVersionConsistency({
-      tagVersion: "1.2.4",
+  it("fails when the feed's version disagrees", () => {
+    const result = checkPackageVersionConsistency({
       packageVersion: "1.2.3",
-      feeds: baseFeeds,
-      installerFilenames: baseFilenames,
-    })
-    expect(result.ok).toBe(false)
-    expect(result.reason).toContain("tag version")
-  })
-
-  it("fails when a feed file's version disagrees", () => {
-    const result = checkVersionConsistency({
-      tagVersion: "1.2.3",
-      packageVersion: "1.2.3",
-      feeds: { ...baseFeeds, "latest.yml": { version: "1.2.2" } },
+      feeds: { "latest.yml": { version: "1.2.2" } },
       installerFilenames: baseFilenames,
     })
     expect(result.ok).toBe(false)
@@ -218,8 +205,7 @@ describe("checkVersionConsistency", () => {
   })
 
   it("fails when an installer filename does not contain the exact expected version", () => {
-    const result = checkVersionConsistency({
-      tagVersion: "1.2.3",
+    const result = checkPackageVersionConsistency({
       packageVersion: "1.2.3",
       feeds: baseFeeds,
       installerFilenames: ["Synapse-Setup-1.2.2.exe"],
@@ -229,13 +215,189 @@ describe("checkVersionConsistency", () => {
   })
 
   it("rejects a version that only contains the expected version as a substring", () => {
-    const result = checkVersionConsistency({
-      tagVersion: "1.2.3",
+    const result = checkPackageVersionConsistency({
       packageVersion: "1.2.3",
       feeds: baseFeeds,
       installerFilenames: ["Synapse-11.2.30.exe"],
     })
     expect(result.ok).toBe(false)
+  })
+})
+
+describe("checkTagVersion", () => {
+  it("passes when the tag matches package.json", () => {
+    expect(checkTagVersion({ tagVersion: "1.2.3", packageVersion: "1.2.3" })).toEqual({ ok: true })
+  })
+
+  it("fails when the tag does not match package.json", () => {
+    const result = checkTagVersion({ tagVersion: "1.2.4", packageVersion: "1.2.3" })
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("tag version")
+  })
+})
+
+describe("parseReleaseMode", () => {
+  it('accepts "dry-run"', () => {
+    expect(parseReleaseMode("dry-run")).toEqual({ ok: true, mode: "dry-run" })
+  })
+
+  it('accepts "release"', () => {
+    expect(parseReleaseMode("release")).toEqual({ ok: true, mode: "release" })
+  })
+
+  it("fails closed on a missing mode", () => {
+    const result = parseReleaseMode(undefined)
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("undefined")
+  })
+
+  it("fails closed on an unrecognized mode", () => {
+    const result = parseReleaseMode("production")
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("production")
+  })
+})
+
+describe("checkReleaseModeGate", () => {
+  const evalSignalInputs = baseArgs()
+
+  it("release mode passes when tag and eval-signal inputs are present and healthy", () => {
+    const result = checkReleaseModeGate({
+      mode: "release",
+      tagVersion: "1.2.3",
+      packageVersion: "1.2.3",
+      evalSignalInputs,
+    })
+    expect(result).toEqual({ ok: true, mode: "release" })
+  })
+
+  it("release mode fails closed when the tag version is omitted", () => {
+    const result = checkReleaseModeGate({
+      mode: "release",
+      packageVersion: "1.2.3",
+      evalSignalInputs,
+    })
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("tag version")
+  })
+
+  it("release mode fails closed when the eval-signal inputs are omitted", () => {
+    const result = checkReleaseModeGate({
+      mode: "release",
+      tagVersion: "1.2.3",
+      packageVersion: "1.2.3",
+    })
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("eval-signal")
+  })
+
+  it("release mode still enforces the tag check", () => {
+    const result = checkReleaseModeGate({
+      mode: "release",
+      tagVersion: "1.2.4",
+      packageVersion: "1.2.3",
+      evalSignalInputs,
+    })
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("tag version")
+  })
+
+  it("release mode still enforces the eval-signal check", () => {
+    const result = checkReleaseModeGate({
+      mode: "release",
+      tagVersion: "1.2.3",
+      packageVersion: "1.2.3",
+      evalSignalInputs: { ...evalSignalInputs, releasedSha: "sha-not-evaluated" },
+    })
+    expect(result.ok).toBe(false)
+  })
+
+  it("dry-run mode skips both checks even when tag/eval inputs are omitted", () => {
+    const result = checkReleaseModeGate({ mode: "dry-run", packageVersion: "1.2.3" })
+    expect(result).toEqual({ ok: true, mode: "dry-run", skipped: ["tagVersion", "evalSignal"] })
+  })
+
+  it("fails closed on an invalid mode regardless of other inputs", () => {
+    const result = checkReleaseModeGate({
+      mode: "production",
+      packageVersion: "1.2.3",
+      tagVersion: "1.2.3",
+      evalSignalInputs,
+    })
+    expect(result.ok).toBe(false)
+  })
+})
+
+describe("release profile (RELEASE_PROFILE)", () => {
+  it("declares exactly the Windows x64 NSIS/MSI target", () => {
+    expect(RELEASE_PROFILE).toEqual({
+      schemaVersion: 1,
+      targets: [
+        {
+          platform: "windows",
+          arch: "x64",
+          packages: ["nsis", "msi"],
+          updaterFeed: "latest.yml",
+        },
+      ],
+    })
+  })
+})
+
+describe("buildReleaseContext", () => {
+  it("builds a schema-version-1 context for a valid dry run", () => {
+    const result = buildReleaseContext({
+      mode: "dry-run",
+      commitSha: "abc123",
+      workflowRunId: "999",
+    })
+    expect(result).toEqual({
+      ok: true,
+      context: {
+        schemaVersion: 1,
+        mode: "dry-run",
+        commitSha: "abc123",
+        workflowRunId: "999",
+      },
+    })
+  })
+
+  it("builds a schema-version-1 context for a valid release", () => {
+    const result = buildReleaseContext({
+      mode: "release",
+      commitSha: "abc123",
+      workflowRunId: "999",
+    })
+    expect(result).toEqual({
+      ok: true,
+      context: {
+        schemaVersion: 1,
+        mode: "release",
+        commitSha: "abc123",
+        workflowRunId: "999",
+      },
+    })
+  })
+
+  it("rejects an invalid mode", () => {
+    const result = buildReleaseContext({
+      mode: "production",
+      commitSha: "abc123",
+      workflowRunId: "999",
+    })
+    expect(result.ok).toBe(false)
+  })
+
+  it("rejects an empty commitSha", () => {
+    const result = buildReleaseContext({ mode: "dry-run", commitSha: "", workflowRunId: "999" })
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("commitSha")
+  })
+
+  it("rejects a missing workflowRunId", () => {
+    const result = buildReleaseContext({ mode: "dry-run", commitSha: "abc123", workflowRunId: "" })
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("workflowRunId")
   })
 })
 
@@ -247,34 +409,28 @@ function validContainers() {
       "latest.yml",
     ],
     "electron-windows-x64-msi": ["Synapse-1.2.3.msi"],
-    "electron-macos-x64-zip": [
-      "Synapse-1.2.3-x64-mac.zip",
-      "Synapse-1.2.3-x64-mac.zip.blockmap",
-      "latest-mac.yml",
-    ],
-    "electron-macos-arm64-zip": [
-      "Synapse-1.2.3-arm64-mac.zip",
-      "Synapse-1.2.3-arm64-mac.zip.blockmap",
-      "latest-mac.yml",
-    ],
-    "electron-macos-x64-dmg": ["Synapse-1.2.3-x64.dmg"],
-    "electron-macos-arm64-dmg": ["Synapse-1.2.3-arm64.dmg"],
-    "electron-linux-x64-appimage": ["Synapse-1.2.3.AppImage", "latest-linux.yml"],
-    "electron-linux-x64-deb": ["Synapse-1.2.3.deb"],
   }
 }
 
 describe("checkArtifactManifest", () => {
-  it("passes when every container has exactly its expected files", () => {
+  it("passes on the exact Windows NSIS + MSI container set", () => {
     expect(checkArtifactManifest(validContainers())).toEqual({ ok: true })
   })
 
-  it("fails when a container is missing entirely", () => {
+  it("fails when the NSIS container is missing", () => {
     const containers = validContainers()
-    delete containers["electron-linux-x64-deb"]
+    delete containers["electron-windows-x64-nsis"]
     const result = checkArtifactManifest(containers)
     expect(result.ok).toBe(false)
-    expect(result.reason).toContain("electron-linux-x64-deb")
+    expect(result.reason).toContain("electron-windows-x64-nsis")
+  })
+
+  it("fails when the MSI container is missing", () => {
+    const containers = validContainers()
+    delete containers["electron-windows-x64-msi"]
+    const result = checkArtifactManifest(containers)
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("electron-windows-x64-msi")
   })
 
   it("fails when a container has the wrong file count", () => {
@@ -285,59 +441,75 @@ describe("checkArtifactManifest", () => {
     expect(result.reason).toContain("electron-windows-x64-msi")
   })
 
-  it("fails when a container appears that isn't in the table", () => {
-    const containers = validContainers()
-    containers["test-results"] = ["report.xml"]
-    const result = checkArtifactManifest(containers)
-    expect(result.ok).toBe(false)
-    expect(result.reason).toContain("test-results")
-  })
-
-  it("fails when a container's file doesn't match the expected pattern", () => {
+  it("fails when a container's file doesn't match the expected extension", () => {
     const containers = validContainers()
     containers["electron-windows-x64-msi"] = ["Synapse-1.2.3.exe"]
     const result = checkArtifactManifest(containers)
     expect(result.ok).toBe(false)
     expect(result.reason).toContain("electron-windows-x64-msi")
   })
+
+  it("fails when an electron-macos-* container appears", () => {
+    const containers = validContainers()
+    containers["electron-macos-x64-zip"] = ["Synapse-1.2.3-x64-mac.zip"]
+    const result = checkArtifactManifest(containers)
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("electron-macos-x64-zip")
+  })
+
+  it("fails when an electron-linux-* container appears", () => {
+    const containers = validContainers()
+    containers["electron-linux-x64-deb"] = ["Synapse-1.2.3.deb"]
+    const result = checkArtifactManifest(containers)
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("electron-linux-x64-deb")
+  })
+
+  it("fails when an unrelated container appears", () => {
+    const containers = validContainers()
+    containers["test-results"] = ["report.xml"]
+    const result = checkArtifactManifest(containers)
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("test-results")
+  })
 })
 
 describe("validateSingleFileFeed", () => {
-  const real = { filename: "Synapse-1.2.3-x64-mac.zip", sha512: "AAA", size: 100, blockMapSize: 10 }
+  const real = { filename: "Synapse-Setup-1.2.3.exe", sha512: "WINHASH", size: 300 }
   const feed = {
     version: "1.2.3",
-    files: [{ url: "Synapse-1.2.3-x64-mac.zip", sha512: "AAA", size: 100, blockMapSize: 10 }],
+    files: [{ url: "Synapse-Setup-1.2.3.exe", sha512: "WINHASH", size: 300 }],
   }
 
-  it("passes when the feed matches the real file exactly", () => {
-    const result = validateSingleFileFeed(feed, real, "test feed")
+  it("passes when the feed matches the real NSIS installer exactly", () => {
+    const result = validateSingleFileFeed(feed, real, "latest.yml")
     expect(result.ok).toBe(true)
     expect(result.entry).toEqual(feed.files[0])
   })
 
   it("fails when files does not have exactly one entry", () => {
-    expect(validateSingleFileFeed({ ...feed, files: [] }, real, "test feed").ok).toBe(false)
+    expect(validateSingleFileFeed({ ...feed, files: [] }, real, "latest.yml").ok).toBe(false)
     expect(
-      validateSingleFileFeed({ ...feed, files: [feed.files[0], feed.files[0]] }, real, "test feed")
+      validateSingleFileFeed({ ...feed, files: [feed.files[0], feed.files[0]] }, real, "latest.yml")
         .ok
     ).toBe(false)
   })
 
   it("fails when the referenced filename does not match the real file", () => {
     const result = validateSingleFileFeed(
-      { ...feed, files: [{ ...feed.files[0], url: "wrong-name.zip" }] },
+      { ...feed, files: [{ ...feed.files[0], url: "wrong-name.exe" }] },
       real,
-      "test feed"
+      "latest.yml"
     )
     expect(result.ok).toBe(false)
-    expect(result.reason).toContain("wrong-name.zip")
+    expect(result.reason).toContain("wrong-name.exe")
   })
 
   it("fails on a sha512 mismatch", () => {
     const result = validateSingleFileFeed(
       { ...feed, files: [{ ...feed.files[0], sha512: "WRONG" }] },
       real,
-      "test feed"
+      "latest.yml"
     )
     expect(result.ok).toBe(false)
     expect(result.reason).toContain("sha512")
@@ -347,122 +519,64 @@ describe("validateSingleFileFeed", () => {
     const result = validateSingleFileFeed(
       { ...feed, files: [{ ...feed.files[0], size: 999 }] },
       real,
-      "test feed"
+      "latest.yml"
     )
     expect(result.ok).toBe(false)
     expect(result.reason).toContain("size")
   })
-
-  it("fails on a blockMapSize mismatch when the field is present", () => {
-    const result = validateSingleFileFeed(
-      { ...feed, files: [{ ...feed.files[0], blockMapSize: 999 }] },
-      real,
-      "test feed"
-    )
-    expect(result.ok).toBe(false)
-    expect(result.reason).toContain("blockMapSize")
-  })
-
-  it("does not require blockMapSize when the feed entry omits it", () => {
-    const { blockMapSize: _drop, ...entryWithoutBlockMapSize } = feed.files[0]
-    const result = validateSingleFileFeed(
-      { ...feed, files: [entryWithoutBlockMapSize] },
-      real,
-      "test feed"
-    )
-    expect(result.ok).toBe(true)
-  })
 })
 
-describe("mergeMacFeeds", () => {
-  const x64Real = { filename: "Synapse-1.2.3-x64-mac.zip", sha512: "X64HASH", size: 100 }
-  const arm64Real = { filename: "Synapse-1.2.3-arm64-mac.zip", sha512: "ARM64HASH", size: 200 }
-  const x64Feed = {
-    version: "1.2.3",
-    releaseDate: "2026-07-11T00:00:00.000Z",
-    files: [{ url: "Synapse-1.2.3-x64-mac.zip", sha512: "X64HASH", size: 100 }],
-  }
-  const arm64Feed = {
-    version: "1.2.3",
-    releaseDate: "2026-07-11T00:00:00.000Z",
-    files: [{ url: "Synapse-1.2.3-arm64-mac.zip", sha512: "ARM64HASH", size: 200 }],
-  }
+describe("validateWindowsBlockmap", () => {
+  const installerName = "Synapse-Setup-1.2.3.exe"
+  const blockmapName = "Synapse-Setup-1.2.3.exe.blockmap"
+  const validBytes = gzipSync(JSON.stringify({ version: 2, files: [] }))
 
-  it("merges two valid single-arch feeds into one canonical feed", () => {
-    const result = mergeMacFeeds({ x64Feed, arm64Feed, x64Real, arm64Real })
-    expect(result.ok).toBe(true)
-    expect(result.merged).toEqual({
-      version: "1.2.3",
-      files: [x64Feed.files[0], arm64Feed.files[0]],
-      path: "Synapse-1.2.3-x64-mac.zip",
-      sha512: "X64HASH",
-      releaseDate: "2026-07-11T00:00:00.000Z",
-    })
+  it("passes for the matching name and nonempty gzip JSON", () => {
+    expect(validateWindowsBlockmap(installerName, blockmapName, validBytes)).toEqual({ ok: true })
   })
 
-  it("fails when x64 and arm64 versions disagree", () => {
-    const result = mergeMacFeeds({
-      x64Feed,
-      arm64Feed: { ...arm64Feed, version: "1.2.4" },
-      x64Real,
-      arm64Real,
-    })
+  it("fails when the blockmap name is missing", () => {
+    const result = validateWindowsBlockmap(installerName, undefined, validBytes)
     expect(result.ok).toBe(false)
-    expect(result.reason).toContain("disagree")
   })
 
-  it("fails when both entries have the same URL", () => {
-    const collidingArm64Real = { ...arm64Real, filename: "Synapse-1.2.3-x64-mac.zip" }
-    const collidingArm64Feed = {
-      ...arm64Feed,
-      files: [{ ...arm64Feed.files[0], url: "Synapse-1.2.3-x64-mac.zip" }],
-    }
-    const result = mergeMacFeeds({
-      x64Feed,
-      arm64Feed: collidingArm64Feed,
-      x64Real,
-      arm64Real: collidingArm64Real,
-    })
+  it("fails when the blockmap name does not match the installer name", () => {
+    const result = validateWindowsBlockmap(installerName, "wrong-name.exe.blockmap", validBytes)
     expect(result.ok).toBe(false)
-    expect(result.reason).toContain("colliding")
+    expect(result.reason).toContain("wrong-name.exe.blockmap")
   })
 
-  it('fails when the "arm64" leg does not contain "arm64" in its URL', () => {
-    const wrongReal = { ...arm64Real, filename: "Synapse-1.2.3-mac.zip" }
-    const wrongFeed = {
-      ...arm64Feed,
-      files: [{ ...arm64Feed.files[0], url: "Synapse-1.2.3-mac.zip" }],
-    }
-    const result = mergeMacFeeds({ x64Feed, arm64Feed: wrongFeed, x64Real, arm64Real: wrongReal })
+  it("fails on empty bytes", () => {
+    const result = validateWindowsBlockmap(installerName, blockmapName, Buffer.alloc(0))
     expect(result.ok).toBe(false)
-    expect(result.reason).toContain('"arm64"')
-  })
-})
-
-describe("checkFeedFiles", () => {
-  const windowsReal = { filename: "Synapse-Setup-1.2.3.exe", sha512: "WINHASH", size: 300 }
-  const linuxReal = { filename: "Synapse-1.2.3.AppImage", sha512: "LINUXHASH", size: 400 }
-  const windowsFeed = {
-    version: "1.2.3",
-    files: [{ url: "Synapse-Setup-1.2.3.exe", sha512: "WINHASH", size: 300 }],
-  }
-  const linuxFeed = {
-    version: "1.2.3",
-    files: [{ url: "Synapse-1.2.3.AppImage", sha512: "LINUXHASH", size: 400 }],
-  }
-
-  it("passes when both feeds match their real files", () => {
-    expect(checkFeedFiles({ windowsFeed, windowsReal, linuxFeed, linuxReal })).toEqual({ ok: true })
+    expect(result.reason).toContain("empty")
   })
 
-  it("fails when the windows feed doesn't match", () => {
-    const result = checkFeedFiles({
-      windowsFeed: { ...windowsFeed, files: [{ ...windowsFeed.files[0], sha512: "WRONG" }] },
-      windowsReal,
-      linuxFeed,
-      linuxReal,
-    })
+  it("fails on non-gzip bytes", () => {
+    const result = validateWindowsBlockmap(installerName, blockmapName, Buffer.from("not gzip"))
     expect(result.ok).toBe(false)
+    expect(result.reason).toContain("gzip")
+  })
+
+  it("fails when the gzip payload contains invalid JSON", () => {
+    const bytes = gzipSync("not json")
+    const result = validateWindowsBlockmap(installerName, blockmapName, bytes)
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("JSON")
+  })
+
+  it("fails when the gzip JSON is not an object", () => {
+    const bytes = gzipSync(JSON.stringify([1, 2, 3]))
+    const result = validateWindowsBlockmap(installerName, blockmapName, bytes)
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("object")
+  })
+
+  it("fails when the gzip JSON is a bare primitive", () => {
+    const bytes = gzipSync(JSON.stringify(42))
+    const result = validateWindowsBlockmap(installerName, blockmapName, bytes)
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("object")
   })
 })
 
@@ -551,32 +665,371 @@ describe("verifyManifest", () => {
   })
 })
 
-describe("mac merge / electron-updater contract", () => {
-  it("the real MacUpdater.filterFilesForArch resolves each arch to the correct merged entry", () => {
-    const x64Real = { filename: "Synapse-1.2.3-x64-mac.zip", sha512: "X64HASH", size: 100 }
-    const arm64Real = { filename: "Synapse-1.2.3-arm64-mac.zip", sha512: "ARM64HASH", size: 200 }
-    const x64Feed = {
-      version: "1.2.3",
-      files: [{ url: "Synapse-1.2.3-x64-mac.zip", sha512: "X64HASH", size: 100 }],
+describe("release profile and context serialization", () => {
+  it("serializes RELEASE_PROFILE deterministically across calls", () => {
+    const first = JSON.stringify(RELEASE_PROFILE, null, 2)
+    const second = JSON.stringify(RELEASE_PROFILE, null, 2)
+    expect(first).toBe(second)
+    expect(JSON.parse(first)).toEqual(RELEASE_PROFILE)
+  })
+
+  it("serializes a release context deterministically across calls", () => {
+    const { context } = buildReleaseContext({
+      mode: "release",
+      commitSha: "abc123",
+      workflowRunId: "999",
+    })
+    const first = JSON.stringify(context, null, 2)
+    const second = JSON.stringify(context, null, 2)
+    expect(first).toBe(second)
+    expect(JSON.parse(first)).toEqual(context)
+  })
+})
+
+describe("buildSigningStatus", () => {
+  it("keeps schemaVersion 1 and includes only platformCodeSigning.windows", () => {
+    const status = buildSigningStatus({
+      credentialsConfigured: false,
+      verification: "not-performed",
+      releaseClaim: "unsigned-unverified",
+    })
+    expect(status.schemaVersion).toBe(1)
+    expect(Object.keys(status.platformCodeSigning)).toEqual(["windows"])
+    expect(status.platformCodeSigning.windows).toEqual({
+      credentialsConfigured: false,
+      verification: "not-performed",
+      releaseClaim: "unsigned-unverified",
+    })
+    expect(status.githubArtifactAttestation).toEqual({ required: true })
+  })
+})
+
+describe("buildReleaseBody", () => {
+  const releaseContext = {
+    schemaVersion: 1,
+    mode: "release",
+    commitSha: "abc123",
+    workflowRunId: "999",
+  }
+  const signingStatus = buildSigningStatus({
+    credentialsConfigured: false,
+    verification: "not-performed",
+    releaseClaim: "unsigned-unverified",
+  })
+
+  it("renders 'Windows x64 (NSIS, MSI)' from RELEASE_PROFILE", () => {
+    const body = buildReleaseBody({
+      releaseProfile: RELEASE_PROFILE,
+      releaseContext,
+      signingStatus,
+      attestationUrl: "https://example.com/attestation",
+      repoOwner: "acme",
+    })
+    expect(body).toContain("Windows x64 (NSIS, MSI)")
+  })
+
+  it("starts a dry-run body with the DRY RUN marker", () => {
+    const body = buildReleaseBody({
+      releaseProfile: RELEASE_PROFILE,
+      releaseContext: { ...releaseContext, mode: "dry-run" },
+      signingStatus,
+      attestationUrl: "https://example.com/attestation",
+      repoOwner: "acme",
+    })
+    expect(body.startsWith("DRY RUN — NOT A RELEASE")).toBe(true)
+  })
+
+  it("has no dry-run marker for a release-mode body", () => {
+    const body = buildReleaseBody({
+      releaseProfile: RELEASE_PROFILE,
+      releaseContext,
+      signingStatus,
+      attestationUrl: "https://example.com/attestation",
+      repoOwner: "acme",
+    })
+    expect(body).not.toContain("DRY RUN")
+  })
+
+  it("iterates the signing-status platform map without assuming a macOS key", () => {
+    const body = buildReleaseBody({
+      releaseProfile: RELEASE_PROFILE,
+      releaseContext,
+      signingStatus,
+      attestationUrl: "https://example.com/attestation",
+      repoOwner: "acme",
+    })
+    expect(body).toContain("**windows**")
+    expect(body).not.toContain("macos")
+    expect(body).not.toContain("**macOS**")
+  })
+
+  it("renders the signed-and-verified claim wording, not the unsigned wording", () => {
+    const verifiedSigningStatus = buildSigningStatus({
+      credentialsConfigured: true,
+      verification: "verified",
+      releaseClaim: "signed-and-verified",
+    })
+    const body = buildReleaseBody({
+      releaseProfile: RELEASE_PROFILE,
+      releaseContext,
+      signingStatus: verifiedSigningStatus,
+      attestationUrl: "https://example.com/attestation",
+      repoOwner: "acme",
+    })
+    expect(body).toContain(
+      "This artifact was signed with a configured platform credential, and CI verified the signature."
+    )
+    expect(body).not.toContain(
+      "CI has neither a configured platform code-signing credential nor has it performed a platform signature verification on this artifact."
+    )
+  })
+
+  it("fails closed on an unrecognized releaseClaim instead of rendering an optimistic claim", () => {
+    const bogusSigningStatus = buildSigningStatus({
+      credentialsConfigured: true,
+      verification: "verified",
+      releaseClaim: "some-future-claim",
+    })
+    expect(() =>
+      buildReleaseBody({
+        releaseProfile: RELEASE_PROFILE,
+        releaseContext,
+        signingStatus: bogusSigningStatus,
+        attestationUrl: "https://example.com/attestation",
+        repoOwner: "acme",
+      })
+    ).toThrow(/unrecognized releaseClaim/)
+  })
+})
+
+describe("approved-bundle manifest coverage", () => {
+  function bundleFiles() {
+    return [
+      { name: "Synapse-Setup-1.2.3.exe", sha512: "EXEHASH" },
+      { name: "Synapse-Setup-1.2.3.exe.blockmap", sha512: "BLOCKMAPHASH" },
+      { name: "Synapse-1.2.3.msi", sha512: "MSIHASH" },
+      { name: "latest.yml", sha512: "FEEDHASH" },
+      { name: "release-profile.json", sha512: "PROFILEHASH" },
+      { name: "release-context.json", sha512: "CONTEXTHASH" },
+      { name: "signing-status.json", sha512: "SIGNINGHASH" },
+    ]
+  }
+
+  it("covers the EXE, blockmap, MSI, feed, and every proof file", () => {
+    const manifest = buildManifest(bundleFiles())
+    expect(Object.keys(manifest.files).sort()).toEqual(
+      [
+        "Synapse-Setup-1.2.3.exe",
+        "Synapse-Setup-1.2.3.exe.blockmap",
+        "Synapse-1.2.3.msi",
+        "latest.yml",
+        "release-profile.json",
+        "release-context.json",
+        "signing-status.json",
+      ].sort()
+    )
+    expect(verifyManifest(manifest, bundleFiles())).toEqual({ ok: true })
+  })
+
+  it("fails verification when blockmap bytes change without rebuilding the manifest", () => {
+    const manifest = buildManifest(bundleFiles())
+    const tamperedFiles = bundleFiles().map((f) =>
+      f.name === "Synapse-Setup-1.2.3.exe.blockmap"
+        ? { ...f, sha512: "DIFFERENT-BLOCKMAP-HASH" }
+        : f
+    )
+    const result = verifyManifest(manifest, tamperedFiles)
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("Synapse-Setup-1.2.3.exe.blockmap")
+  })
+})
+
+describe("build-electron.yml contract (Windows-only, RELEASE_PROFILE)", () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
+  const WORKFLOW_PATH = join(REPO_ROOT, ".github/workflows/build-electron.yml")
+  const rawWorkflow = readFileSync(WORKFLOW_PATH, "utf8")
+  const workflow = yaml.load(rawWorkflow)
+  const jobs = Object.values(workflow.jobs)
+
+  function allSteps() {
+    return jobs.flatMap((job) => job.steps ?? [])
+  }
+
+  function uploadArtifactSteps() {
+    return allSteps().filter(
+      (step) => typeof step.uses === "string" && step.uses.startsWith("actions/upload-artifact")
+    )
+  }
+
+  it("defines exactly one job", () => {
+    expect(jobs).toHaveLength(1)
+  })
+
+  it("runs on windows-latest with no platform matrix/strategy", () => {
+    expect(jobs[0]["runs-on"]).toBe("windows-latest")
+    expect(jobs[0].strategy).toBeUndefined()
+  })
+
+  it("invokes electron-builder with --win --x64 --publish=never", () => {
+    const builderStep = allSteps().find(
+      (step) => typeof step.run === "string" && step.run.includes("electron-builder")
+    )
+    expect(builderStep).toBeDefined()
+    expect(builderStep.run).toContain("--win --x64 --publish=never")
+  })
+
+  it("uploads exactly the two electron-* containers named after RELEASE_PROFILE", () => {
+    const expectedNames = RELEASE_PROFILE.targets
+      .flatMap((target) =>
+        target.packages.map((pkg) => `electron-${target.platform}-${target.arch}-${pkg}`)
+      )
+      .sort()
+    expect(expectedNames).toEqual(["electron-windows-x64-msi", "electron-windows-x64-nsis"])
+
+    const electronUploads = uploadArtifactSteps().filter(
+      (step) => typeof step.with?.name === "string" && step.with.name.startsWith("electron-")
+    )
+    expect(electronUploads).toHaveLength(2)
+    expect(electronUploads.map((step) => step.with.name).sort()).toEqual(expectedNames)
+  })
+
+  it("every electron-* upload uses if-no-files-found: error", () => {
+    const electronUploads = uploadArtifactSteps().filter(
+      (step) => typeof step.with?.name === "string" && step.with.name.startsWith("electron-")
+    )
+    expect(electronUploads.length).toBeGreaterThan(0)
+    for (const step of electronUploads) {
+      expect(step.with["if-no-files-found"]).toBe("error")
     }
-    const arm64Feed = {
-      version: "1.2.3",
-      files: [{ url: "Synapse-1.2.3-arm64-mac.zip", sha512: "ARM64HASH", size: 200 }],
+  })
+
+  it("contains no macOS/Linux platform remnants", () => {
+    for (const forbidden of [
+      "macos-latest",
+      "ubuntu-latest",
+      "--mac",
+      "--linux",
+      "latest-mac.yml",
+      "latest-linux.yml",
+    ]) {
+      expect(rawWorkflow).not.toContain(forbidden)
     }
+  })
 
-    const { merged } = mergeMacFeeds({ x64Feed, arm64Feed, x64Real, arm64Real })
-    const files = merged.files.map((f) => ({
-      ...f,
-      url: { pathname: f.url },
-      info: { url: f.url },
-    }))
+  it("names any optional unpacked compatibility artifact compat-*, never electron-*", () => {
+    const unpackedUploads = uploadArtifactSteps().filter(
+      (step) =>
+        typeof step.with?.name === "string" && step.with.name.toLowerCase().includes("unpacked")
+    )
+    for (const step of unpackedUploads) {
+      expect(step.with.name.startsWith("compat-")).toBe(true)
+      expect(step.with.name.startsWith("electron-")).toBe(false)
+    }
+  })
+})
 
-    const arm64Resolved = MacUpdater.filterFilesForArch(files, true)
-    expect(arm64Resolved).toHaveLength(1)
-    expect(arm64Resolved[0].url.pathname).toBe("Synapse-1.2.3-arm64-mac.zip")
+describe("release.yml contract (dry-run dispatch, fail-closed)", () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
+  const WORKFLOW_PATH = join(REPO_ROOT, ".github/workflows/release.yml")
+  const rawWorkflow = readFileSync(WORKFLOW_PATH, "utf8")
+  const workflow = yaml.load(rawWorkflow)
+  const jobs = workflow.jobs
 
-    const x64Resolved = MacUpdater.filterFilesForArch(files, false)
-    expect(x64Resolved).toHaveLength(1)
-    expect(x64Resolved[0].url.pathname).toBe("Synapse-1.2.3-x64-mac.zip")
+  function jobSteps(jobName) {
+    return jobs[jobName]?.steps ?? []
+  }
+
+  function findStep(jobName, predicate) {
+    return jobSteps(jobName).find(predicate)
+  }
+
+  it("keeps push.tags v* trigger", () => {
+    expect(workflow.on.push.tags).toEqual(["v*"])
+  })
+
+  it("defines workflow_dispatch dry_run as required boolean defaulting true", () => {
+    const dryRun = workflow.on.workflow_dispatch.inputs.dry_run
+    expect(dryRun).toBeDefined()
+    expect(dryRun.type).toBe("boolean")
+    expect(dryRun.required).toBe(true)
+    expect(dryRun.default).toBe(true)
+  })
+
+  it("validate-invocation fails closed when manual dry_run is not true", () => {
+    const rejectStep = findStep(
+      "validate-invocation",
+      (step) =>
+        typeof step.name === "string" &&
+        step.name.toLowerCase().includes("reject") &&
+        typeof step.run === "string" &&
+        step.run.includes("exit 1")
+    )
+    expect(rejectStep).toBeDefined()
+    expect(rejectStep.if).toContain("workflow_dispatch")
+    expect(rejectStep.if).toContain("inputs.dry_run != true")
+  })
+
+  it("build and gate depend on validate-invocation", () => {
+    expect(jobs["build-electron"].needs).toContain("validate-invocation")
+    expect(jobs["release-admission-gate"].needs).toContain("validate-invocation")
+  })
+
+  it("create-release requires push event and refs/tags/v*", () => {
+    expect(jobs["create-release"].if).toContain("github.event_name == 'push'")
+    expect(jobs["create-release"].if).toContain("refs/tags/v")
+  })
+
+  it("release gate receives explicit RELEASE_MODE", () => {
+    const gateStep = findStep(
+      "release-admission-gate",
+      (step) =>
+        step.name === "Run release admission gate" && typeof step.env?.RELEASE_MODE === "string"
+    )
+    expect(gateStep).toBeDefined()
+    expect(gateStep.env.RELEASE_MODE).toContain("RELEASE_MODE")
+  })
+
+  it("attests release-approved-bundle/assets/* in the gate job", () => {
+    const attestStep = findStep(
+      "release-admission-gate",
+      (step) => typeof step.uses === "string" && step.uses.startsWith("actions/attest")
+    )
+    expect(attestStep).toBeDefined()
+    expect(attestStep.with["subject-path"]).toBe("release-approved-bundle/assets/*")
+  })
+
+  it("uses distinct proof artifact names for dry-run vs release", () => {
+    expect(workflow.env.BUNDLE_ARTIFACT_NAME).toContain("release-approved-bundle-dry-run")
+    expect(workflow.env.BUNDLE_ARTIFACT_NAME).toContain("release-approved-bundle")
+    expect(workflow.env.BUNDLE_ARTIFACT_NAME).not.toBe("release-approved-bundle")
+
+    const uploadStep = findStep(
+      "release-admission-gate",
+      (step) => typeof step.uses === "string" && step.uses.startsWith("actions/upload-artifact")
+    )
+    expect(uploadStep.with.name).toContain("BUNDLE_ARTIFACT_NAME")
+  })
+
+  it("create-release downloads only release-approved-bundle, never the dry-run artifact", () => {
+    const downloadStep = findStep(
+      "create-release",
+      (step) => typeof step.uses === "string" && step.uses.startsWith("actions/download-artifact")
+    )
+    expect(downloadStep).toBeDefined()
+    expect(downloadStep.with.name).toBe("release-approved-bundle")
+    expect(downloadStep.with.name).not.toContain("dry-run")
+  })
+
+  it("buildReleaseBody wiring reads profile, context, and signing status", () => {
+    const bodyStep = findStep(
+      "release-admission-gate",
+      (step) => step.name === "Write release body" && typeof step.run === "string"
+    )
+    expect(bodyStep).toBeDefined()
+    expect(bodyStep.run).toContain("release-profile.json")
+    expect(bodyStep.run).toContain("release-context.json")
+    expect(bodyStep.run).toContain("signing-status.json")
+    expect(bodyStep.run).toContain("releaseProfile")
+    expect(bodyStep.run).toContain("releaseContext")
   })
 })

@@ -49,11 +49,15 @@ export function PluginsStatusCard({ onNavigate }: { onNavigate: (id: NavId) => v
 
   useEffect(() => {
     if (!isElectron()) return
-    void Promise.all([listPlugins(), searchMarketplace()]).then(([installed, search]) => {
-      setUpdates(computeUpdates(installed, search.items, i18n.language))
-      setTrending(computeTrending(search.items, i18n.language))
-      setLoading(false)
-    })
+    void Promise.all([
+      listPlugins(),
+      searchMarketplace().catch(() => ({ items: [] as MarketplaceSummary[] })),
+    ])
+      .then(([installed, search]) => {
+        setUpdates(computeUpdates(installed, search.items, i18n.language))
+        setTrending(computeTrending(search.items, i18n.language))
+      })
+      .finally(() => setLoading(false))
   }, [i18n.language])
 
   useEffect(() => {

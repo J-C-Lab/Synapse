@@ -113,7 +113,9 @@ import { runMcpConnectionTest } from "./mcp/mcp-connection-test"
 import { defaultNotificationIcon, showStartupNotification } from "./notifications"
 import { createCapabilityAudit } from "./plugins/capability-audit"
 import { createElectronSecretPrompt, CredentialBroker } from "./plugins/credential-broker"
+import { createElectronPluginAdapters } from "./plugins/electron-adapters"
 import { GrantStore, grantStoreFilePath } from "./plugins/grant-store"
+import { createHotkeyAdapter } from "./plugins/hotkey-adapter"
 import { createMarketplaceApi } from "./plugins/marketplace-api"
 import { PluginHost } from "./plugins/plugin-host"
 import { getContentType, resolveStaticPath } from "./protocol/resolve-static-path"
@@ -802,11 +804,22 @@ function initPluginHost(): PluginHost {
     approvalRegistry
   )
 
-  return new PluginHost({
+  let hostRef: PluginHost | undefined
+  const host = new PluginHost({
     fetch: (url, init) => net.fetch(url, init),
     marketplaceGetToken: () => marketplaceTokenStore().get(),
     userDataDir,
     resourcesDir: pluginResourcesDir(),
+    adapters: createElectronPluginAdapters(userDataDir, {
+      onNotificationAction: (notificationId, actionId) => {
+        void hostRef?.bridge
+          .handleNotificationAction(notificationId, actionId)
+          .catch((err) => logger.child("plugin-host").warn("notification action failed", { err }))
+      },
+    }),
+    hotkeyAdapter: createHotkeyAdapter({
+      reservedAccelerators: () => [launcher.getSettings().hotkey],
+    }),
     runtime: () => {
       const settings = launcher.getSettings()
       return {
@@ -851,6 +864,8 @@ function initPluginHost(): PluginHost {
       },
     }),
   })
+  hostRef = host
+  return host
 }
 
 function pluginResourcesDir(): string {

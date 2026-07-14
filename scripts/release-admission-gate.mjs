@@ -4,6 +4,7 @@ import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "n
 import { join } from "node:path"
 import process from "node:process"
 import { fileURLToPath } from "node:url"
+import { gunzipSync } from "node:zlib"
 import yaml from "js-yaml"
 
 const STALE_MS = 48 * 60 * 60 * 1000
@@ -117,19 +118,14 @@ export function stripLeadingV(tag) {
 }
 
 /**
- * Every feed file's version, and every installer filename, must agree
- * with both the tag and package.json — never derived, always checked
- * directly, so a matrix leg that silently built from the wrong commit
- * (still producing a structurally complete, correctly-named output)
- * can't slip through.
+ * Every Windows feed file's version, and every installer filename, must
+ * agree with package.json — never derived, always checked directly, so a
+ * build that silently produced the wrong version (still structurally
+ * complete and correctly named) can't slip through. Required in both
+ * dry-run and release mode: package.json is always the source of truth
+ * for what was actually built, regardless of whether a tag exists yet.
  */
-export function checkVersionConsistency({ tagVersion, packageVersion, feeds, installerFilenames }) {
-  if (tagVersion !== packageVersion) {
-    return {
-      ok: false,
-      reason: `tag version "${tagVersion}" does not match package.json version "${packageVersion}"`,
-    }
-  }
+export function checkPackageVersionConsistency({ packageVersion, feeds, installerFilenames }) {
   for (const [name, feed] of Object.entries(feeds)) {
     if (feed.version !== packageVersion) {
       return {
@@ -155,17 +151,124 @@ function hasExactVersionSegment(filename, version) {
   return new RegExp(`(?:^|[-_])${escapedVersion}(?=[-_.]|$)`).test(filename)
 }
 
-/** Exactly the platform/arch containers build-electron.yml's matrix
- *  produces (§4/§9 of the spec — includes the Linux leg this spec adds). */
+/**
+ * The tag is only meaningful once a release is actually being cut — a
+ * dry-run branch dispatch has no tag at all. Kept separate from
+ * `checkPackageVersionConsistency` so release-only eligibility can be
+ * gated independently of the artifact/feed checks that must run every time.
+ */
+export function checkTagVersion({ tagVersion, packageVersion }) {
+  if (tagVersion !== packageVersion) {
+    return {
+      ok: false,
+      reason: `tag version "${tagVersion}" does not match package.json version "${packageVersion}"`,
+    }
+  }
+  return { ok: true }
+}
+
+/** The gate's two supported execution modes (§Checkpoint R). Anything else
+ *  — including a missing value — fails closed rather than defaulting. */
+export function parseReleaseMode(rawMode) {
+  if (rawMode === "dry-run" || rawMode === "release") {
+    return { ok: true, mode: rawMode }
+  }
+  return {
+    ok: false,
+    reason: `unrecognized release mode "${rawMode}" — expected "dry-run" or "release"`,
+  }
+}
+
+/**
+ * The only two checks a branch dry run cannot perform (no tag, no
+ * release-SHA nightly signal). Release mode must never be able to omit
+ * either input — silently skipping them for a "release" is exactly the
+ * TOCTOU gap `checkEvalSignal` and `checkTagVersion` exist to close.
+ * Every other contract (artifact/feed/signing/manifest) is unconditional
+ * and lives outside this gate.
+ */
+export function checkReleaseModeGate({ mode, tagVersion, packageVersion, evalSignalInputs }) {
+  const modeResult = parseReleaseMode(mode)
+  if (!modeResult.ok) return modeResult
+
+  if (modeResult.mode === "dry-run") {
+    return { ok: true, mode: "dry-run", skipped: ["tagVersion", "evalSignal"] }
+  }
+
+  if (typeof tagVersion !== "string" || tagVersion.length === 0) {
+    return {
+      ok: false,
+      reason: "release mode requires a tag version; only dry-run may omit it",
+    }
+  }
+  if (evalSignalInputs == null) {
+    return {
+      ok: false,
+      reason: "release mode requires eval-signal inputs; only dry-run may omit them",
+    }
+  }
+
+  const tagCheck = checkTagVersion({ tagVersion, packageVersion })
+  if (!tagCheck.ok) return tagCheck
+
+  const evalCheck = checkEvalSignal(evalSignalInputs)
+  if (!evalCheck.ok) return evalCheck
+
+  return { ok: true, mode: "release" }
+}
+
+/**
+ * The one machine-readable statement of what this release actually
+ * publishes (S11 Checkpoint R). Emitted verbatim as `release-profile.json`
+ * in the approved bundle and rendered into the release body — never
+ * duplicated as a second, independently-maintained platform list.
+ */
+export const RELEASE_PROFILE = {
+  schemaVersion: 1,
+  targets: [
+    {
+      platform: "windows",
+      arch: "x64",
+      packages: ["nsis", "msi"],
+      updaterFeed: "latest.yml",
+    },
+  ],
+}
+
+/**
+ * The dynamic counterpart to `RELEASE_PROFILE`: which commit/run produced
+ * this bundle and under which mode, so an attested dry-run bundle can
+ * never be mistaken for a real release. Rejects empty identifiers instead
+ * of silently emitting a proof file that doesn't actually identify
+ * anything.
+ */
+export function buildReleaseContext({ mode, commitSha, workflowRunId }) {
+  const modeResult = parseReleaseMode(mode)
+  if (!modeResult.ok) return modeResult
+
+  if (typeof commitSha !== "string" || commitSha.length === 0) {
+    return { ok: false, reason: "buildReleaseContext requires a non-empty commitSha" }
+  }
+  if (typeof workflowRunId !== "string" || workflowRunId.length === 0) {
+    return { ok: false, reason: "buildReleaseContext requires a non-empty workflowRunId" }
+  }
+
+  return {
+    ok: true,
+    context: {
+      schemaVersion: 1,
+      mode: modeResult.mode,
+      commitSha,
+      workflowRunId,
+    },
+  }
+}
+
+/** Exactly the two containers the Windows-only release profile produces
+ *  (S11 Checkpoint R — supersedes S03's multi-platform matrix). */
 export const EXPECTED_ARTIFACT_MANIFEST = {
   "electron-windows-x64-nsis": [/\.exe$/, /\.blockmap$/, /^latest\.yml$/],
   "electron-windows-x64-msi": [/\.msi$/],
-  "electron-macos-x64-zip": [/-x64-mac\.zip$/, /\.blockmap$/, /^latest-mac\.yml$/],
-  "electron-macos-arm64-zip": [/-arm64-mac\.zip$/, /\.blockmap$/, /^latest-mac\.yml$/],
-  "electron-macos-x64-dmg": [/\.dmg$/],
-  "electron-macos-arm64-dmg": [/\.dmg$/],
-  "electron-linux-x64-appimage": [/\.AppImage$/, /^latest-linux\.yml$/],
-  "electron-linux-x64-deb": [/\.deb$/],
 }
 
 /**
@@ -211,9 +314,13 @@ export function checkArtifactManifest(downloadedContainers) {
 }
 
 /**
- * Shared by both the mac pre-merge check and the Windows/Linux feed
- * check: a feed file describing exactly one updater artifact must
- * reference the real file that actually exists, by name, hash, and size.
+ * A feed file describing exactly one updater artifact must reference the
+ * real file that actually exists, by name, hash, and size. Windows'
+ * `latest.yml` is the only release feed now that S11 Checkpoint R has made
+ * the release profile Windows-only, checked against the real NSIS installer
+ * only — the blockmap is verified independently by `validateWindowsBlockmap()`
+ * below, because standard `latest.yml` output carries no blockmap filename or
+ * hash to compare.
  */
 export function validateSingleFileFeed(feed, real, label) {
   if (!Array.isArray(feed.files) || feed.files.length !== 1) {
@@ -233,61 +340,48 @@ export function validateSingleFileFeed(feed, real, label) {
   if (entry.size !== real.size) {
     return { ok: false, reason: `${label} size does not match the real file` }
   }
-  if (entry.blockMapSize !== undefined && entry.blockMapSize !== real.blockMapSize) {
-    return { ok: false, reason: `${label} blockMapSize does not match the real blockmap file` }
-  }
   return { ok: true, entry }
 }
 
 /**
- * Merges the two single-arch latest-mac.yml files build-electron.yml's
- * separate x64/arm64 matrix legs each independently produce into one
- * canonical feed — verified against the locked electron-updater@6.8.9
- * source (spec §5): MacUpdater.filterFilesForArch() picks an entry by
- * checking whether its URL contains "arm64", so the merged `files` array
- * must have exactly one entry that does and one that doesn't.
+ * The NSIS blockmap is an adjacent updater asset, not a field inside
+ * `latest.yml` — electron-updater's own differential-download code reads
+ * it by gunzipping the file and parsing the result as JSON (locked
+ * against the real `electron-updater@6.8.9` convention), so this proves
+ * the bytes are structurally usable. `manifest.json` is what actually
+ * binds this file's sha512 into the release; this contract only proves
+ * the name and bytes are well-formed before that hash is taken.
  */
-export function mergeMacFeeds({ x64Feed, arm64Feed, x64Real, arm64Real }) {
-  const x64Result = validateSingleFileFeed(x64Feed, x64Real, "x64 latest-mac.yml")
-  if (!x64Result.ok) return x64Result
-  const arm64Result = validateSingleFileFeed(arm64Feed, arm64Real, "arm64 latest-mac.yml")
-  if (!arm64Result.ok) return arm64Result
-
-  if (x64Feed.version !== arm64Feed.version) {
-    return { ok: false, reason: "x64 and arm64 latest-mac.yml versions disagree" }
+export function validateWindowsBlockmap(installerName, blockmapName, bytes) {
+  const expectedName = `${installerName}.blockmap`
+  if (blockmapName !== expectedName) {
+    return {
+      ok: false,
+      reason: `blockmap filename "${blockmapName}" does not match expected "${expectedName}"`,
+    }
+  }
+  if (!bytes || bytes.length === 0) {
+    return { ok: false, reason: `blockmap "${blockmapName}" is empty` }
   }
 
-  const x64Entry = x64Result.entry
-  const arm64Entry = arm64Result.entry
-  if (x64Entry.url === arm64Entry.url) {
-    return { ok: false, reason: "x64 and arm64 latest-mac.yml entries have colliding URLs" }
-  }
-  if (!arm64Entry.url.includes("arm64")) {
-    return { ok: false, reason: 'arm64 latest-mac.yml entry URL does not contain "arm64"' }
-  }
-  if (x64Entry.url.includes("arm64")) {
-    return { ok: false, reason: 'x64 latest-mac.yml entry URL unexpectedly contains "arm64"' }
+  let decompressed
+  try {
+    decompressed = gunzipSync(bytes)
+  } catch {
+    return { ok: false, reason: `blockmap "${blockmapName}" is not valid gzip data` }
   }
 
-  return {
-    ok: true,
-    merged: {
-      version: x64Feed.version,
-      files: [x64Entry, arm64Entry],
-      path: x64Entry.url,
-      sha512: x64Entry.sha512,
-      releaseDate: x64Feed.releaseDate,
-    },
+  let parsed
+  try {
+    parsed = JSON.parse(decompressed.toString("utf8"))
+  } catch {
+    return { ok: false, reason: `blockmap "${blockmapName}" does not gunzip to valid JSON` }
   }
-}
 
-/** Windows and Linux each ship one arch, so their feeds get the same
- *  single-file check the mac pre-merge phase uses, with no merge step. */
-export function checkFeedFiles({ windowsFeed, windowsReal, linuxFeed, linuxReal }) {
-  const winResult = validateSingleFileFeed(windowsFeed, windowsReal, "latest.yml")
-  if (!winResult.ok) return winResult
-  const linuxResult = validateSingleFileFeed(linuxFeed, linuxReal, "latest-linux.yml")
-  if (!linuxResult.ok) return linuxResult
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, reason: `blockmap "${blockmapName}" JSON content is not an object` }
+  }
+
   return { ok: true }
 }
 
@@ -326,6 +420,24 @@ export function computeSigningStatus(credentialsConfigured, verification) {
   return {
     ok: false,
     reason: `unrecognized signing state: credentialsConfigured=${credentialsConfigured}, verification=${verification}`,
+  }
+}
+
+/**
+ * The one `signing-status.json` object written into the approved bundle.
+ * Windows-only per S11 Checkpoint R: `platformCodeSigning` stays a map keyed
+ * by platform (rather than a fixed windows+macos pair) so a future platform
+ * can be added without a shape change, but today it contains exactly one
+ * entry. Kept as a pure function, separate from the real `computeSigningStatus`
+ * call in `main()`, so tests can lock the emitted shape without any gh/fs I/O.
+ */
+export function buildSigningStatus(windowsSigning) {
+  return {
+    schemaVersion: 1,
+    platformCodeSigning: {
+      windows: windowsSigning,
+    },
+    githubArtifactAttestation: { required: true },
   }
 }
 
@@ -484,172 +596,204 @@ function main() {
     return
   }
 
-  // §4: artifact identity and cardinality.
+  // Explicit execution mode (§Checkpoint R). release.yml sets RELEASE_MODE to
+  // "release" on tag push and "dry-run" on workflow_dispatch; defaulting to
+  // "release" when absent is fail-closed against accidentally running dry-run
+  // checks on a real publish path.
+  const modeResult = parseReleaseMode(process.env.RELEASE_MODE ?? "release")
+  if (!modeResult.ok) return fail(modeResult.reason)
+  const mode = modeResult.mode
+
+  // §4: artifact identity and cardinality — exactly the two Windows containers.
   const containers = downloadRawArtifacts()
   const manifestCheck = checkArtifactManifest(containers)
   if (!manifestCheck.ok) return fail(manifestCheck.reason)
 
-  // §5: mac feed merge (pre-merge + post-merge).
-  const winDir = join(ARTIFACTS_DIR, "electron-windows-x64-nsis")
-  const macX64Dir = join(ARTIFACTS_DIR, "electron-macos-x64-zip")
-  const macArm64Dir = join(ARTIFACTS_DIR, "electron-macos-arm64-zip")
-  const linuxDir = join(ARTIFACTS_DIR, "electron-linux-x64-appimage")
+  // §5: the approved Windows NSIS + MSI containers and their real files.
+  const nsisDir = join(ARTIFACTS_DIR, "electron-windows-x64-nsis")
+  const msiDir = join(ARTIFACTS_DIR, "electron-windows-x64-msi")
+  const nsisFiles = containers["electron-windows-x64-nsis"]
+  const msiFiles = containers["electron-windows-x64-msi"]
 
-  const winExeName = containers["electron-windows-x64-nsis"].find((f) => f.endsWith(".exe"))
-  const macX64ZipName = containers["electron-macos-x64-zip"].find((f) => f.endsWith(".zip"))
-  const macArm64ZipName = containers["electron-macos-arm64-zip"].find((f) => f.endsWith(".zip"))
-  const macX64DmgName = containers["electron-macos-x64-dmg"].find((f) => f.endsWith(".dmg"))
-  const macArm64DmgName = containers["electron-macos-arm64-dmg"].find((f) => f.endsWith(".dmg"))
-  const appImageName = containers["electron-linux-x64-appimage"].find((f) =>
-    f.endsWith(".AppImage")
-  )
-  const debName = containers["electron-linux-x64-deb"].find((f) => f.endsWith(".deb"))
+  const winExeName = nsisFiles.find((f) => f.endsWith(".exe"))
+  const blockmapName = nsisFiles.find((f) => f.endsWith(".blockmap"))
+  const msiName = msiFiles[0]
 
-  const mergeResult = mergeMacFeeds({
-    x64Feed: readYaml(join(macX64Dir, "latest-mac.yml")),
-    arm64Feed: readYaml(join(macArm64Dir, "latest-mac.yml")),
-    x64Real: realFileInfo(macX64Dir, macX64ZipName),
-    arm64Real: realFileInfo(macArm64Dir, macArm64ZipName),
-  })
-  if (!mergeResult.ok) return fail(mergeResult.reason)
+  const winFeed = readYaml(join(nsisDir, "latest.yml"))
+  const feedCheck = validateSingleFileFeed(winFeed, realFileInfo(nsisDir, winExeName), "latest.yml")
+  if (!feedCheck.ok) return fail(feedCheck.reason)
 
-  const winFeed = readYaml(join(winDir, "latest.yml"))
-  const linuxFeed = readYaml(join(linuxDir, "latest-linux.yml"))
-  const feedFilesCheck = checkFeedFiles({
-    windowsFeed: winFeed,
-    windowsReal: realFileInfo(winDir, winExeName),
-    linuxFeed,
-    linuxReal: realFileInfo(linuxDir, appImageName),
-  })
-  if (!feedFilesCheck.ok) return fail(feedFilesCheck.reason)
-
-  // §3: version consistency.
-  const packageVersion = JSON.parse(readFileSync("package.json", "utf8")).version
-  const tagVersion = stripLeadingV(process.env.GITHUB_REF_NAME)
-  const installerFilenames = [
+  const blockmapCheck = validateWindowsBlockmap(
     winExeName,
-    containers["electron-windows-x64-msi"][0],
-    macX64ZipName,
-    macArm64ZipName,
-    macX64DmgName,
-    macArm64DmgName,
-    appImageName,
-    debName,
-  ]
-  const versionCheck = checkVersionConsistency({
-    tagVersion,
+    blockmapName,
+    readFileSync(join(nsisDir, blockmapName))
+  )
+  if (!blockmapCheck.ok) return fail(blockmapCheck.reason)
+
+  // §3: version consistency — required in both modes.
+  const packageVersion = JSON.parse(readFileSync("package.json", "utf8")).version
+  const packageVersionCheck = checkPackageVersionConsistency({
     packageVersion,
-    feeds: {
-      "latest.yml": winFeed,
-      "latest-linux.yml": linuxFeed,
-      "latest-mac.yml (merged)": mergeResult.merged,
-    },
-    installerFilenames,
+    feeds: { "latest.yml": winFeed },
+    installerFilenames: [winExeName, msiName],
   })
-  if (!versionCheck.ok) return fail(versionCheck.reason)
+  if (!packageVersionCheck.ok) return fail(packageVersionCheck.reason)
 
-  // §2: eval-signal.
-  const evalCheck = checkEvalSignal(fetchEvalSignalInputs(releasedSha))
-  if (!evalCheck.ok) return fail(evalCheck.reason)
+  // §2/§3: tag version and S01 eval-signal eligibility — release mode only.
+  const tagVersion = mode === "release" ? stripLeadingV(process.env.GITHUB_REF_NAME) : undefined
+  const evalSignalInputs = mode === "release" ? fetchEvalSignalInputs(releasedSha) : undefined
+  const modeGateCheck = checkReleaseModeGate({ mode, tagVersion, packageVersion, evalSignalInputs })
+  if (!modeGateCheck.ok) return fail(modeGateCheck.reason)
+  if (modeGateCheck.skipped?.length) {
+    for (const check of modeGateCheck.skipped) {
+      console.log(`release-admission-gate: ${check} check skipped (${mode} mode — inapplicable)`)
+    }
+  }
 
-  // §6: signing status (hardcoded not-performed today — §12 parks real verification).
-  const appleCertConfigured = process.env.APPLE_CERT_CONFIGURED === "true"
+  // §6: Windows signing status (hardcoded not-performed today — §12 parks real verification).
   const windowsCertConfigured = process.env.WINDOWS_CERT_CONFIGURED === "true"
-  const macSigning = computeSigningStatus(appleCertConfigured, "not-performed")
-  if (!macSigning.ok) return fail(`macOS signing: ${macSigning.reason}`)
   const winSigning = computeSigningStatus(windowsCertConfigured, "not-performed")
   if (!winSigning.ok) return fail(`Windows signing: ${winSigning.reason}`)
 
-  // §8: assemble release-approved-bundle/assets/.
+  // The dynamic release-context proof — which commit/run produced this
+  // bundle and under which mode.
+  const contextResult = buildReleaseContext({
+    mode,
+    commitSha: releasedSha,
+    workflowRunId: process.env.GITHUB_RUN_ID ?? "",
+  })
+  if (!contextResult.ok) return fail(contextResult.reason)
+
+  // §8: assemble release-approved-bundle/assets/ — only the two Windows
+  // containers plus the generated proof files.
   const bundleDir = "release-approved-bundle"
   const assetsDir = join(bundleDir, "assets")
   mkdirSync(assetsDir, { recursive: true })
 
-  copyContainerFiles(winDir, containers["electron-windows-x64-nsis"], assetsDir)
-  copyContainerFiles(
-    join(ARTIFACTS_DIR, "electron-windows-x64-msi"),
-    containers["electron-windows-x64-msi"],
-    assetsDir
+  copyContainerFiles(nsisDir, nsisFiles, assetsDir)
+  copyContainerFiles(msiDir, msiFiles, assetsDir)
+
+  writeFileSync(
+    join(assetsDir, "release-profile.json"),
+    `${JSON.stringify(RELEASE_PROFILE, null, 2)}\n`
   )
-  copyContainerFiles(
-    macX64Dir,
-    containers["electron-macos-x64-zip"].filter((f) => !f.endsWith(".yml")),
-    assetsDir
-  )
-  copyContainerFiles(
-    macArm64Dir,
-    containers["electron-macos-arm64-zip"].filter((f) => !f.endsWith(".yml")),
-    assetsDir
-  )
-  copyContainerFiles(
-    join(ARTIFACTS_DIR, "electron-macos-x64-dmg"),
-    containers["electron-macos-x64-dmg"],
-    assetsDir
-  )
-  copyContainerFiles(
-    join(ARTIFACTS_DIR, "electron-macos-arm64-dmg"),
-    containers["electron-macos-arm64-dmg"],
-    assetsDir
-  )
-  copyContainerFiles(
-    linuxDir,
-    containers["electron-linux-x64-appimage"].filter((f) => !f.endsWith(".yml")),
-    assetsDir
-  )
-  copyContainerFiles(
-    join(ARTIFACTS_DIR, "electron-linux-x64-deb"),
-    containers["electron-linux-x64-deb"],
-    assetsDir
+  writeFileSync(
+    join(assetsDir, "release-context.json"),
+    `${JSON.stringify(contextResult.context, null, 2)}\n`
   )
 
-  writeFileSync(join(assetsDir, "latest.yml"), yaml.dump(winFeed))
-  writeFileSync(join(assetsDir, "latest-linux.yml"), yaml.dump(linuxFeed))
-  writeFileSync(join(assetsDir, "latest-mac.yml"), yaml.dump(mergeResult.merged))
-
-  const signingStatus = {
-    schemaVersion: 1,
-    platformCodeSigning: {
-      windows: {
-        credentialsConfigured: windowsCertConfigured,
-        verification: "not-performed",
-        releaseClaim: winSigning.releaseClaim,
-      },
-      macos: {
-        credentialsConfigured: appleCertConfigured,
-        verification: "not-performed",
-        releaseClaim: macSigning.releaseClaim,
-      },
-    },
-    githubArtifactAttestation: { required: true },
-  }
+  const signingStatus = buildSigningStatus({
+    credentialsConfigured: windowsCertConfigured,
+    verification: "not-performed",
+    releaseClaim: winSigning.releaseClaim,
+  })
   writeFileSync(
     join(assetsDir, "signing-status.json"),
     `${JSON.stringify(signingStatus, null, 2)}\n`
   )
 
-  const manifestFiles = readdirSync(assetsDir)
+  // The independently-known expected file set — everything just copied or
+  // written into assetsDir above — never derived from a directory listing.
+  // Comparing this against the real on-disk contents (next) is what actually
+  // catches an unexpected extra/missing file; hashing and verifying against
+  // the same readdir() result would be a tautology.
+  const expectedAssetNames = [
+    ...nsisFiles,
+    ...msiFiles,
+    "release-profile.json",
+    "release-context.json",
+    "signing-status.json",
+  ]
+  const onDiskNames = readdirSync(assetsDir).filter((f) => f !== "manifest.json")
+  const missingOnDisk = expectedAssetNames.filter((n) => !onDiskNames.includes(n))
+  const unexpectedOnDisk = onDiskNames.filter((n) => !expectedAssetNames.includes(n))
+  if (missingOnDisk.length > 0 || unexpectedOnDisk.length > 0) {
+    return fail(
+      `assets/ file set does not match what was written (missing: [${missingOnDisk}], unexpected: [${unexpectedOnDisk}])`
+    )
+  }
+
+  const manifestFiles = expectedAssetNames.map((name) => ({
+    name,
+    sha512: sha512Of(join(assetsDir, name)),
+  }))
+  const manifest = buildManifest(manifestFiles)
+  writeFileSync(join(assetsDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`)
+
+  // Defense in depth: re-read every asset from disk a second time,
+  // independently of the hashes just used to build the manifest, and verify
+  // against the manifest.json file that was actually written.
+  const writtenManifest = JSON.parse(readFileSync(join(assetsDir, "manifest.json"), "utf8"))
+  const reReadFiles = readdirSync(assetsDir)
     .filter((f) => f !== "manifest.json")
     .map((name) => ({ name, sha512: sha512Of(join(assetsDir, name)) }))
-  const manifest = buildManifest(manifestFiles)
-  const selfVerify = verifyManifest(manifest, manifestFiles)
+  const selfVerify = verifyManifest(writtenManifest, reReadFiles)
   if (!selfVerify.ok) return fail(`manifest self-check failed: ${selfVerify.reason}`)
-  writeFileSync(join(assetsDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`)
 
   console.log(`release-admission-gate: assets/ assembled and manifest verified at ${assetsDir}`)
 }
 
-export function buildReleaseBody({ signingStatus, attestationUrl, repoOwner }) {
+function capitalize(word) {
+  return word.charAt(0).toUpperCase() + word.slice(1)
+}
+
+/** Renders `RELEASE_PROFILE`'s targets as e.g. "Windows x64 (NSIS, MSI)" —
+ *  the release body's platform statement is generated from this one object,
+ *  never maintained as a second independent hardcoded platform list. */
+function formatReleaseTargets(releaseProfile) {
+  return releaseProfile.targets
+    .map(
+      (target) =>
+        `${capitalize(target.platform)} ${target.arch} (${target.packages.map((p) => p.toUpperCase()).join(", ")})`
+    )
+    .join(", ")
+}
+
+/**
+ * Exhaustive, fail-closed rendering of a platform's `releaseClaim` into the
+ * prose actually shown in the published release body. An unrecognized claim
+ * must never fall through to the strongest ("signed and verified") wording —
+ * that would let a future third signing state silently ship an optimistic
+ * security claim it never earned.
+ */
+function renderReleaseClaim(platform, releaseClaim) {
+  if (releaseClaim === "unsigned-unverified") {
+    return "CI has neither a configured platform code-signing credential nor has it performed a platform signature verification on this artifact."
+  }
+  if (releaseClaim === "signed-and-verified") {
+    return "This artifact was signed with a configured platform credential, and CI verified the signature."
+  }
+  throw new Error(
+    `buildReleaseBody: unrecognized releaseClaim "${releaseClaim}" for platform "${platform}" — refusing to render an unverified security claim`
+  )
+}
+
+/**
+ * Renders the release body from explicit `releaseProfile`/`releaseContext`
+ * arguments rather than reading `RELEASE_PROFILE` or a global mode off the
+ * environment — that keeps this function unit-testable and makes a
+ * dry-run/release mismatch (attested profile vs. rendered body) structurally
+ * impossible. `signingStatus.platformCodeSigning` is iterated as a map, so
+ * this never assumes a macOS entry exists alongside Windows.
+ */
+export function buildReleaseBody({
+  releaseProfile,
+  releaseContext,
+  signingStatus,
+  attestationUrl,
+  repoOwner,
+}) {
   const platformLines = Object.entries(signingStatus.platformCodeSigning).map(
     ([platform, info]) => {
-      const claim =
-        info.releaseClaim === "unsigned-unverified"
-          ? "CI has neither a configured platform code-signing credential nor has it performed a platform signature verification on this artifact."
-          : "This artifact was signed with a configured platform credential, and CI verified the signature."
+      const claim = renderReleaseClaim(platform, info.releaseClaim)
       return `- **${platform}**: ${claim}`
     }
   )
-  return [
+
+  const body = [
     "## Release Proof",
+    "",
+    `- **Release targets**: ${formatReleaseTargets(releaseProfile)}. No macOS or Linux artifacts are built, verified, or published by this pipeline.`,
     "",
     ...platformLines,
     "",
@@ -658,6 +802,8 @@ export function buildReleaseBody({ signingStatus, attestationUrl, repoOwner }) {
     "- **Integrity**: every asset's sha512 is listed in `manifest.json`, included in this release.",
     "",
   ].join("\n")
+
+  return releaseContext.mode === "dry-run" ? `DRY RUN — NOT A RELEASE\n\n${body}` : body
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) main()
