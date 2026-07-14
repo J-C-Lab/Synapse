@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest"
 import { buildStatusJson } from "./eval-nightly-report.mjs"
 import {
   buildManifest,
+  buildReleaseBody,
   buildReleaseContext,
+  buildSigningStatus,
   checkArtifactManifest,
   checkEvalSignal,
   checkPackageVersionConsistency,
@@ -656,5 +658,146 @@ describe("verifyManifest", () => {
     ])
     expect(result.ok).toBe(false)
     expect(result.reason).toContain("extra")
+  })
+})
+
+describe("release profile and context serialization", () => {
+  it("serializes RELEASE_PROFILE deterministically across calls", () => {
+    const first = JSON.stringify(RELEASE_PROFILE, null, 2)
+    const second = JSON.stringify(RELEASE_PROFILE, null, 2)
+    expect(first).toBe(second)
+    expect(JSON.parse(first)).toEqual(RELEASE_PROFILE)
+  })
+
+  it("serializes a release context deterministically across calls", () => {
+    const { context } = buildReleaseContext({
+      mode: "release",
+      commitSha: "abc123",
+      workflowRunId: "999",
+    })
+    const first = JSON.stringify(context, null, 2)
+    const second = JSON.stringify(context, null, 2)
+    expect(first).toBe(second)
+    expect(JSON.parse(first)).toEqual(context)
+  })
+})
+
+describe("buildSigningStatus", () => {
+  it("keeps schemaVersion 1 and includes only platformCodeSigning.windows", () => {
+    const status = buildSigningStatus({
+      credentialsConfigured: false,
+      verification: "not-performed",
+      releaseClaim: "unsigned-unverified",
+    })
+    expect(status.schemaVersion).toBe(1)
+    expect(Object.keys(status.platformCodeSigning)).toEqual(["windows"])
+    expect(status.platformCodeSigning.windows).toEqual({
+      credentialsConfigured: false,
+      verification: "not-performed",
+      releaseClaim: "unsigned-unverified",
+    })
+    expect(status.githubArtifactAttestation).toEqual({ required: true })
+  })
+})
+
+describe("buildReleaseBody", () => {
+  const releaseContext = {
+    schemaVersion: 1,
+    mode: "release",
+    commitSha: "abc123",
+    workflowRunId: "999",
+  }
+  const signingStatus = buildSigningStatus({
+    credentialsConfigured: false,
+    verification: "not-performed",
+    releaseClaim: "unsigned-unverified",
+  })
+
+  it("renders 'Windows x64 (NSIS, MSI)' from RELEASE_PROFILE", () => {
+    const body = buildReleaseBody({
+      releaseProfile: RELEASE_PROFILE,
+      releaseContext,
+      signingStatus,
+      attestationUrl: "https://example.com/attestation",
+      repoOwner: "acme",
+    })
+    expect(body).toContain("Windows x64 (NSIS, MSI)")
+  })
+
+  it("starts a dry-run body with the DRY RUN marker", () => {
+    const body = buildReleaseBody({
+      releaseProfile: RELEASE_PROFILE,
+      releaseContext: { ...releaseContext, mode: "dry-run" },
+      signingStatus,
+      attestationUrl: "https://example.com/attestation",
+      repoOwner: "acme",
+    })
+    expect(body.startsWith("DRY RUN — NOT A RELEASE")).toBe(true)
+  })
+
+  it("has no dry-run marker for a release-mode body", () => {
+    const body = buildReleaseBody({
+      releaseProfile: RELEASE_PROFILE,
+      releaseContext,
+      signingStatus,
+      attestationUrl: "https://example.com/attestation",
+      repoOwner: "acme",
+    })
+    expect(body).not.toContain("DRY RUN")
+  })
+
+  it("iterates the signing-status platform map without assuming a macOS key", () => {
+    const body = buildReleaseBody({
+      releaseProfile: RELEASE_PROFILE,
+      releaseContext,
+      signingStatus,
+      attestationUrl: "https://example.com/attestation",
+      repoOwner: "acme",
+    })
+    expect(body).toContain("**windows**")
+    expect(body).not.toContain("macos")
+    expect(body).not.toContain("**macOS**")
+  })
+})
+
+describe("approved-bundle manifest coverage", () => {
+  function bundleFiles() {
+    return [
+      { name: "Synapse-Setup-1.2.3.exe", sha512: "EXEHASH" },
+      { name: "Synapse-Setup-1.2.3.exe.blockmap", sha512: "BLOCKMAPHASH" },
+      { name: "Synapse-1.2.3.msi", sha512: "MSIHASH" },
+      { name: "latest.yml", sha512: "FEEDHASH" },
+      { name: "release-profile.json", sha512: "PROFILEHASH" },
+      { name: "release-context.json", sha512: "CONTEXTHASH" },
+      { name: "signing-status.json", sha512: "SIGNINGHASH" },
+    ]
+  }
+
+  it("covers the EXE, blockmap, MSI, feed, and every proof file", () => {
+    const manifest = buildManifest(bundleFiles())
+    expect(Object.keys(manifest.files).sort()).toEqual(
+      [
+        "Synapse-Setup-1.2.3.exe",
+        "Synapse-Setup-1.2.3.exe.blockmap",
+        "Synapse-1.2.3.msi",
+        "latest.yml",
+        "release-profile.json",
+        "release-context.json",
+        "signing-status.json",
+      ].sort()
+    )
+    expect(verifyManifest(manifest, bundleFiles())).toEqual({ ok: true })
+  })
+
+  it("fails verification when blockmap bytes change without rebuilding the manifest", () => {
+    const manifest = buildManifest(bundleFiles())
+    const tamperedFiles = bundleFiles().map((f) =>
+      f.name === "Synapse-Setup-1.2.3.exe.blockmap"
+        ? { ...f, sha512: "DIFFERENT-BLOCKMAP-HASH" }
+        : f
+    )
+    const result = verifyManifest(manifest, tamperedFiles)
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain("Synapse-Setup-1.2.3.exe.blockmap")
   })
 })

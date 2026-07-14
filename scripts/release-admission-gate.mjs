@@ -316,10 +316,11 @@ export function checkArtifactManifest(downloadedContainers) {
 /**
  * A feed file describing exactly one updater artifact must reference the
  * real file that actually exists, by name, hash, and size. Windows'
- * `latest.yml` is the only feed left after S11 Checkpoint R, checked
- * against the real NSIS installer only — the blockmap is verified
- * independently by `validateWindowsBlockmap()` below, because standard
- * `latest.yml` output carries no blockmap filename or hash to compare.
+ * `latest.yml` is the only release feed now that S11 Checkpoint R has made
+ * the release profile Windows-only, checked against the real NSIS installer
+ * only — the blockmap is verified independently by `validateWindowsBlockmap()`
+ * below, because standard `latest.yml` output carries no blockmap filename or
+ * hash to compare.
  */
 export function validateSingleFileFeed(feed, real, label) {
   if (!Array.isArray(feed.files) || feed.files.length !== 1) {
@@ -385,58 +386,6 @@ export function validateWindowsBlockmap(installerName, blockmapName, bytes) {
 }
 
 /**
- * Merges the two single-arch latest-mac.yml files build-electron.yml's
- * separate x64/arm64 matrix legs each independently produce into one
- * canonical feed — verified against the locked electron-updater@6.8.9
- * source (spec §5): MacUpdater.filterFilesForArch() picks an entry by
- * checking whether its URL contains "arm64", so the merged `files` array
- * must have exactly one entry that does and one that doesn't.
- */
-export function mergeMacFeeds({ x64Feed, arm64Feed, x64Real, arm64Real }) {
-  const x64Result = validateSingleFileFeed(x64Feed, x64Real, "x64 latest-mac.yml")
-  if (!x64Result.ok) return x64Result
-  const arm64Result = validateSingleFileFeed(arm64Feed, arm64Real, "arm64 latest-mac.yml")
-  if (!arm64Result.ok) return arm64Result
-
-  if (x64Feed.version !== arm64Feed.version) {
-    return { ok: false, reason: "x64 and arm64 latest-mac.yml versions disagree" }
-  }
-
-  const x64Entry = x64Result.entry
-  const arm64Entry = arm64Result.entry
-  if (x64Entry.url === arm64Entry.url) {
-    return { ok: false, reason: "x64 and arm64 latest-mac.yml entries have colliding URLs" }
-  }
-  if (!arm64Entry.url.includes("arm64")) {
-    return { ok: false, reason: 'arm64 latest-mac.yml entry URL does not contain "arm64"' }
-  }
-  if (x64Entry.url.includes("arm64")) {
-    return { ok: false, reason: 'x64 latest-mac.yml entry URL unexpectedly contains "arm64"' }
-  }
-
-  return {
-    ok: true,
-    merged: {
-      version: x64Feed.version,
-      files: [x64Entry, arm64Entry],
-      path: x64Entry.url,
-      sha512: x64Entry.sha512,
-      releaseDate: x64Feed.releaseDate,
-    },
-  }
-}
-
-/** Windows and Linux each ship one arch, so their feeds get the same
- *  single-file check the mac pre-merge phase uses, with no merge step. */
-export function checkFeedFiles({ windowsFeed, windowsReal, linuxFeed, linuxReal }) {
-  const winResult = validateSingleFileFeed(windowsFeed, windowsReal, "latest.yml")
-  if (!winResult.ok) return winResult
-  const linuxResult = validateSingleFileFeed(linuxFeed, linuxReal, "latest-linux.yml")
-  if (!linuxResult.ok) return linuxResult
-  return { ok: true }
-}
-
-/**
  * Spec §6's fail-closed signing state machine. Decided now, before any
  * real signing credential exists, so that the day one is added without
  * also wiring up real signature verification, the very next release
@@ -471,6 +420,24 @@ export function computeSigningStatus(credentialsConfigured, verification) {
   return {
     ok: false,
     reason: `unrecognized signing state: credentialsConfigured=${credentialsConfigured}, verification=${verification}`,
+  }
+}
+
+/**
+ * The one `signing-status.json` object written into the approved bundle.
+ * Windows-only per S11 Checkpoint R: `platformCodeSigning` stays a map keyed
+ * by platform (rather than a fixed windows+macos pair) so a future platform
+ * can be added without a shape change, but today it contains exactly one
+ * entry. Kept as a pure function, separate from the real `computeSigningStatus`
+ * call in `main()`, so tests can lock the emitted shape without any gh/fs I/O.
+ */
+export function buildSigningStatus(windowsSigning) {
+  return {
+    schemaVersion: 1,
+    platformCodeSigning: {
+      windows: windowsSigning,
+    },
+    githubArtifactAttestation: { required: true },
   }
 }
 
@@ -629,146 +596,92 @@ function main() {
     return
   }
 
-  // §4: artifact identity and cardinality.
+  // Explicit execution mode (§Checkpoint R). release.yml's tag-push publish
+  // path does not set RELEASE_MODE, so an absent value means a real release
+  // rather than silently defaulting to the weaker dry-run checks; only the
+  // dry-run dispatch workflow ever sets RELEASE_MODE=dry-run.
+  const modeResult = parseReleaseMode(process.env.RELEASE_MODE ?? "release")
+  if (!modeResult.ok) return fail(modeResult.reason)
+  const mode = modeResult.mode
+
+  // §4: artifact identity and cardinality — exactly the two Windows containers.
   const containers = downloadRawArtifacts()
   const manifestCheck = checkArtifactManifest(containers)
   if (!manifestCheck.ok) return fail(manifestCheck.reason)
 
-  // §5: mac feed merge (pre-merge + post-merge).
-  const winDir = join(ARTIFACTS_DIR, "electron-windows-x64-nsis")
-  const macX64Dir = join(ARTIFACTS_DIR, "electron-macos-x64-zip")
-  const macArm64Dir = join(ARTIFACTS_DIR, "electron-macos-arm64-zip")
-  const linuxDir = join(ARTIFACTS_DIR, "electron-linux-x64-appimage")
+  // §5: the approved Windows NSIS + MSI containers and their real files.
+  const nsisDir = join(ARTIFACTS_DIR, "electron-windows-x64-nsis")
+  const msiDir = join(ARTIFACTS_DIR, "electron-windows-x64-msi")
+  const nsisFiles = containers["electron-windows-x64-nsis"]
+  const msiFiles = containers["electron-windows-x64-msi"]
 
-  const winExeName = containers["electron-windows-x64-nsis"].find((f) => f.endsWith(".exe"))
-  const macX64ZipName = containers["electron-macos-x64-zip"].find((f) => f.endsWith(".zip"))
-  const macArm64ZipName = containers["electron-macos-arm64-zip"].find((f) => f.endsWith(".zip"))
-  const macX64DmgName = containers["electron-macos-x64-dmg"].find((f) => f.endsWith(".dmg"))
-  const macArm64DmgName = containers["electron-macos-arm64-dmg"].find((f) => f.endsWith(".dmg"))
-  const appImageName = containers["electron-linux-x64-appimage"].find((f) =>
-    f.endsWith(".AppImage")
-  )
-  const debName = containers["electron-linux-x64-deb"].find((f) => f.endsWith(".deb"))
+  const winExeName = nsisFiles.find((f) => f.endsWith(".exe"))
+  const blockmapName = nsisFiles.find((f) => f.endsWith(".blockmap"))
+  const msiName = msiFiles[0]
 
-  const mergeResult = mergeMacFeeds({
-    x64Feed: readYaml(join(macX64Dir, "latest-mac.yml")),
-    arm64Feed: readYaml(join(macArm64Dir, "latest-mac.yml")),
-    x64Real: realFileInfo(macX64Dir, macX64ZipName),
-    arm64Real: realFileInfo(macArm64Dir, macArm64ZipName),
-  })
-  if (!mergeResult.ok) return fail(mergeResult.reason)
+  const winFeed = readYaml(join(nsisDir, "latest.yml"))
+  const feedCheck = validateSingleFileFeed(winFeed, realFileInfo(nsisDir, winExeName), "latest.yml")
+  if (!feedCheck.ok) return fail(feedCheck.reason)
 
-  const winFeed = readYaml(join(winDir, "latest.yml"))
-  const linuxFeed = readYaml(join(linuxDir, "latest-linux.yml"))
-  const feedFilesCheck = checkFeedFiles({
-    windowsFeed: winFeed,
-    windowsReal: realFileInfo(winDir, winExeName),
-    linuxFeed,
-    linuxReal: realFileInfo(linuxDir, appImageName),
-  })
-  if (!feedFilesCheck.ok) return fail(feedFilesCheck.reason)
-
-  // §3: version consistency.
-  const packageVersion = JSON.parse(readFileSync("package.json", "utf8")).version
-  const tagVersion = stripLeadingV(process.env.GITHUB_REF_NAME)
-  const installerFilenames = [
+  const blockmapCheck = validateWindowsBlockmap(
     winExeName,
-    containers["electron-windows-x64-msi"][0],
-    macX64ZipName,
-    macArm64ZipName,
-    macX64DmgName,
-    macArm64DmgName,
-    appImageName,
-    debName,
-  ]
+    blockmapName,
+    readFileSync(join(nsisDir, blockmapName))
+  )
+  if (!blockmapCheck.ok) return fail(blockmapCheck.reason)
+
+  // §3: version consistency — required in both modes.
+  const packageVersion = JSON.parse(readFileSync("package.json", "utf8")).version
   const packageVersionCheck = checkPackageVersionConsistency({
     packageVersion,
-    feeds: {
-      "latest.yml": winFeed,
-      "latest-linux.yml": linuxFeed,
-      "latest-mac.yml (merged)": mergeResult.merged,
-    },
-    installerFilenames,
+    feeds: { "latest.yml": winFeed },
+    installerFilenames: [winExeName, msiName],
   })
   if (!packageVersionCheck.ok) return fail(packageVersionCheck.reason)
 
-  const tagVersionCheck = checkTagVersion({ tagVersion, packageVersion })
-  if (!tagVersionCheck.ok) return fail(tagVersionCheck.reason)
+  // §2/§3: tag version and S01 eval-signal eligibility — release mode only.
+  const tagVersion = mode === "release" ? stripLeadingV(process.env.GITHUB_REF_NAME) : undefined
+  const evalSignalInputs = mode === "release" ? fetchEvalSignalInputs(releasedSha) : undefined
+  const modeGateCheck = checkReleaseModeGate({ mode, tagVersion, packageVersion, evalSignalInputs })
+  if (!modeGateCheck.ok) return fail(modeGateCheck.reason)
 
-  // §2: eval-signal.
-  const evalCheck = checkEvalSignal(fetchEvalSignalInputs(releasedSha))
-  if (!evalCheck.ok) return fail(evalCheck.reason)
-
-  // §6: signing status (hardcoded not-performed today — §12 parks real verification).
-  const appleCertConfigured = process.env.APPLE_CERT_CONFIGURED === "true"
+  // §6: Windows signing status (hardcoded not-performed today — §12 parks real verification).
   const windowsCertConfigured = process.env.WINDOWS_CERT_CONFIGURED === "true"
-  const macSigning = computeSigningStatus(appleCertConfigured, "not-performed")
-  if (!macSigning.ok) return fail(`macOS signing: ${macSigning.reason}`)
   const winSigning = computeSigningStatus(windowsCertConfigured, "not-performed")
   if (!winSigning.ok) return fail(`Windows signing: ${winSigning.reason}`)
 
-  // §8: assemble release-approved-bundle/assets/.
+  // The dynamic release-context proof — which commit/run produced this
+  // bundle and under which mode.
+  const contextResult = buildReleaseContext({
+    mode,
+    commitSha: releasedSha,
+    workflowRunId: process.env.GITHUB_RUN_ID ?? "",
+  })
+  if (!contextResult.ok) return fail(contextResult.reason)
+
+  // §8: assemble release-approved-bundle/assets/ — only the two Windows
+  // containers plus the generated proof files.
   const bundleDir = "release-approved-bundle"
   const assetsDir = join(bundleDir, "assets")
   mkdirSync(assetsDir, { recursive: true })
 
-  copyContainerFiles(winDir, containers["electron-windows-x64-nsis"], assetsDir)
-  copyContainerFiles(
-    join(ARTIFACTS_DIR, "electron-windows-x64-msi"),
-    containers["electron-windows-x64-msi"],
-    assetsDir
+  copyContainerFiles(nsisDir, nsisFiles, assetsDir)
+  copyContainerFiles(msiDir, msiFiles, assetsDir)
+
+  writeFileSync(
+    join(assetsDir, "release-profile.json"),
+    `${JSON.stringify(RELEASE_PROFILE, null, 2)}\n`
   )
-  copyContainerFiles(
-    macX64Dir,
-    containers["electron-macos-x64-zip"].filter((f) => !f.endsWith(".yml")),
-    assetsDir
-  )
-  copyContainerFiles(
-    macArm64Dir,
-    containers["electron-macos-arm64-zip"].filter((f) => !f.endsWith(".yml")),
-    assetsDir
-  )
-  copyContainerFiles(
-    join(ARTIFACTS_DIR, "electron-macos-x64-dmg"),
-    containers["electron-macos-x64-dmg"],
-    assetsDir
-  )
-  copyContainerFiles(
-    join(ARTIFACTS_DIR, "electron-macos-arm64-dmg"),
-    containers["electron-macos-arm64-dmg"],
-    assetsDir
-  )
-  copyContainerFiles(
-    linuxDir,
-    containers["electron-linux-x64-appimage"].filter((f) => !f.endsWith(".yml")),
-    assetsDir
-  )
-  copyContainerFiles(
-    join(ARTIFACTS_DIR, "electron-linux-x64-deb"),
-    containers["electron-linux-x64-deb"],
-    assetsDir
+  writeFileSync(
+    join(assetsDir, "release-context.json"),
+    `${JSON.stringify(contextResult.context, null, 2)}\n`
   )
 
-  writeFileSync(join(assetsDir, "latest.yml"), yaml.dump(winFeed))
-  writeFileSync(join(assetsDir, "latest-linux.yml"), yaml.dump(linuxFeed))
-  writeFileSync(join(assetsDir, "latest-mac.yml"), yaml.dump(mergeResult.merged))
-
-  const signingStatus = {
-    schemaVersion: 1,
-    platformCodeSigning: {
-      windows: {
-        credentialsConfigured: windowsCertConfigured,
-        verification: "not-performed",
-        releaseClaim: winSigning.releaseClaim,
-      },
-      macos: {
-        credentialsConfigured: appleCertConfigured,
-        verification: "not-performed",
-        releaseClaim: macSigning.releaseClaim,
-      },
-    },
-    githubArtifactAttestation: { required: true },
-  }
+  const signingStatus = buildSigningStatus({
+    credentialsConfigured: windowsCertConfigured,
+    verification: "not-performed",
+    releaseClaim: winSigning.releaseClaim,
+  })
   writeFileSync(
     join(assetsDir, "signing-status.json"),
     `${JSON.stringify(signingStatus, null, 2)}\n`
@@ -785,7 +698,37 @@ function main() {
   console.log(`release-admission-gate: assets/ assembled and manifest verified at ${assetsDir}`)
 }
 
-export function buildReleaseBody({ signingStatus, attestationUrl, repoOwner }) {
+function capitalize(word) {
+  return word.charAt(0).toUpperCase() + word.slice(1)
+}
+
+/** Renders `RELEASE_PROFILE`'s targets as e.g. "Windows x64 (NSIS, MSI)" —
+ *  the release body's platform statement is generated from this one object,
+ *  never maintained as a second independent hardcoded platform list. */
+function formatReleaseTargets(releaseProfile) {
+  return releaseProfile.targets
+    .map(
+      (target) =>
+        `${capitalize(target.platform)} ${target.arch} (${target.packages.map((p) => p.toUpperCase()).join(", ")})`
+    )
+    .join(", ")
+}
+
+/**
+ * Renders the release body from explicit `releaseProfile`/`releaseContext`
+ * arguments rather than reading `RELEASE_PROFILE` or a global mode off the
+ * environment — that keeps this function unit-testable and makes a
+ * dry-run/release mismatch (attested profile vs. rendered body) structurally
+ * impossible. `signingStatus.platformCodeSigning` is iterated as a map, so
+ * this never assumes a macOS entry exists alongside Windows.
+ */
+export function buildReleaseBody({
+  releaseProfile,
+  releaseContext,
+  signingStatus,
+  attestationUrl,
+  repoOwner,
+}) {
   const platformLines = Object.entries(signingStatus.platformCodeSigning).map(
     ([platform, info]) => {
       const claim =
@@ -795,8 +738,11 @@ export function buildReleaseBody({ signingStatus, attestationUrl, repoOwner }) {
       return `- **${platform}**: ${claim}`
     }
   )
-  return [
+
+  const body = [
     "## Release Proof",
+    "",
+    `- **Release targets**: ${formatReleaseTargets(releaseProfile)}. No macOS or Linux artifacts are built, verified, or published by this pipeline.`,
     "",
     ...platformLines,
     "",
@@ -805,6 +751,8 @@ export function buildReleaseBody({ signingStatus, attestationUrl, repoOwner }) {
     "- **Integrity**: every asset's sha512 is listed in `manifest.json`, included in this release.",
     "",
   ].join("\n")
+
+  return releaseContext.mode === "dry-run" ? `DRY RUN — NOT A RELEASE\n\n${body}` : body
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) main()
