@@ -1,12 +1,15 @@
 shellEmulator: true
 
 trustPolicy: no-downgrade
+trustPolicyExclude:
+  - semver@5.7.2
 
 packages:
   - docs
   - packages/*
 allowBuilds:
   electron: true
+  electron-winstaller: false
   esbuild: true
   msw: true
   sharp: true
