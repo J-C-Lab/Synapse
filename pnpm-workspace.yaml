@@ -9,7 +9,7 @@ packages:
   - packages/*
 allowBuilds:
   electron: true
-  electron-winstaller: true
+  electron-winstaller: false
   esbuild: true
   msw: true
   sharp: true
