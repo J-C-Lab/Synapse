@@ -959,6 +959,45 @@ describe("pluginHost trigger registration", () => {
     expect(host.triggerSnapshot().some((s) => s.triggerId === "tick")).toBe(false)
   })
 
+  it("marks a trigger instance stale once its plugin is disabled, not just when the manifest changes", async () => {
+    const timerAdapter: TimerAdapter = {
+      register: () => () => {},
+      registerCron: () => () => {},
+    }
+    const host = new PluginHost(
+      hostOptions({
+        migrationMarker: migrationAlreadyDone(),
+        timerAdapter,
+        adapters: noopAdapters,
+      })
+    )
+    const pluginId = "com.synapse.timer"
+    await writeHostPlugin({
+      id: pluginId,
+      permissions: ["notification"],
+      triggers: [
+        {
+          id: "tick",
+          type: "timer",
+          schedule: { intervalMs: 60_000 },
+          handler: "triggers.onTick",
+          uses: [{ capability: "notification", budget: { maxCalls: 1, period: "1h" } }],
+          limits: { minIntervalMs: 60_000, maxConcurrency: 1 },
+        },
+      ],
+    })
+    await host.init()
+    const record = await host.createTriggerInstance(pluginId, "tick", "default")
+
+    const beforeDisable = await host.listTriggerInstances(pluginId, "tick")
+    expect(beforeDisable.find((row) => row.id === record.id)?.stale).toBe(false)
+
+    await host.setEnabled(pluginId, false)
+
+    const afterDisable = await host.listTriggerInstances(pluginId, "tick")
+    expect(afterDisable.find((row) => row.id === record.id)?.stale).toBe(true)
+  })
+
   it("runs agent-budgeted triggers through the background agent dispatcher", async () => {
     const fires: Record<string, Parameters<TimerAdapter["register"]>[2]> = {}
     const timerAdapter: TimerAdapter = {
