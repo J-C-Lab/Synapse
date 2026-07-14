@@ -23,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Dry-run proof only (must be true — manual dispatch never publishes)"
+        description: Dry-run proof only (must be true — manual dispatch never publishes)
         type: boolean
         required: true
         default: true
