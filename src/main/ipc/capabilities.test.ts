@@ -499,6 +499,57 @@ describe("capabilityIpcService — registry-backed cancellation", () => {
 
     await expect(resultPromise).resolves.toEqual({ allow: false, outcomeReason: "gui-disposed" })
   })
+
+  it("grantPrompt resolves send-failed instead of hanging/rejecting when sendGrantRequest throws", async () => {
+    const entry = activeEntry(testManifest({ permissions: ["clipboard:read"] }))
+    const service = createService(entry, {
+      sendGrantRequest: () => {
+        throw new Error("Object has been destroyed")
+      },
+    })
+    const identity = buildGrantIdentity(entry.pluginId, entry.manifest!, entry.source.kind)
+
+    const result = await service.grantPrompt({
+      identity,
+      request: {
+        capability: "clipboard:read",
+        invocation: {
+          source: "tool",
+          trigger: "command:run",
+          caller: { kind: "agent", principal: { kind: "internal-agent" } },
+        },
+        operation: "read",
+      },
+      tier: "consent",
+    })
+
+    expect(result).toEqual({ allow: false, outcomeReason: "send-failed" })
+  })
+
+  it("capabilityApprover resolves send-failed instead of hanging/rejecting when sendApprovalRequest throws", async () => {
+    const entry = activeEntry(testManifest({ permissions: ["clipboard:read"] }))
+    const service = createService(entry, {
+      sendApprovalRequest: () => {
+        throw new Error("Object has been destroyed")
+      },
+    })
+    const identity = buildGrantIdentity(entry.pluginId, entry.manifest!, entry.source.kind)
+
+    const result = await service.capabilityApprover({
+      identity,
+      request: {
+        capability: "clipboard:read",
+        invocation: {
+          source: "tool",
+          trigger: "command:run",
+          caller: { kind: "agent", principal: { kind: "internal-agent" } },
+        },
+        operation: "read",
+      },
+    })
+
+    expect(result).toEqual({ allow: false, outcomeReason: "send-failed" })
+  })
 })
 
 describe("capability ipc handlers", () => {

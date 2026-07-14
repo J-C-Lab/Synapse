@@ -28,7 +28,10 @@ export function RunObservatoryPage() {
   useEffect(() => {
     if (!isElectron()) return
     void listRuns().then(setSummaries)
-    void listAiWorkspaces().then((list) => {
+    // includeArchived: a run recorded against a workspace that has since been
+    // archived must still resolve to its real name here, not just its raw id
+    // — this is a diagnostic view of history, not a picker of live workspaces.
+    void listAiWorkspaces({ includeArchived: true }).then((list) => {
       setWorkspaceNames(Object.fromEntries(list.map((w) => [w.id, w.name])))
     })
   }, [])
@@ -38,16 +41,28 @@ export function RunObservatoryPage() {
       setDetail(undefined)
       return
     }
+    // A response for a run the user has since navigated away from (quick
+    // A→B selection) must not clobber the now-current selection's state —
+    // guard every setState below on this effect instance still being live.
+    let cancelled = false
     setParentUnavailable(false)
     void getRun(selectedRunId).then((result) => {
+      if (cancelled) return
       setDetail(result)
       if (result?.conversationId) {
-        void getAiConversation(result.conversationId).then((c) => setConversationExists(Boolean(c)))
+        void getAiConversation(result.conversationId).then((c) => {
+          if (!cancelled) setConversationExists(Boolean(c))
+        })
       } else {
         setConversationExists(undefined)
       }
-      void listRuns({ parentRunId: selectedRunId }).then(setChildRuns)
+      void listRuns({ parentRunId: selectedRunId }).then((rows) => {
+        if (!cancelled) setChildRuns(rows)
+      })
     })
+    return () => {
+      cancelled = true
+    }
   }, [selectedRunId])
 
   async function onSelectParent(parentRunId: string) {
@@ -149,12 +164,48 @@ export function RunObservatoryPage() {
           ))}
         </div>
 
-        <div className="min-w-0 flex-1 overflow-y-auto rounded-md border p-4">
+        <div
+          data-testid="run-detail-panel"
+          className="min-w-0 flex-1 overflow-y-auto rounded-md border p-4"
+        >
           {!detail && (
             <p className="text-sm text-muted-foreground">{t("runObservatory.selectPrompt")}</p>
           )}
           {detail && (
             <div className="flex flex-col gap-3 text-sm">
+              <div>
+                <strong>{t("runObservatory.detailRunId")}:</strong>{" "}
+                <span className="font-mono text-xs">{detail.runId}</span>
+              </div>
+              <div>
+                <strong>{t("runObservatory.detailOrigin")}:</strong> {detail.origin}
+              </div>
+              <div>
+                <strong>{t("runObservatory.detailOutcome")}:</strong> {detail.outcome}
+              </div>
+              <div>
+                <strong>{t("runObservatory.detailPrincipal")}:</strong>{" "}
+                {detail.principal
+                  ? `${detail.principal.kind}${detail.principal.clientId ? ` (${detail.principal.clientId})` : ""}`
+                  : "—"}
+              </div>
+              <div>
+                <strong>{t("runObservatory.detailInvocation")}:</strong>{" "}
+                {detail.invocationId ? (
+                  <span className="font-mono text-xs">{detail.invocationId}</span>
+                ) : (
+                  "—"
+                )}
+              </div>
+              <div>
+                <strong>{t("runObservatory.detailStarted")}:</strong>{" "}
+                {new Date(detail.startedAt).toLocaleString()}
+              </div>
+              <div>
+                <strong>{t("runObservatory.detailEnded")}:</strong>{" "}
+                {new Date(detail.endedAt).toLocaleString()} (
+                {formatDuration(detail.startedAt, detail.endedAt)})
+              </div>
               <div>
                 <strong>{t("runObservatory.detailConversation")}:</strong>{" "}
                 {detail.conversationId ? (

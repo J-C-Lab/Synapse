@@ -20,6 +20,9 @@ export default antfu(
       "coverage/**",
       "node_modules/**",
       "docs/**",
+      // Sibling checkouts of this same repo (superpowers:using-git-worktrees)
+      // — their source is a duplicate, not part of this checkout's program.
+      ".worktrees/**",
       // shadcn primitives are vendored from upstream; treat as third-party
       "src/renderer/src/components/ui/**",
       // Scaffolder payload — shipped verbatim to generated plugin projects,

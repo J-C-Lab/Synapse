@@ -1,5 +1,5 @@
 // src/main/approvals/approval-registry.test.ts
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ApprovalRegistry } from "./approval-registry"
 
 describe("approvalRegistry — register / resolveByHuman", () => {
@@ -321,5 +321,54 @@ describe("approvalRegistry — handle-bound markDelivered/cancel", () => {
       allow: false,
       outcomeReason: "send-failed",
     })
+  })
+})
+
+describe("approvalRegistry — settledFor leak and id-reuse guard", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("a registration cancelled before markDelivered ever runs (send failure) does not leak forever", () => {
+    const registry = new ApprovalRegistry()
+    const outcome = registry.register("host-resource", { id: "req-1" })
+    if (outcome.status !== "registered") throw new Error("unreachable")
+
+    // Mirrors a send failure: cancel() settles the entry, and — because the
+    // send never succeeded — markDelivered() is never going to be called
+    // for this id.
+    outcome.handle.cancel("send-failed")
+
+    // Immediately after, the id is still recognized as recently-settled —
+    // register() rejects a same-id reuse as a duplicate rather than
+    // silently conflating it with the new registration.
+    const reuseTooSoon = registry.register("host-resource", { id: "req-1" })
+    expect(reuseTooSoon.status).toBe("duplicate-id")
+
+    // Once the tombstone window elapses, the leaked entry is gone and the
+    // same id can be registered again cleanly.
+    vi.advanceTimersByTime(31_000)
+    const reuseAfterTtl = registry.register("host-resource", { id: "req-1" })
+    expect(reuseAfterTtl.status).toBe("registered")
+  })
+
+  it("pruning runs on markDelivered() too, not only on register()", () => {
+    const registry = new ApprovalRegistry()
+    const outcome = registry.register("host-resource", { id: "req-2" })
+    if (outcome.status !== "registered") throw new Error("unreachable")
+    outcome.handle.cancel("send-failed")
+
+    vi.advanceTimersByTime(31_000)
+    // No throw, no crash — this call's only job here is to trigger the
+    // prune sweep; the id it's called with doesn't need to correspond to
+    // anything live.
+    registry.markDelivered("req-2", [])
+
+    const reuseAfterTtl = registry.register("host-resource", { id: "req-2" })
+    expect(reuseAfterTtl.status).toBe("registered")
   })
 })

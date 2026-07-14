@@ -293,7 +293,7 @@ export class PluginHost {
       dispatch: (req) => this.sandbox.dispatchTrigger(req),
       dispatchAgent: (req) => this.dispatchBackgroundAgent(req),
       instanceStore: this.triggerInstances,
-      identityForPlugin: (pluginId) => this.identityForPlugin(pluginId),
+      identityForPlugin: (pluginId) => this.currentActiveIdentityForPlugin(pluginId),
       isWorkspaceArchived: (workspaceId) =>
         this.options.workspaces?.isArchived(workspaceId) ?? Promise.resolve(false),
     })
@@ -590,11 +590,30 @@ export class PluginHost {
     })
   }
 
-  identityForPlugin(pluginId: string): ReturnType<typeof buildGrantIdentity> | undefined {
+  /** Manifest-derived identity regardless of the plugin's current run
+   *  status — for management paths (e.g. reading a disabled plugin's
+   *  declared capabilities to render its Settings row) that need to know
+   *  who a plugin *is* even while it isn't running. Never use this to
+   *  decide whether a trigger instance is stale or whether a runtime
+   *  dispatch is still valid — use {@link currentActiveIdentityForPlugin}
+   *  for that. */
+  manifestIdentityForPlugin(pluginId: string): ReturnType<typeof buildGrantIdentity> | undefined {
     const entry = this.registry.get(pluginId)
     return entry?.manifest
       ? buildGrantIdentity(pluginId, entry.manifest, entry.source.kind)
       : undefined
+  }
+
+  /** Identity only when the plugin is currently `"active"` — undefined for
+   *  disabled/crashed/invalid plugins even if a manifest is still on
+   *  record. This is the truth runtime dispatch, fan-out, and
+   *  trigger-instance staleness checks must use: a disabled or crashed
+   *  plugin has no live identity, so every instance bound to it is
+   *  stale. */
+  currentActiveIdentityForPlugin(
+    pluginId: string
+  ): ReturnType<typeof buildGrantIdentity> | undefined {
+    return this.isPluginActive(pluginId) ? this.manifestIdentityForPlugin(pluginId) : undefined
   }
 
   isPluginActive(pluginId: string): boolean {
@@ -643,7 +662,7 @@ export class PluginHost {
   async listTriggerInstances(pluginId: string, triggerId: string): Promise<TriggerInstanceRow[]> {
     const records = await this.triggerInstances.listForTrigger(pluginId, triggerId)
     const decl = this.triggerRegistry.getDeclaration(pluginId, triggerId)
-    const currentIdentity = this.identityForPlugin(pluginId)
+    const currentIdentity = this.currentActiveIdentityForPlugin(pluginId)
     const rows: TriggerInstanceRow[] = []
     for (const record of records) {
       const workspace = await this.options.workspaces?.get(record.workspaceId)
@@ -699,7 +718,7 @@ export class PluginHost {
   }
 
   private identityForPluginOrThrow(pluginId: string): ReturnType<typeof buildGrantIdentity> {
-    const identity = this.identityForPlugin(pluginId)
+    const identity = this.currentActiveIdentityForPlugin(pluginId)
     if (!identity) throw new Error(`Plugin not active: ${pluginId}`)
     return identity
   }

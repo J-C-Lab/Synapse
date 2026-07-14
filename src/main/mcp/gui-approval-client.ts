@@ -117,12 +117,26 @@ async function sendPayload(
   const reader = createJsonLineReader(connected.socket)
   let timeoutTimer: ReturnType<typeof setTimeout> | undefined
   try {
-    writeJsonLine(connected.socket, { token: connected.token, requestId, ...payload })
+    try {
+      writeJsonLine(connected.socket, { token: connected.token, requestId, ...payload })
+    } catch {
+      // The request itself never made it onto the wire — this is the only
+      // path that means "never delivered", so it's the only path that
+      // should ever produce "send-failed".
+      return { allow: false, outcomeReason: "send-failed" }
+    }
 
     // reader.next() waits indefinitely here — the response timeout below
     // is the sole timeout authority, so there is exactly one setTimeout
-    // race decision (not two racing timers on the same delay).
-    const responsePromise = reader.next()
+    // race decision (not two racing timers on the same delay). If the
+    // socket closes/errors after the request was already sent, that's a
+    // disconnect, not a failure to send — reader.next() rejecting here
+    // maps to "client-disconnected", distinct from the pre-send failure
+    // above.
+    const responsePromise = reader
+      .next()
+      .then((value) => ({ kind: "response" as const, value }))
+      .catch(() => ({ kind: "client-disconnected" as const }))
     const timeoutPromise = new Promise<{ kind: "timed-out" }>((resolve) => {
       timeoutTimer = setTimeout(resolve, responseTimeoutMs, { kind: "timed-out" })
     })
@@ -132,18 +146,21 @@ async function sendPayload(
         })
       : new Promise<never>(() => {})
 
-    const winner = await Promise.race([
-      responsePromise.then((value) => ({ kind: "response" as const, value })),
-      timeoutPromise,
-      abortPromise,
-    ])
+    const winner = await Promise.race([responsePromise, timeoutPromise, abortPromise])
 
     if (winner.kind === "response") return parseResponse(winner.value)
+    if (winner.kind === "client-disconnected") {
+      return { allow: false, outcomeReason: "client-disconnected" }
+    }
 
-    writeJsonLine(connected.socket, { type: "cancel", requestId, reason: winner.kind })
+    try {
+      writeJsonLine(connected.socket, { type: "cancel", requestId, reason: winner.kind })
+    } catch {
+      // Best-effort — the caller already has a definitive local outcome
+      // regardless of whether the cancel frame actually reached the GUI
+      // side.
+    }
     return { allow: false, outcomeReason: winner.kind }
-  } catch {
-    return { allow: false, outcomeReason: "send-failed" }
   } finally {
     clearTimeout(timeoutTimer)
     reader.dispose()

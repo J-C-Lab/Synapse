@@ -56,6 +56,20 @@ interface PendingEntry {
   deliveredTo: Set<WebContents>
 }
 
+interface SettledForEntry {
+  kind: ApprovalKind
+  outcome: ApprovalResult
+  settledAt: number
+}
+
+// A call site is not required to ever call markDelivered() — e.g. the
+// send itself can fail, in which case cancel() settles the registration
+// with no delivery info coming, ever. Without a bound, that leaves a
+// settledFor entry with nothing left to consume it, forever. Same
+// tombstone-with-TTL shape as the renderer's SETTLED_TOMBSTONE_MS
+// (capability-prompt-host.tsx) for the mirror-image problem.
+const SETTLED_FOR_TTL_MS = 30_000
+
 export class ApprovalRegistry {
   private readonly pending = new Map<string, PendingEntry>()
   // Bridges finish() → markDelivered()'s post-settle path when settlement
@@ -63,14 +77,16 @@ export class ApprovalRegistry {
   // markDelivered() ever learns the recipients, so the kind and the real
   // outcome are parked here just long enough for that one callback — the
   // late notification must report what actually happened (allowed/denied/
-  // cancelled/etc.), not a guess.
-  private readonly settledFor = new Map<string, { kind: ApprovalKind; outcome: ApprovalResult }>()
+  // cancelled/etc.), not a guess. Pruned by age, not just by consumption,
+  // since consumption (markDelivered) is not guaranteed to happen.
+  private readonly settledFor = new Map<string, SettledForEntry>()
 
   constructor(private readonly options: ApprovalRegistryOptions = {}) {}
 
   register(kind: ApprovalKind, options: RegisterOptions): RegisterOutcome {
+    this.pruneSettledFor()
     const id = options.id ?? randomUUID()
-    if (options.id !== undefined && this.pending.has(id)) {
+    if (options.id !== undefined && (this.pending.has(id) || this.settledFor.has(id))) {
       return { status: "duplicate-id" }
     }
     if (options.signal?.aborted) {
@@ -89,7 +105,7 @@ export class ApprovalRegistry {
       if (entry.deliveredTo.size > 0) {
         this.options.onSettled?.(id, entry.kind, outcome, [...entry.deliveredTo])
       } else {
-        this.settledFor.set(id, { kind: entry.kind, outcome })
+        this.settledFor.set(id, { kind: entry.kind, outcome, settledAt: Date.now() })
       }
     }
 
@@ -124,6 +140,7 @@ export class ApprovalRegistry {
    *  onSettled for the recipients just learned about, so nothing shows a
    *  stale prompt with no one ever telling it to remove it. */
   markDelivered(id: string, deliveredTo: readonly WebContents[]): void {
+    this.pruneSettledFor()
     const entry = this.pending.get(id)
     if (entry) {
       for (const wc of deliveredTo) entry.deliveredTo.add(wc)
@@ -160,5 +177,12 @@ export class ApprovalRegistry {
   /** Cancels every pending request unconditionally — app-quit teardown only. */
   disposeAll(): void {
     for (const id of [...this.pending.keys()]) this.cancel(id, "gui-disposed")
+  }
+
+  private pruneSettledFor(): void {
+    const now = Date.now()
+    for (const [id, entry] of this.settledFor) {
+      if (now - entry.settledAt > SETTLED_FOR_TTL_MS) this.settledFor.delete(id)
+    }
   }
 }

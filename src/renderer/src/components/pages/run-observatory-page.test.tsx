@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { RunObservatoryPage } from "./run-observatory-page"
 
@@ -24,6 +24,13 @@ const enMessages: Record<string, string> = {
   "runObservatory.filterAll": "All",
   "runObservatory.emptyList": "No runs match the current filters.",
   "runObservatory.selectPrompt": "Select a run to see its details.",
+  "runObservatory.detailRunId": "Run ID",
+  "runObservatory.detailOrigin": "Origin",
+  "runObservatory.detailOutcome": "Outcome",
+  "runObservatory.detailPrincipal": "Principal",
+  "runObservatory.detailInvocation": "Invocation ID",
+  "runObservatory.detailStarted": "Started",
+  "runObservatory.detailEnded": "Ended",
   "runObservatory.detailConversation": "Conversation",
   "runObservatory.detailWorkspace": "Workspace",
   "runObservatory.detailTrigger": "Trigger instance",
@@ -136,5 +143,69 @@ describe("run observatory page", () => {
     fireEvent.click(await screen.findByText("run-a"))
     await waitFor(() => expect(getConversation).toHaveBeenCalledWith("c1"))
     expect(await screen.findByText(/no longer exists/)).toBeInTheDocument()
+  })
+
+  it("renders every RunTrace provenance field the completion criteria require", async () => {
+    getRun.mockResolvedValue({
+      ...summaryA,
+      invocationId: "inv-42",
+      principal: { kind: "external-mcp", clientId: "claude-desktop" },
+      toolCalls: [],
+    })
+    listRuns.mockImplementation(async (query?: { parentRunId?: string }) =>
+      query?.parentRunId ? [] : [summaryA, summaryB]
+    )
+    render(<RunObservatoryPage />)
+    fireEvent.click(await screen.findByText("run-a"))
+
+    const panel = within(await screen.findByTestId("run-detail-panel"))
+    expect(panel.getByText("run-a")).toBeInTheDocument()
+    expect(panel.getByText("interactive")).toBeInTheDocument()
+    expect(panel.getByText("end_turn")).toBeInTheDocument()
+    expect(panel.getByText(/external-mcp \(claude-desktop\)/)).toBeInTheDocument()
+    expect(panel.getByText("inv-42")).toBeInTheDocument()
+  })
+
+  it("shows an em dash for principal/invocationId when the run predates that field", async () => {
+    getRun.mockResolvedValue({ ...summaryA, toolCalls: [] })
+    render(<RunObservatoryPage />)
+    fireEvent.click(await screen.findByText("run-a"))
+
+    const panel = within(await screen.findByTestId("run-detail-panel"))
+    await panel.findByText("interactive")
+    const dashes = panel.getAllByText("—")
+    expect(dashes.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it("passes includeArchived so runs against archived workspaces still resolve a name", async () => {
+    render(<RunObservatoryPage />)
+    await screen.findByText("run-a")
+    expect(listAiWorkspaces).toHaveBeenCalledWith({ includeArchived: true })
+  })
+
+  it("a late response for a previously-selected run does not clobber the currently-selected run's detail", async () => {
+    let resolveRunA!: (value: unknown) => void
+    getRun.mockImplementation(async (runId: string) => {
+      if (runId === "run-a") {
+        return new Promise((resolve) => {
+          resolveRunA = resolve
+        })
+      }
+      return { ...summaryB, toolCalls: [] }
+    })
+    render(<RunObservatoryPage />)
+    const [runAListItem] = await screen.findAllByText("run-a")
+    fireEvent.click(runAListItem)
+    await waitFor(() => expect(getRun).toHaveBeenCalledWith("run-a"))
+
+    fireEvent.click(screen.getByText("run-b"))
+    const panel = within(await screen.findByTestId("run-detail-panel"))
+    await panel.findByText("mcp")
+
+    resolveRunA({ ...summaryA, toolCalls: [] })
+    await Promise.resolve()
+
+    expect(panel.getByText("mcp")).toBeInTheDocument()
+    expect(panel.queryByText("interactive")).not.toBeInTheDocument()
   })
 })
