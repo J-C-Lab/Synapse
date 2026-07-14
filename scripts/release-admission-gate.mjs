@@ -4,6 +4,7 @@ import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "n
 import { join } from "node:path"
 import process from "node:process"
 import { fileURLToPath } from "node:url"
+import { gunzipSync } from "node:zlib"
 import yaml from "js-yaml"
 
 const STALE_MS = 48 * 60 * 60 * 1000
@@ -117,19 +118,14 @@ export function stripLeadingV(tag) {
 }
 
 /**
- * Every feed file's version, and every installer filename, must agree
- * with both the tag and package.json — never derived, always checked
- * directly, so a matrix leg that silently built from the wrong commit
- * (still producing a structurally complete, correctly-named output)
- * can't slip through.
+ * Every Windows feed file's version, and every installer filename, must
+ * agree with package.json — never derived, always checked directly, so a
+ * build that silently produced the wrong version (still structurally
+ * complete and correctly named) can't slip through. Required in both
+ * dry-run and release mode: package.json is always the source of truth
+ * for what was actually built, regardless of whether a tag exists yet.
  */
-export function checkVersionConsistency({ tagVersion, packageVersion, feeds, installerFilenames }) {
-  if (tagVersion !== packageVersion) {
-    return {
-      ok: false,
-      reason: `tag version "${tagVersion}" does not match package.json version "${packageVersion}"`,
-    }
-  }
+export function checkPackageVersionConsistency({ packageVersion, feeds, installerFilenames }) {
   for (const [name, feed] of Object.entries(feeds)) {
     if (feed.version !== packageVersion) {
       return {
@@ -155,17 +151,124 @@ function hasExactVersionSegment(filename, version) {
   return new RegExp(`(?:^|[-_])${escapedVersion}(?=[-_.]|$)`).test(filename)
 }
 
-/** Exactly the platform/arch containers build-electron.yml's matrix
- *  produces (§4/§9 of the spec — includes the Linux leg this spec adds). */
+/**
+ * The tag is only meaningful once a release is actually being cut — a
+ * dry-run branch dispatch has no tag at all. Kept separate from
+ * `checkPackageVersionConsistency` so release-only eligibility can be
+ * gated independently of the artifact/feed checks that must run every time.
+ */
+export function checkTagVersion({ tagVersion, packageVersion }) {
+  if (tagVersion !== packageVersion) {
+    return {
+      ok: false,
+      reason: `tag version "${tagVersion}" does not match package.json version "${packageVersion}"`,
+    }
+  }
+  return { ok: true }
+}
+
+/** The gate's two supported execution modes (§Checkpoint R). Anything else
+ *  — including a missing value — fails closed rather than defaulting. */
+export function parseReleaseMode(rawMode) {
+  if (rawMode === "dry-run" || rawMode === "release") {
+    return { ok: true, mode: rawMode }
+  }
+  return {
+    ok: false,
+    reason: `unrecognized release mode "${rawMode}" — expected "dry-run" or "release"`,
+  }
+}
+
+/**
+ * The only two checks a branch dry run cannot perform (no tag, no
+ * release-SHA nightly signal). Release mode must never be able to omit
+ * either input — silently skipping them for a "release" is exactly the
+ * TOCTOU gap `checkEvalSignal` and `checkTagVersion` exist to close.
+ * Every other contract (artifact/feed/signing/manifest) is unconditional
+ * and lives outside this gate.
+ */
+export function checkReleaseModeGate({ mode, tagVersion, packageVersion, evalSignalInputs }) {
+  const modeResult = parseReleaseMode(mode)
+  if (!modeResult.ok) return modeResult
+
+  if (modeResult.mode === "dry-run") {
+    return { ok: true, mode: "dry-run", skipped: ["tagVersion", "evalSignal"] }
+  }
+
+  if (typeof tagVersion !== "string" || tagVersion.length === 0) {
+    return {
+      ok: false,
+      reason: "release mode requires a tag version; only dry-run may omit it",
+    }
+  }
+  if (evalSignalInputs == null) {
+    return {
+      ok: false,
+      reason: "release mode requires eval-signal inputs; only dry-run may omit them",
+    }
+  }
+
+  const tagCheck = checkTagVersion({ tagVersion, packageVersion })
+  if (!tagCheck.ok) return tagCheck
+
+  const evalCheck = checkEvalSignal(evalSignalInputs)
+  if (!evalCheck.ok) return evalCheck
+
+  return { ok: true, mode: "release" }
+}
+
+/**
+ * The one machine-readable statement of what this release actually
+ * publishes (S11 Checkpoint R). Emitted verbatim as `release-profile.json`
+ * in the approved bundle and rendered into the release body — never
+ * duplicated as a second, independently-maintained platform list.
+ */
+export const RELEASE_PROFILE = {
+  schemaVersion: 1,
+  targets: [
+    {
+      platform: "windows",
+      arch: "x64",
+      packages: ["nsis", "msi"],
+      updaterFeed: "latest.yml",
+    },
+  ],
+}
+
+/**
+ * The dynamic counterpart to `RELEASE_PROFILE`: which commit/run produced
+ * this bundle and under which mode, so an attested dry-run bundle can
+ * never be mistaken for a real release. Rejects empty identifiers instead
+ * of silently emitting a proof file that doesn't actually identify
+ * anything.
+ */
+export function buildReleaseContext({ mode, commitSha, workflowRunId }) {
+  const modeResult = parseReleaseMode(mode)
+  if (!modeResult.ok) return modeResult
+
+  if (typeof commitSha !== "string" || commitSha.length === 0) {
+    return { ok: false, reason: "buildReleaseContext requires a non-empty commitSha" }
+  }
+  if (typeof workflowRunId !== "string" || workflowRunId.length === 0) {
+    return { ok: false, reason: "buildReleaseContext requires a non-empty workflowRunId" }
+  }
+
+  return {
+    ok: true,
+    context: {
+      schemaVersion: 1,
+      mode: modeResult.mode,
+      commitSha,
+      workflowRunId,
+    },
+  }
+}
+
+/** Exactly the two containers the Windows-only release profile produces
+ *  (S11 Checkpoint R — supersedes S03's multi-platform matrix). */
 export const EXPECTED_ARTIFACT_MANIFEST = {
   "electron-windows-x64-nsis": [/\.exe$/, /\.blockmap$/, /^latest\.yml$/],
   "electron-windows-x64-msi": [/\.msi$/],
-  "electron-macos-x64-zip": [/-x64-mac\.zip$/, /\.blockmap$/, /^latest-mac\.yml$/],
-  "electron-macos-arm64-zip": [/-arm64-mac\.zip$/, /\.blockmap$/, /^latest-mac\.yml$/],
-  "electron-macos-x64-dmg": [/\.dmg$/],
-  "electron-macos-arm64-dmg": [/\.dmg$/],
-  "electron-linux-x64-appimage": [/\.AppImage$/, /^latest-linux\.yml$/],
-  "electron-linux-x64-deb": [/\.deb$/],
 }
 
 /**
@@ -211,9 +314,12 @@ export function checkArtifactManifest(downloadedContainers) {
 }
 
 /**
- * Shared by both the mac pre-merge check and the Windows/Linux feed
- * check: a feed file describing exactly one updater artifact must
- * reference the real file that actually exists, by name, hash, and size.
+ * A feed file describing exactly one updater artifact must reference the
+ * real file that actually exists, by name, hash, and size. Windows'
+ * `latest.yml` is the only feed left after S11 Checkpoint R, checked
+ * against the real NSIS installer only — the blockmap is verified
+ * independently by `validateWindowsBlockmap()` below, because standard
+ * `latest.yml` output carries no blockmap filename or hash to compare.
  */
 export function validateSingleFileFeed(feed, real, label) {
   if (!Array.isArray(feed.files) || feed.files.length !== 1) {
@@ -233,10 +339,49 @@ export function validateSingleFileFeed(feed, real, label) {
   if (entry.size !== real.size) {
     return { ok: false, reason: `${label} size does not match the real file` }
   }
-  if (entry.blockMapSize !== undefined && entry.blockMapSize !== real.blockMapSize) {
-    return { ok: false, reason: `${label} blockMapSize does not match the real blockmap file` }
-  }
   return { ok: true, entry }
+}
+
+/**
+ * The NSIS blockmap is an adjacent updater asset, not a field inside
+ * `latest.yml` — electron-updater's own differential-download code reads
+ * it by gunzipping the file and parsing the result as JSON (locked
+ * against the real `electron-updater@6.8.9` convention), so this proves
+ * the bytes are structurally usable. `manifest.json` is what actually
+ * binds this file's sha512 into the release; this contract only proves
+ * the name and bytes are well-formed before that hash is taken.
+ */
+export function validateWindowsBlockmap(installerName, blockmapName, bytes) {
+  const expectedName = `${installerName}.blockmap`
+  if (blockmapName !== expectedName) {
+    return {
+      ok: false,
+      reason: `blockmap filename "${blockmapName}" does not match expected "${expectedName}"`,
+    }
+  }
+  if (!bytes || bytes.length === 0) {
+    return { ok: false, reason: `blockmap "${blockmapName}" is empty` }
+  }
+
+  let decompressed
+  try {
+    decompressed = gunzipSync(bytes)
+  } catch {
+    return { ok: false, reason: `blockmap "${blockmapName}" is not valid gzip data` }
+  }
+
+  let parsed
+  try {
+    parsed = JSON.parse(decompressed.toString("utf8"))
+  } catch {
+    return { ok: false, reason: `blockmap "${blockmapName}" does not gunzip to valid JSON` }
+  }
+
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, reason: `blockmap "${blockmapName}" JSON content is not an object` }
+  }
+
+  return { ok: true }
 }
 
 /**
@@ -536,8 +681,7 @@ function main() {
     appImageName,
     debName,
   ]
-  const versionCheck = checkVersionConsistency({
-    tagVersion,
+  const packageVersionCheck = checkPackageVersionConsistency({
     packageVersion,
     feeds: {
       "latest.yml": winFeed,
@@ -546,7 +690,10 @@ function main() {
     },
     installerFilenames,
   })
-  if (!versionCheck.ok) return fail(versionCheck.reason)
+  if (!packageVersionCheck.ok) return fail(packageVersionCheck.reason)
+
+  const tagVersionCheck = checkTagVersion({ tagVersion, packageVersion })
+  if (!tagVersionCheck.ok) return fail(tagVersionCheck.reason)
 
   // §2: eval-signal.
   const evalCheck = checkEvalSignal(fetchEvalSignalInputs(releasedSha))
