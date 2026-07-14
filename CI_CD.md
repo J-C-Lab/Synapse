@@ -39,7 +39,9 @@ Linux artifacts.
 | Local packaging for release   | `pnpm electron:build:win`                              | Required before `pnpm test:e2e:packaged`                   |
 | Local packaging (unsupported) | `pnpm electron:build:mac`, `pnpm electron:build:linux` | Convenience scripts only — not part of the release profile |
 
-Runtime stack for this profile: **Electron 33.x**, **electron-builder 25.x**, **electron-updater 6.8.9**.
+Runtime stack for this profile: **Electron 43.x**, **electron-builder 26.x**, **electron-updater 6.8.9**.
+Repository/CI tooling itself runs on Node 22.13.x; only the packaged Electron main process (and the
+`ELECTRON_RUN_AS_NODE=1` MCP child it spawns) run under Electron 43's embedded Node 24.x.
 
 ## Release flow
 

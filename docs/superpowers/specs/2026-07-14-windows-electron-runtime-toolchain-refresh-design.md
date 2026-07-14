@@ -1,7 +1,11 @@
 # S11 — Windows Electron Runtime & Packaging Toolchain Refresh (design)
 
 > Date: 2026-07-14
-> Status: design, not yet implemented.
+> Status: Checkpoints R and A implemented and merged. Checkpoint B (Electron 43
+> runtime upgrade, profile-compatibility harness, runtime documentation) is
+> implemented and passing local verification; it still needs the hardware-only
+> clean-install and updater rehearsal evidence (goals 9 and 13) before the
+> Checkpoint B PR merges.
 > Scope: Windows x64 runtime **and release publication** only. macOS/Linux local
 > build configuration is retained, but neither platform is built or published by
 > the release pipeline after this spec.

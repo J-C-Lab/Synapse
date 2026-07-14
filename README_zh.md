@@ -114,7 +114,7 @@ synapse/
 
 | 领域        | 工具                                                                              |
 | ----------- | --------------------------------------------------------------------------------- |
-| 桌面        | Electron 33 · electron-vite · electron-builder · electron-updater                 |
+| 桌面        | Electron 43 · electron-vite · electron-builder · electron-updater                 |
 | UI          | React 19 · TypeScript 5(strict) · Tailwind CSS v4 · shadcn/ui · Zustand · i18next |
 | AI          | `@anthropic-ai/sdk` · `openai` · `@modelcontextprotocol/sdk`                      |
 | 后端        | Fastify 5 · Drizzle ORM · Postgres(Neon) · Cloudflare R2(S3) · zod                |
