@@ -8,7 +8,33 @@ The test stack is Vitest, jsdom, and Testing Library.
 pnpm test
 pnpm test:watch
 pnpm test:coverage
+pnpm eval                    # eval suite (vitest.eval.config.ts)
+pnpm test:e2e                # development project (no packaged build required)
+pnpm test:e2e:packaged       # packaged-smoke only — run after pnpm electron:build:win
 ```
+
+## Checkpoint R local gate
+
+Run this before opening a release PR or tagging. All commands must pass on **Electron 33.x** +
+**electron-builder 25.x** + **electron-updater 6.8.9**:
+
+```bash
+pnpm format:check
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm eval
+pnpm electron:build:win
+pnpm test:e2e:packaged
+git diff --check
+```
+
+`electron:build:win` produces the Windows x64 NSIS/MSI installers under `release/` and an unpacked
+tree at `release/win-unpacked/Synapse.exe` that `test:e2e:packaged` exercises. This is the same
+packaged readiness proof CI runs in `build-electron.yml`.
+
+Publication profile details, dry-run dispatch, and the tag-release checklist live in
+[CI_CD.md](CI_CD.md).
 
 ## Layout
 
@@ -126,8 +152,12 @@ before). Run this on a **clean Windows machine** (or a fresh VM) before a Window
 pnpm electron:build:win
 ```
 
-- [ ] Build succeeds and `release/` contains both an NSIS installer (`Synapse Setup X.Y.Z.exe`) and
-      an MSI (`Synapse X.Y.Z.msi`), plus `latest.yml` and `*.blockmap` (the auto-update feed).
+- [ ] Build succeeds and `release/` contains:
+  - NSIS installer: `Synapse Setup X.Y.Z.exe`
+  - MSI: `Synapse X.Y.Z.msi`
+  - Updater feed: `latest.yml` and `Synapse Setup X.Y.Z.exe.blockmap`
+  - Unpacked tree: `release/win-unpacked/Synapse.exe` (local smoke input — not a GitHub Release asset)
+- [ ] `pnpm test:e2e:packaged` passes (renderer readiness, IPC round-trip, MCP stdio handshake)
 
 ### Install and first launch (NSIS)
 

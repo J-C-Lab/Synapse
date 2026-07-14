@@ -60,7 +60,7 @@ rating, and moderating plugins.
 - Global-shortcut **command launcher** and a **floating ball** quick-access surface
 - Theme switching (light/dark/system) with persisted appearance settings
 - **English & 简体中文** i18n
-- **Auto-update** with an in-app banner (manual download/restart flow)
+- **Auto-update** with an in-app banner on **Windows** (manual download/restart flow)
 
 ### 🔐 LAN device sync
 
@@ -195,7 +195,8 @@ pnpm dev                # Electron dev mode
 pnpm build              # Build workspace packages, then main/preload/renderer → out/
 pnpm preview            # Preview the production build
 pnpm electron:build     # Package the current platform (electron-builder)
-pnpm electron:build:win # Windows: NSIS + MSI  (also :mac / :linux)
+pnpm electron:build:win # Windows x64: NSIS + MSI — the supported release packaging command
+# pnpm electron:build:mac / :linux — unsupported local-only convenience scripts (not published)
 
 # Quality
 pnpm lint               # ESLint            (pnpm lint:fix to autofix)
@@ -210,18 +211,24 @@ pnpm docs:dev           # docs site + web portal (port 3001)
 
 ## Validation
 
-Run the full local check before committing — this mirrors CI:
+Run the full local check before committing — this mirrors CI and the Checkpoint R release gate:
 
 ```bash
 pnpm format:check
 pnpm lint
 pnpm typecheck
 pnpm test
-pnpm build
+pnpm eval
+pnpm electron:build:win
+pnpm test:e2e:packaged
 ```
 
-> CI (GitHub Actions) runs the same quality gates, the test suite with coverage, and unsigned
-> Electron builds for Windows, macOS (x64 + arm64), and Linux on every PR to `main`.
+See [TESTING.md](./TESTING.md) for smoke-test checklists and [CI/CD.md](./CI_CD.md) for the Windows-only
+publication profile, dry-run proof, and release checklist.
+
+> CI (GitHub Actions) runs the same quality gates, the test + eval suites, and an unsigned Windows x64
+> Electron build (with packaged renderer + MCP readiness) on every PR to `main`. Public GitHub Releases
+> currently ship Windows x64 NSIS/MSI only — no macOS or Linux artifacts.
 
 ## Assets
 

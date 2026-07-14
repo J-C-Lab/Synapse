@@ -596,10 +596,10 @@ function main() {
     return
   }
 
-  // Explicit execution mode (§Checkpoint R). release.yml's tag-push publish
-  // path does not set RELEASE_MODE, so an absent value means a real release
-  // rather than silently defaulting to the weaker dry-run checks; only the
-  // dry-run dispatch workflow ever sets RELEASE_MODE=dry-run.
+  // Explicit execution mode (§Checkpoint R). release.yml sets RELEASE_MODE to
+  // "release" on tag push and "dry-run" on workflow_dispatch; defaulting to
+  // "release" when absent is fail-closed against accidentally running dry-run
+  // checks on a real publish path.
   const modeResult = parseReleaseMode(process.env.RELEASE_MODE ?? "release")
   if (!modeResult.ok) return fail(modeResult.reason)
   const mode = modeResult.mode
