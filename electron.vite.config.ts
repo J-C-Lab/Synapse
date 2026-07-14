@@ -33,14 +33,17 @@ export default defineConfig({
     // schema). Bundle it from source instead of externalizing it so the app
     // needs no prior `pnpm build:manifest` in dev/build — mirrors how the SDK
     // is aliased to source for tsc/vitest. zod stays externalized (real dep).
+    // @synapse/agent-protocol has no runtime dependency of its own (pure
+    // types + pure functions), so it is always safe to bundle from source.
     plugins: [
-      externalizeDepsPlugin({ exclude: ["@synapse/plugin-manifest"] }),
+      externalizeDepsPlugin({ exclude: ["@synapse/plugin-manifest", "@synapse/agent-protocol"] }),
       copyCredentialSecretPromptHtml(),
     ],
     resolve: {
       alias: {
         "@synapse/plugin-manifest": resolve(__dirname, "packages/plugin-manifest/src/index.ts"),
         "@synapse/plugin-sdk": resolve(__dirname, "packages/plugin-sdk/src/index.ts"),
+        "@synapse/agent-protocol": resolve(__dirname, "packages/agent-protocol/src/index.ts"),
       },
     },
     build: {
@@ -73,6 +76,7 @@ export default defineConfig({
       alias: {
         "@": resolve(__dirname, "src/renderer/src"),
         "@synapse/plugin-sdk": resolve(__dirname, "packages/plugin-sdk/src/index.ts"),
+        "@synapse/agent-protocol": resolve(__dirname, "packages/agent-protocol/src/index.ts"),
       },
     },
     plugins: [react(), tailwindcss()],

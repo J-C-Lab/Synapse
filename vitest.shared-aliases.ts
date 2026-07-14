@@ -9,6 +9,7 @@ export const workspaceAliases = {
   "@synapse/plugin-manifest": resolve(__dirname, "packages/plugin-manifest/src/index.ts"),
   "@synapse/plugin-cli": resolve(__dirname, "packages/plugin-cli/src/index.ts"),
   "@synapse/marketplace-types": resolve(__dirname, "packages/marketplace-types/src/index.ts"),
+  "@synapse/agent-protocol": resolve(__dirname, "packages/agent-protocol/src/index.ts"),
   // Stub Electron when running tests outside of the Electron runtime.
   electron: resolve(__dirname, "__mocks__/electron.ts"),
 }

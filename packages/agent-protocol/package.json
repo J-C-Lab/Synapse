@@ -1,0 +1,28 @@
+{
+  "name": "@synapsepkg/agent-protocol",
+  "version": "0.1.0",
+  "description": "Renderer-safe durable agent run protocol (events, snapshots, lifecycle vocabulary) shared by Synapse's main, preload, and renderer processes",
+  "license": "MIT",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "README.md",
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --root ../.. packages/agent-protocol/src"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
