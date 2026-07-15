@@ -822,4 +822,64 @@ describe("agentService", () => {
 
     expect((await svc.getConversation("c1"))?.plan).toBeUndefined()
   })
+
+  describe("startup readiness barrier", () => {
+    it("chat() works unchanged when reconcileRunsAtStartup was never called", async () => {
+      const { service: svc } = service({
+        host: fakeHost(),
+        provider: fakeProvider([{ text: "x" }]),
+      })
+      const result = await svc.chat("c1", "go")
+      expect(result.stopReason).toBeDefined()
+    })
+
+    it("chat() awaits an in-flight reconcileRunsAtStartup() before starting a new turn", async () => {
+      const { service: svc } = service({
+        host: fakeHost(),
+        provider: fakeProvider([{ text: "x" }]),
+      })
+      const order: string[] = []
+      let resolveScan: () => void = () => {}
+      const scanPromise = new Promise<void>((resolve) => {
+        resolveScan = () => {
+          order.push("scan-resolved")
+          resolve()
+        }
+      })
+
+      const reconciled = svc.reconcileRunsAtStartup({
+        listRecoverable: async () => {
+          order.push("scan-started")
+          await scanPromise
+          return []
+        },
+      })
+
+      const chatPromise = svc.chat("c1", "go").then((r) => {
+        order.push("chat-resolved")
+        return r
+      })
+
+      // Give the scan a tick to actually start before releasing it.
+      await Promise.resolve()
+      await Promise.resolve()
+      resolveScan()
+
+      await reconciled
+      await chatPromise
+      expect(order).toEqual(["scan-started", "scan-resolved", "chat-resolved"])
+    })
+
+    it("reconcileRunsAtStartup() only runs the scan once across repeated calls", async () => {
+      const { service: svc } = service({
+        host: fakeHost(),
+        provider: fakeProvider([{ text: "x" }]),
+      })
+      const listRecoverable = vi.fn(async () => [])
+      await svc.reconcileRunsAtStartup({ listRecoverable })
+      await svc.reconcileRunsAtStartup({ listRecoverable })
+      await svc.chat("c1", "go")
+      expect(listRecoverable).toHaveBeenCalledTimes(1)
+    })
+  })
 })

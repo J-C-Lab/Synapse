@@ -164,8 +164,30 @@ export class AgentService {
   private readonly permanentAllow = new Set<string>()
   private permanentAllowLoaded = false
   private approvalCounter = 0
+  private startupReconciliation: Promise<void> | undefined
 
   constructor(private readonly options: AgentServiceOptions) {}
+
+  /**
+   * Startup readiness barrier (design §"Run recovery service and startup
+   * UX"): runs the recovery scan at most once and makes every later chat()
+   * call await it, so a stale/terminalizing conversation lease from a prior
+   * process is never raced by a fresh interactive turn. Never called by
+   * default — every caller that doesn't wire a recovery service keeps
+   * working exactly as before; chat() just skips the (unset) barrier.
+   */
+  async reconcileRunsAtStartup(recovery: {
+    listRecoverable: () => Promise<unknown>
+  }): Promise<void> {
+    if (!this.startupReconciliation) {
+      this.startupReconciliation = recovery.listRecoverable().then(() => undefined)
+    }
+    await this.startupReconciliation
+  }
+
+  private async ensureStartupReconciled(): Promise<void> {
+    if (this.startupReconciliation) await this.startupReconciliation
+  }
 
   /** Seed permanentAllow from the persisted store once (lazy). */
   private async ensurePermanentAllowLoaded(): Promise<void> {
@@ -432,6 +454,7 @@ export class AgentService {
     conversationId: string,
     text: string
   ): Promise<{ stopReason: string; usage: TokenUsage }> {
+    await this.ensureStartupReconciled()
     const { providerId, model } = await this.selection()
     const apiKey = await this.options.credentials.get(providerId)
     if (!apiKey) throw new AgentMissingKeyError()
