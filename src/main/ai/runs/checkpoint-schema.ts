@@ -164,7 +164,13 @@ export interface ModelBudgetAdmission {
 export interface ModelRequestAttempt {
   attemptId: string
   requestHash: string
-  state: "prepared" | "dispatched" | "unknown_response" | "response_staged" | "budget_settled"
+  state:
+    | "prepared"
+    | "held"
+    | "dispatched"
+    | "unknown_response"
+    | "response_staged"
+    | "budget_settled"
   admission: ModelBudgetAdmission
   assistantMessageId?: string
   usage?: TokenUsage

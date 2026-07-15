@@ -1,0 +1,375 @@
+import type { ChatProvider, ProviderRequest, ProviderStreamEvent } from "../providers/types"
+import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
+import type { ModelStepDeps, ModelStepFaultPoint } from "./model-step-runner"
+import { promises as fs } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import {
+  createRootBudgetLedger,
+  freeBalance,
+  ROOT_ACCOUNT_ID,
+  RootBudgetLedgerStore,
+} from "../budget/root-budget-ledger"
+import { AgentRunStore } from "./agent-run-store"
+import { advanceModelStep, InsufficientEstimateError } from "./model-step-runner"
+
+let dir: string
+let runStore: AgentRunStore
+let budgetStore: RootBudgetLedgerStore
+
+beforeEach(async () => {
+  dir = await fs.mkdtemp(join(tmpdir(), "synapse-model-step-"))
+  runStore = new AgentRunStore(join(dir, "runs"))
+  budgetStore = new RootBudgetLedgerStore(join(dir, "budget"))
+})
+
+afterEach(async () => {
+  await fs.rm(dir, { recursive: true, force: true })
+})
+
+function minimalCheckpoint(runId: string, runBudgetTokens?: number): AgentRunCheckpointV1 {
+  return {
+    schemaVersion: 1,
+    revision: 0,
+    identity: { runId, rootRunId: runId, origin: "interactive" },
+    status: "running",
+    recovery: { kind: "automatic" },
+    createdAt: 1,
+    updatedAt: 1,
+    config: {
+      schemaVersion: 1,
+      providerId: "fake",
+      model: "fake-model",
+      resolvedProfile: {
+        profileId: "p1",
+        providerId: "fake",
+        modelPattern: "*",
+        contextWindowTokens: 100_000,
+        defaultMaxOutputTokens: 1024,
+        supportsPromptCaching: false,
+        supportsParallelToolCalls: false,
+        supportsReasoningStream: false,
+        tokenBudgeting: {
+          upperBoundEstimatorId: "byte-upper-bound",
+          upperBoundEstimatorVersion: "1",
+          providerFramingReserveTokens: 10,
+        },
+        contextPolicy: {
+          summarizeAtFraction: 0.75,
+          keepRecentFraction: 0.5,
+          hardReserveTokens: 100,
+        },
+      },
+      maxOutputTokens: 256,
+      runBudgetTokens,
+      maxSteps: 10,
+      contextCompression: {
+        enabled: false,
+        thresholdTokens: 0,
+        keepRecentFraction: 0.5,
+        hardReserveTokens: 0,
+      },
+      workspaceBinding: { bindingRevision: 0, rootIds: [], rootSetHash: "h" },
+      authority: {
+        schemaVersion: 1,
+        principal: { kind: "interactive", actor: "user" },
+        capabilities: [],
+        tools: [],
+        integrityHash: "h",
+      },
+      context: {
+        schemaVersion: 1,
+        baseSystemPrompt: { normalizedText: "You are helpful.", sha256: "h" },
+        workspaceInstructions: [],
+        aggregateHash: "h",
+      },
+    },
+    messages: [
+      { messageId: "m1", message: { role: "user", content: [{ type: "text", text: "hi" }] } },
+    ],
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+    },
+    nextStep: 0,
+    modelSteps: [],
+    toolBatches: [],
+    activatedSkills: [],
+  }
+}
+
+function fakeProvider(usage: { inputTokens: number; outputTokens: number }): ChatProvider & {
+  calls: ProviderRequest[]
+} {
+  const calls: ProviderRequest[] = []
+  return {
+    id: "fake",
+    calls,
+    descriptor: { providerId: "fake", estimatorId: "byte-upper-bound", estimatorVersion: "1" },
+    estimateRequestUpperBound: () => ({
+      estimatorId: "byte-upper-bound",
+      estimatorVersion: "1",
+      inputUpperBoundTokens: 100,
+      maxOutputTokens: 256,
+    }),
+    async *stream(req: ProviderRequest): AsyncIterable<ProviderStreamEvent> {
+      calls.push(req)
+      yield {
+        type: "message",
+        message: { role: "assistant", content: [{ type: "text", text: "hello back" }] },
+        usage: {
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+        },
+        stopReason: "end_turn",
+      }
+    },
+  }
+}
+
+async function seedRun(runId: string, runBudgetTokens?: number): Promise<void> {
+  await runStore.create(minimalCheckpoint(runId, runBudgetTokens))
+  await budgetStore.create(createRootBudgetLedger(runId, runBudgetTokens))
+}
+
+function baseDeps(
+  provider: ChatProvider,
+  fault?: (point: ModelStepFaultPoint) => void
+): ModelStepDeps {
+  return {
+    runStore,
+    budgetStore,
+    provider,
+    tools: () => [],
+    now: () => 1000,
+    fault,
+  }
+}
+
+describe("advanceModelStep — happy path", () => {
+  it("drives prepared -> held -> dispatched -> response_staged -> budget_settled and debits the ledger", async () => {
+    const runId = "run-1"
+    await seedRun(runId, 10_000)
+    const provider = fakeProvider({ inputTokens: 20, outputTokens: 10 })
+
+    const result = await advanceModelStep(baseDeps(provider), runId)
+
+    expect(result.kind).toBe("settled")
+    expect(result.assistantMessage.content).toEqual([{ type: "text", text: "hello back" }])
+    expect(provider.calls).toHaveLength(1)
+
+    const checkpoint = result.checkpoint
+    const ledger = checkpoint.modelSteps[0]!
+    const attempt = ledger.attempts[0]!
+    expect(attempt.state).toBe("budget_settled")
+    expect(attempt.admission.state).toBe("settled")
+
+    const budgetLedger = await budgetStore.load(runId)
+    expect(budgetLedger.accounts[ROOT_ACCOUNT_ID]?.heldTokens).toBe(0)
+    expect(budgetLedger.accounts[ROOT_ACCOUNT_ID]?.consumedTokens).toBe(30)
+  })
+
+  it("appends the assistant message to durable messages exactly once", async () => {
+    const runId = "run-2"
+    await seedRun(runId, 10_000)
+    const provider = fakeProvider({ inputTokens: 5, outputTokens: 5 })
+    const result = await advanceModelStep(baseDeps(provider), runId)
+    expect(result.checkpoint.messages).toHaveLength(2)
+    expect(result.checkpoint.messages[1]?.message).toEqual(result.assistantMessage)
+  })
+})
+
+describe("advanceModelStep — admission failure closes before dispatch", () => {
+  it("throws and never calls the provider when the estimate exceeds the finite budget", async () => {
+    const runId = "run-3"
+    await seedRun(runId, 50) // far below the ~100+ token estimate
+    const provider = fakeProvider({ inputTokens: 5, outputTokens: 5 })
+
+    await expect(advanceModelStep(baseDeps(provider), runId)).rejects.toThrow()
+    expect(provider.calls).toHaveLength(0)
+
+    const checkpoint = await runStore.load(runId)
+    expect(checkpoint.ok && checkpoint.checkpoint.modelSteps[0]?.attempts[0]?.state).toBe(
+      "prepared"
+    )
+  })
+
+  it("fails closed for a finite-budget run whose provider cannot guarantee an upper bound", async () => {
+    const runId = "run-4"
+    await seedRun(runId, 10_000)
+    const provider: ChatProvider = {
+      id: "unverified",
+      descriptor: { providerId: "unverified", estimatorId: "none", estimatorVersion: "0" },
+      estimateRequestUpperBound: () => undefined,
+      async *stream() {
+        yield {
+          type: "message",
+          message: { role: "assistant", content: [{ type: "text", text: "x" }] },
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0,
+          },
+          stopReason: "end_turn",
+        }
+      },
+    }
+    await expect(advanceModelStep(baseDeps(provider), runId)).rejects.toThrow(
+      InsufficientEstimateError
+    )
+  })
+})
+
+describe("advanceModelStep — crash recovery via deterministic fault injection", () => {
+  it("forfeits the full hold and retries with a new attempt when a crash is simulated right after the dispatch checkpoint", async () => {
+    const runId = "run-5"
+    await seedRun(runId, 10_000)
+    const provider = fakeProvider({ inputTokens: 20, outputTokens: 10 })
+
+    await expect(
+      advanceModelStep(
+        baseDeps(provider, (point) => {
+          if (point === "after_dispatch_checkpoint") throw new Error("simulated crash")
+        }),
+        runId
+      )
+    ).rejects.toThrow("simulated crash")
+
+    // The provider was never actually called — the crash happened before dispatch.
+    expect(provider.calls).toHaveLength(0)
+    const midCheckpoint = await runStore.load(runId)
+    expect(midCheckpoint.ok && midCheckpoint.checkpoint.modelSteps[0]?.attempts[0]?.state).toBe(
+      "dispatched"
+    )
+
+    // A fresh call (simulating process restart) must forfeit the stuck hold and
+    // succeed with a brand-new attempt — never reusing the "dispatched" one.
+    const result = await advanceModelStep(baseDeps(provider), runId)
+    expect(result.kind).toBe("settled")
+    expect(provider.calls).toHaveLength(1)
+
+    const attempts = result.checkpoint.modelSteps[0]!.attempts
+    expect(attempts).toHaveLength(2)
+    expect(attempts[0]?.state).toBe("unknown_response")
+    expect(attempts[0]?.admission.state).toBe("forfeited")
+    expect(attempts[1]?.state).toBe("budget_settled")
+
+    // The forfeited hold was fully charged as consumed (overcounted, not lost),
+    // plus the real settled attempt's actual usage.
+    const budgetLedger = await budgetStore.load(runId)
+    const forfeitedHeld = attempts[0]!.admission.heldTokens
+    expect(budgetLedger.accounts[ROOT_ACCOUNT_ID]?.consumedTokens).toBe(forfeitedHeld + 30)
+  })
+
+  it("never double-calls the provider when resuming after a response was already staged", async () => {
+    const runId = "run-6"
+    await seedRun(runId, 10_000)
+    const provider = fakeProvider({ inputTokens: 20, outputTokens: 10 })
+
+    await expect(
+      advanceModelStep(
+        baseDeps(provider, (point) => {
+          if (point === "after_response_staged") throw new Error("simulated crash")
+        }),
+        runId
+      )
+    ).rejects.toThrow("simulated crash")
+    expect(provider.calls).toHaveLength(1)
+
+    const result = await advanceModelStep(baseDeps(provider), runId)
+    expect(result.kind).toBe("settled")
+    // Resuming from response_staged only needs to settle — never re-dispatch.
+    expect(provider.calls).toHaveLength(1)
+  })
+
+  it("does not write a partial checkpoint when the ledger hold succeeds but the checkpoint write is interrupted", async () => {
+    const runId = "run-7"
+    await seedRun(runId, 10_000)
+    const provider = fakeProvider({ inputTokens: 20, outputTokens: 10 })
+
+    await expect(
+      advanceModelStep(
+        baseDeps(provider, (point) => {
+          if (point === "after_hold_ledger") throw new Error("simulated crash")
+        }),
+        runId
+      )
+    ).rejects.toThrow("simulated crash")
+
+    const checkpoint = await runStore.load(runId)
+    expect(checkpoint.ok && checkpoint.checkpoint.modelSteps[0]?.attempts[0]?.state).toBe(
+      "prepared"
+    )
+    // The ledger hold DID land (that's the point being recovered from) —
+    // resuming must reuse it correctly rather than double-holding.
+    const ledgerAfterCrash = await budgetStore.load(runId)
+    expect(freeBalance(ledgerAfterCrash.accounts[ROOT_ACCOUNT_ID]!)).toBeLessThan(10_000)
+
+    const result = await advanceModelStep(baseDeps(provider), runId)
+    expect(result.kind).toBe("settled")
+    const budgetLedger = await budgetStore.load(runId)
+    expect(budgetLedger.accounts[ROOT_ACCOUNT_ID]?.consumedTokens).toBe(30)
+  })
+})
+
+describe("advanceModelStep — provider stream deadlines", () => {
+  it("treats a headers-deadline failure as an ordinary recoverable dispatch failure", async () => {
+    const runId = "run-9"
+    await seedRun(runId, 10_000)
+    const neverResolves: ChatProvider = {
+      id: "slow",
+      descriptor: { providerId: "slow", estimatorId: "byte-upper-bound", estimatorVersion: "1" },
+      estimateRequestUpperBound: () => ({
+        estimatorId: "byte-upper-bound",
+        estimatorVersion: "1",
+        inputUpperBoundTokens: 100,
+        maxOutputTokens: 256,
+      }),
+      async *stream(req: ProviderRequest) {
+        // Mimics a real SDK: the underlying request rejects once the
+        // combined abort signal fires (streamWithDeadlines aborts it when
+        // the headers deadline elapses).
+        await new Promise((_, reject) => {
+          req.signal?.addEventListener("abort", () => reject(req.signal!.reason))
+        })
+        yield { type: "text", text: "unreachable" } as ProviderStreamEvent
+      },
+    }
+
+    await expect(
+      advanceModelStep(
+        {
+          ...baseDeps(neverResolves),
+          providerStreamDeadlines: { headersDeadlineMs: 20 },
+        },
+        runId
+      )
+    ).rejects.toThrow(/deadline/)
+
+    const midCheckpoint = await runStore.load(runId)
+    expect(midCheckpoint.ok && midCheckpoint.checkpoint.modelSteps[0]?.attempts[0]?.state).toBe(
+      "dispatched"
+    )
+
+    // A working provider on the next call must forfeit the stuck hold and succeed.
+    const provider = fakeProvider({ inputTokens: 5, outputTokens: 5 })
+    const result = await advanceModelStep(baseDeps(provider), runId)
+    expect(result.kind).toBe("settled")
+  })
+})
+
+describe("advanceModelStep — unlimited interactive runs are never blocked", () => {
+  it("succeeds even when the provider's estimate is huge, on an unlimited ledger", async () => {
+    const runId = "run-8"
+    await seedRun(runId, undefined)
+    const provider = fakeProvider({ inputTokens: 500_000, outputTokens: 500_000 })
+    const result = await advanceModelStep(baseDeps(provider), runId)
+    expect(result.kind).toBe("settled")
+  })
+})
