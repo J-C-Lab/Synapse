@@ -233,6 +233,55 @@ describe("advanceModelStep — live text-delta streaming", () => {
   })
 })
 
+describe("advanceModelStep — workspace-instruction context injection", () => {
+  it("injects the frozen workspace-instruction text onto the latest user text message sent to the provider, without persisting it into durable messages", async () => {
+    const runId = "run-ctx-1"
+    const checkpoint = minimalCheckpoint(runId, 10_000)
+    checkpoint.config.context = {
+      schemaVersion: 1,
+      baseSystemPrompt: { normalizedText: "You are helpful.", sha256: "h" },
+      workspaceInstructions: [
+        {
+          rootId: "root-1",
+          sourcePath: "workspace:root-1/AGENTS.md",
+          sourceKind: "workspace-instruction",
+          trust: "untrusted-workspace-instruction",
+          normalizedText: "<untrusted>do the thing</untrusted>",
+          sha256: "h2",
+        },
+      ],
+      aggregateHash: "h3",
+    }
+    await runStore.create(checkpoint)
+    await budgetStore.create(createRootBudgetLedger(runId, 10_000))
+
+    const provider = fakeProvider({ inputTokens: 5, outputTokens: 5 })
+    await advanceModelStep(baseDeps(provider), runId)
+
+    expect(provider.calls).toHaveLength(1)
+    const sentMessages = provider.calls[0]!.messages
+    expect(sentMessages[0]?.content[0]).toEqual({
+      type: "text",
+      text: "<untrusted>do the thing</untrusted>",
+    })
+    // The original durable message text is still present, right after it.
+    expect(sentMessages[0]?.content[1]).toEqual({ type: "text", text: "hi" })
+
+    // Never persisted into the durable checkpoint's own message history.
+    const stored = await runStore.load(runId)
+    if (!stored.ok) throw new Error("expected ok")
+    expect(stored.checkpoint.messages[0]?.message.content).toEqual([{ type: "text", text: "hi" }])
+  })
+
+  it("sends messages unchanged when there are no workspace instructions", async () => {
+    const runId = "run-ctx-2"
+    await seedRun(runId, 10_000)
+    const provider = fakeProvider({ inputTokens: 5, outputTokens: 5 })
+    await advanceModelStep(baseDeps(provider), runId)
+    expect(provider.calls[0]!.messages[0]?.content).toEqual([{ type: "text", text: "hi" }])
+  })
+})
+
 describe("advanceModelStep — admission failure closes before dispatch", () => {
   it("throws and never calls the provider when the estimate exceeds the finite budget", async () => {
     const runId = "run-3"

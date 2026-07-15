@@ -10,6 +10,7 @@ import type {
   ModelStepLedger,
 } from "./checkpoint-schema"
 import { randomUUID } from "node:crypto"
+import { injectUntrustedContext } from "../agent-runtime"
 import {
   admitModelAttempt,
   forfeitModelAttempt,
@@ -168,8 +169,7 @@ async function prepareAttempt(
   checkpoint: AgentRunCheckpointV1,
   step: number
 ): Promise<AgentRunCheckpointV1> {
-  const { system } = assembleFromContextSnapshot(checkpoint.config.context)
-  const messages = toChatMessages(checkpoint.messages)
+  const { system, messages } = outgoingRequestContext(checkpoint)
   const tools = deps.tools()
   const maxOutputTokens = checkpoint.config.maxOutputTokens
 
@@ -271,8 +271,7 @@ async function callProviderAndStage(
 ): Promise<AgentRunCheckpointV1> {
   await deps.fault?.("before_provider_call")
 
-  const { system } = assembleFromContextSnapshot(checkpoint.config.context)
-  const messages = toChatMessages(checkpoint.messages)
+  const { system, messages } = outgoingRequestContext(checkpoint)
   const tools = deps.tools()
 
   let assistantMessage: ChatMessage | undefined
@@ -397,6 +396,26 @@ async function ensureForfeitedAndPrepareNext(
   }
 
   return prepareAttempt(deps, cp, step)
+}
+
+/** The exact system text and wire messages one provider request is built
+ *  from: durable messages plus the frozen workspace-instruction text
+ *  transiently injected onto the latest user text message — never persisted
+ *  back into the checkpoint, matching AgentRuntime's existing in-memory
+ *  behavior (see agent-runtime.ts's injectUntrustedContext). Used for both
+ *  the upper-bound estimate/request hash and the actual dispatched request,
+ *  so admission is never computed against a smaller payload than what's
+ *  actually sent. */
+function outgoingRequestContext(checkpoint: AgentRunCheckpointV1): {
+  system: string
+  messages: ChatMessage[]
+} {
+  const { system, instructionContextText } = assembleFromContextSnapshot(checkpoint.config.context)
+  const durableMessages = toChatMessages(checkpoint.messages)
+  const messages = instructionContextText
+    ? injectUntrustedContext(durableMessages, instructionContextText)
+    : durableMessages
+  return { system, messages }
 }
 
 function requestHashFor(

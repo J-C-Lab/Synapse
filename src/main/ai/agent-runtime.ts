@@ -355,7 +355,14 @@ function toolResult(toolUseId: string, content: string, isError: boolean): ChatC
   return { type: "tool_result", toolUseId, content, isError }
 }
 
-function injectUntrustedContext(messages: ChatMessage[], contextText: string): ChatMessage[] {
+/** Injects frozen workspace-instruction text onto the latest user text
+ *  message, transiently for one outgoing provider request — never persisted
+ *  into durable message history. Shared with the durable model-step runner
+ *  (runs/model-step-runner.ts) so both paths inject byte-identically. */
+export function injectUntrustedContext(
+  messages: ChatMessage[],
+  contextText: string
+): ChatMessage[] {
   if (!contextText.trim()) return messages
   const targetIndex = findLatestUserTextMessage(messages)
   const contextBlock: ChatContentBlock = { type: "text", text: contextText }
