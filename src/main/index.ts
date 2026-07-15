@@ -37,6 +37,7 @@ import {
   DEFAULT_TOOL_RESILIENCE,
 } from "./ai/ai-settings-store"
 import { aiApprovalsFilePath, ApprovalStore } from "./ai/approval-store"
+import { RootBudgetLedgerStore } from "./ai/budget/root-budget-ledger"
 import { asFallbackSource, CompositeToolHost } from "./ai/composite-tool-host"
 import { ConversationStore } from "./ai/conversation-store"
 import { aiCredentialFilePath, AiCredentialStore } from "./ai/credential-store"
@@ -59,7 +60,13 @@ import {
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/catalog"
 import { ResilientToolHost } from "./ai/resilient-tool-host"
 import { RunBudgetRegistry } from "./ai/run-budget-registry"
-import { getLatestPlan, recordRun as persistRunTrace, runTraceDir } from "./ai/run-trace-store"
+import {
+  getLatestPlan,
+  recordRun as persistRunTrace,
+  runTraceDir,
+  upsertRunTrace,
+} from "./ai/run-trace-store"
+import { AgentRunStore } from "./ai/runs/agent-run-store"
 import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
@@ -1019,9 +1026,15 @@ async function createAgentService(): Promise<AgentService> {
     }
   })
 
+  const agentRunStore = new AgentRunStore(path.join(userDataDir, "ai", "runs"))
+  const agentBudgetStore = new RootBudgetLedgerStore(path.join(userDataDir, "ai", "budget"))
+
   const agentService = new AgentService({
     credentials,
     tools: agentTools,
+    runStore: agentRunStore,
+    budgetStore: agentBudgetStore,
+    upsertTrace: (input) => upsertRunTrace(runsDir, input),
     getToolHealth: () => resilientToolHost.snapshots(),
     onToolResilienceChange: (cfg) => {
       toolResilience = cfg

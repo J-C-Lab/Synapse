@@ -1,7 +1,7 @@
-import type { AgentEvent, ToolApprovalOutcome } from "./agent-runtime"
 import type { AiSettingsStore, ToolResilienceSettings } from "./ai-settings-store"
 import type { ApprovalDecision } from "./approval-gate"
 import type { ApprovalStore } from "./approval-store"
+import type { RootBudgetLedgerStore } from "./budget/root-budget-ledger"
 import type {
   ConversationStore,
   ConversationSummary,
@@ -14,22 +14,23 @@ import type { McpServerConfig, McpServerConfigStore } from "./mcp-server-config-
 import type { PlanStep } from "./plan/plan-types"
 import type { RunPlanRegistry } from "./plan/run-plan-registry"
 import type { ProviderDescriptor } from "./providers/catalog"
-import type { ChatMessage, ChatProvider, ProviderToolSchema, TokenUsage } from "./providers/types"
-import type { RunTrace } from "./run-trace-store"
+import type { ChatProvider, ProviderToolSchema, TokenUsage } from "./providers/types"
+import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "./run-trace-store"
+import type { AgentRunStore } from "./runs/agent-run-store"
+import type { DurableApprovalPolicyInput } from "./runs/durable-approval"
+import type { RunFinalizerDeps } from "./runs/run-finalizer"
 import type { ToolStatSnapshot } from "./tool-circuit-breaker"
 import type { AiToolRegistry } from "./tool-registry"
 import type { WorkspaceRootStore } from "./workspace/workspace-root-store"
 import type { Workspace, WorkspaceStore } from "./workspace/workspace-store"
 import { randomUUID } from "node:crypto"
 import { logger } from "../logging"
-import { AgentRuntime } from "./agent-runtime"
 import { DEFAULT_TOOL_RESILIENCE } from "./ai-settings-store"
-import { decideApproval } from "./approval-gate"
-import { ContextCompressor } from "./context/context-compressor"
-import { summarizeViaProvider } from "./context/summarize-via-provider"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./providers/catalog"
-import { buildInteractiveRun } from "./run-provenance"
+import { runInteractiveTurn } from "./runs/interactive-run-driver"
+import { setupInteractiveRun } from "./runs/interactive-run-setup"
+import { finalizeRun } from "./runs/run-finalizer"
 import { DEFAULT_WORKSPACE } from "./workspace/workspace-store"
 
 // Assembles the AI pieces (credentials + provider catalog + tools + runtime +
@@ -66,6 +67,14 @@ export interface AgentServiceOptions {
   credentials: AiCredentialStore
   tools: AiToolRegistry
   conversations: ConversationStore
+  /** Durable checkpoint store — every interactive turn's run of record. */
+  runStore: AgentRunStore
+  /** Durable per-root-run token budget ledger. */
+  budgetStore: RootBudgetLedgerStore
+  /** Strict, idempotent terminal-finalization trace write (design §"Terminal
+   *  finalization across stores"). Distinct from `recordRun` below, which is
+   *  a best-effort convenience callback fired with the same trace. */
+  upsertTrace: (input: TraceUpsertInput) => TraceUpsertReceipt
   workspaces?: Pick<WorkspaceStore, "exists" | "isActive"> &
     Partial<Pick<WorkspaceStore, "list" | "create" | "rename" | "archive" | "unarchive">>
   sendEvent: (event: AiChatEvent) => void
@@ -127,7 +136,7 @@ export class AgentMissingKeyError extends Error {
 }
 
 interface PendingApproval {
-  resolve: (outcome: ToolApprovalOutcome) => void
+  resolve: (outcome: { allowed: boolean; remember: RememberScope }) => void
   fqName: string
   conversationId: string
   input: unknown
@@ -156,14 +165,19 @@ export interface AiStatus {
 }
 
 export class AgentService {
-  private readonly aborts = new Map<string, AbortController>()
+  /** runId → its AbortController. Run-id-keyed (not conversation-id-keyed):
+   *  cancellation now targets the specific durable run in flight, consulted
+   *  via `conversationRuns` below rather than assumed unique per conversation. */
+  private readonly runAborts = new Map<string, AbortController>()
+  /** conversationId → the runId currently active for it, so `cancel()`'s
+   *  public conversation-scoped API can find the right AbortController. */
+  private readonly conversationRuns = new Map<string, string>()
   /** runId → conversationId for the currently active turn(s). */
   private readonly activeRunConversations = new Map<string, string>()
   private readonly pendingApprovals = new Map<string, PendingApproval>()
   private readonly conversationAllow = new Map<string, Set<string>>()
   private readonly permanentAllow = new Set<string>()
   private permanentAllowLoaded = false
-  private approvalCounter = 0
   private startupReconciliation: Promise<void> | undefined
 
   constructor(private readonly options: AgentServiceOptions) {}
@@ -449,7 +463,16 @@ export class AgentService {
     await this.options.conversations.delete(id)
   }
 
-  /** Run one chat turn, streaming events. Resolves when the turn completes. */
+  /** Run one chat turn, streaming events. Resolves when the turn completes.
+   *
+   *  Runs through the durable pipeline (design §"Replace AgentService.chat()'s
+   *  in-memory run setup"): setupInteractiveRun() acquires the conversation
+   *  lease and creates the checkpoint, runInteractiveTurn() drives it to a
+   *  terminal outcome and finalizes it (commits the conversation, upserts the
+   *  trace, releases resources) via finalizeRun(). A conversation that never
+   *  existed is created empty first, matching the old persist()-based
+   *  get-or-create behavior — chat() has never required an explicit
+   *  createConversation() call first. */
   async chat(
     conversationId: string,
     text: string
@@ -462,69 +485,124 @@ export class AgentService {
     const settings = this.options.settings ? await this.options.settings.get() : undefined
     const budgetTokens = settings?.budgetTokens ?? 0
     const resolvedBudget = budgetTokens > 0 ? budgetTokens : undefined
-
-    const runId = randomUUID()
-    this.registerRun(runId, conversationId)
-    this.options.onTurnStart?.({ runId, budgetTokens: resolvedBudget })
-
     const cfg = settings?.contextCompression
-    const compressor =
-      cfg?.enabled && cfg.thresholdTokens > 0
-        ? new ContextCompressor({
-            thresholdTokens: cfg.thresholdTokens,
-            summarize: async (older) => {
-              const provider = this.createProviderFor(providerId, apiKey)
-              return summarizeViaProvider(provider, model, older)
-            },
-          })
-        : undefined
 
     const existing = await this.options.conversations.get(conversationId)
     const workspaceId = existing?.workspaceId ?? "default"
-    const provenance = buildInteractiveRun({ runId, conversationId, workspaceId })
+    if (!existing) {
+      await this.options.conversations.save({
+        id: conversationId,
+        workspaceId,
+        messages: [],
+        createdAt: this.now(),
+        updatedAt: this.now(),
+      })
+    }
     const resolvedExecutionRoots = (await this.options.getExecutionWorkspaces?.(workspaceId)) ?? []
 
-    const runtime = new AgentRuntime({
-      provider: this.createProviderFor(providerId, apiKey),
-      tools: this.options.tools,
-      model,
-      budgetTokens: resolvedBudget,
-      executionWorkspaces: () => resolvedExecutionRoots,
-      recordRun: this.options.recordRun,
-      getPlan: (id) => this.getPlan(id),
-      compress: compressor ? compressor.compress.bind(compressor) : undefined,
-    })
-    const messages: ChatMessage[] = existing?.messages ? [...existing.messages] : []
-    messages.push({ role: "user", content: [{ type: "text", text }] })
+    const runId = randomUUID()
+    this.registerRun(runId, conversationId)
+    this.conversationRuns.set(conversationId, runId)
+    this.options.onTurnStart?.({ runId, budgetTokens: resolvedBudget })
 
     const controller = new AbortController()
-    this.aborts.set(conversationId, controller)
+    this.runAborts.set(runId, controller)
 
     const textBatcher = createTextDeltaBatcher((delta) =>
       this.options.sendEvent({ type: "text", conversationId, delta })
     )
 
     try {
-      const result = await runtime.run({
-        provenance,
-        messages,
-        signal: controller.signal,
-        onText: (delta) => textBatcher.push(delta),
-        onEvent: (event) => {
-          textBatcher.flush()
-          this.forwardAgentEvent(conversationId, event)
+      const checkpoint = await setupInteractiveRun(
+        {
+          runStore: this.options.runStore,
+          budgetStore: this.options.budgetStore,
+          conversations: this.options.conversations,
+          tools: this.options.tools,
+          now: this.now,
         },
-        approve: (request) => this.approve(conversationId, request.toolName, request.input),
-      })
+        {
+          runId,
+          conversationId,
+          workspaceId,
+          text,
+          providerId,
+          model,
+          maxOutputTokens: 4096,
+          runBudgetTokens: resolvedBudget,
+          maxSteps: 10,
+          contextCompression: {
+            enabled: cfg?.enabled ?? false,
+            thresholdTokens: cfg?.thresholdTokens ?? 0,
+            keepRecentFraction: 0.5,
+            hardReserveTokens: 0,
+          },
+          executionWorkspaces: resolvedExecutionRoots,
+        }
+      )
+
+      const provider = this.createProviderFor(providerId, apiKey)
+      const outcome = await runInteractiveTurn(
+        {
+          model: {
+            runStore: this.options.runStore,
+            budgetStore: this.options.budgetStore,
+            provider,
+            tools: () => this.options.tools.list(),
+            now: this.now,
+            maxSteps: checkpoint.config.maxSteps,
+            onTextDelta: (delta) => textBatcher.push(delta),
+          },
+          toolBatch: {
+            tools: this.options.tools,
+            caller: { kind: "agent", conversationId, runId },
+            resolver: (policyInput) =>
+              this.resolveDurableApprovalPolicy(conversationId, policyInput),
+            requestApproval: (approvalId, policyInput) =>
+              this.requestDurableApproval(conversationId, approvalId, policyInput, textBatcher),
+            now: this.now,
+            onToolCall: (call) => {
+              textBatcher.flush()
+              const fqName = this.options.tools.describe(call.name)?.fqName ?? call.name
+              this.options.sendEvent({
+                type: "tool_call",
+                conversationId,
+                id: call.id,
+                name: fqName,
+                input: call.input,
+              })
+            },
+            onToolResult: (result) => {
+              textBatcher.flush()
+              this.options.sendEvent({
+                type: "tool_result",
+                conversationId,
+                id: result.id,
+                isError: result.isError,
+              })
+            },
+          },
+          signal: controller.signal,
+          finalize: (rid, input) => finalizeRun(this.finalizerDeps(), rid, input),
+          buildResourceReleasePlan: () => ({
+            budgetOperationIds: [],
+            skillPackageLeaseIds: [],
+            releaseArtifactRunPin: false,
+            adoptionLeaseIds: [],
+          }),
+        },
+        runId
+      )
       textBatcher.flush()
-      await this.persist(conversationId, existing, result.messages, workspaceId)
-      this.options.sendEvent({
-        type: "done",
-        conversationId,
-        stopReason: result.stopReason,
-        usage: result.usage,
-      })
-      return { stopReason: result.stopReason, usage: result.usage }
+
+      const trace = outcome.checkpoint.finalization?.trace
+      if (trace) this.options.recordRun?.(trace)
+
+      const stopReason: string =
+        outcome.kind === "suspended_unknown_tool_outcome" ? "suspended" : outcome.stopReason
+      const usage = outcome.checkpoint.usage
+      this.options.sendEvent({ type: "done", conversationId, stopReason, usage })
+      return { stopReason, usage }
     } catch (err) {
       textBatcher.flush()
       this.options.sendEvent({
@@ -535,7 +613,10 @@ export class AgentService {
       throw err
     } finally {
       textBatcher.dispose()
-      this.aborts.delete(conversationId)
+      this.runAborts.delete(runId)
+      if (this.conversationRuns.get(conversationId) === runId) {
+        this.conversationRuns.delete(conversationId)
+      }
       this.failPendingApprovals(conversationId)
       this.activeRunConversations.delete(runId)
       this.options.planRegistry?.clear(runId)
@@ -543,9 +624,72 @@ export class AgentService {
     }
   }
 
+  private finalizerDeps(): RunFinalizerDeps {
+    return {
+      runStore: this.options.runStore,
+      conversation: this.options.conversations,
+      upsertTrace: this.options.upsertTrace,
+      releaseResources: async () => {},
+      now: this.now,
+    }
+  }
+
+  /** The durable tool-batch runner's hard-policy resolver — permanent/
+   *  conversation "always allow" and the injected approvalResolver policy
+   *  hook, ahead of the annotation heuristic. Mirrors the first stages of
+   *  the old in-memory approve() exactly. */
+  private async resolveDurableApprovalPolicy(
+    conversationId: string,
+    policyInput: DurableApprovalPolicyInput
+  ): Promise<ApprovalDecision | undefined> {
+    await this.ensurePermanentAllowLoaded()
+    if (
+      this.permanentAllow.has(policyInput.fqName) ||
+      this.allowSet(conversationId).has(policyInput.fqName)
+    ) {
+      return "allow"
+    }
+    const policyDecision = await this.options.approvalResolver?.({
+      conversationId,
+      safeName: policyInput.safeName,
+      fqName: policyInput.fqName,
+      input: policyInput.input,
+    })
+    if (policyDecision === "deny" || policyDecision === "allow") return policyDecision
+    return undefined
+  }
+
+  /** Only reached for a call the policy resolver and annotation heuristic
+   *  both left as "ask" — persists the pending approval and emits the same
+   *  approval_request event the renderer already handles. */
+  private requestDurableApproval(
+    conversationId: string,
+    approvalId: string,
+    policyInput: DurableApprovalPolicyInput,
+    textBatcher: TextDeltaBatcher
+  ): Promise<{ allowed: boolean; remember: RememberScope }> {
+    return new Promise((resolve) => {
+      this.pendingApprovals.set(approvalId, {
+        resolve,
+        fqName: policyInput.fqName,
+        conversationId,
+        input: policyInput.input,
+      })
+      textBatcher.flush()
+      this.options.sendEvent({
+        type: "approval_request",
+        conversationId,
+        approvalId,
+        toolName: policyInput.fqName,
+        input: policyInput.input,
+      })
+    })
+  }
+
   /** Cancel an in-flight turn. */
   cancel(conversationId: string): void {
-    this.aborts.get(conversationId)?.abort()
+    const runId = this.conversationRuns.get(conversationId)
+    if (runId) this.runAborts.get(runId)?.abort()
     this.failPendingApprovals(conversationId)
   }
 
@@ -576,9 +720,7 @@ export class AgentService {
     if (allow && remember === "conversation") {
       this.allowSet(pending.conversationId).add(pending.fqName)
     }
-    pending.resolve(
-      allow ? { allowed: true, executionAuditDecision: "approved" } : { allowed: false }
-    )
+    pending.resolve({ allowed: allow, remember })
   }
 
   /** Tools the user has permanently allowed (persisted "always" decisions). */
@@ -594,83 +736,6 @@ export class AgentService {
     await this.options.approvals?.remove(fqName)
   }
 
-  private async approve(
-    conversationId: string,
-    safeName: string,
-    input: unknown
-  ): Promise<ToolApprovalOutcome> {
-    await this.ensurePermanentAllowLoaded()
-    const descriptor = this.options.tools.describe(safeName)
-    const fqName = descriptor?.fqName ?? safeName
-
-    if (this.permanentAllow.has(fqName) || this.allowSet(conversationId).has(fqName)) {
-      return { allowed: true, executionAuditDecision: "allow" }
-    }
-
-    // Deterministic policy runs before the annotation gate: it can hard-deny a
-    // command (never prompting) or auto-allow a recognized safe one.
-    const policyDecision = await this.options.approvalResolver?.({
-      conversationId,
-      safeName,
-      fqName,
-      input,
-    })
-    if (policyDecision === "deny") return { allowed: false }
-    if (policyDecision === "allow") return { allowed: true, executionAuditDecision: "allow" }
-
-    if (decideApproval(descriptor?.manifestTool.annotations) === "allow") {
-      return { allowed: true, executionAuditDecision: "allow" }
-    }
-
-    const approvalId = `apr_${++this.approvalCounter}`
-    return new Promise<ToolApprovalOutcome>((resolve) => {
-      this.pendingApprovals.set(approvalId, { resolve, fqName, conversationId, input })
-      this.options.sendEvent({
-        type: "approval_request",
-        conversationId,
-        approvalId,
-        toolName: fqName,
-        input,
-      })
-    })
-  }
-
-  private forwardAgentEvent(conversationId: string, event: AgentEvent): void {
-    if (event.type === "tool_call") {
-      const fqName = this.options.tools.describe(event.name)?.fqName ?? event.name
-      this.options.sendEvent({
-        type: "tool_call",
-        conversationId,
-        id: event.id,
-        name: fqName,
-        input: event.input,
-      })
-    } else {
-      this.options.sendEvent({
-        type: "tool_result",
-        conversationId,
-        id: event.id,
-        isError: event.isError,
-      })
-    }
-  }
-
-  private async persist(
-    conversationId: string,
-    existing: StoredConversation | undefined,
-    messages: ChatMessage[],
-    workspaceId: string
-  ): Promise<void> {
-    await this.options.conversations.save({
-      id: conversationId,
-      title: existing?.title ?? deriveTitle(messages),
-      workspaceId: existing?.workspaceId ?? workspaceId,
-      messages,
-      createdAt: existing?.createdAt ?? this.now(),
-      updatedAt: this.now(),
-    })
-  }
-
   private allowSet(conversationId: string): Set<string> {
     let set = this.conversationAllow.get(conversationId)
     if (!set) {
@@ -684,25 +749,20 @@ export class AgentService {
     for (const [id, pending] of this.pendingApprovals) {
       if (pending.conversationId === conversationId) {
         this.pendingApprovals.delete(id)
-        pending.resolve({ allowed: false })
+        pending.resolve({ allowed: false, remember: "once" })
       }
     }
   }
 }
 
-function deriveTitle(messages: ChatMessage[]): string {
-  const firstUser = messages.find((message) => message.role === "user")
-  const text = firstUser?.content.find((block) => block.type === "text")
-  const raw = text && text.type === "text" ? text.text.trim() : ""
-  if (!raw) return "New conversation"
-  return raw.length > 60 ? `${raw.slice(0, 60)}…` : raw
+interface TextDeltaBatcher {
+  push: (delta: string) => void
+  flush: () => void
+  dispose: () => void
 }
 
 /** Coalesce high-frequency provider text deltas before IPC to the renderer. */
-function createTextDeltaBatcher(
-  send: (delta: string) => void,
-  intervalMs = 32
-): { push: (delta: string) => void; flush: () => void; dispose: () => void } {
+function createTextDeltaBatcher(send: (delta: string) => void, intervalMs = 32): TextDeltaBatcher {
   let buffer = ""
   let timer: ReturnType<typeof setTimeout> | null = null
 

@@ -12,9 +12,12 @@ import * as path from "node:path"
 import { afterAll, describe, expect, it } from "vitest"
 import { AgentService } from "../agent-service"
 import { AiSettingsStore } from "../ai-settings-store"
+import { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import { ConversationStore } from "../conversation-store"
 import { AiCredentialStore } from "../credential-store"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "../providers/catalog"
+import { upsertRunTrace } from "../run-trace-store"
+import { AgentRunStore } from "../runs/agent-run-store"
 import { AiToolRegistry } from "../tool-registry"
 
 // Real-provider end-to-end smoke for the AI tool-use loop. This is the one
@@ -101,6 +104,9 @@ describe.skipIf(!API_KEY)(`AI tool-use loop — real provider (${PROVIDER})`, ()
         credentials,
         tools: new AiToolRegistry(host),
         conversations: new ConversationStore(path.join(dir, "conversations")),
+        runStore: new AgentRunStore(path.join(dir, "runs")),
+        budgetStore: new RootBudgetLedgerStore(path.join(dir, "budget")),
+        upsertTrace: (input) => upsertRunTrace(path.join(dir, "traces"), input),
         providers: defaultProviderCatalog(),
         settings,
         sendEvent: (event) => {
