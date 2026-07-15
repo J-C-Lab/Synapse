@@ -1,5 +1,7 @@
+import type { AgentRunEvent } from "@synapse/agent-protocol"
 import type { RunTrace } from "../run-trace-store"
 import type { AgentRunCheckpointV1, RunFinalizationLedger } from "./checkpoint-schema"
+import type { RunEventEmitter } from "./run-event-emitter"
 import type { FinalizeRunInput, RunFinalizerDeps, RunFinalizerFaultPoint } from "./run-finalizer"
 import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
@@ -9,6 +11,16 @@ import { ConversationStore } from "../conversation-store"
 import { getRunTrace, upsertRunTrace } from "../run-trace-store"
 import { AgentRunStore } from "./agent-run-store"
 import { finalizeRun } from "./run-finalizer"
+
+function fakeEmitter(): RunEventEmitter & { events: AgentRunEvent[] } {
+  const events: AgentRunEvent[] = []
+  return {
+    events,
+    async emit(input) {
+      events.push({ ...input } as AgentRunEvent)
+    },
+  }
+}
 
 let dir: string
 let runStore: AgentRunStore
@@ -363,5 +375,77 @@ describe("finalizeRun — invalid transitions", () => {
       resourceReleasePlan: releasePlan({ budgetOperationIds: [] }),
     }
     await expect(finalizeRun(baseDeps(), runId, input)).rejects.toThrow(/invalid transition/)
+  })
+})
+
+describe("finalizeRun — durable event emission", () => {
+  it("emits run_status_changed, one finalization_phase_updated per phase, and run_completed on a normal completion", async () => {
+    const runId = "run-events-1"
+    await seedRun(runId, { conversationCommit: undefined })
+    const emitter = fakeEmitter()
+    const input: FinalizeRunInput = {
+      desiredStatus: "completed",
+      stopReason: "end_turn",
+      trace: trace(runId),
+      resourceReleasePlan: releasePlan({ budgetOperationIds: [] }),
+    }
+
+    await finalizeRun(baseDeps({ eventEmitter: emitter }), runId, input)
+
+    expect(emitter.events.map((e) => e.type)).toEqual([
+      "run_status_changed",
+      "finalization_phase_updated",
+      "finalization_phase_updated",
+      "finalization_phase_updated",
+      "finalization_phase_updated",
+      "finalization_phase_updated",
+      "finalization_phase_updated",
+      "run_status_changed",
+      "run_completed",
+    ])
+    const phases = emitter.events
+      .filter((e) => e.type === "finalization_phase_updated")
+      .map((e) => (e.type === "finalization_phase_updated" ? e.phase : undefined))
+    expect(phases).toEqual([
+      "prepared",
+      "conversation_committed",
+      "trace_upserted",
+      "resources_released",
+      "conversation_lease_released",
+      "complete",
+    ])
+    expect(emitter.events[0]).toMatchObject({ type: "run_status_changed", status: "terminalizing" })
+    expect(emitter.events[7]).toMatchObject({ type: "run_status_changed", status: "completed" })
+  })
+
+  it("emits run_failed with the desired status as outcome for a cancelled run", async () => {
+    const runId = "run-events-2"
+    await seedRun(runId, { conversationCommit: undefined })
+    const emitter = fakeEmitter()
+    const input: FinalizeRunInput = {
+      desiredStatus: "cancelled",
+      stopReason: "aborted",
+      trace: trace(runId, { outcome: "aborted" }),
+      resourceReleasePlan: releasePlan({ budgetOperationIds: [] }),
+    }
+
+    await finalizeRun(baseDeps({ eventEmitter: emitter }), runId, input)
+
+    const last = emitter.events.at(-1)
+    expect(last).toMatchObject({ type: "run_failed", outcome: "cancelled", reason: "aborted" })
+  })
+
+  it("never throws when eventEmitter is omitted (every existing caller keeps working)", async () => {
+    const runId = "run-events-3"
+    await seedRun(runId, { conversationCommit: undefined })
+    const input: FinalizeRunInput = {
+      desiredStatus: "completed",
+      stopReason: "end_turn",
+      trace: trace(runId),
+      resourceReleasePlan: releasePlan({ budgetOperationIds: [] }),
+    }
+    await expect(finalizeRun(baseDeps(), runId, input)).resolves.toMatchObject({
+      status: "completed",
+    })
   })
 })

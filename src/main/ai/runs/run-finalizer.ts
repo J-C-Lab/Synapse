@@ -3,6 +3,7 @@ import type { AgentRunStore } from "./agent-run-store"
 import type { CanonicalJson } from "./canonical-json"
 import type { AgentRunCheckpointV1, RunFinalizationLedger } from "./checkpoint-schema"
 import type { DurableChatMessage } from "./durable-messages"
+import type { RunEventEmitter } from "./run-event-emitter"
 import { randomUUID } from "node:crypto"
 import { ConversationLeaseConflictError } from "../conversation-store"
 import { canonicalHash } from "./canonical-json"
@@ -74,6 +75,11 @@ export interface RunFinalizerDeps {
   newId?: () => string
   /** Named crash-recovery test seams — never set in production. */
   fault?: (point: RunFinalizerFaultPoint) => void
+  /** Emits run_status_changed/finalization_phase_updated/run_completed/
+   *  run_failed to the durable event journal — purely observational
+   *  (renderer projection), never awaited for correctness. Omitted by
+   *  callers that don't need durable event history (most existing tests). */
+  eventEmitter?: RunEventEmitter
 }
 
 export interface FinalizeRunInput {
@@ -101,6 +107,8 @@ export async function finalizeRun(
     deps.fault?.("before_prepare")
     checkpoint = await prepare(deps, runId, checkpoint, input)
     deps.fault?.("after_prepared")
+    await emitStatusChanged(deps, checkpoint)
+    await emitPhase(deps, checkpoint)
   }
 
   for (;;) {
@@ -111,30 +119,74 @@ export async function finalizeRun(
       deps.fault?.("before_conversation_commit")
       checkpoint = await commitConversationPhase(deps, runId, checkpoint)
       deps.fault?.("after_conversation_committed")
+      await emitPhase(deps, checkpoint)
       continue
     }
     if (phase === "conversation_committed") {
       deps.fault?.("before_trace_upsert")
       checkpoint = await traceUpsertPhase(deps, runId, checkpoint)
       deps.fault?.("after_trace_upserted")
+      await emitPhase(deps, checkpoint)
       continue
     }
     if (phase === "trace_upserted") {
       deps.fault?.("before_resource_release")
       checkpoint = await releaseResourcesPhase(deps, runId, checkpoint)
       deps.fault?.("after_resources_released")
+      await emitPhase(deps, checkpoint)
       continue
     }
     if (phase === "resources_released") {
       deps.fault?.("before_lease_release")
       checkpoint = await releaseLeasePhase(deps, runId, checkpoint)
       deps.fault?.("after_lease_released")
+      await emitPhase(deps, checkpoint)
       continue
     }
     // phase === "conversation_lease_released"
     deps.fault?.("before_complete")
     checkpoint = await completePhase(deps, runId)
     deps.fault?.("after_complete")
+    await emitPhase(deps, checkpoint)
+    await emitStatusChanged(deps, checkpoint)
+    await emitTerminalOutcome(deps, checkpoint)
+  }
+}
+
+async function emitStatusChanged(
+  deps: RunFinalizerDeps,
+  checkpoint: AgentRunCheckpointV1
+): Promise<void> {
+  await deps.eventEmitter?.emit({
+    type: "run_status_changed",
+    status: checkpoint.status,
+    recovery: checkpoint.recovery,
+  })
+}
+
+async function emitPhase(deps: RunFinalizerDeps, checkpoint: AgentRunCheckpointV1): Promise<void> {
+  const ledger = checkpoint.finalization
+  if (!ledger) return
+  await deps.eventEmitter?.emit({
+    type: "finalization_phase_updated",
+    finalizationId: ledger.finalizationId,
+    phase: ledger.phase,
+  })
+}
+
+async function emitTerminalOutcome(
+  deps: RunFinalizerDeps,
+  checkpoint: AgentRunCheckpointV1
+): Promise<void> {
+  const desiredStatus = checkpoint.finalization?.desiredStatus
+  if (desiredStatus === "completed") {
+    await deps.eventEmitter?.emit({ type: "run_completed", outcome: "completed" })
+  } else if (desiredStatus === "cancelled" || desiredStatus === "failed") {
+    await deps.eventEmitter?.emit({
+      type: "run_failed",
+      outcome: desiredStatus,
+      reason: checkpoint.finalization?.stopReason,
+    })
   }
 }
 
