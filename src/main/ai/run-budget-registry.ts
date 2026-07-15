@@ -1,4 +1,14 @@
-/** Per-run token budget caps for subagent inheritance (keyed by parent runId). */
+/**
+ * Per-run token budget caps for subagent inheritance (keyed by parent runId).
+ *
+ * @deprecated In-memory only — lost on restart and not checkpointed. Being
+ * replaced by the durable, revisioned `RootBudgetLedgerStore`
+ * (src/main/ai/budget/root-budget-ledger.ts) plus the idempotent
+ * admit/settle/forfeit/release operations in
+ * src/main/ai/budget/model-admission.ts. This registry stays wired for the
+ * synchronous subagent's `.get()` budget lookup (read-only) until Task 15
+ * migrates that caller; no new caller may write to it via `.set()`.
+ */
 export class RunBudgetRegistry {
   private readonly budgets = new Map<string, number | undefined>()
 
