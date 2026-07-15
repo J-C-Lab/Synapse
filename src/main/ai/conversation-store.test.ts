@@ -2,7 +2,12 @@ import { promises as fs, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { ConversationStore } from "./conversation-store"
+import {
+  ConversationCommitCorruptionError,
+  ConversationLeaseConflictError,
+  ConversationNotFoundError,
+  ConversationStore,
+} from "./conversation-store"
 
 let dir: string
 
@@ -18,7 +23,7 @@ function store(now = () => 1000): ConversationStore {
   return new ConversationStore(dir, now)
 }
 
-describe("conversationStore", () => {
+describe("conversationStore — legacy-compatible projection", () => {
   it("saves and reads back a conversation", async () => {
     const s = store()
     await s.save({
@@ -85,5 +90,283 @@ describe("conversationStore", () => {
     const s = store()
     await s.save({ id: "c3", workspaceId: "work", messages: [], createdAt: 1, updatedAt: 1 })
     expect((await s.list())[0]).toMatchObject({ id: "c3", workspaceId: "work" })
+  })
+
+  it("does not resurrect a deleted conversation via get/list", async () => {
+    const s = store()
+    await s.save({ id: "gone", workspaceId: "default", messages: [], createdAt: 1, updatedAt: 1 })
+    await s.delete("gone")
+    expect(await s.get("gone")).toBeUndefined()
+    expect(await s.list()).toEqual([])
+  })
+})
+
+describe("conversationStore — lazy legacy migration", () => {
+  it("migrates a legacy record to V2 on first read and never regenerates its message ids", async () => {
+    writeFileSync(
+      join(dir, "legacy1.json"),
+      JSON.stringify({
+        id: "legacy1",
+        workspaceId: "default",
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        createdAt: 1,
+        updatedAt: 1,
+      })
+    )
+    const s = store()
+    const first = await s.get("legacy1")
+    expect(first?.messages).toHaveLength(1)
+
+    const raw = JSON.parse(await fs.readFile(join(dir, "legacy1.json"), "utf-8"))
+    expect(raw.schemaVersion).toBe(2)
+    const firstMessageId = raw.messages[0].messageId
+    expect(typeof firstMessageId).toBe("string")
+
+    // Reading again must not regenerate the id, even though the file is
+    // already migrated (this call takes the fast, no-migration path).
+    await s.get("legacy1")
+    const rawAgain = JSON.parse(await fs.readFile(join(dir, "legacy1.json"), "utf-8"))
+    expect(rawAgain.messages[0].messageId).toBe(firstMessageId)
+  })
+})
+
+describe("conversationStore — durable lease/commit/tombstone", () => {
+  async function seeded(s: ConversationStore, id = "c1"): Promise<void> {
+    await s.save({ id, workspaceId: "default", messages: [], createdAt: 1, updatedAt: 1 })
+  }
+
+  it("acquires a lease at content revision 0 for a freshly created conversation", async () => {
+    const s = store()
+    await seeded(s)
+    const { fencingToken, deletionEpoch } = await s.acquireRunLease("c1", 0, "run-1")
+    expect(fencingToken).toBe(1)
+    expect(deletionEpoch).toBe(0)
+  })
+
+  it("rejects a second simultaneous lease attempt while the first is still live", async () => {
+    const s = store()
+    await seeded(s)
+    await s.acquireRunLease("c1", 0, "run-1")
+    await expect(s.acquireRunLease("c1", 0, "run-2")).rejects.toThrow(
+      ConversationLeaseConflictError
+    )
+  })
+
+  it("under two genuinely concurrent lease attempts, exactly one wins", async () => {
+    const s = store()
+    await seeded(s)
+    const results = await Promise.allSettled([
+      s.acquireRunLease("c1", 0, "run-a"),
+      s.acquireRunLease("c1", 0, "run-b"),
+    ])
+    const fulfilled = results.filter((r) => r.status === "fulfilled")
+    const rejected = results.filter((r) => r.status === "rejected")
+    expect(fulfilled).toHaveLength(1)
+    expect(rejected).toHaveLength(1)
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+      ConversationLeaseConflictError
+    )
+  })
+
+  it("renews a lease without advancing content revision", async () => {
+    const s = store()
+    await seeded(s)
+    const { fencingToken } = await s.acquireRunLease("c1", 0, "run-1")
+    await s.renewRunLease("c1", "run-1", fencingToken)
+    const record = await s.get("c1")
+    expect(record?.messages).toEqual([]) // content untouched
+    // A second acquire attempt still conflicts — the lease is alive, not cleared.
+    await expect(s.acquireRunLease("c1", 0, "run-2")).rejects.toThrow(
+      ConversationLeaseConflictError
+    )
+  })
+
+  it("rejects renewal under a stale fencing token", async () => {
+    const s = store()
+    await seeded(s)
+    const { fencingToken } = await s.acquireRunLease("c1", 0, "run-1")
+    await expect(s.renewRunLease("c1", "run-1", fencingToken + 1)).rejects.toThrow(
+      ConversationLeaseConflictError
+    )
+  })
+
+  it("commits messages and advances content revision, then blocks a stale second commit", async () => {
+    const s = store()
+    await seeded(s)
+    const { fencingToken } = await s.acquireRunLease("c1", 0, "run-1")
+    const durable = [
+      {
+        messageId: "m1",
+        message: { role: "user" as const, content: [{ type: "text" as const, text: "hi" }] },
+      },
+    ]
+
+    const { contentRevision } = await s.commitRun({
+      conversationId: "c1",
+      runId: "run-1",
+      fencingToken,
+      baseContentRevision: 0,
+      deletionEpoch: 0,
+      finalizationId: "fin-1",
+      messages: durable,
+    })
+    expect(contentRevision).toBe(1)
+
+    // A concurrent/late commit against the now-stale baseContentRevision=0 must fail.
+    await expect(
+      s.commitRun({
+        conversationId: "c1",
+        runId: "run-1",
+        fencingToken,
+        baseContentRevision: 0,
+        deletionEpoch: 0,
+        finalizationId: "fin-2",
+        messages: durable,
+      })
+    ).rejects.toThrow(ConversationLeaseConflictError)
+  })
+
+  it("makes commitRun idempotent for a retry with the same finalizationId and identical payload", async () => {
+    const s = store()
+    await seeded(s)
+    const { fencingToken } = await s.acquireRunLease("c1", 0, "run-1")
+    const durable = [
+      {
+        messageId: "m1",
+        message: { role: "user" as const, content: [{ type: "text" as const, text: "hi" }] },
+      },
+    ]
+    const input = {
+      conversationId: "c1",
+      runId: "run-1",
+      fencingToken,
+      baseContentRevision: 0,
+      deletionEpoch: 0,
+      finalizationId: "fin-1",
+      messages: durable,
+    }
+    const first = await s.commitRun(input)
+    const retry = await s.commitRun(input)
+    expect(retry.contentRevision).toBe(first.contentRevision)
+  })
+
+  it("treats a retry under the same finalizationId with a different payload as corruption", async () => {
+    const s = store()
+    await seeded(s)
+    const { fencingToken } = await s.acquireRunLease("c1", 0, "run-1")
+    const base = {
+      conversationId: "c1",
+      runId: "run-1",
+      fencingToken,
+      baseContentRevision: 0,
+      deletionEpoch: 0,
+      finalizationId: "fin-1",
+    }
+    await s.commitRun({
+      ...base,
+      messages: [
+        {
+          messageId: "m1",
+          message: { role: "user" as const, content: [{ type: "text" as const, text: "hi" }] },
+        },
+      ],
+    })
+    await expect(
+      s.commitRun({
+        ...base,
+        messages: [
+          {
+            messageId: "m1",
+            message: {
+              role: "user" as const,
+              content: [{ type: "text" as const, text: "DIFFERENT" }],
+            },
+          },
+        ],
+      })
+    ).rejects.toThrow(ConversationCommitCorruptionError)
+  })
+
+  it("releases a lease idempotently and rejects release under mismatched preconditions", async () => {
+    const s = store()
+    await seeded(s)
+    const { fencingToken } = await s.acquireRunLease("c1", 0, "run-1")
+    const durable = [
+      {
+        messageId: "m1",
+        message: { role: "user" as const, content: [{ type: "text" as const, text: "hi" }] },
+      },
+    ]
+    const { contentRevision } = await s.commitRun({
+      conversationId: "c1",
+      runId: "run-1",
+      fencingToken,
+      baseContentRevision: 0,
+      deletionEpoch: 0,
+      finalizationId: "fin-1",
+      messages: durable,
+    })
+
+    const releaseInput = {
+      conversationId: "c1",
+      runId: "run-1",
+      fencingToken,
+      finalizationId: "fin-1",
+      committedContentRevision: contentRevision,
+    }
+    const first = await s.releaseRunLease(releaseInput)
+    // Idempotent retry after the lease is already cleared.
+    const retry = await s.releaseRunLease(releaseInput)
+    expect(retry.recordRevision).toBe(first.recordRevision)
+
+    // A new lease can now be acquired — the prior one was actually released.
+    await expect(s.acquireRunLease("c1", contentRevision, "run-2")).resolves.toMatchObject({})
+  })
+
+  it("rejects release under a mismatched fencing token", async () => {
+    const s = store()
+    await seeded(s)
+    const { fencingToken } = await s.acquireRunLease("c1", 0, "run-1")
+    await expect(
+      s.releaseRunLease({
+        conversationId: "c1",
+        runId: "run-1",
+        fencingToken: fencingToken + 1,
+        finalizationId: "fin-1",
+        committedContentRevision: 0,
+      })
+    ).rejects.toThrow(ConversationLeaseConflictError)
+  })
+
+  it("tombstones under a matching content revision and blocks a stale tombstone", async () => {
+    const s = store()
+    await seeded(s)
+    await expect(s.tombstone("c1", 1)).rejects.toThrow(ConversationLeaseConflictError)
+    await s.tombstone("c1", 0)
+    expect(await s.get("c1")).toBeUndefined()
+  })
+
+  it("clears an active lease and blocks a bound run's commit when the conversation is deleted mid-run", async () => {
+    const s = store()
+    await seeded(s)
+    const { fencingToken } = await s.acquireRunLease("c1", 0, "run-1")
+    await s.delete("c1")
+
+    await expect(
+      s.commitRun({
+        conversationId: "c1",
+        runId: "run-1",
+        fencingToken,
+        baseContentRevision: 0,
+        deletionEpoch: 0,
+        finalizationId: "fin-1",
+        messages: [],
+      })
+    ).rejects.toThrow(ConversationLeaseConflictError)
+  })
+
+  it("throws ConversationNotFoundError for lease operations on a missing conversation", async () => {
+    const s = store()
+    await expect(s.acquireRunLease("nope", 0, "run-1")).rejects.toThrow(ConversationNotFoundError)
   })
 })
