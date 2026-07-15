@@ -17,6 +17,7 @@ import { ConversationStore } from "./conversation-store"
 import { emptyUsage } from "./providers/types"
 import { upsertRunTrace } from "./run-trace-store"
 import { AgentRunStore } from "./runs/agent-run-store"
+import { RunEventStore } from "./runs/run-event-store"
 import { AiToolRegistry, modelToolName } from "./tool-registry"
 
 // The durable pipeline (Task 13) needs a real, temp-dir-backed
@@ -42,12 +43,16 @@ function tempDir(prefix: string): string {
   return dir
 }
 
-function runStores(): Pick<AgentServiceOptions, "runStore" | "budgetStore" | "upsertTrace"> {
+function runStores(): Pick<
+  AgentServiceOptions,
+  "runStore" | "budgetStore" | "upsertTrace" | "eventStore"
+> {
   const dir = tempDir("synapse-agent-service-runs-")
   return {
     runStore: new AgentRunStore(join(dir, "runs")),
     budgetStore: new RootBudgetLedgerStore(join(dir, "budget")),
     upsertTrace: (input) => upsertRunTrace(join(dir, "traces"), input),
+    eventStore: new RunEventStore(join(dir, "events")),
   }
 }
 
@@ -230,6 +235,31 @@ function minimalService(overrides: Partial<AgentServiceOptions>): AgentService {
     ...overrides,
   })
 }
+
+describe("agentService — durable event emission", () => {
+  it("emits run_started and run_completed to the durable event journal for a normal chat turn", async () => {
+    const stores = runStores()
+    const svc = new AgentService({
+      credentials: credentials("sk-test"),
+      tools: new AiToolRegistry(fakeHost()),
+      conversations: conversations().store,
+      sendEvent: () => {},
+      createProvider: () => fakeProvider([{ text: "hi" }]),
+      now: () => 1000,
+      ...stores,
+    })
+
+    await svc.chat("conv-1", "hello")
+
+    const runs = await stores.runStore.scan({})
+    expect(runs).toHaveLength(1)
+    const runId = runs[0]!.runId
+    const events = await stores.eventStore.readAll(runId)
+    expect(events.map((e) => e.type)).toContain("run_started")
+    expect(events.map((e) => e.type)).toContain("run_completed")
+    expect(events[0]).toMatchObject({ type: "run_started", origin: "interactive" })
+  })
+})
 
 describe("agentService", () => {
   it("auto-runs a read-only tool and streams events without asking", async () => {

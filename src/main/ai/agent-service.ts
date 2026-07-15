@@ -18,6 +18,7 @@ import type { ChatProvider, ProviderToolSchema, TokenUsage } from "./providers/t
 import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "./run-trace-store"
 import type { AgentRunStore } from "./runs/agent-run-store"
 import type { DurableApprovalPolicyInput } from "./runs/durable-approval"
+import type { RunEventStore } from "./runs/run-event-store"
 import type { RunFinalizerDeps } from "./runs/run-finalizer"
 import type { ToolStatSnapshot } from "./tool-circuit-breaker"
 import type { AiToolRegistry } from "./tool-registry"
@@ -30,6 +31,7 @@ import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./providers/catalog"
 import { runInteractiveTurn } from "./runs/interactive-run-driver"
 import { setupInteractiveRun } from "./runs/interactive-run-setup"
+import { createRunEventEmitter } from "./runs/run-event-emitter"
 import { finalizeRun } from "./runs/run-finalizer"
 import { DEFAULT_WORKSPACE } from "./workspace/workspace-store"
 
@@ -71,6 +73,9 @@ export interface AgentServiceOptions {
   runStore: AgentRunStore
   /** Durable per-root-run token budget ledger. */
   budgetStore: RootBudgetLedgerStore
+  /** Durable append-only event journal — renderer-facing run projections
+   *  (Task 15) read from this. */
+  eventStore: RunEventStore
   /** Strict, idempotent terminal-finalization trace write (design §"Terminal
    *  finalization across stores"). Distinct from `recordRun` below, which is
    *  a best-effort convenience callback fired with the same trace. */
@@ -537,6 +542,17 @@ export class AgentService {
       )
 
       const provider = this.createProviderFor(providerId, apiKey)
+      const eventEmitter = await createRunEventEmitter(
+        this.options.eventStore,
+        {
+          runId,
+          rootRunId: checkpoint.identity.rootRunId,
+          conversationId,
+        },
+        this.now
+      )
+      await eventEmitter.emit({ type: "run_started", origin: "interactive", workspaceId })
+
       const outcome = await runInteractiveTurn(
         {
           model: {
@@ -547,6 +563,7 @@ export class AgentService {
             now: this.now,
             maxSteps: checkpoint.config.maxSteps,
             onTextDelta: (delta) => textBatcher.push(delta),
+            eventEmitter,
           },
           toolBatch: {
             tools: this.options.tools,
@@ -576,9 +593,10 @@ export class AgentService {
                 isError: result.isError,
               })
             },
+            eventEmitter,
           },
           signal: controller.signal,
-          finalize: (rid, input) => finalizeRun(this.finalizerDeps(), rid, input),
+          finalize: (rid, input) => finalizeRun(this.finalizerDeps(eventEmitter), rid, input),
           buildResourceReleasePlan: () => ({
             budgetOperationIds: [],
             skillPackageLeaseIds: [],
@@ -618,13 +636,14 @@ export class AgentService {
     }
   }
 
-  private finalizerDeps(): RunFinalizerDeps {
+  private finalizerDeps(eventEmitter?: RunFinalizerDeps["eventEmitter"]): RunFinalizerDeps {
     return {
       runStore: this.options.runStore,
       conversation: this.options.conversations,
       upsertTrace: this.options.upsertTrace,
       releaseResources: async () => {},
       now: this.now,
+      eventEmitter,
     }
   }
 

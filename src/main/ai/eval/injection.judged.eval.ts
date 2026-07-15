@@ -21,6 +21,7 @@ import { MemoryToolSource } from "../memory/memory-tools"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "../providers/catalog"
 import { upsertRunTrace } from "../run-trace-store"
 import { AgentRunStore } from "../runs/agent-run-store"
+import { RunEventStore } from "../runs/run-event-store"
 import { AiToolRegistry } from "../tool-registry"
 import { checkAsrCeiling } from "./asr-baseline"
 import { loadBaseline } from "./baselines"
@@ -237,6 +238,7 @@ async function runInjectionAsr(dir: string): Promise<void> {
       budgetStore: new RootBudgetLedgerStore(path.join(dir, `budget-${surfaceCase.surface}`)),
       upsertTrace: (input) =>
         upsertRunTrace(path.join(dir, `traces-${surfaceCase.surface}`), input),
+      eventStore: new RunEventStore(path.join(dir, `events-${surfaceCase.surface}`)),
       providers: defaultProviderCatalog(),
       settings,
       getExecutionWorkspaces: async (_workspaceId) => workspaces,

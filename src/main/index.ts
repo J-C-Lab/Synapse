@@ -66,6 +66,7 @@ import {
   upsertRunTrace,
 } from "./ai/run-trace-store"
 import { AgentRunStore } from "./ai/runs/agent-run-store"
+import { RunEventStore } from "./ai/runs/run-event-store"
 import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
@@ -283,6 +284,7 @@ const agentRunStore = new AgentRunStore(path.join(app.getPath("userData"), "ai",
 const agentBudgetStore = new RootBudgetLedgerStore(
   path.join(app.getPath("userData"), "ai", "budget")
 )
+const agentEventStore = new RunEventStore(path.join(app.getPath("userData"), "ai", "events"))
 let accountService: MarketplaceAccountService
 let marketplaceTokens: MarketplaceTokenStore | undefined
 // External MCP servers feeding tools to the built-in agent (P5). Held at module
@@ -1048,6 +1050,7 @@ async function createAgentService(): Promise<AgentService> {
     runStore: agentRunStore,
     budgetStore: agentBudgetStore,
     upsertTrace: (input) => upsertRunTrace(runsDir, input),
+    eventStore: agentEventStore,
     getToolHealth: () => resilientToolHost.snapshots(),
     onToolResilienceChange: (cfg) => {
       toolResilience = cfg
