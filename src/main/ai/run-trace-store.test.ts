@@ -1,9 +1,17 @@
 import type { RunTrace } from "./run-trace-store"
-import { existsSync, mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { getLatestPlan, getRunTrace, listRuns, recordRun, runTraceDir } from "./run-trace-store"
+import {
+  getLatestPlan,
+  getRunTrace,
+  listRuns,
+  recordRun,
+  runTraceDir,
+  TraceUpsertCorruptionError,
+  upsertRunTrace,
+} from "./run-trace-store"
 
 let dir: string
 
@@ -221,6 +229,95 @@ describe("runTraceStore", () => {
     it("a filter matching nothing returns an empty array, not undefined", () => {
       recordRun(dir, trace({ runId: "a", origin: "interactive" }))
       expect(listRuns(dir, { origin: "mcp" })).toEqual([])
+    })
+  })
+
+  describe("upsertRunTrace", () => {
+    it("writes a new trace and returns revision 1", () => {
+      const receipt = upsertRunTrace(dir, {
+        runId: "run-1",
+        finalizationId: "fin-1",
+        traceHash: "hash-1",
+        trace: trace(),
+      })
+      expect(receipt).toEqual({ revision: 1 })
+      expect(getRunTrace(dir, "run-1")).toEqual(trace())
+    })
+
+    it("an identical retry (same finalizationId + hash) returns the same revision without rewriting", () => {
+      upsertRunTrace(dir, {
+        runId: "run-1",
+        finalizationId: "fin-1",
+        traceHash: "hash-1",
+        trace: trace(),
+      })
+      const receipt = upsertRunTrace(dir, {
+        runId: "run-1",
+        finalizationId: "fin-1",
+        traceHash: "hash-1",
+        trace: trace(),
+      })
+      expect(receipt).toEqual({ revision: 1 })
+    })
+
+    it("the same finalizationId with a different hash is a typed corruption error", () => {
+      upsertRunTrace(dir, {
+        runId: "run-1",
+        finalizationId: "fin-1",
+        traceHash: "hash-1",
+        trace: trace(),
+      })
+      expect(() =>
+        upsertRunTrace(dir, {
+          runId: "run-1",
+          finalizationId: "fin-1",
+          traceHash: "hash-2",
+          trace: trace({ outcome: "error" }),
+        })
+      ).toThrow(TraceUpsertCorruptionError)
+    })
+
+    it("a different finalizationId is a fresh upsert, bumping the revision", () => {
+      upsertRunTrace(dir, {
+        runId: "run-1",
+        finalizationId: "fin-1",
+        traceHash: "hash-1",
+        trace: trace(),
+      })
+      const receipt = upsertRunTrace(dir, {
+        runId: "run-1",
+        finalizationId: "fin-2",
+        traceHash: "hash-2",
+        trace: trace({ outcome: "error" }),
+      })
+      expect(receipt).toEqual({ revision: 2 })
+      expect(getRunTrace(dir, "run-1")?.outcome).toBe("error")
+    })
+
+    it("is visible through getRunTrace and listRuns like a recordRun trace", () => {
+      upsertRunTrace(dir, {
+        runId: "run-1",
+        finalizationId: "fin-1",
+        traceHash: "hash-1",
+        trace: trace(),
+      })
+      expect(getRunTrace(dir, "run-1")).toEqual(trace())
+      expect(listRuns(dir).map((t) => t.runId)).toEqual(["run-1"])
+    })
+
+    it("stores an on-disk envelope distinct from the plain recordRun format", () => {
+      upsertRunTrace(dir, {
+        runId: "run-1",
+        finalizationId: "fin-1",
+        traceHash: "hash-1",
+        trace: trace(),
+      })
+      const raw = JSON.parse(readFileSync(path.join(dir, "run-1.json"), "utf8"))
+      expect(raw).toMatchObject({
+        envelopeVersion: 1,
+        finalizationId: "fin-1",
+        traceHash: "hash-1",
+      })
     })
   })
 

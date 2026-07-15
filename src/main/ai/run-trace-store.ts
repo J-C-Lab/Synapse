@@ -79,7 +79,102 @@ export function getRunTrace(dir: string, runId: string): RunTrace | undefined {
   const file = path.join(dir, `${runId}.json`)
   if (!existsSync(file)) return undefined
   try {
-    return JSON.parse(readFileSync(file, "utf8")) as RunTrace
+    return unwrap(JSON.parse(readFileSync(file, "utf8")))
+  } catch {
+    return undefined
+  }
+}
+
+// --- strict, idempotent terminal-finalization upsert -----------------------
+// recordRun above stays a best-effort, unconditional overwrite for every
+// non-terminal caller (background/subagent runs not yet migrated onto the
+// durable finalizer). upsertRunTrace is the terminal-finalization path
+// (design §"Terminal finalization across stores" step 3): identical retries
+// (same finalizationId + traceHash) return the already-stored revision;
+// the same finalizationId with a different hash is corruption, never
+// silently overwritten. The on-disk envelope wraps the plain RunTrace so
+// getRunTrace/listRuns keep reading old plain-RunTrace files exactly as
+// before (unwrap() below falls back to treating the whole payload as a
+// legacy RunTrace when it isn't a recognized envelope).
+
+export interface TraceUpsertInput {
+  runId: string
+  finalizationId: string
+  traceHash: string
+  trace: RunTrace
+}
+
+export interface TraceUpsertReceipt {
+  revision: number
+}
+
+export class TraceUpsertCorruptionError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "TraceUpsertCorruptionError"
+  }
+}
+
+interface TraceEnvelope {
+  envelopeVersion: 1
+  finalizationId: string
+  traceHash: string
+  revision: number
+  trace: RunTrace
+}
+
+function isTraceEnvelope(value: unknown): value is TraceEnvelope {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { envelopeVersion?: unknown }).envelopeVersion === 1 &&
+    typeof (value as { finalizationId?: unknown }).finalizationId === "string" &&
+    typeof (value as { trace?: unknown }).trace === "object"
+  )
+}
+
+/** Unwraps a v1 envelope to its trace; anything else is treated as a legacy
+ *  plain RunTrace payload, preserved unchanged. */
+function unwrap(value: unknown): RunTrace {
+  return isTraceEnvelope(value) ? value.trace : (value as RunTrace)
+}
+
+export function upsertRunTrace(dir: string, input: TraceUpsertInput): TraceUpsertReceipt {
+  if (!isSafeRunId(input.runId)) {
+    throw new Error(`refusing unsafe runId for trace upsert: ${input.runId}`)
+  }
+  const file = path.join(dir, `${input.runId}.json`)
+  const existing = readEnvelope(file)
+
+  if (existing && existing.finalizationId === input.finalizationId) {
+    if (existing.traceHash !== input.traceHash) {
+      throw new TraceUpsertCorruptionError(
+        `trace upsert for run ${input.runId}, finalization ${input.finalizationId}: ` +
+          `stored hash ${existing.traceHash} does not match ${input.traceHash}`
+      )
+    }
+    return { revision: existing.revision }
+  }
+
+  const revision = (existing?.revision ?? 0) + 1
+  const envelope: TraceEnvelope = {
+    envelopeVersion: 1,
+    finalizationId: input.finalizationId,
+    traceHash: input.traceHash,
+    revision,
+    trace: input.trace,
+  }
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(file, `${JSON.stringify(envelope)}\n`)
+  prune(dir)
+  return { revision }
+}
+
+function readEnvelope(file: string): TraceEnvelope | undefined {
+  if (!existsSync(file)) return undefined
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"))
+    return isTraceEnvelope(parsed) ? parsed : undefined
   } catch {
     return undefined
   }
@@ -137,7 +232,7 @@ function readAll(dir: string): RunTrace[] {
   for (const name of readdirSync(dir)) {
     if (!name.endsWith(".json")) continue
     try {
-      out.push(JSON.parse(readFileSync(path.join(dir, name), "utf8")) as RunTrace)
+      out.push(unwrap(JSON.parse(readFileSync(path.join(dir, name), "utf8"))))
     } catch {
       // Skip a corrupt/partial file rather than failing the whole listing.
     }
