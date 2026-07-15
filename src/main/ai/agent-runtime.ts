@@ -104,6 +104,19 @@ export function buildSystemPrompt(
   return `${base}\n\n${guidance}`
 }
 
+/** The exact composed base system text a fresh interactive run uses today
+ *  (default prompt + routing guidance + untrusted-context notice) — shared
+ *  with the durable interactive-run-setup path (runs/interactive-run-
+ *  setup.ts) so both produce byte-identical system prompts for the same
+ *  execution workspaces. */
+export function buildDefaultSystemText(
+  executionWorkspaces: readonly WorkspaceRootRecord[]
+): string {
+  return (
+    buildSystemPrompt(DEFAULT_SYSTEM_PROMPT, { executionWorkspaces }) + UNTRUSTED_CONTEXT_NOTICE
+  )
+}
+
 export interface AgentRuntimeOptions {
   provider: ChatProvider
   tools: AiToolRegistry
