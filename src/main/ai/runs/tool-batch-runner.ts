@@ -53,6 +53,14 @@ export interface ToolBatchDeps {
   /** Named crash-recovery test seams — never set in production. */
   fault?: (point: ToolBatchFaultPoint) => void
   maxToolResultChars?: number
+  /** Fired once per call, in order, right after the whole batch's ledger is
+   *  durably created — purely observational (live UI projection), never
+   *  re-fired for a call the ledger already knew about on resume. */
+  onToolCall?: (call: { id: string; name: string; input: unknown }) => void
+  /** Fired once a call's resolution becomes durable, whatever the reason
+   *  (executed, denied, invalid, or a conforming adapter's replayed prior
+   *  result) — purely observational, fired after the persisting write. */
+  onToolResult?: (call: { id: string; isError: boolean }) => void
 }
 
 export type ToolBatchOutcome =
@@ -73,6 +81,9 @@ export async function advanceToolBatch(
   if (!findBatch(checkpoint, modelStep)) {
     checkpoint = await createBatch(deps, runId, checkpoint, modelStep)
     deps.fault?.("after_batch_created")
+    for (const call of requireBatch(checkpoint, modelStep).calls) {
+      deps.onToolCall?.({ id: call.toolUseId, name: call.safeName, input: call.input })
+    }
   }
 
   const callCount = requireBatch(checkpoint, modelStep).calls.length
@@ -345,9 +356,11 @@ async function resolveWithoutExecution(
     complete: true,
   }
   const resolution: ToolCallResolution = { status: "resolved", reason, result }
-  await mutateCheckpoint(deps, runId, (cp) =>
+  const checkpoint = await mutateCheckpoint(deps, runId, (cp) =>
     updateCall(cp, modelStep, ordinal, (c) => ({ ...c, resolution }))
   )
+  const call = requireBatch(checkpoint, modelStep).calls[ordinal]!
+  deps.onToolResult?.({ id: call.toolUseId, isError: true })
 }
 
 function syntheticDenialText(
@@ -453,6 +466,7 @@ async function executionPhase(
     }))
   )
   deps.fault?.("after_attempt_completed")
+  deps.onToolResult?.({ id: call.toolUseId, isError: persistedResult.isError })
 
   return { kind: "resolved", checkpoint }
 }
@@ -503,6 +517,7 @@ async function recoverInterruptedAttempt(
         resolution: { status: "resolved", reason: "executed", result, attemptId: latest.attemptId },
       }))
     )
+    deps.onToolResult?.({ id: call.toolUseId, isError: result.isError })
     return { kind: "resolved", checkpoint }
   }
 

@@ -259,6 +259,64 @@ describe("advanceToolBatch — happy path", () => {
   })
 })
 
+describe("advanceToolBatch — onToolCall/onToolResult event hooks", () => {
+  it("fires onToolCall once per call in order right after batch creation", async () => {
+    const runId = "run-events-1"
+    const { registry } = makeRegistry(["a", "b"], { a: () => "A", b: () => "B" })
+    await seed(runId, [
+      { id: "t1", name: "a", input: { x: 1 } },
+      { id: "t2", name: "b", input: { y: 2 } },
+    ])
+    const calls: Array<{ id: string; name: string; input: unknown }> = []
+
+    await advanceToolBatch(baseDeps(registry, { onToolCall: (c) => calls.push(c) }), runId, 0)
+
+    expect(calls).toEqual([
+      { id: "t1", name: "a", input: { x: 1 } },
+      { id: "t2", name: "b", input: { y: 2 } },
+    ])
+  })
+
+  it("does not re-fire onToolCall for an already-created batch on resume", async () => {
+    const runId = "run-events-2"
+    const { registry } = makeRegistry(["a"], { a: () => "A" })
+    await seed(runId, [{ id: "t1", name: "a", input: {} }])
+    const calls: unknown[] = []
+
+    await advanceToolBatch(baseDeps(registry, { onToolCall: (c) => calls.push(c) }), runId, 0)
+    await advanceToolBatch(baseDeps(registry, { onToolCall: (c) => calls.push(c) }), runId, 0)
+
+    expect(calls).toHaveLength(1)
+  })
+
+  it("fires onToolResult once per call as each resolves, whether executed or denied", async () => {
+    const runId = "run-events-3"
+    const { registry } = makeRegistry(["a", "denied"], {
+      a: () => "A",
+      denied: () => "should not run",
+    })
+    await seed(runId, [
+      { id: "t1", name: "a", input: {} },
+      { id: "t2", name: "denied", input: {} },
+    ])
+    const results: Array<{ id: string; isError: boolean }> = []
+
+    await advanceToolBatch(
+      baseDeps(registry, {
+        onToolResult: (r) => results.push(r),
+        resolver: (input) => (input.safeName === "denied" ? "deny" : undefined),
+      }),
+      runId,
+      0
+    )
+
+    expect(results).toEqual([
+      { id: "t1", isError: false },
+      { id: "t2", isError: true },
+    ])
+  })
+})
+
 describe("advanceToolBatch — denial/policy without execution", () => {
   it("resolves a policy-denied call synthetically with no execution attempt", async () => {
     const runId = "run-3"
