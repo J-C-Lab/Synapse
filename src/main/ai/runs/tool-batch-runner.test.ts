@@ -317,6 +317,48 @@ describe("advanceToolBatch — onToolCall/onToolResult event hooks", () => {
   })
 })
 
+describe("advanceToolBatch — executionAuditDecision", () => {
+  it("passes 'allow' for an auto-allowed (never-asked) call", async () => {
+    const { registry, invoke } = makeRegistry(["read_file"], { read_file: () => "contents" })
+    await seed("run-audit-1", [{ id: "t1", name: "read_file", input: {} }])
+
+    await advanceToolBatch(baseDeps(registry), "run-audit-1", 0)
+
+    expect(invoke).toHaveBeenCalledWith(
+      "read_file",
+      {},
+      expect.objectContaining({ executionAuditDecision: "allow" })
+    )
+  })
+
+  it("passes 'approved' for a call that was actually asked and allowed", async () => {
+    const descriptor = toolDescriptor("ask_me", {
+      manifestTool: {
+        name: "ask_me",
+        description: "d",
+        inputSchema: { type: "object" },
+        annotations: {},
+      },
+    })
+    const invoke = vi.fn(async () => ({ content: [{ type: "text" as const, text: "ok" }] }))
+    const registry = new AiToolRegistry({ listTools: () => [descriptor], invokeTool: invoke })
+    registry.list()
+    await seed("run-audit-2", [{ id: "t1", name: "ask_me", input: {} }])
+
+    await advanceToolBatch(
+      baseDeps(registry, { requestApproval: async () => ({ allowed: true, remember: "once" }) }),
+      "run-audit-2",
+      0
+    )
+
+    expect(invoke).toHaveBeenCalledWith(
+      "ask_me",
+      {},
+      expect.objectContaining({ executionAuditDecision: "approved" })
+    )
+  })
+})
+
 describe("advanceToolBatch — denial/policy without execution", () => {
   it("resolves a policy-denied call synthetically with no execution attempt", async () => {
     const runId = "run-3"

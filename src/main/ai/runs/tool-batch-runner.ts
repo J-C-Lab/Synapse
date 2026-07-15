@@ -422,10 +422,19 @@ async function executionPhase(
   )
   deps.fault?.("after_attempt_started")
 
+  // "approved" only when this call was actually asked and the answer was
+  // allow; "not_required" (auto-allowed by the annotation heuristic or a
+  // resolver) is "allow" — matches the distinction execution-tool-host.ts's
+  // audit log makes between an auto-allowed call and a user-confirmed one.
+  const executionAuditDecision = call.approval.status === "resolved" ? "approved" : "allow"
+
   let toolResult: ToolResult | undefined
   let executionError: unknown
   try {
-    toolResult = await deps.tools.invoke(call.safeName, call.input, { caller: deps.caller })
+    toolResult = await deps.tools.invoke(call.safeName, call.input, {
+      caller: deps.caller,
+      executionAuditDecision,
+    })
   } catch (err) {
     executionError = err
   }
