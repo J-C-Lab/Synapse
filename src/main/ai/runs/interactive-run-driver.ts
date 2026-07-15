@@ -12,13 +12,17 @@ import { advanceDurableRun } from "./durable-agent-driver"
 import { InsufficientEstimateError } from "./model-step-runner"
 import { advanceToolBatch } from "./tool-batch-runner"
 
-// Drives one interactive turn from its already-persisted initial checkpoint
-// (see interactive-run-setup.ts) to a terminal outcome, alternating between
-// the durable model-step driver and the ordered tool-batch runner exactly as
-// the design's outer loop describes — never advancing more than one legal
-// step without re-checking the latest checkpoint. Finalizes the run itself
-// on every terminal outcome except a suspension, which requires an explicit
-// human recovery decision (Task 12) before anything can finalize.
+// Drives one run from its already-persisted initial checkpoint (see
+// interactive-run-setup.ts / background-run-setup.ts / subagent-run-setup.ts)
+// to a terminal outcome, alternating between the durable model-step driver
+// and the ordered tool-batch runner exactly as the design's outer loop
+// describes — never advancing more than one legal step without re-checking
+// the latest checkpoint. Finalizes the run itself on every terminal outcome
+// except a suspension, which requires an explicit human recovery decision
+// (Task 12) before anything can finalize. Named for its first caller
+// (interactive chat); despite that, everything here is driven purely by
+// checkpoint/runId, so background-agent and subagent runs (Task 14) reuse it
+// unchanged — only their setup and finalize wiring differ.
 
 export type InteractiveTurnStopReason = "end_turn" | "max_steps" | "aborted" | "budget_exceeded"
 
@@ -164,6 +168,8 @@ function buildTraceFromCheckpoint(
   return {
     runId: checkpoint.identity.runId,
     conversationId: checkpoint.identity.conversationId,
+    invocationId: checkpoint.identity.invocationId,
+    parentRunId: checkpoint.identity.parentRunId,
     origin: checkpoint.identity.origin,
     workspaceId: checkpoint.identity.workspaceId,
     startedAt: checkpoint.createdAt,
