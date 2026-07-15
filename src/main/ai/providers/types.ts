@@ -95,8 +95,48 @@ export type ProviderStreamEvent =
       stopReason: string
     }
 
+/** What a request-upper-bound estimator reads to compute its bound — every
+ *  piece of context a real request assembles, before any transport exists. */
+export interface RequestEstimateInput {
+  model: string
+  systemText: string
+  messages: ChatMessage[]
+  tools: ProviderToolSchema[]
+  /** Active skill instruction text folded into context (Checkpoint D). Empty
+   *  until the skill runtime exists. */
+  activeSkillBlocks?: string[]
+  maxOutputTokens: number
+}
+
+export interface RequestUpperBoundEstimate {
+  estimatorId: string
+  estimatorVersion: string
+  inputUpperBoundTokens: number
+  maxOutputTokens: number
+}
+
+/** Immutable identity for a provider instance, frozen into a run's config
+ *  alongside the resolved model profile — see FrozenRunConfigV1. */
+export interface ChatProviderDescriptor {
+  providerId: string
+  estimatorId: string
+  estimatorVersion: string
+}
+
 export interface ChatProvider {
   readonly id: string
+  /** Immutable descriptor + estimator, frozen into a run's config. Optional
+   *  so lightweight test/eval doubles keep compiling; a provider that omits
+   *  this (or `estimateRequestUpperBound`) is treated exactly like one whose
+   *  estimator declines — "inadmissible for finite budgets", never
+   *  zero-cost. The two real adapters (Anthropic, OpenAI) always set it. */
+  readonly descriptor?: ChatProviderDescriptor
+  /** Computes a conservative upper bound for a request BEFORE any transport
+   *  is created, so budget admission can happen ahead of dispatch. Returns
+   *  undefined when this adapter cannot guarantee a bound (e.g. an unverified
+   *  model) — callers must treat that as "inadmissible for finite budgets",
+   *  never as zero cost. */
+  estimateRequestUpperBound?: (input: RequestEstimateInput) => RequestUpperBoundEstimate | undefined
   /** Stream one assistant turn. Implementations must honour `req.signal`
    *  and call `req.onTransportProgress` at the raw-SDK-event level if
    *  provided — see ProviderRequest. */
