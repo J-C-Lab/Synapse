@@ -118,10 +118,6 @@ export interface AgentServiceOptions {
   getLatestPlan?: (conversationId: string) => PlanStep[] | undefined
   /** The in-run plan store, so chat() can clear it per turn and expose getPlan. */
   planRegistry?: RunPlanRegistry
-  /** Fired at the start of each interactive turn with the resolved per-run token budget. */
-  onTurnStart?: (ctx: { runId: string; budgetTokens: number | undefined }) => void
-  /** Fired when an interactive turn ends so per-run budget state can be cleared. */
-  onTurnEnd?: (ctx: { runId: string }) => void
   /** Per-tool circuit-breaker health snapshots, surfaced to the renderer. */
   getToolHealth?: () => ToolStatSnapshot[]
   /** Applied when tool-resilience settings change so the live host can retune. */
@@ -503,7 +499,6 @@ export class AgentService {
     const runId = randomUUID()
     this.registerRun(runId, conversationId)
     this.conversationRuns.set(conversationId, runId)
-    this.options.onTurnStart?.({ runId, budgetTokens: resolvedBudget })
 
     const controller = new AbortController()
     this.runAborts.set(runId, controller)
@@ -620,7 +615,6 @@ export class AgentService {
       this.failPendingApprovals(conversationId)
       this.activeRunConversations.delete(runId)
       this.options.planRegistry?.clear(runId)
-      this.options.onTurnEnd?.({ runId })
     }
   }
 

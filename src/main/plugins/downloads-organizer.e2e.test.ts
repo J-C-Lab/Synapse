@@ -11,7 +11,10 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { rootIdForPattern } from "@synapse/plugin-manifest"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { RootBudgetLedgerStore } from "../ai/budget/root-budget-ledger"
 import { emptyUsage } from "../ai/providers/types"
+import { upsertRunTrace } from "../ai/run-trace-store"
+import { AgentRunStore } from "../ai/runs/agent-run-store"
 import { modelToolName } from "../ai/tool-registry"
 import { createHeadlessHotkeyAdapter } from "./headless-trigger-adapters"
 import { PluginHost } from "./plugin-host"
@@ -19,6 +22,19 @@ import { PluginHost } from "./plugin-host"
 let dir: string
 let home: string
 let previousHome: string | undefined
+
+function runsSupport(baseDir: string): {
+  runStore: AgentRunStore
+  budgetStore: RootBudgetLedgerStore
+  upsertTrace: ConstructorParameters<typeof PluginHost>[0]["upsertTrace"]
+} {
+  const runsDir = path.join(baseDir, "ai-runs")
+  return {
+    runStore: new AgentRunStore(runsDir),
+    budgetStore: new RootBudgetLedgerStore(path.join(baseDir, "ai-budget")),
+    upsertTrace: (input) => upsertRunTrace(runsDir, input),
+  }
+}
 
 const CLASSIFY_AND_MOVE_TOOL_NAME = modelToolName({
   fqName: "com.synapse.downloads-organizer/classifyAndMove",
@@ -81,6 +97,7 @@ describe("downloadsOrganizer", () => {
       fsWatchAdapter,
       storageFlushMs: 0,
       workspaceRoots: { listForWorkspace: async () => [] },
+      ...runsSupport(dir),
       backgroundAgentProvider: async () => ({ provider, model: "fake-model" }),
       capabilityGovernance: {
         userDataDir: dir,
@@ -144,6 +161,15 @@ function fakeProvider(
   let turn = 0
   return {
     id: "fake",
+    // The manifest configures a finite maxTokensPerRun; durable admission
+    // fails closed for a finite-budget run whose provider can't guarantee
+    // an upper bound.
+    estimateRequestUpperBound: () => ({
+      estimatorId: "fake",
+      estimatorVersion: "1",
+      inputUpperBoundTokens: 0,
+      maxOutputTokens: 100,
+    }),
     async *stream(req) {
       seenTools.push(req.tools)
       seenMessages.push(req.messages)

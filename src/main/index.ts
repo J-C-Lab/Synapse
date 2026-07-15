@@ -59,7 +59,6 @@ import {
 } from "./ai/plugin-introspection-tools"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/catalog"
 import { ResilientToolHost } from "./ai/resilient-tool-host"
-import { RunBudgetRegistry } from "./ai/run-budget-registry"
 import {
   getLatestPlan,
   recordRun as persistRunTrace,
@@ -274,7 +273,16 @@ let emitPlanForRun: (
 let makeSubagentProvider: () => Promise<{ provider: ChatProvider; model: string }> = async () => {
   throw new Error("subagent provider not wired")
 }
-const runBudgetRegistry = new RunBudgetRegistry()
+// Shared across initPluginHost() (background-agent runs) and
+// createAgentService() (interactive runs, and the subagent runner it wires
+// up) — one durable checkpoint/budget store pair per app run, not a
+// per-caller copy, since the CAS/lease machinery each store owns is only
+// correct when every caller mutating a given runId goes through the same
+// in-memory lock map.
+const agentRunStore = new AgentRunStore(path.join(app.getPath("userData"), "ai", "runs"))
+const agentBudgetStore = new RootBudgetLedgerStore(
+  path.join(app.getPath("userData"), "ai", "budget")
+)
 let accountService: MarketplaceAccountService
 let marketplaceTokens: MarketplaceTokenStore | undefined
 // External MCP servers feeding tools to the built-in agent (P5). Held at module
@@ -848,7 +856,9 @@ function initPluginHost(): PluginHost {
     memoryTools: () => sharedMemoryTools,
     executionTools: () => sharedExecutionTools,
     recordRun: (trace) => runTraceRecorder(trace),
-    runBudgetRegistry,
+    runStore: agentRunStore,
+    budgetStore: agentBudgetStore,
+    upsertTrace: (input) => upsertRunTrace(runTraceDir(userDataDir), input),
     workspaceRoots: workspaceRootStore,
     workspaces,
     reservedAccelerators: () => [launcher.getSettings().hotkey],
@@ -962,10 +972,16 @@ async function createAgentService(): Promise<AgentService> {
   let agentTools!: AiToolRegistry
   const subagentSource = new SpawnSubagentToolSource({
     parentTools: () => agentTools,
-    budgetTokens: (runId) => runBudgetRegistry.get(runId),
     runSubagent: async (inp) => {
       const { provider, model } = await makeSubagentProvider()
-      return new SubagentRunner({ provider, model, recordRun }).run(inp)
+      return new SubagentRunner({
+        provider,
+        model,
+        runStore: agentRunStore,
+        budgetStore: agentBudgetStore,
+        upsertTrace: (input) => upsertRunTrace(runsDir, input),
+        recordRun,
+      }).run(inp)
     },
   })
 
@@ -1026,9 +1042,6 @@ async function createAgentService(): Promise<AgentService> {
     }
   })
 
-  const agentRunStore = new AgentRunStore(path.join(userDataDir, "ai", "runs"))
-  const agentBudgetStore = new RootBudgetLedgerStore(path.join(userDataDir, "ai", "budget"))
-
   const agentService = new AgentService({
     credentials,
     tools: agentTools,
@@ -1062,12 +1075,6 @@ async function createAgentService(): Promise<AgentService> {
     recordRun,
     getLatestPlan: (conversationId) => getLatestPlan(runsDir, conversationId),
     planRegistry,
-    onTurnStart: ({ runId, budgetTokens }) => {
-      runBudgetRegistry.set(runId, budgetTokens)
-    },
-    onTurnEnd: ({ runId }) => {
-      runBudgetRegistry.clear(runId)
-    },
     mcp: {
       // Encrypt env/header secrets at rest with the OS keychain.
       configs: mcpConfigStore,

@@ -5,10 +5,9 @@ import { writeJsonFile } from "../../lan/atomic-json-store"
 import { canonicalHash } from "../runs/canonical-json"
 
 // Durable per-root-run budget ledger (design §"Durable async child tasks" /
-// root budget ledger). Replaces the in-memory RunBudgetRegistry as the
-// authority for token admission: every admit/settle/forfeit/release is a
-// checkpointed, idempotent operation against a revisioned ledger, not a
-// number held only in main-process memory.
+// root budget ledger). Every admit/settle/forfeit/release is a checkpointed,
+// idempotent operation against a revisioned ledger, not a number held only
+// in main-process memory.
 
 export const ROOT_ACCOUNT_ID = "root"
 

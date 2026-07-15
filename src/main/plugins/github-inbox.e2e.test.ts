@@ -10,12 +10,28 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { RootBudgetLedgerStore } from "../ai/budget/root-budget-ledger"
 import { emptyUsage } from "../ai/providers/types"
+import { upsertRunTrace } from "../ai/run-trace-store"
+import { AgentRunStore } from "../ai/runs/agent-run-store"
 import { modelToolName } from "../ai/tool-registry"
 import { createHeadlessHotkeyAdapter } from "./headless-trigger-adapters"
 import { PluginHost } from "./plugin-host"
 
 let dir: string
+
+function runsSupport(baseDir: string): {
+  runStore: AgentRunStore
+  budgetStore: RootBudgetLedgerStore
+  upsertTrace: ConstructorParameters<typeof PluginHost>[0]["upsertTrace"]
+} {
+  const runsDir = path.join(baseDir, "ai-runs")
+  return {
+    runStore: new AgentRunStore(runsDir),
+    budgetStore: new RootBudgetLedgerStore(path.join(baseDir, "ai-budget")),
+    upsertTrace: (input) => upsertRunTrace(runsDir, input),
+  }
+}
 
 const GET_INBOX_SNAPSHOT_TOOL_NAME = modelToolName({
   fqName: "com.synapse.github-inbox/getInboxSnapshot",
@@ -59,6 +75,7 @@ describe("github inbox plugin", () => {
       fsWatchAdapter: noopFsWatchAdapter,
       hotkeyAdapter: createHeadlessHotkeyAdapter(),
       workspaceRoots: { listForWorkspace: async () => [] },
+      ...runsSupport(dir),
       adapters: {
         clipboard: { read: async () => undefined, write: async () => {} },
         notifications: { show: async () => {} },
@@ -100,6 +117,15 @@ describe("github inbox plugin", () => {
 function fakeDigestProvider(seenTools: ProviderToolSchema[][]): ChatProvider {
   return {
     id: "fake",
+    // The manifest configures a finite maxTokensPerRun; durable admission
+    // fails closed for a finite-budget run whose provider can't guarantee
+    // an upper bound.
+    estimateRequestUpperBound: () => ({
+      estimatorId: "fake",
+      estimatorVersion: "1",
+      inputUpperBoundTokens: 0,
+      maxOutputTokens: 100,
+    }),
     async *stream(req): AsyncGenerator<any> {
       seenTools.push(req.tools)
       const content: ChatContentBlock[] = [

@@ -8,9 +8,12 @@ import type {
   Visibility,
 } from "@synapse/marketplace-types"
 import type { ClipboardContent, ToolResult } from "@synapse/plugin-sdk"
+import type { RootBudgetLedgerStore } from "../ai/budget/root-budget-ledger"
 import type { ExecutionToolHostSource } from "../ai/execution/execution-tool-host"
 import type { MemoryToolSource } from "../ai/memory/memory-tools"
 import type { ChatProvider } from "../ai/providers/types"
+import type { TraceUpsertInput, TraceUpsertReceipt } from "../ai/run-trace-store"
+import type { AgentRunStore } from "../ai/runs/agent-run-store"
 import type { WorkspaceRootStore } from "../ai/workspace/workspace-root-store"
 import type { WorkspaceStore } from "../ai/workspace/workspace-store"
 import type { PluginTriggerRow, TriggerInstanceRow } from "../ipc/triggers"
@@ -124,11 +127,12 @@ export interface PluginHostOptions {
   backgroundAgentProvider?: () => Promise<{ provider: ChatProvider; model?: string }>
   /** Forwards per-run traces from background-agent runs to the host recorder. */
   recordRun?: (trace: import("../ai/run-trace-store").RunTrace) => void
-  /** Per-run token budgets for subagents spawned during background-agent runs. */
-  runBudgetRegistry?: {
-    set: (runId: string, budgetTokens: number | undefined) => void
-    clear: (runId: string) => void
-  }
+  /** Durable run/budget stores background-agent runs persist their checkpoint
+   *  and root budget ledger through — the same singletons the interactive
+   *  path and subagent runner use. */
+  runStore: AgentRunStore
+  budgetStore: RootBudgetLedgerStore
+  upsertTrace: (input: TraceUpsertInput) => TraceUpsertReceipt
   workspaceRoots: Pick<WorkspaceRootStore, "listForWorkspace">
   workspaces?: Pick<WorkspaceStore, "get" | "exists" | "isActive" | "isArchived">
   /** The interactive path's own MemoryToolSource/ExecutionToolHostSource
@@ -575,7 +579,9 @@ export class PluginHost {
       tools,
       ledger: this.agentBudgetLedger,
       recordRun: this.options.recordRun,
-      runBudgetRegistry: this.options.runBudgetRegistry,
+      runStore: this.options.runStore,
+      budgetStore: this.options.budgetStore,
+      upsertTrace: this.options.upsertTrace,
       workspaceRoots: this.options.workspaceRoots,
     })
     await runner.run({

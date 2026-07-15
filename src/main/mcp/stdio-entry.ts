@@ -4,9 +4,11 @@ import { spawn } from "node:child_process"
 import * as os from "node:os"
 import * as path from "node:path"
 import process from "node:process"
+import { RootBudgetLedgerStore } from "../ai/budget/root-budget-ledger"
 import { asFallbackSource, CompositeToolHost } from "../ai/composite-tool-host"
 import { MEMORY_FQ_PREFIX, MemoryToolSource } from "../ai/memory/memory-tools"
-import { recordRun } from "../ai/run-trace-store"
+import { recordRun, runTraceDir, upsertRunTrace } from "../ai/run-trace-store"
+import { AgentRunStore } from "../ai/runs/agent-run-store"
 import { WorkspaceRootStore } from "../ai/workspace/workspace-root-store"
 import { WorkspaceStore } from "../ai/workspace/workspace-store"
 import { createFileSink } from "../logging/file-sink"
@@ -95,6 +97,10 @@ async function main(): Promise<void> {
       signal: request.signal,
     })
 
+  // "tools-only" mode skips trigger registration, so no background-agent run
+  // is ever dispatched here — these are supplied only because
+  // PluginHostOptions requires them uniformly across every mode.
+  const runsDir = runTraceDir(userDataDir)
   const pluginHost = new PluginHost({
     userDataDir,
     resourcesDir,
@@ -102,6 +108,9 @@ async function main(): Promise<void> {
     fetch: (url, init) => globalThis.fetch(url, init),
     runtime: () => ({ locale: "en", theme: { mode: "light", accent: "neutral" } }),
     capabilityGovernance: { userDataDir, approve },
+    runStore: new AgentRunStore(path.join(userDataDir, "ai", "runs")),
+    budgetStore: new RootBudgetLedgerStore(path.join(userDataDir, "ai", "budget")),
+    upsertTrace: (input) => upsertRunTrace(runsDir, input),
     workspaceRoots: workspaceRootStore,
     mode: "tools-only",
   })
@@ -113,7 +122,6 @@ async function main(): Promise<void> {
     new MemoryToolSource(memory),
   ])
 
-  const runsDir = path.join(userDataDir, "logs", "runs")
   const binding = resolveMcpWorkspaceBinding(process.env)
   const server = await runSynapseMcpStdioServer(host, {
     version: process.env.npm_package_version,
