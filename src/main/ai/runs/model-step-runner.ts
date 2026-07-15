@@ -64,6 +64,11 @@ export interface ModelStepDeps {
    *  Throwing here simulates a crash at exactly that point; unit tests use
    *  this instead of timing sleeps. */
   fault?: (point: ModelStepFaultPoint) => void | Promise<void>
+  /** Forwards each incremental text delta as the provider streams it, for
+   *  live UI updates. Purely observational — never persisted or awaited for
+   *  correctness; the durable checkpoint only ever gets the final assembled
+   *  message. Omitted by every caller that doesn't need live streaming. */
+  onTextDelta?: (text: string) => void
 }
 
 export class InsufficientEstimateError extends Error {}
@@ -283,7 +288,9 @@ async function callProviderAndStage(
     },
     deps.providerStreamDeadlines
   )) {
-    if (event.type === "message") {
+    if (event.type === "text") {
+      deps.onTextDelta?.(event.text)
+    } else if (event.type === "message") {
       assistantMessage = event.message
       usage = event.usage
     }

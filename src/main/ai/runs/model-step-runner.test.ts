@@ -184,6 +184,55 @@ describe("advanceModelStep — happy path", () => {
   })
 })
 
+describe("advanceModelStep — live text-delta streaming", () => {
+  it("forwards every text delta via onTextDelta, in order, before the final message settles", async () => {
+    const runId = "run-delta-1"
+    await seedRun(runId, 10_000)
+    const deltas: string[] = []
+    const provider: ChatProvider = {
+      id: "fake",
+      descriptor: { providerId: "fake", estimatorId: "byte-upper-bound", estimatorVersion: "1" },
+      estimateRequestUpperBound: () => ({
+        estimatorId: "byte-upper-bound",
+        estimatorVersion: "1",
+        inputUpperBoundTokens: 100,
+        maxOutputTokens: 256,
+      }),
+      async *stream(): AsyncIterable<ProviderStreamEvent> {
+        yield { type: "text", text: "Hel" }
+        yield { type: "text", text: "lo " }
+        yield { type: "text", text: "back" }
+        yield {
+          type: "message",
+          message: { role: "assistant", content: [{ type: "text", text: "Hello back" }] },
+          usage: {
+            inputTokens: 5,
+            outputTokens: 5,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0,
+          },
+          stopReason: "end_turn",
+        }
+      },
+    }
+
+    const result = await advanceModelStep(
+      { ...baseDeps(provider), onTextDelta: (text) => deltas.push(text) },
+      runId
+    )
+
+    expect(deltas).toEqual(["Hel", "lo ", "back"])
+    expect(result.assistantMessage.content).toEqual([{ type: "text", text: "Hello back" }])
+  })
+
+  it("never throws when onTextDelta is omitted (every existing caller keeps working)", async () => {
+    const runId = "run-delta-2"
+    await seedRun(runId, 10_000)
+    const provider = fakeProvider({ inputTokens: 5, outputTokens: 5 })
+    await expect(advanceModelStep(baseDeps(provider), runId)).resolves.toBeDefined()
+  })
+})
+
 describe("advanceModelStep — admission failure closes before dispatch", () => {
   it("throws and never calls the provider when the estimate exceeds the finite budget", async () => {
     const runId = "run-3"
