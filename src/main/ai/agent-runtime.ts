@@ -1,3 +1,4 @@
+import type { ToolResult } from "@synapse/plugin-sdk"
 import type { WorkspaceRootRecord } from "./execution/types"
 import type { EnvelopeTier } from "./guardrails/untrusted-content"
 import type { PlanStep } from "./plan/plan-types"
@@ -55,9 +56,35 @@ const UNTRUSTED_CONTEXT_NOTICE =
 // Default-on as of 2026-07-07 — two independent real-key eval runs showed
 // tool-result injection compliance go from 3x-reproduced obeyed:1 to a clean
 // obeyed:0. SYNAPSE_UNTRUSTED_ENVELOPE_V2=0 remains as an explicit kill switch.
-function envelopeTierForToolResult(toolFqName: string): EnvelopeTier {
+export function envelopeTierForToolResult(toolFqName: string): EnvelopeTier {
   if (process.env.SYNAPSE_UNTRUSTED_ENVELOPE_V2 === "0") return "legacy"
   return toolFqName.startsWith("memory:") ? "legacy" : "strong"
+}
+
+export interface RenderedToolResult {
+  /** Bounded, labeled text — exactly what the model sees as this call's result. */
+  text: string
+  isError: boolean
+}
+
+/** Renders a raw ToolResult into the bounded, untrusted-labeled text the
+ *  model sees. Shared by AgentRuntime's in-memory loop and the durable
+ *  tool-batch runner so both paths produce byte-identical output for the
+ *  same underlying result. */
+export function renderLabeledToolResult(
+  result: ToolResult,
+  toolFqName: string,
+  options: { maxToolResultChars?: number } = {}
+): RenderedToolResult {
+  const isError = result.isError ?? false
+  const text = renderToolResultText(result) || "(no output)"
+  const bounded = truncateToolResultText(text, { maxChars: options.maxToolResultChars })
+  const labeled = labelUntrustedContent(
+    `tool-result:${toolFqName}`,
+    bounded,
+    envelopeTierForToolResult(toolFqName)
+  )
+  return { text: labeled, isError }
 }
 
 function executionGuidance(workspaces: readonly WorkspaceRootRecord[]): string {
@@ -298,18 +325,13 @@ export class AgentRuntime {
         executionAuditDecision: outcome.executionAuditDecision,
         signal: options.signal,
       })
-      const isError = result.isError ?? false
-      options.onEvent?.({ type: "tool_result", id: call.id, isError })
-      record(!isError, isError ? "tool-error" : undefined)
-      const text = renderToolResultText(result) || "(no output)"
-      const bounded = truncateToolResultText(text, { maxChars: this.options.maxToolResultChars })
       const toolFqName = this.resolveToolName(call.name)
-      const labeled = labelUntrustedContent(
-        `tool-result:${toolFqName}`,
-        bounded,
-        envelopeTierForToolResult(toolFqName)
-      )
-      return toolResult(call.id, labeled, isError)
+      const rendered = renderLabeledToolResult(result, toolFqName, {
+        maxToolResultChars: this.options.maxToolResultChars,
+      })
+      options.onEvent?.({ type: "tool_result", id: call.id, isError: rendered.isError })
+      record(!rendered.isError, rendered.isError ? "tool-error" : undefined)
+      return toolResult(call.id, rendered.text, rendered.isError)
     } catch (err) {
       options.onEvent?.({ type: "tool_result", id: call.id, isError: true })
       const message = err instanceof Error ? err.message : String(err)
