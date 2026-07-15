@@ -143,6 +143,53 @@ describe("conversationStore — durable lease/commit/tombstone", () => {
     expect(deletionEpoch).toBe(0)
   })
 
+  describe("acquireRunLeaseAtCurrentRevision", () => {
+    it("reads the current content revision and acquires a lease against it atomically", async () => {
+      const s = store()
+      await seeded(s)
+      const result = await s.acquireRunLeaseAtCurrentRevision("c1", "run-1")
+      expect(result.baseContentRevision).toBe(0)
+      expect(result.fencingToken).toBe(1)
+      expect(result.deletionEpoch).toBe(0)
+      expect(result.messages).toEqual([])
+
+      // The lease is genuinely held — a second acquire attempt conflicts.
+      await expect(s.acquireRunLease("c1", 0, "run-2")).rejects.toThrow(
+        ConversationLeaseConflictError
+      )
+    })
+
+    it("picks up the conversation's current messages and revision, not a stale one", async () => {
+      const s = store()
+      await s.save({
+        id: "c1",
+        workspaceId: "default",
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      const result = await s.acquireRunLeaseAtCurrentRevision("c1", "run-1")
+      expect(result.baseContentRevision).toBe(1)
+      expect(result.messages).toHaveLength(1)
+    })
+
+    it("throws ConversationNotFoundError for a missing conversation", async () => {
+      const s = store()
+      await expect(s.acquireRunLeaseAtCurrentRevision("nope", "run-1")).rejects.toThrow(
+        ConversationNotFoundError
+      )
+    })
+
+    it("throws ConversationLeaseConflictError for a conversation with a live lease already held", async () => {
+      const s = store()
+      await seeded(s)
+      await s.acquireRunLease("c1", 0, "run-1")
+      await expect(s.acquireRunLeaseAtCurrentRevision("c1", "run-2")).rejects.toThrow(
+        ConversationLeaseConflictError
+      )
+    })
+  })
+
   it("rejects a second simultaneous lease attempt while the first is still live", async () => {
     const s = store()
     await seeded(s)

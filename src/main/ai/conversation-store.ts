@@ -220,6 +220,57 @@ export class ConversationStore {
     })
   }
 
+  /**
+   * Reads the conversation's current content revision and acquires a lease
+   * against it in one atomic step under this conversation's lock — the
+   * `expectedContentRevision` CAS parameter on {@link acquireRunLease} means
+   * a caller who doesn't already hold that revision (every new interactive
+   * turn) would otherwise have to read it first via a separate call, racing
+   * any writer that lands between the read and the acquire.
+   */
+  async acquireRunLeaseAtCurrentRevision(
+    conversationId: string,
+    runId: string
+  ): Promise<{
+    fencingToken: number
+    deletionEpoch: number
+    baseContentRevision: number
+    messages: DurableChatMessage[]
+  }> {
+    return this.withLock(conversationId, async () => {
+      const now = this.now()
+      const record = await this.readForMutation(conversationId)
+      if (!record) throw new ConversationNotFoundError(conversationId)
+      if (record.state !== "active") {
+        throw new ConversationLeaseConflictError("conversation-tombstoned")
+      }
+      if (record.activeRun && record.activeRun.leaseExpiresAt > now) {
+        throw new ConversationLeaseConflictError("lease-already-held")
+      }
+      const fencingToken = record.lastFencingToken + 1
+      const baseContentRevision = record.contentRevision
+      const next: ConversationRecordV2 = {
+        ...record,
+        lastFencingToken: fencingToken,
+        activeRun: {
+          runId,
+          fencingToken,
+          baseContentRevision,
+          leaseExpiresAt: now + DEFAULT_LEASE_MS,
+        },
+        recordRevision: record.recordRevision + 1,
+        updatedAt: now,
+      }
+      await this.writeRecord(next)
+      return {
+        fencingToken,
+        deletionEpoch: record.deletionEpoch,
+        baseContentRevision,
+        messages: record.messages,
+      }
+    })
+  }
+
   async renewRunLease(conversationId: string, runId: string, fencingToken: number): Promise<void> {
     await this.withLock(conversationId, async () => {
       const now = this.now()
