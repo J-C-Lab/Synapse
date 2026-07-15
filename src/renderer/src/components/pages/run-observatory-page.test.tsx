@@ -6,6 +6,9 @@ const listRuns = vi.fn()
 const getRun = vi.fn()
 const listAiWorkspaces = vi.fn()
 const getConversation = vi.fn()
+const listRecoverableRuns = vi.fn()
+const resumeRun = vi.fn()
+const abandonRun = vi.fn()
 
 vi.mock("@/lib/electron", () => ({
   isElectron: () => true,
@@ -13,6 +16,9 @@ vi.mock("@/lib/electron", () => ({
   getRun: (...args: unknown[]) => getRun(...args),
   listAiWorkspaces: (...args: unknown[]) => listAiWorkspaces(...args),
   getAiConversation: (...args: unknown[]) => getConversation(...args),
+  listRecoverableRuns: (...args: unknown[]) => listRecoverableRuns(...args),
+  resumeRun: (...args: unknown[]) => resumeRun(...args),
+  abandonRun: (...args: unknown[]) => abandonRun(...args),
 }))
 
 const enMessages: Record<string, string> = {
@@ -42,6 +48,14 @@ const enMessages: Record<string, string> = {
   "runObservatory.parentUnavailable":
     "Parent run trace is unavailable. It may have aged out of retention or failed to persist.",
   "runObservatory.noChildRuns": "No child runs.",
+  "runObservatory.recoverableTitle": "Recoverable runs",
+  "runObservatory.recoverableResume": "Resume",
+  "runObservatory.recoverableAbandon": "Abandon",
+  "runObservatory.recoverableBlocked": "Blocked: {{reason}}",
+  "runObservatory.recoverableConflict": "Conversation conflict — this run can only be abandoned.",
+  "runObservatory.recoverableDecisionRequired": "Needs a decision: {{reason}}",
+  "runObservatory.recoverableRetry": "Retry",
+  "runObservatory.recoverableMarkFailed": "Mark failed",
 }
 
 vi.mock("react-i18next", () => ({
@@ -78,9 +92,13 @@ beforeEach(() => {
   getRun.mockReset()
   listAiWorkspaces.mockReset()
   getConversation.mockReset()
+  listRecoverableRuns.mockReset()
+  resumeRun.mockReset()
+  abandonRun.mockReset()
   listRuns.mockResolvedValue([summaryA, summaryB])
   listAiWorkspaces.mockResolvedValue([{ id: "ws-1", name: "Project A", createdAt: 0 }])
   getConversation.mockResolvedValue({ id: "c1", workspaceId: "ws-1", messages: [], updatedAt: 0 })
+  listRecoverableRuns.mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -207,5 +225,81 @@ describe("run observatory page", () => {
 
     expect(panel.getByText("mcp")).toBeInTheDocument()
     expect(panel.queryByText("interactive")).not.toBeInTheDocument()
+  })
+})
+
+describe("run observatory page — recoverable runs", () => {
+  const recoverableRun = {
+    runId: "run-stuck",
+    rootRunId: "run-stuck",
+    origin: "interactive" as const,
+    status: "suspended_unknown_tool_outcome" as const,
+    recovery: { kind: "requires_review" as const, reason: "unknown-tool-outcome" as const },
+    createdAt: 1,
+    updatedAt: 2,
+  }
+
+  it("does not render the panel when there is nothing to recover", async () => {
+    render(<RunObservatoryPage />)
+    await screen.findByText("run-a")
+    expect(screen.queryByTestId("recoverable-runs-panel")).not.toBeInTheDocument()
+  })
+
+  it("lists a recoverable run and resumes it", async () => {
+    listRecoverableRuns.mockResolvedValue([recoverableRun])
+    resumeRun.mockResolvedValue({ ok: true })
+    render(<RunObservatoryPage />)
+
+    const panel = within(await screen.findByTestId("recoverable-runs-panel"))
+    expect(panel.getByText("run-stuck")).toBeInTheDocument()
+
+    listRecoverableRuns.mockResolvedValue([])
+    fireEvent.click(panel.getByText("Resume"))
+
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledWith("run-stuck", undefined))
+    await waitFor(() => expect(listRecoverableRuns).toHaveBeenCalledTimes(2))
+  })
+
+  it("shows a blocked reason and does not refresh the list", async () => {
+    listRecoverableRuns.mockResolvedValue([recoverableRun])
+    resumeRun.mockResolvedValue({ ok: false, reason: "blocked", blockedReason: "deadline-expired" })
+    render(<RunObservatoryPage />)
+
+    const panel = within(await screen.findByTestId("recoverable-runs-panel"))
+    fireEvent.click(panel.getByText("Resume"))
+
+    await panel.findByText(/Blocked:/)
+    expect(listRecoverableRuns).toHaveBeenCalledTimes(1)
+  })
+
+  it("offers retry/mark-failed when a decision is required, and resolves with the chosen decision", async () => {
+    listRecoverableRuns.mockResolvedValue([recoverableRun])
+    resumeRun.mockResolvedValueOnce({
+      ok: false,
+      reason: "decision_required",
+      reviewReason: "unknown-tool-outcome",
+    })
+    render(<RunObservatoryPage />)
+
+    const panel = within(await screen.findByTestId("recoverable-runs-panel"))
+    fireEvent.click(panel.getByText("Resume"))
+    await panel.findByText(/Needs a decision:/)
+
+    resumeRun.mockResolvedValueOnce({ ok: true })
+    fireEvent.click(panel.getByText("Retry"))
+
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledWith("run-stuck", { kind: "retry" }))
+  })
+
+  it("abandons a run and refreshes the recoverable list", async () => {
+    listRecoverableRuns.mockResolvedValue([recoverableRun])
+    render(<RunObservatoryPage />)
+
+    const panel = within(await screen.findByTestId("recoverable-runs-panel"))
+    listRecoverableRuns.mockResolvedValue([])
+    fireEvent.click(panel.getByText("Abandon"))
+
+    await waitFor(() => expect(abandonRun).toHaveBeenCalledWith("run-stuck"))
+    await waitFor(() => expect(listRecoverableRuns).toHaveBeenCalledTimes(2))
   })
 })

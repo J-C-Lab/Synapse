@@ -1,7 +1,17 @@
-import type { RunDetail, RunSummary } from "@/lib/electron"
+import type { AgentRunSummary } from "@synapse/agent-protocol"
+import type { ResumeRunResult, RunDetail, RunSummary } from "@/lib/electron"
 import { useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { getAiConversation, getRun, isElectron, listAiWorkspaces, listRuns } from "@/lib/electron"
+import {
+  abandonRun,
+  getAiConversation,
+  getRun,
+  isElectron,
+  listAiWorkspaces,
+  listRecoverableRuns,
+  listRuns,
+  resumeRun,
+} from "@/lib/electron"
 
 const ORIGINS = ["interactive", "background-agent", "subagent", "mcp"] as const
 const OUTCOMES = ["end_turn", "max_steps", "aborted", "budget_exceeded", "error"] as const
@@ -24,6 +34,12 @@ export function RunObservatoryPage() {
   const [conversationExists, setConversationExists] = useState<boolean | undefined>()
   const [parentUnavailable, setParentUnavailable] = useState(false)
   const [childRuns, setChildRuns] = useState<RunSummary[]>([])
+  const [recoverable, setRecoverable] = useState<AgentRunSummary[]>([])
+  const [resumeResults, setResumeResults] = useState<Record<string, ResumeRunResult>>({})
+
+  function refreshRecoverable(): void {
+    void listRecoverableRuns().then(setRecoverable)
+  }
 
   useEffect(() => {
     if (!isElectron()) return
@@ -34,7 +50,24 @@ export function RunObservatoryPage() {
     void listAiWorkspaces({ includeArchived: true }).then((list) => {
       setWorkspaceNames(Object.fromEntries(list.map((w) => [w.id, w.name])))
     })
+    refreshRecoverable()
   }, [])
+
+  async function onResume(runId: string, decision?: { kind: "retry" | "mark_failed" }) {
+    const result = await resumeRun(runId, decision)
+    setResumeResults((prev) => ({ ...prev, [runId]: result }))
+    if (result.ok) refreshRecoverable()
+  }
+
+  async function onAbandon(runId: string) {
+    await abandonRun(runId)
+    setResumeResults((prev) => {
+      const next = { ...prev }
+      delete next[runId]
+      return next
+    })
+    refreshRecoverable()
+  }
 
   useEffect(() => {
     if (!selectedRunId) {
@@ -91,6 +124,76 @@ export function RunObservatoryPage() {
         <h1 className="text-2xl font-semibold tracking-tight">{t("runObservatory.title")}</h1>
         <p className="text-sm text-muted-foreground">{t("runObservatory.subtitle")}</p>
       </header>
+
+      {recoverable.length > 0 && (
+        <div data-testid="recoverable-runs-panel" className="rounded-md border p-3">
+          <h2 className="text-sm font-semibold">{t("runObservatory.recoverableTitle")}</h2>
+          <ul className="mt-2 flex flex-col gap-2">
+            {recoverable.map((run) => {
+              const result = resumeResults[run.runId]
+              return (
+                <li key={run.runId} className="flex flex-col gap-1 text-sm">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs">{run.runId}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {run.origin} · {run.status}
+                    </span>
+                    <button
+                      type="button"
+                      className="rounded border px-2 py-0.5 text-xs hover:bg-accent"
+                      onClick={() => onResume(run.runId)}
+                    >
+                      {t("runObservatory.recoverableResume")}
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border px-2 py-0.5 text-xs hover:bg-accent"
+                      onClick={() => onAbandon(run.runId)}
+                    >
+                      {t("runObservatory.recoverableAbandon")}
+                    </button>
+                  </div>
+                  {result && !result.ok && result.reason === "blocked" && (
+                    <p className="text-xs text-muted-foreground">
+                      {t("runObservatory.recoverableBlocked", { reason: result.blockedReason })}
+                    </p>
+                  )}
+                  {result &&
+                    !result.ok &&
+                    result.reason === "conversation_conflict_unresumable" && (
+                      <p className="text-xs text-muted-foreground">
+                        {t("runObservatory.recoverableConflict")}
+                      </p>
+                    )}
+                  {result && !result.ok && result.reason === "decision_required" && (
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <span>
+                        {t("runObservatory.recoverableDecisionRequired", {
+                          reason: result.reviewReason,
+                        })}
+                      </span>
+                      <button
+                        type="button"
+                        className="rounded border px-2 py-0.5 hover:bg-accent"
+                        onClick={() => onResume(run.runId, { kind: "retry" })}
+                      >
+                        {t("runObservatory.recoverableRetry")}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded border px-2 py-0.5 hover:bg-accent"
+                        onClick={() => onResume(run.runId, { kind: "mark_failed" })}
+                      >
+                        {t("runObservatory.recoverableMarkFailed")}
+                      </button>
+                    </div>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
 
       <div className="flex gap-3">
         <label className="flex flex-col gap-1 text-sm">
