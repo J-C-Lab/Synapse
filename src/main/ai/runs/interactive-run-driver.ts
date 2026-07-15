@@ -44,10 +44,15 @@ export async function runInteractiveTurn(
   deps: InteractiveRunDriverDeps,
   runId: string
 ): Promise<InteractiveTurnOutcome> {
-  const toolBatchDeps: ToolBatchDeps = { ...deps.toolBatch, runStore: deps.model.runStore }
-  // A single top-level signal governs both the between-steps loop check
-  // below and cancellation of an in-flight provider call — callers set it
-  // once here rather than having to keep two copies in sync.
+  // A single top-level signal governs the between-steps loop check below,
+  // cancellation of an in-flight provider call, and cancellation of an
+  // in-flight tool invocation — callers set it once here rather than having
+  // to keep three copies in sync.
+  const toolBatchDeps: ToolBatchDeps = {
+    ...deps.toolBatch,
+    runStore: deps.model.runStore,
+    signal: deps.signal,
+  }
   const modelDeps: DurableAgentDriverDeps = { ...deps.model, signal: deps.signal }
 
   for (;;) {

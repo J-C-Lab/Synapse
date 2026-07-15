@@ -53,6 +53,10 @@ export interface ToolBatchDeps {
   /** Named crash-recovery test seams — never set in production. */
   fault?: (point: ToolBatchFaultPoint) => void
   maxToolResultChars?: number
+  /** Caller-supplied cancellation, forwarded into the tool invocation so a
+   *  live cancel can interrupt a running call — matches AgentRuntime's
+   *  existing runOneTool, which has always passed this through. */
+  signal?: AbortSignal
   /** Fired once per call, in order, right after the whole batch's ledger is
    *  durably created — purely observational (live UI projection), never
    *  re-fired for a call the ledger already knew about on resume. */
@@ -434,6 +438,7 @@ async function executionPhase(
     toolResult = await deps.tools.invoke(call.safeName, call.input, {
       caller: deps.caller,
       executionAuditDecision,
+      signal: deps.signal,
     })
   } catch (err) {
     executionError = err

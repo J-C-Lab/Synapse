@@ -359,6 +359,22 @@ describe("advanceToolBatch — executionAuditDecision", () => {
   })
 })
 
+describe("advanceToolBatch — cancellation", () => {
+  it("forwards deps.signal into the tool invocation so a live cancel can interrupt it", async () => {
+    const { registry, invoke } = makeRegistry(["read_file"], { read_file: () => "contents" })
+    await seed("run-signal-1", [{ id: "t1", name: "read_file", input: {} }])
+    const controller = new AbortController()
+
+    await advanceToolBatch(baseDeps(registry, { signal: controller.signal }), "run-signal-1", 0)
+
+    expect(invoke).toHaveBeenCalledWith(
+      "read_file",
+      {},
+      expect.objectContaining({ signal: controller.signal })
+    )
+  })
+})
+
 describe("advanceToolBatch — denial/policy without execution", () => {
   it("resolves a policy-denied call synthetically with no execution attempt", async () => {
     const runId = "run-3"
