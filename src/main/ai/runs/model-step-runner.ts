@@ -61,6 +61,13 @@ export interface ModelStepDeps {
    *  thrown error, leaving the attempt "dispatched" for the next call to
    *  forfeit and retry. */
   providerStreamDeadlines?: ProviderStreamDeadlines
+  /** Caller-supplied cancellation (e.g. the user cancelling a chat turn),
+   *  forwarded to the provider request alongside the deadline timers —
+   *  streamWithDeadlines combines both into one signal. Dispatched state is
+   *  left exactly as it is on abort; the next call's own recovery
+   *  (ensureForfeitedAndPrepareNext) reconciles it like any other
+   *  interrupted dispatch. */
+  signal?: AbortSignal
   /** Deterministic fault injection for tests — called at named boundaries.
    *  Throwing here simulates a crash at exactly that point; unit tests use
    *  this instead of timing sleeps. */
@@ -284,6 +291,7 @@ async function callProviderAndStage(
       messages,
       tools,
       maxTokens: checkpoint.config.maxOutputTokens,
+      signal: deps.signal,
     },
     deps.providerStreamDeadlines
   )) {

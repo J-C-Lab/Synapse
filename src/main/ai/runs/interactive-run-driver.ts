@@ -45,6 +45,10 @@ export async function runInteractiveTurn(
   runId: string
 ): Promise<InteractiveTurnOutcome> {
   const toolBatchDeps: ToolBatchDeps = { ...deps.toolBatch, runStore: deps.model.runStore }
+  // A single top-level signal governs both the between-steps loop check
+  // below and cancellation of an in-flight provider call — callers set it
+  // once here rather than having to keep two copies in sync.
+  const modelDeps: DurableAgentDriverDeps = { ...deps.model, signal: deps.signal }
 
   for (;;) {
     if (deps.signal?.aborted) {
@@ -71,7 +75,7 @@ export async function runInteractiveTurn(
 
     let stepOutcome
     try {
-      stepOutcome = await advanceDurableRun(deps.model, runId)
+      stepOutcome = await advanceDurableRun(modelDeps, runId)
     } catch (err) {
       if (err instanceof InsufficientBudgetError || err instanceof InsufficientEstimateError) {
         return finalizeTerminal(deps, runId, "budget_exceeded")

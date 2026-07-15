@@ -282,6 +282,46 @@ describe("advanceModelStep — workspace-instruction context injection", () => {
   })
 })
 
+describe("advanceModelStep — cancellation", () => {
+  it("forwards deps.signal to the provider request so an external abort actually cancels the call", async () => {
+    const runId = "run-cancel-1"
+    await seedRun(runId, 10_000)
+    const seenSignals: (AbortSignal | undefined)[] = []
+    const provider: ChatProvider = {
+      id: "fake",
+      descriptor: { providerId: "fake", estimatorId: "byte-upper-bound", estimatorVersion: "1" },
+      estimateRequestUpperBound: () => ({
+        estimatorId: "byte-upper-bound",
+        estimatorVersion: "1",
+        inputUpperBoundTokens: 100,
+        maxOutputTokens: 256,
+      }),
+      async *stream(req: ProviderRequest): AsyncIterable<ProviderStreamEvent> {
+        seenSignals.push(req.signal)
+        // Mimics a real SDK client: several real fs writes happen between
+        // advanceModelStep() starting and the provider actually being
+        // called, so by the time we get here the caller's abort() below
+        // (fired synchronously, right after kicking off the promise) has
+        // almost certainly already landed — check .aborted directly rather
+        // than relying solely on a future "abort" event that already fired.
+        if (req.signal?.aborted) throw req.signal.reason
+        await new Promise((_, reject) => {
+          req.signal?.addEventListener("abort", () => reject(req.signal!.reason))
+        })
+        yield { type: "text", text: "unreachable" } as ProviderStreamEvent
+      },
+    }
+    const controller = new AbortController()
+
+    const promise = advanceModelStep({ ...baseDeps(provider), signal: controller.signal }, runId)
+    controller.abort(new Error("user cancelled"))
+
+    await expect(promise).rejects.toThrow(/cancelled/)
+    expect(seenSignals).toHaveLength(1)
+    expect(seenSignals[0]).toBeInstanceOf(AbortSignal)
+  })
+})
+
 describe("advanceModelStep — admission failure closes before dispatch", () => {
   it("throws and never calls the provider when the estimate exceeds the finite budget", async () => {
     const runId = "run-3"
