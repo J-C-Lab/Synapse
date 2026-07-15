@@ -180,9 +180,10 @@ async function prepareAttempt(
   const tools = deps.tools()
   const maxOutputTokens = checkpoint.config.maxOutputTokens
 
+  const accountId = budgetAccountIdFor(checkpoint)
   const ledgerNow = await deps.budgetStore.load(checkpoint.identity.rootRunId)
-  const rootAccount = ledgerNow.accounts[ROOT_ACCOUNT_ID]
-  const isUnlimited = rootAccount !== undefined && freeBalance(rootAccount) === undefined
+  const account = ledgerNow.accounts[accountId]
+  const isUnlimited = account !== undefined && freeBalance(account) === undefined
 
   const estimate = deps.provider.estimateRequestUpperBound?.({
     model: checkpoint.config.model,
@@ -200,7 +201,7 @@ async function prepareAttempt(
   const attemptId = randomUUID()
   const admission: ModelBudgetAdmission = {
     operationId: `admit:${checkpoint.identity.runId}:${step}:${attemptId}`,
-    accountId: ROOT_ACCOUNT_ID,
+    accountId,
     estimatorId: estimate?.estimatorId ?? "none",
     estimatorVersion: estimate?.estimatorVersion ?? "0",
     inputUpperBoundTokens: estimate?.inputUpperBoundTokens ?? 0,
@@ -404,6 +405,19 @@ async function ensureForfeitedAndPrepareNext(
   }
 
   return prepareAttempt(deps, cp, step)
+}
+
+/** A run admits/settles against its own account: the root account for a run
+ *  that is its own root (interactive/background — identity.runId ===
+ *  rootRunId), or the child-task account reserved for it under the shared
+ *  root ledger otherwise (a subagent — see runs/subagent-run-setup.ts's
+ *  reserveChildAccount call). A child-task account's totalTokens is always
+ *  finite (reserveChildAccount requires a concrete number), so a subagent
+ *  step can never be treated as unlimited even when its root run is. */
+function budgetAccountIdFor(checkpoint: AgentRunCheckpointV1): string {
+  return checkpoint.identity.runId === checkpoint.identity.rootRunId
+    ? ROOT_ACCOUNT_ID
+    : checkpoint.identity.runId
 }
 
 /** The exact system text and wire messages one provider request is built

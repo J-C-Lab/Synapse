@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
   createRootBudgetLedger,
   freeBalance,
+  reserveChildAccount,
   ROOT_ACCOUNT_ID,
   RootBudgetLedgerStore,
 } from "../budget/root-budget-ledger"
@@ -509,5 +510,38 @@ describe("advanceModelStep — unlimited interactive runs are never blocked", ()
     const provider = fakeProvider({ inputTokens: 500_000, outputTokens: 500_000 })
     const result = await advanceModelStep(baseDeps(provider), runId)
     expect(result.kind).toBe("settled")
+  })
+})
+
+describe("advanceModelStep — child budget accounts (subagent runs)", () => {
+  it("admits against its own child account, not the root, when identity.runId differs from rootRunId", async () => {
+    const rootRunId = "parent-root"
+    const childRunId = "child-1"
+
+    await runStore.create(
+      (() => {
+        const cp = minimalCheckpoint(childRunId, undefined)
+        return { ...cp, identity: { ...cp.identity, rootRunId, parentRunId: rootRunId } }
+      })()
+    )
+    await budgetStore.create(createRootBudgetLedger(rootRunId, 10_000))
+    const seeded = await budgetStore.load(rootRunId)
+    const { ledger: reserved } = reserveChildAccount(seeded, {
+      operationId: "reserve-child-1",
+      accountId: childRunId,
+      taskId: childRunId,
+      totalTokens: 500,
+    })
+    await budgetStore.mutate(rootRunId, seeded.revision, () => reserved)
+
+    const provider = fakeProvider({ inputTokens: 20, outputTokens: 10 })
+    const result = await advanceModelStep(baseDeps(provider), childRunId)
+
+    expect(result.kind).toBe("settled")
+    const budgetLedger = await budgetStore.load(rootRunId)
+    expect(budgetLedger.accounts[ROOT_ACCOUNT_ID]?.heldTokens).toBe(0)
+    expect(budgetLedger.accounts[ROOT_ACCOUNT_ID]?.consumedTokens).toBe(0)
+    expect(budgetLedger.accounts[ROOT_ACCOUNT_ID]?.reservedTokens).toBe(500)
+    expect(budgetLedger.accounts[childRunId]?.consumedTokens).toBe(30)
   })
 })
