@@ -204,6 +204,13 @@ const electronAPI = {
   unarchiveAiWorkspace: (id: string) => ipcRenderer.invoke("ai:unarchive-workspace", { id }),
   listRuns: (query?: { parentRunId?: string }) => ipcRenderer.invoke("runs:list", query),
   getRun: (runId: string) => ipcRenderer.invoke("runs:get", runId),
+  getRunSnapshot: (runId: string) => ipcRenderer.invoke("runs:getSnapshot", runId),
+  getRunEventsSince: (runId: string, afterSequence: number) =>
+    ipcRenderer.invoke("runs:getEventsSince", { runId, afterSequence }),
+  listRecoverableRuns: () => ipcRenderer.invoke("runs:listRecoverable"),
+  resumeRun: (runId: string, decision?: { kind: "retry" | "mark_failed" }) =>
+    ipcRenderer.invoke("runs:resume", { runId, decision }),
+  abandonRun: (runId: string) => ipcRenderer.invoke("runs:abandon", runId),
   listWorkspaceRoots: (workspaceId: string) =>
     ipcRenderer.invoke("ai:list-workspace-roots", workspaceId),
   getMcpOnboardingAvailability: (workspaceId: string) =>

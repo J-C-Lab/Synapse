@@ -2,6 +2,8 @@
 // Kept in the preload package so the renderer and the preload always
 // agree on the contract.
 
+import type { AgentRunEvent, AgentRunSnapshot, AgentRunSummary } from "@synapse/agent-protocol"
+
 export {}
 
 declare global {
@@ -428,6 +430,12 @@ declare global {
     plan?: { title: string; status: "pending" | "in_progress" | "completed" }[]
   }
 
+  type SynapseResumeRunResult =
+    | { ok: true }
+    | { ok: false; reason: "blocked"; blockedReason: string }
+    | { ok: false; reason: "decision_required"; reviewReason: string }
+    | { ok: false; reason: "conversation_conflict_unresumable" }
+
   interface SynapseWorkspaceRoot {
     id: string
     workspaceId: string
@@ -843,6 +851,14 @@ declare global {
       unarchiveAiWorkspace: (id: string) => Promise<SynapseAiWorkspace>
       listRuns: (query?: { parentRunId?: string }) => Promise<SynapseRunSummary[]>
       getRun: (runId: string) => Promise<SynapseRunDetail | undefined>
+      getRunSnapshot: (runId: string) => Promise<AgentRunSnapshot | undefined>
+      getRunEventsSince: (runId: string, afterSequence: number) => Promise<AgentRunEvent[]>
+      listRecoverableRuns: () => Promise<AgentRunSummary[]>
+      resumeRun: (
+        runId: string,
+        decision?: { kind: "retry" | "mark_failed" }
+      ) => Promise<SynapseResumeRunResult>
+      abandonRun: (runId: string) => Promise<void>
       listWorkspaceRoots: (workspaceId: string) => Promise<SynapseWorkspaceRoot[]>
       getMcpOnboardingAvailability: (
         workspaceId: string

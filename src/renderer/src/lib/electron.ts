@@ -1,3 +1,4 @@
+import type { AgentRunEvent, AgentRunSnapshot, AgentRunSummary } from "@synapse/agent-protocol"
 import type {
   AdminReportsResponse,
   MyPluginsResponse,
@@ -685,6 +686,34 @@ export async function listRuns(query?: { parentRunId?: string }): Promise<RunSum
 
 export async function getRun(runId: string): Promise<RunDetail | undefined> {
   return api().getRun(runId)
+}
+
+export async function getRunSnapshot(runId: string): Promise<AgentRunSnapshot | undefined> {
+  return api().getRunSnapshot(runId)
+}
+
+export async function getRunEventsSince(
+  runId: string,
+  afterSequence: number
+): Promise<AgentRunEvent[]> {
+  return api().getRunEventsSince(runId, afterSequence)
+}
+
+export async function listRecoverableRuns(): Promise<AgentRunSummary[]> {
+  return api().listRecoverableRuns()
+}
+
+export type ResumeRunResult = SynapseResumeRunResult
+
+export async function resumeRun(
+  runId: string,
+  decision?: { kind: "retry" | "mark_failed" }
+): Promise<ResumeRunResult> {
+  return api().resumeRun(runId, decision)
+}
+
+export async function abandonRun(runId: string): Promise<void> {
+  await api().abandonRun(runId)
 }
 
 export async function createAiWorkspace(name: string): Promise<AiWorkspace> {
