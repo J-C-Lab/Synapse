@@ -65,8 +65,13 @@ import {
   runTraceDir,
   upsertRunTrace,
 } from "./ai/run-trace-store"
+import { AgentRunRecoveryService } from "./ai/runs/agent-run-recovery-service"
 import { AgentRunStore } from "./ai/runs/agent-run-store"
+import { freezeAuthoritySnapshot } from "./ai/runs/authority-snapshot"
+import { buildTraceFromCheckpoint } from "./ai/runs/interactive-run-driver"
+import { rootSetHashFor } from "./ai/runs/interactive-run-setup"
 import { RunEventStore } from "./ai/runs/run-event-store"
+import { finalizeRun } from "./ai/runs/run-finalizer"
 import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
@@ -264,6 +269,7 @@ let hostResourceIpcService!: HostResourceIpcService
 let approvalRegistry!: ApprovalRegistry
 let lan: LanService
 let agent: AgentService
+let agentRunRecoveryService: AgentRunRecoveryService
 let sharedMemoryTools: MemoryToolSource | undefined
 let sharedExecutionTools: ExecutionToolHostSource | undefined
 let runTraceRecorder: (trace: RunTrace) => void = () => {}
@@ -464,9 +470,12 @@ function registerIpc(): void {
     workspaces: new WorkspaceStore(path.join(app.getPath("userData"), "ai")),
     spawnConnectionTest: (descriptor) => runMcpConnectionTest(descriptor, 10_000),
   })
-  registerRunsIpc(ipcMain, runTraceDir(app.getPath("userData")), {
-    isTrustedSender: isTrustedIpcSender,
-  })
+  registerRunsIpc(
+    ipcMain,
+    runTraceDir(app.getPath("userData")),
+    { runStore: agentRunStore, eventStore: agentEventStore, recovery: agentRunRecoveryService },
+    { isTrustedSender: isTrustedIpcSender }
+  )
   if (memoryService)
     registerMemoryIpc(ipcMain, memoryService, { isTrustedSender: isTrustedIpcSender })
   updateService = setupAutoUpdates()
@@ -1044,6 +1053,71 @@ async function createAgentService(): Promise<AgentService> {
     }
   })
 
+  const conversations = new ConversationStore(path.join(userDataDir, "ai", "conversations"))
+
+  agentRunRecoveryService = new AgentRunRecoveryService({
+    runStore: agentRunStore,
+    now: Date.now,
+    finalize: (runId, input) =>
+      finalizeRun(
+        {
+          runStore: agentRunStore,
+          conversation: conversations,
+          upsertTrace: (upsertInput) => upsertRunTrace(runsDir, upsertInput),
+          releaseResources: async () => {},
+          now: Date.now,
+        },
+        runId,
+        input
+      ),
+    buildAbandonTrace: (checkpoint) => buildTraceFromCheckpoint(checkpoint, "aborted"),
+    buildAbandonResourcePlan: () => ({
+      budgetOperationIds: [],
+      skillPackageLeaseIds: [],
+      releaseArtifactRunPin: false,
+      adoptionLeaseIds: [],
+    }),
+    buildClassifierInput: async (checkpoint) => {
+      const conversationExists = checkpoint.identity.conversationId
+        ? (await conversations.get(checkpoint.identity.conversationId)) !== undefined
+        : undefined
+      const currentWorkspaceRootSetHash = checkpoint.identity.workspaceId
+        ? rootSetHashFor(await workspaceRootStore.listForWorkspace(checkpoint.identity.workspaceId))
+        : undefined
+      // Interactive runs share the one global tool registry + a fixed
+      // principal, so their current authority is exactly reconstructible.
+      // Background-agent/subagent runs are narrowed at spawn time (trigger
+      // capability filtering, spawn_subagent's tool intersection) from
+      // inputs the checkpoint doesn't retain — there is no way to
+      // reconstruct "the tools this specific run would get if started
+      // today" from the checkpoint alone. For those origins this compares
+      // the run's own frozen authority against itself (never narrower,
+      // never wider), a documented limitation: authority-narrowing since
+      // the run started won't be caught for those two origins, though the
+      // conversation-existence/workspace-binding/context-integrity/
+      // deadline/unknown-tool-outcome checks above are unaffected and still
+      // apply to every origin.
+      const currentAuthority =
+        checkpoint.identity.origin === "interactive"
+          ? freezeAuthoritySnapshot({
+              principal: { kind: "interactive", actor: "user" },
+              capabilities: [],
+              tools: agentTools.listWithDescriptors().map(({ schema, descriptor }) => ({
+                descriptor,
+                safeName: schema.name,
+                modelSchema: schema,
+              })),
+            })
+          : checkpoint.config.authority
+      return {
+        currentAuthority,
+        conversationExists,
+        currentWorkspaceRootSetHash,
+        now: Date.now(),
+      }
+    },
+  })
+
   const agentService = new AgentService({
     credentials,
     tools: agentTools,
@@ -1069,7 +1143,7 @@ async function createAgentService(): Promise<AgentService> {
         fqName: ctx.fqName,
         input: ctx.input,
       }),
-    conversations: new ConversationStore(path.join(userDataDir, "ai", "conversations")),
+    conversations,
     workspaces: new WorkspaceStore(path.join(userDataDir, "ai")),
     providers: defaultProviderCatalog(),
     settings: aiSettings,

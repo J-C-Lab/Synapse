@@ -72,7 +72,10 @@ export function deriveTitle(messages: readonly ChatMessage[]): string {
   return raw.length > 60 ? `${raw.slice(0, 60)}…` : raw
 }
 
-function rootSetHashFor(workspaces: readonly WorkspaceRootRecord[]): string {
+/** Exported for reuse by recovery classification (index.ts), which needs the
+ *  exact same hash construction to compare a checkpoint's frozen workspace
+ *  binding against the workspace's current root set. */
+export function rootSetHashFor(workspaces: readonly WorkspaceRootRecord[]): string {
   const ids = workspaces.map((ws) => ws.id).sort()
   return canonicalHash(ids as unknown as CanonicalJson)
 }

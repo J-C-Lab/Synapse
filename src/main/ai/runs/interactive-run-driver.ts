@@ -156,8 +156,10 @@ async function finalizeTerminal(
  *  whether this is the first pass or a resume after a crash. RunTrace is a
  *  diagnostics index (design §"RunTrace... does NOT duplicate tool
  *  arguments/results"), not a source of truth, so approximate timing for
- *  calls that never executed (denied/invalid) is an acceptable trade-off. */
-function buildTraceFromCheckpoint(
+ *  calls that never executed (denied/invalid) is an acceptable trade-off.
+ *  Exported for reuse by AgentRunRecoveryService's buildAbandonTrace
+ *  (index.ts), which needs the identical checkpoint-derived trace shape. */
+export function buildTraceFromCheckpoint(
   checkpoint: AgentRunCheckpointV1,
   outcome: InteractiveTurnStopReason
 ): RunTrace {
