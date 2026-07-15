@@ -207,7 +207,10 @@ function deriveInvocationAdapterId(
   return "mcp-client"
 }
 
-function frozenProvenance(
+/** Maps a live tool descriptor's provenance to the frozen/invocation-recovery
+ *  vocabulary ("mcp-client" -> "mcp"); reused by tool-registry.ts's
+ *  invocation-adapter wiring so the two never drift apart. */
+export function frozenProvenance(
   provenance: RegisteredToolDescriptor["provenance"]
 ): FrozenToolAuthority["provenance"] {
   return provenance === "mcp-client" ? "mcp" : provenance

@@ -1,7 +1,12 @@
 import type { RegisteredToolDescriptor } from "../plugins/types"
 import type { ToolHostPort } from "./tool-registry"
 import { describe, expect, it, vi } from "vitest"
-import { AiToolRegistry, modelToolName, renderToolResultText } from "./tool-registry"
+import {
+  AiToolRegistry,
+  invocationAdapterFor,
+  modelToolName,
+  renderToolResultText,
+} from "./tool-registry"
 
 function descriptor(
   fqName: string,
@@ -161,6 +166,23 @@ describe("aiToolRegistry", () => {
       registry.invoke(modelToolName(bad), {}, { caller: { kind: "agent" } })
     ).rejects.toThrow(/not model-visible/)
     expect(h.invokeTool).not.toHaveBeenCalled()
+  })
+})
+
+describe("invocationAdapterFor", () => {
+  it("declares replayGuarantee none for every provenance — accepting an id alone proves nothing", () => {
+    expect(invocationAdapterFor(descriptor("com.x/a", "host")).replayGuarantee).toBe("none")
+    expect(invocationAdapterFor(descriptor("com.x/a", "plugin")).replayGuarantee).toBe("none")
+    expect(invocationAdapterFor(descriptor("mcp:s/a", "mcp-client")).replayGuarantee).toBe("none")
+  })
+
+  it("maps mcp-client provenance to the mcp adapter label", () => {
+    expect(invocationAdapterFor(descriptor("mcp:s/a", "mcp-client")).provenance).toBe("mcp")
+  })
+
+  it("always reports unknown for recovery — never a guess", async () => {
+    const adapter = invocationAdapterFor(descriptor("com.x/a", "plugin"))
+    expect(await adapter.recoverInvocation("inv-1", "fp-1")).toEqual({ status: "unknown" })
   })
 })
 
