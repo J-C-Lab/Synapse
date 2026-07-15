@@ -1,6 +1,8 @@
+import type { AgentRunEvent } from "@synapse/agent-protocol"
 import type { ChatProvider, ProviderRequest, ProviderStreamEvent } from "../providers/types"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
 import type { ModelStepDeps, ModelStepFaultPoint } from "./model-step-runner"
+import type { RunEventEmitter } from "./run-event-emitter"
 import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -543,5 +545,83 @@ describe("advanceModelStep — child budget accounts (subagent runs)", () => {
     expect(budgetLedger.accounts[ROOT_ACCOUNT_ID]?.consumedTokens).toBe(0)
     expect(budgetLedger.accounts[ROOT_ACCOUNT_ID]?.reservedTokens).toBe(500)
     expect(budgetLedger.accounts[childRunId]?.consumedTokens).toBe(30)
+  })
+})
+
+function fakeEmitter(): RunEventEmitter & { events: AgentRunEvent[] } {
+  const events: AgentRunEvent[] = []
+  return {
+    events,
+    async emit(input) {
+      events.push({ ...input } as AgentRunEvent)
+    },
+  }
+}
+
+describe("advanceModelStep — durable event emission", () => {
+  it("emits budget_admission_updated(held) then budget_admission_updated(settled) and model_completed on a normal settle", async () => {
+    const runId = "run-events-1"
+    await seedRun(runId, 10_000)
+    const emitter = fakeEmitter()
+    const provider = fakeProvider({ inputTokens: 20, outputTokens: 10 })
+
+    await advanceModelStep({ ...baseDeps(provider), eventEmitter: emitter }, runId)
+
+    expect(emitter.events.map((e) => [e.type, "state" in e ? e.state : undefined])).toEqual([
+      ["budget_admission_updated", "held"],
+      ["budget_admission_updated", "settled"],
+      ["model_completed", undefined],
+    ])
+    const settled = emitter.events[1]
+    expect(settled).toMatchObject({ type: "budget_admission_updated", consumedTokens: 30 })
+    const completed = emitter.events[2]
+    expect(completed).toMatchObject({
+      type: "model_completed",
+      step: 0,
+      inputTokens: 20,
+      outputTokens: 10,
+    })
+    expect(
+      completed && "assistantMessageId" in completed && typeof completed.assistantMessageId
+    ).toBe("string")
+  })
+
+  it("emits budget_admission_updated(forfeited) when a crash is simulated right after the dispatch checkpoint", async () => {
+    const runId = "run-events-2"
+    await seedRun(runId, 10_000)
+    const emitter = fakeEmitter()
+    const provider = fakeProvider({ inputTokens: 20, outputTokens: 10 })
+
+    await expect(
+      advanceModelStep(
+        {
+          ...baseDeps(provider, (point) => {
+            if (point === "after_dispatch_checkpoint") throw new Error("simulated crash")
+          }),
+          eventEmitter: emitter,
+        },
+        runId
+      )
+    ).rejects.toThrow("simulated crash")
+
+    // Resume: the next call forfeits the interrupted hold before preparing fresh.
+    await advanceModelStep(
+      { ...baseDeps(fakeProvider({ inputTokens: 5, outputTokens: 5 })), eventEmitter: emitter },
+      runId
+    )
+
+    const forfeited = emitter.events.find(
+      (e) => e.type === "budget_admission_updated" && e.state === "forfeited"
+    )
+    expect(forfeited).toBeDefined()
+  })
+
+  it("never throws when eventEmitter is omitted (every existing caller keeps working)", async () => {
+    const runId = "run-events-3"
+    await seedRun(runId, 10_000)
+    const provider = fakeProvider({ inputTokens: 20, outputTokens: 10 })
+    await expect(advanceModelStep(baseDeps(provider), runId)).resolves.toMatchObject({
+      kind: "settled",
+    })
   })
 })

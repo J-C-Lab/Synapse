@@ -9,6 +9,7 @@ import type {
   ModelRequestAttempt,
   ModelStepLedger,
 } from "./checkpoint-schema"
+import type { RunEventEmitter } from "./run-event-emitter"
 import { randomUUID } from "node:crypto"
 import { injectUntrustedContext } from "../agent-runtime"
 import {
@@ -77,6 +78,11 @@ export interface ModelStepDeps {
    *  correctness; the durable checkpoint only ever gets the final assembled
    *  message. Omitted by every caller that doesn't need live streaming. */
   onTextDelta?: (text: string) => void
+  /** Emits budget_admission_updated/model_completed to the durable event
+   *  journal at each transition — purely observational (renderer
+   *  projection), never awaited for correctness. Omitted by callers that
+   *  don't need durable event history (most existing tests). */
+  eventEmitter?: RunEventEmitter
 }
 
 export class InsufficientEstimateError extends Error {}
@@ -253,6 +259,12 @@ async function holdAttempt(
     modelSteps: upsertAttempt(cp.modelSteps, step, heldAttempt),
   }))
   await deps.fault?.("after_hold")
+  await deps.eventEmitter?.emit({
+    type: "budget_admission_updated",
+    operationId: attempt.admission.operationId,
+    state: "held",
+    heldTokens,
+  })
   return next
 }
 
@@ -356,6 +368,22 @@ async function settleAttempt(
     usage: addUsage(cp.usage, attempt.usage ?? emptyUsage()),
   }))
   await deps.fault?.("after_settle")
+  await deps.eventEmitter?.emit({
+    type: "budget_admission_updated",
+    operationId: attempt.admission.operationId,
+    state: "settled",
+    consumedTokens: actualTokens,
+  })
+  if (attempt.assistantMessageId) {
+    const usage = attempt.usage ?? emptyUsage()
+    await deps.eventEmitter?.emit({
+      type: "model_completed",
+      step,
+      assistantMessageId: attempt.assistantMessageId,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+    })
+  }
   return { checkpoint: next, estimatorIncompatible }
 }
 
@@ -402,6 +430,12 @@ async function ensureForfeitedAndPrepareNext(
       modelSteps: upsertAttempt(c.modelSteps, step, forfeitedAttempt),
     }))
     await deps.fault?.("after_forfeit_checkpoint")
+    await deps.eventEmitter?.emit({
+      type: "budget_admission_updated",
+      operationId: current.admission.operationId,
+      state: "forfeited",
+      consumedTokens: current.admission.heldTokens,
+    })
   }
 
   return prepareAttempt(deps, cp, step)
