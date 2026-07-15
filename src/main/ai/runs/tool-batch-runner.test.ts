@@ -1,5 +1,7 @@
+import type { AgentRunEvent } from "@synapse/agent-protocol"
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../../plugins/types"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
+import type { RunEventEmitter } from "./run-event-emitter"
 import type { ToolBatchDeps, ToolBatchFaultPoint } from "./tool-batch-runner"
 import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
@@ -8,6 +10,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AiToolRegistry } from "../tool-registry"
 import { AgentRunStore } from "./agent-run-store"
 import { advanceToolBatch } from "./tool-batch-runner"
+
+function fakeEmitter(): RunEventEmitter & { events: AgentRunEvent[] } {
+  const events: AgentRunEvent[] = []
+  return {
+    events,
+    async emit(input) {
+      events.push({ ...input } as AgentRunEvent)
+    },
+  }
+}
 
 let dir: string
 let runStore: AgentRunStore
@@ -631,5 +643,78 @@ describe("advanceToolBatch — unknown tool outcome suspension", () => {
     const call = outcome.checkpoint.toolBatches[0]!.calls[0]!
     expect(call.attempts[0]?.state.status).toBe("unknown")
     expect(call.resolution.status).toBe("unresolved")
+  })
+})
+
+describe("advanceToolBatch — durable event emission", () => {
+  it("emits tool_requested then tool_started/tool_completed for an auto-allowed call", async () => {
+    const runId = "run-events-1"
+    const { registry } = makeRegistry(["read_file"], { read_file: () => "contents" })
+    await seed(runId, [{ id: "t1", name: "read_file", input: { path: "a.txt" } }])
+    const emitter = fakeEmitter()
+
+    await advanceToolBatch(baseDeps(registry, { eventEmitter: emitter }), runId, 0)
+
+    expect(emitter.events.map((e) => e.type)).toEqual([
+      "tool_requested",
+      "tool_started",
+      "tool_completed",
+    ])
+    expect(emitter.events[0]).toMatchObject({
+      type: "tool_requested",
+      modelStep: 0,
+      ordinal: 0,
+      toolUseId: "t1",
+      safeName: "read_file",
+    })
+    expect(emitter.events[2]).toMatchObject({
+      type: "tool_completed",
+      ordinal: 0,
+      toolUseId: "t1",
+      isError: false,
+      complete: true,
+    })
+  })
+
+  it("emits approval_pending then approval_resolved(allowed: false) for a denied confirmation-required call", async () => {
+    const runId = "run-events-2"
+    const { registry } = makeRegistry(
+      ["write_file"],
+      { write_file: () => "ok" },
+      { requiresConfirmation: true }
+    )
+    await seed(runId, [{ id: "t1", name: "write_file", input: {} }])
+    const emitter = fakeEmitter()
+
+    await advanceToolBatch(
+      baseDeps(registry, {
+        eventEmitter: emitter,
+        requestApproval: async () => ({ allowed: false, remember: "once" }),
+      }),
+      runId,
+      0
+    )
+
+    expect(emitter.events.map((e) => e.type)).toEqual([
+      "tool_requested",
+      "approval_pending",
+      "approval_resolved",
+    ])
+    expect(emitter.events[2]).toMatchObject({
+      type: "approval_resolved",
+      allowed: false,
+      remember: "once",
+    })
+    // Denied without ever executing — there's no attempt/attemptId to
+    // report, so no tool_completed is emitted for this call.
+    expect(emitter.events.some((e) => e.type === "tool_completed")).toBe(false)
+  })
+
+  it("never throws when eventEmitter is omitted (every existing caller keeps working)", async () => {
+    const runId = "run-events-3"
+    const { registry } = makeRegistry(["read_file"], { read_file: () => "contents" })
+    await seed(runId, [{ id: "t1", name: "read_file", input: {} }])
+    const outcome = await advanceToolBatch(baseDeps(registry), runId, 0)
+    expect(outcome.kind).toBe("materialized")
   })
 })

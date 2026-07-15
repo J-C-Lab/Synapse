@@ -15,6 +15,7 @@ import type {
   DurableApprovalResolver,
   RememberScope,
 } from "./durable-approval"
+import type { RunEventEmitter } from "./run-event-emitter"
 import { randomUUID } from "node:crypto"
 import { renderLabeledToolResult } from "../agent-runtime"
 import { invocationAdapterFor } from "../tool-registry"
@@ -65,6 +66,11 @@ export interface ToolBatchDeps {
    *  (executed, denied, invalid, or a conforming adapter's replayed prior
    *  result) — purely observational, fired after the persisting write. */
   onToolResult?: (call: { id: string; isError: boolean }) => void
+  /** Emits tool_requested/approval_pending/approval_resolved/tool_started/
+   *  tool_completed to the durable event journal — purely observational
+   *  (renderer projection), never awaited for correctness. Omitted by
+   *  callers that don't need durable event history (most existing tests). */
+  eventEmitter?: RunEventEmitter
 }
 
 export type ToolBatchOutcome =
@@ -87,6 +93,14 @@ export async function advanceToolBatch(
     deps.fault?.("after_batch_created")
     for (const call of requireBatch(checkpoint, modelStep).calls) {
       deps.onToolCall?.({ id: call.toolUseId, name: call.safeName, input: call.input })
+      await deps.eventEmitter?.emit({
+        type: "tool_requested",
+        modelStep,
+        ordinal: call.ordinal,
+        toolUseId: call.toolUseId,
+        safeName: call.safeName,
+        fqName: call.fqName,
+      })
     }
   }
 
@@ -290,6 +304,12 @@ async function approvalPhase(
       }))
     )
     deps.fault?.("after_approval_pending")
+    await deps.eventEmitter?.emit({
+      type: "approval_pending",
+      approvalId,
+      ordinal,
+      safeName: call.safeName,
+    })
 
     const decided = await deps.requestApproval(approvalId, policyInput(call))
     checkpoint = await mutateCheckpoint(deps, runId, (cp) =>
@@ -305,6 +325,12 @@ async function approvalPhase(
       }))
     )
     deps.fault?.("after_approval_resolved")
+    await deps.eventEmitter?.emit({
+      type: "approval_resolved",
+      approvalId,
+      allowed: decided.allowed,
+      remember: decided.remember,
+    })
 
     if (!decided.allowed) {
       await resolveWithoutExecution(deps, runId, modelStep, ordinal, "approval-denied")
@@ -329,6 +355,12 @@ async function approvalPhase(
       }))
     )
     deps.fault?.("after_approval_resolved")
+    await deps.eventEmitter?.emit({
+      type: "approval_resolved",
+      approvalId,
+      allowed: decided.allowed,
+      remember: decided.remember,
+    })
 
     if (!decided.allowed) {
       await resolveWithoutExecution(deps, runId, modelStep, ordinal, "approval-denied")
@@ -425,6 +457,12 @@ async function executionPhase(
     updateCall(cp, modelStep, ordinal, (c) => ({ ...c, attempts: [...c.attempts, newAttempt] }))
   )
   deps.fault?.("after_attempt_started")
+  await deps.eventEmitter?.emit({
+    type: "tool_started",
+    ordinal,
+    toolUseId: call.toolUseId,
+    attemptId,
+  })
 
   // "approved" only when this call was actually asked and the answer was
   // allow; "not_required" (auto-allowed by the annotation heuristic or a
@@ -481,6 +519,14 @@ async function executionPhase(
   )
   deps.fault?.("after_attempt_completed")
   deps.onToolResult?.({ id: call.toolUseId, isError: persistedResult.isError })
+  await deps.eventEmitter?.emit({
+    type: "tool_completed",
+    ordinal,
+    toolUseId: call.toolUseId,
+    attemptId,
+    isError: persistedResult.isError,
+    complete: persistedResult.complete,
+  })
 
   return { kind: "resolved", checkpoint }
 }
@@ -532,6 +578,14 @@ async function recoverInterruptedAttempt(
       }))
     )
     deps.onToolResult?.({ id: call.toolUseId, isError: result.isError })
+    await deps.eventEmitter?.emit({
+      type: "tool_completed",
+      ordinal,
+      toolUseId: call.toolUseId,
+      attemptId: latest.attemptId,
+      isError: result.isError,
+      complete: result.complete,
+    })
     return { kind: "resolved", checkpoint }
   }
 
