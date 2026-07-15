@@ -180,6 +180,37 @@ describe("conversationStore — durable lease/commit/tombstone", () => {
       )
     })
 
+    it("sets the title in the same atomic write when currently unset", async () => {
+      const s = store()
+      await seeded(s)
+      await s.acquireRunLeaseAtCurrentRevision("c1", "run-1", "My new title")
+      const record = await s.get("c1")
+      expect(record?.title).toBe("My new title")
+    })
+
+    it("never overwrites a title that's already set", async () => {
+      const s = store()
+      await s.save({
+        id: "c1",
+        title: "Existing title",
+        workspaceId: "default",
+        messages: [],
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      await s.acquireRunLeaseAtCurrentRevision("c1", "run-1", "Would-be new title")
+      const record = await s.get("c1")
+      expect(record?.title).toBe("Existing title")
+    })
+
+    it("leaves title unset when titleIfUnset is omitted", async () => {
+      const s = store()
+      await seeded(s)
+      await s.acquireRunLeaseAtCurrentRevision("c1", "run-1")
+      const record = await s.get("c1")
+      expect(record?.title).toBeUndefined()
+    })
+
     it("throws ConversationLeaseConflictError for a conversation with a live lease already held", async () => {
       const s = store()
       await seeded(s)

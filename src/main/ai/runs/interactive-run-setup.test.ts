@@ -163,6 +163,27 @@ describe("setupInteractiveRun — conversation lease", () => {
       setupInteractiveRun(baseDeps(), baseInput({ conversationId: "missing" }))
     ).rejects.toThrow()
   })
+
+  it("sets the conversation's title from the first turn's text", async () => {
+    await seedConversation("conv-1")
+    await setupInteractiveRun(baseDeps(), baseInput({ text: "help me plan a trip" }))
+    const stored = await conversations.get("conv-1")
+    expect(stored?.title).toBe("help me plan a trip")
+  })
+
+  it("never overwrites an existing title on a later turn", async () => {
+    await conversations.save({
+      id: "conv-1",
+      title: "Existing title",
+      workspaceId: "ws-1",
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    await setupInteractiveRun(baseDeps(), baseInput({ text: "a follow-up message" }))
+    const stored = await conversations.get("conv-1")
+    expect(stored?.title).toBe("Existing title")
+  })
 })
 
 describe("setupInteractiveRun — frozen authority", () => {

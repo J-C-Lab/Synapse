@@ -59,6 +59,19 @@ function principalFor(): FrozenPrincipalSnapshot {
   return { kind: "interactive", actor: "user" }
 }
 
+/** Derives a conversation title from its first user message. Shared with
+ *  agent-service.ts's conversation summary projection so both agree on the
+ *  same title for the same content. Only ever takes effect on a
+ *  conversation's actual first turn — conversation-store.ts's
+ *  acquireRunLeaseAtCurrentRevision never overwrites an already-set title. */
+export function deriveTitle(messages: readonly ChatMessage[]): string {
+  const firstUser = messages.find((message) => message.role === "user")
+  const text = firstUser?.content.find((block) => block.type === "text")
+  const raw = text && text.type === "text" ? text.text.trim() : ""
+  if (!raw) return "New conversation"
+  return raw.length > 60 ? `${raw.slice(0, 60)}…` : raw
+}
+
 function rootSetHashFor(workspaces: readonly WorkspaceRootRecord[]): string {
   const ids = workspaces.map((ws) => ws.id).sort()
   return canonicalHash(ids as unknown as CanonicalJson)
@@ -68,15 +81,15 @@ export async function setupInteractiveRun(
   deps: InteractiveRunSetupDeps,
   input: InteractiveRunSetupInput
 ): Promise<AgentRunCheckpointV1> {
-  const lease = await deps.conversations.acquireRunLeaseAtCurrentRevision(
-    input.conversationId,
-    input.runId
-  )
-
   const newUserMessage: ChatMessage = {
     role: "user",
     content: [{ type: "text", text: input.text }],
   }
+  const lease = await deps.conversations.acquireRunLeaseAtCurrentRevision(
+    input.conversationId,
+    input.runId,
+    deriveTitle([newUserMessage])
+  )
   const durableMessages = toDurableMessages(
     lease.messages,
     [...lease.messages.map((m) => m.message), newUserMessage],

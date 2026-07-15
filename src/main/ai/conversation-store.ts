@@ -227,10 +227,17 @@ export class ConversationStore {
    * a caller who doesn't already hold that revision (every new interactive
    * turn) would otherwise have to read it first via a separate call, racing
    * any writer that lands between the read and the acquire.
+   *
+   * `titleIfUnset`, when given, is written in this same atomic step — but
+   * only if the record's title is not already set. A title is derived once
+   * from a conversation's first message and never changes after that, so
+   * this is the only write path that ever needs to set it; `commitRun`
+   * deliberately never touches title.
    */
   async acquireRunLeaseAtCurrentRevision(
     conversationId: string,
-    runId: string
+    runId: string,
+    titleIfUnset?: string
   ): Promise<{
     fencingToken: number
     deletionEpoch: number
@@ -251,6 +258,7 @@ export class ConversationStore {
       const baseContentRevision = record.contentRevision
       const next: ConversationRecordV2 = {
         ...record,
+        title: record.title ?? titleIfUnset,
         lastFencingToken: fencingToken,
         activeRun: {
           runId,
