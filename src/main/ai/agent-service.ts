@@ -618,6 +618,7 @@ export class AgentService {
 
     const controller = new AbortController()
     this.runAborts.set(runId, controller)
+    let stopLeaseHeartbeat: (() => void) | undefined
 
     const textBatcher = createTextDeltaBatcher((delta) =>
       this.options.sendEvent({ type: "text", conversationId, delta })
@@ -636,6 +637,24 @@ export class AgentService {
         undefined,
         this.options.onRunEvent
       )
+      const lease = checkpoint.conversationCommit
+      if (lease) {
+        // The store lease lasts 30 seconds. Renew well inside that window;
+        // a stale fencing token means another owner won, so immediately stop
+        // this driver before it can issue another provider/tool operation.
+        let renewing = false
+        const timer = setInterval(() => {
+          if (renewing || controller.signal.aborted) return
+          renewing = true
+          void this.options.conversations
+            .renewRunLease(conversationId, runId, lease.leaseFencingToken)
+            .catch(() => controller.abort())
+            .finally(() => {
+              renewing = false
+            })
+        }, 10_000)
+        stopLeaseHeartbeat = () => clearInterval(timer)
+      }
       if (params.emitRunStarted) {
         await eventEmitter.emit({
           type: "run_started",
@@ -707,6 +726,7 @@ export class AgentService {
       this.options.sendEvent({ type: "done", conversationId, stopReason, usage })
       return { stopReason, usage }
     } finally {
+      stopLeaseHeartbeat?.()
       textBatcher.flush()
       textBatcher.dispose()
       this.runAborts.delete(runId)
