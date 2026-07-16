@@ -319,6 +319,24 @@ describe("runTraceStore", () => {
         traceHash: "hash-1",
       })
     })
+
+    it("does not let a later legacy recordRun flatten a durable envelope", () => {
+      upsertRunTrace(dir, {
+        runId: "run-1",
+        finalizationId: "fin-1",
+        traceHash: "hash-1",
+        trace: trace(),
+      })
+      recordRun(dir, trace({ outcome: "error" }))
+
+      const raw = JSON.parse(readFileSync(path.join(dir, "run-1.json"), "utf8"))
+      expect(raw).toMatchObject({
+        envelopeVersion: 1,
+        finalizationId: "fin-1",
+        traceHash: "hash-1",
+      })
+      expect(getRunTrace(dir, "run-1")?.outcome).toBe("end_turn")
+    })
   })
 
   describe("legacy trace compatibility", () => {

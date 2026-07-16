@@ -67,7 +67,12 @@ export function recordRun(dir: string, trace: RunTrace): void {
   }
   try {
     mkdirSync(dir, { recursive: true })
-    writeFileSync(path.join(dir, `${trace.runId}.json`), `${JSON.stringify(trace)}\n`)
+    const file = path.join(dir, `${trace.runId}.json`)
+    // A durable finalizer owns an envelope once it has written one. Legacy
+    // best-effort callers still invoke recordRun for compatibility, but must
+    // never flatten finalization id/hash/revision evidence into a plain trace.
+    if (readEnvelope(file)) return
+    writeFileSync(file, `${JSON.stringify(trace)}\n`)
     prune(dir)
   } catch (err) {
     logger.child("run-trace").warn("failed to record run trace", { runId: trace.runId, err })
