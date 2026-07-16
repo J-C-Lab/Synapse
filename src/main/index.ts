@@ -30,7 +30,7 @@ import {
   shell,
 } from "electron"
 import electronUpdater from "electron-updater"
-import { AgentService } from "./ai/agent-service"
+import { AgentMissingKeyError, AgentService } from "./ai/agent-service"
 import {
   aiSettingsFilePath,
   AiSettingsStore,
@@ -72,6 +72,10 @@ import { buildTraceFromCheckpoint } from "./ai/runs/interactive-run-driver"
 import { rootSetHashFor } from "./ai/runs/interactive-run-setup"
 import { RunEventStore } from "./ai/runs/run-event-store"
 import { finalizeRun } from "./ai/runs/run-finalizer"
+import {
+  autoResumeRecoverableRuns,
+  continueBackgroundOrSubagentRun,
+} from "./ai/runs/run-recovery-orchestrator"
 import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
@@ -280,6 +284,13 @@ let emitPlanForRun: (
 let makeSubagentProvider: () => Promise<{ provider: ChatProvider; model: string }> = async () => {
   throw new Error("subagent provider not wired")
 }
+/** Origin-aware recovery orchestrator dispatch (P1-1): drives an
+ *  already-resumed (status flipped back to "running") checkpoint's durable
+ *  loop forward, choosing the right continuation by origin. Fire-and-forget
+ *  from every caller — see run-recovery-orchestrator.ts's module header for
+ *  why background-agent/subagent continuation is intentionally degraded
+ *  relative to interactive. */
+let continueAnyRun: (runId: string) => void = () => {}
 // Shared across initPluginHost() (background-agent runs) and
 // createAgentService() (interactive runs, and the subagent runner it wires
 // up) — one durable checkpoint/budget store pair per app run, not a
@@ -473,7 +484,12 @@ function registerIpc(): void {
   registerRunsIpc(
     ipcMain,
     runTraceDir(app.getPath("userData")),
-    { runStore: agentRunStore, eventStore: agentEventStore, recovery: agentRunRecoveryService },
+    {
+      runStore: agentRunStore,
+      eventStore: agentEventStore,
+      recovery: agentRunRecoveryService,
+      continueRun: (runId) => continueAnyRun(runId),
+    },
     { isTrustedSender: isTrustedIpcSender }
   )
   if (memoryService)
@@ -1162,12 +1178,73 @@ async function createAgentService(): Promise<AgentService> {
   emitPlanForRun = (runId, steps) => agentService.emitPlanForRun(runId, steps)
   makeSubagentProvider = () => agentService.createBackgroundAgentProvider()
 
+  continueAnyRun = (runId: string): void => {
+    void (async () => {
+      let result: Awaited<ReturnType<typeof agentRunStore.load>>
+      try {
+        result = await agentRunStore.load(runId)
+      } catch (err) {
+        logger.child("runs").warn("continueAnyRun: failed to load checkpoint", { runId, err })
+        return
+      }
+      if (!result.ok) return
+      const checkpoint = result.checkpoint
+      try {
+        if (checkpoint.identity.origin === "interactive") {
+          await agentService.continueRun(runId)
+        } else {
+          await continueBackgroundOrSubagentRun(
+            {
+              runStore: agentRunStore,
+              budgetStore: agentBudgetStore,
+              eventStore: agentEventStore,
+              upsertTrace: (input) => upsertRunTrace(runsDir, input),
+              recordRun,
+              tools: resilientToolHost,
+              buildProvider: async (providerId) => {
+                const apiKey = await credentials.get(providerId)
+                if (!apiKey) throw new AgentMissingKeyError()
+                const descriptor = defaultProviderCatalog().find((p) => p.id === providerId)
+                if (!descriptor) throw new Error(`Unknown provider: ${providerId}`)
+                return descriptor.create(apiKey)
+              },
+            },
+            checkpoint
+          )
+        }
+      } catch (err) {
+        logger
+          .child("runs")
+          .warn("continueAnyRun: run failed to resume", {
+            runId,
+            origin: checkpoint.identity.origin,
+            err,
+          })
+      }
+    })()
+  }
+
   // Kick off the startup recovery scan now, without blocking app readiness on
   // it — chat() internally awaits this same promise before starting any new
   // turn, so a stale/terminalizing conversation lease from a prior process
   // can never be raced by a fresh interactive turn arriving right after
-  // launch.
-  void agentService.reconcileRunsAtStartup(agentRunRecoveryService)
+  // launch. The scan itself now also drives real recovery, not just
+  // classification: every run classified "automatic" gets resumed AND
+  // continued (P1-1) — reconcileRunsAtStartup's own listRecoverable() plumbing
+  // is repurposed to run that whole sequence, so chat() still only ever waits
+  // for this (fast) dispatch phase, never for the continuations it kicks off.
+  void agentService.reconcileRunsAtStartup({
+    listRecoverable: async () => {
+      await autoResumeRecoverableRuns({
+        recovery: agentRunRecoveryService,
+        runStore: agentRunStore,
+        continueRun: (checkpoint) => continueAnyRun(checkpoint.identity.runId),
+        onError: (runId, err) =>
+          logger.child("runs").warn("failed to auto-resume run", { runId, err }),
+      })
+      return []
+    },
+  })
 
   return agentService
 }

@@ -17,6 +17,7 @@ import type { ProviderDescriptor } from "./providers/catalog"
 import type { ChatProvider, ProviderToolSchema, TokenUsage } from "./providers/types"
 import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "./run-trace-store"
 import type { AgentRunStore } from "./runs/agent-run-store"
+import type { AgentRunCheckpointV1 } from "./runs/checkpoint-schema"
 import type { DurableApprovalPolicyInput } from "./runs/durable-approval"
 import type { RunEventStore } from "./runs/run-event-store"
 import type { RunFinalizerDeps } from "./runs/run-finalizer"
@@ -502,15 +503,6 @@ export class AgentService {
     const resolvedExecutionRoots = (await this.options.getExecutionWorkspaces?.(workspaceId)) ?? []
 
     const runId = randomUUID()
-    this.registerRun(runId, conversationId)
-    this.conversationRuns.set(conversationId, runId)
-
-    const controller = new AbortController()
-    this.runAborts.set(runId, controller)
-
-    const textBatcher = createTextDeltaBatcher((delta) =>
-      this.options.sendEvent({ type: "text", conversationId, delta })
-    )
 
     try {
       const checkpoint = await setupInteractiveRun(
@@ -541,6 +533,90 @@ export class AgentService {
         }
       )
 
+      return await this.driveRun({
+        runId,
+        conversationId,
+        checkpoint,
+        providerId,
+        apiKey,
+        emitRunStarted: { workspaceId },
+      })
+    } catch (err) {
+      this.options.sendEvent({
+        type: "error",
+        conversationId,
+        message: err instanceof Error ? err.message : String(err),
+      })
+      throw err
+    }
+  }
+
+  /** Re-drives an already-persisted, non-terminal interactive checkpoint from
+   *  wherever it left off — the real continuation `AgentRunRecoveryService
+   *  .resume()` never performed on its own (that method only flips the
+   *  durable status field back to "running"). Reconstructs the provider from
+   *  the checkpoint's own FROZEN providerId/model (design intent: a resume
+   *  replays what the run already committed to, not whatever the live
+   *  settings happen to be today) rather than `this.selection()`. Called by
+   *  the startup auto-resume orchestrator and by the `runs:resume` IPC
+   *  handler, never awaited by their callers — a slow resumed turn must never
+   *  block the caller. */
+  async continueRun(runId: string): Promise<{ stopReason: string; usage: TokenUsage }> {
+    const result = await this.options.runStore.load(runId)
+    if (!result.ok) {
+      throw new Error(`cannot continue run ${runId}: checkpoint is ${result.reason}`)
+    }
+    const checkpoint = result.checkpoint
+    if (checkpoint.identity.origin !== "interactive") {
+      throw new Error(
+        `continueRun is for interactive-origin runs only (run ${runId} is ${checkpoint.identity.origin})`
+      )
+    }
+    const conversationId = checkpoint.identity.conversationId
+    if (!conversationId) {
+      throw new Error(`interactive run ${runId} has no bound conversationId — cannot continue it`)
+    }
+    const { providerId } = checkpoint.config
+    const apiKey = await this.options.credentials.get(providerId)
+    if (!apiKey) throw new AgentMissingKeyError()
+
+    try {
+      return await this.driveRun({ runId, conversationId, checkpoint, providerId, apiKey })
+    } catch (err) {
+      this.options.sendEvent({
+        type: "error",
+        conversationId,
+        message: err instanceof Error ? err.message : String(err),
+      })
+      throw err
+    }
+  }
+
+  /** The shared turn body every interactive run (fresh or resumed) drives
+   *  through: provider + event-emitter construction, the durable outer loop,
+   *  and renderer event forwarding. `emitRunStarted` is only passed for a
+   *  genuinely new run — a resumed run's `run_started` event was already
+   *  emitted the first time it was created. */
+  private async driveRun(params: {
+    runId: string
+    conversationId: string
+    checkpoint: AgentRunCheckpointV1
+    providerId: string
+    apiKey: string
+    emitRunStarted?: { workspaceId: string }
+  }): Promise<{ stopReason: string; usage: TokenUsage }> {
+    const { runId, conversationId, checkpoint, providerId, apiKey } = params
+    this.registerRun(runId, conversationId)
+    this.conversationRuns.set(conversationId, runId)
+
+    const controller = new AbortController()
+    this.runAborts.set(runId, controller)
+
+    const textBatcher = createTextDeltaBatcher((delta) =>
+      this.options.sendEvent({ type: "text", conversationId, delta })
+    )
+
+    try {
       const provider = this.createProviderFor(providerId, apiKey)
       const eventEmitter = await createRunEventEmitter(
         this.options.eventStore,
@@ -551,7 +627,13 @@ export class AgentService {
         },
         this.now
       )
-      await eventEmitter.emit({ type: "run_started", origin: "interactive", workspaceId })
+      if (params.emitRunStarted) {
+        await eventEmitter.emit({
+          type: "run_started",
+          origin: "interactive",
+          workspaceId: params.emitRunStarted.workspaceId,
+        })
+      }
 
       const outcome = await runInteractiveTurn(
         {
@@ -606,7 +688,6 @@ export class AgentService {
         },
         runId
       )
-      textBatcher.flush()
 
       const trace = outcome.checkpoint.finalization?.trace
       if (trace) this.options.recordRun?.(trace)
@@ -616,15 +697,8 @@ export class AgentService {
       const usage = outcome.checkpoint.usage
       this.options.sendEvent({ type: "done", conversationId, stopReason, usage })
       return { stopReason, usage }
-    } catch (err) {
-      textBatcher.flush()
-      this.options.sendEvent({
-        type: "error",
-        conversationId,
-        message: err instanceof Error ? err.message : String(err),
-      })
-      throw err
     } finally {
+      textBatcher.flush()
       textBatcher.dispose()
       this.runAborts.delete(runId)
       if (this.conversationRuns.get(conversationId) === runId) {

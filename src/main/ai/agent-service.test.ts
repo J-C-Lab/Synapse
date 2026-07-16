@@ -1143,5 +1143,79 @@ describe("agentService", () => {
         { type: "text", text: "second reply" },
       ])
     })
+
+    describe("continueRun()", () => {
+      it("actually re-drives an interrupted run, not just a status flip", async () => {
+        const convo = conversations()
+        const stores = runStores()
+        const host = fakeHost() // unannotated → requires approval
+        const events1: AiChatEvent[] = []
+        const svc1 = new AgentService({
+          credentials: credentials("sk-test"),
+          tools: new AiToolRegistry(host),
+          conversations: convo.store,
+          createProvider: () =>
+            fakeProvider([{ toolUses: [{ id: "t1", name: ACT_TOOL_NAME, input: {} }] }]),
+          sendEvent: (event) => events1.push(event),
+          now: () => 1000,
+          ...stores,
+        })
+
+        // svc1 starts a turn that pauses for approval, then "crashes" — its
+        // in-memory chat() promise is abandoned mid-flight, simulating a
+        // process that died while an approval was durably pending on disk.
+        void svc1.chat("c1", "go")
+        await flush(events1)
+        const request1 = events1.find((event) => event.type === "approval_request")
+        if (request1?.type !== "approval_request") throw new Error("expected approval request")
+
+        const runs = await stores.runStore.scan({})
+        expect(runs).toHaveLength(1)
+        const runId = runs[0]!.runId
+
+        // A fresh AgentService instance, as if the app restarted, reusing the
+        // same durable stores. Its own provider script never gets consulted
+        // if continueRun() incorrectly no-ops instead of re-driving.
+        const events2: AiChatEvent[] = []
+        const svc2 = new AgentService({
+          credentials: credentials("sk-test"),
+          tools: new AiToolRegistry(host),
+          conversations: convo.store,
+          createProvider: () => fakeProvider([{ text: "done" }]),
+          sendEvent: (event) => events2.push(event),
+          now: () => 2000,
+          ...stores,
+        })
+
+        const continued = svc2.continueRun(runId)
+        await flush(events2)
+        const request2 = events2.find((event) => event.type === "approval_request")
+        if (request2?.type !== "approval_request") {
+          throw new Error("expected continueRun to re-emit an approval request")
+        }
+        await svc2.resolveApproval(request2.approvalId, true)
+
+        const result = await continued
+        expect(result.stopReason).toBe("end_turn")
+        expect(host.invokeTool).toHaveBeenCalledOnce()
+
+        const finalCheckpoint = await stores.runStore.load(runId)
+        expect(finalCheckpoint.ok).toBe(true)
+        if (finalCheckpoint.ok) expect(finalCheckpoint.checkpoint.status).toBe("completed")
+      })
+
+      it("rejects when the run does not exist", async () => {
+        const stores = runStores()
+        const svc = new AgentService({
+          credentials: credentials("sk-test"),
+          tools: new AiToolRegistry(fakeHost()),
+          conversations: conversations().store,
+          sendEvent: () => {},
+          ...stores,
+        })
+
+        await expect(svc.continueRun("does-not-exist")).rejects.toThrow()
+      })
+    })
   })
 })

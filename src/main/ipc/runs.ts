@@ -251,6 +251,13 @@ export interface RunsDurableDeps {
   runStore: AgentRunStore
   eventStore: RunEventStore
   recovery: AgentRunRecoveryService
+  /** Fire-and-forget: actually drives the run's durable loop forward after a
+   *  successful resume — `recovery.resume()` itself only flips the status
+   *  field back to "running". Errors are the continuator's own
+   *  responsibility to log; the IPC response must never wait on a full turn
+   *  completing. Optional so callers that haven't wired origin-aware
+   *  continuation yet keep the pre-existing status-flip-only behavior. */
+  continueRun?: (runId: string) => void
 }
 
 export interface RegisterRunsIpcOptions {
@@ -327,6 +334,7 @@ export function registerRunsIpc(
     const query = normalizeResumeQuery(payload)
     try {
       await durable.recovery.resume(query.runId, query.decision)
+      durable.continueRun?.(query.runId)
       return { ok: true }
     } catch (err) {
       if (err instanceof RecoveryBlockedError) {
