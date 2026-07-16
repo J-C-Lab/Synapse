@@ -29,6 +29,16 @@ export type DriverStepOutcome =
     }
   | { kind: "max_steps"; checkpoint: AgentRunCheckpointV1 }
 
+/** The conservative request estimator under-reserved a settled response.
+ * The response is already durably charged; continuing would make a known
+ * invalid budget profile silently usable for further tool/model work. */
+export class EstimatorIncompatibleError extends Error {
+  constructor(readonly checkpoint: AgentRunCheckpointV1) {
+    super(`model estimator exceeded its admitted upper bound for run ${checkpoint.identity.runId}`)
+    this.name = "EstimatorIncompatibleError"
+  }
+}
+
 /**
  * Advances a durable run by exactly one model step. Always reloads the
  * latest checkpoint first — never trusts authority-bearing progress kept
@@ -46,6 +56,7 @@ export async function advanceDurableRun(
   }
 
   const result = await advanceModelStep(deps, runId)
+  if (result.estimatorIncompatible) throw new EstimatorIncompatibleError(result.checkpoint)
   const toolCalls = result.assistantMessage.content.filter(isToolUse)
 
   const advanced = await deps.runStore.mutate(runId, result.checkpoint.revision, (cp) => ({

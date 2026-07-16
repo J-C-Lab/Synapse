@@ -8,7 +8,7 @@ import type { DurableAgentDriverDeps } from "./durable-agent-driver"
 import type { FinalizeRunInput } from "./run-finalizer"
 import type { ToolBatchDeps } from "./tool-batch-runner"
 import { InsufficientBudgetError } from "../budget/root-budget-ledger"
-import { advanceDurableRun } from "./durable-agent-driver"
+import { advanceDurableRun, EstimatorIncompatibleError } from "./durable-agent-driver"
 import { InsufficientEstimateError } from "./model-step-runner"
 import { advanceToolBatch } from "./tool-batch-runner"
 
@@ -24,7 +24,12 @@ import { advanceToolBatch } from "./tool-batch-runner"
 // checkpoint/runId, so background-agent and subagent runs (Task 14) reuse it
 // unchanged — only their setup and finalize wiring differ.
 
-export type InteractiveTurnStopReason = "end_turn" | "max_steps" | "aborted" | "budget_exceeded"
+export type InteractiveTurnStopReason =
+  | "end_turn"
+  | "max_steps"
+  | "aborted"
+  | "budget_exceeded"
+  | "error"
 
 export type InteractiveTurnOutcome =
   | {
@@ -89,6 +94,9 @@ export async function runInteractiveTurn(
       if (err instanceof InsufficientBudgetError || err instanceof InsufficientEstimateError) {
         return finalizeTerminal(deps, runId, "budget_exceeded")
       }
+      if (err instanceof EstimatorIncompatibleError) {
+        return finalizeTerminal(deps, runId, "error", err.checkpoint, "failed")
+      }
       throw err
     }
 
@@ -135,7 +143,8 @@ async function finalizeTerminal(
   deps: InteractiveRunDriverDeps,
   runId: string,
   stopReason: InteractiveTurnStopReason,
-  checkpointHint?: AgentRunCheckpointV1
+  checkpointHint?: AgentRunCheckpointV1,
+  desiredStatus: "completed" | "failed" = "completed"
 ): Promise<InteractiveTurnOutcome> {
   const result = await deps.model.runStore.load(runId)
   if (!result.ok) throw new Error(`cannot finalize run ${runId}: checkpoint is ${result.reason}`)
@@ -143,7 +152,7 @@ async function finalizeTerminal(
 
   const trace = buildTraceFromCheckpoint(checkpoint, stopReason)
   const finalized = await deps.finalize(runId, {
-    desiredStatus: "completed",
+    desiredStatus,
     stopReason,
     trace,
     resourceReleasePlan: deps.buildResourceReleasePlan(checkpoint),
@@ -161,7 +170,7 @@ async function finalizeTerminal(
  *  (index.ts), which needs the identical checkpoint-derived trace shape. */
 export function buildTraceFromCheckpoint(
   checkpoint: AgentRunCheckpointV1,
-  outcome: InteractiveTurnStopReason
+  outcome: RunTrace["outcome"]
 ): RunTrace {
   const toolCalls: RunTraceToolCall[] = checkpoint.toolBatches.flatMap((batch) =>
     batch.calls.map((call) => toRunTraceToolCall(call))

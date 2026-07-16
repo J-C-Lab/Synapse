@@ -9,6 +9,7 @@ import { createRootBudgetLedger, RootBudgetLedgerStore } from "../budget/root-bu
 import { upsertRunTrace } from "../run-trace-store"
 import { AiToolRegistry } from "../tool-registry"
 import { AgentRunStore } from "./agent-run-store"
+import { freezeToolAuthority } from "./authority-snapshot"
 import { runInteractiveTurn } from "./interactive-run-driver"
 import { finalizeRun } from "./run-finalizer"
 
@@ -331,6 +332,28 @@ describe("runInteractiveTurn — cancellation and budget", () => {
   })
 })
 
+describe("runInteractiveTurn — estimator incompatibility", () => {
+  it("charges the settled response but terminalizes failed before any follow-on work", async () => {
+    const runId = "run-estimator-incompatible"
+    await seedRun(runId)
+    const provider = fakeProvider([
+      {
+        type: "message",
+        message: { role: "assistant", content: [{ type: "text", text: "too expensive" }] },
+        usage: usage(1000, 1000),
+        stopReason: "end_turn",
+      },
+    ])
+
+    const outcome = await runInteractiveTurn(makeDeps(provider, fakeRegistry({})), runId)
+
+    expect(outcome).toMatchObject({ kind: "finalized", stopReason: "error" })
+    const loaded = await runStore.load(runId)
+    expect(loaded.ok && loaded.checkpoint.status).toBe("failed")
+    expect(provider.calls).toHaveLength(1)
+  })
+})
+
 describe("runInteractiveTurn — unknown tool outcome suspension", () => {
   it("returns suspended without finalizing when a tool's attempt can't be recovered", async () => {
     const runId = "run-6"
@@ -347,6 +370,22 @@ describe("runInteractiveTurn — unknown tool outcome suspension", () => {
       },
     ])
     const registry = fakeRegistry({ flaky: () => "should not run during recovery" })
+    const loadedBeforeFault = await runStore.load(runId)
+    if (!loadedBeforeFault.ok) throw new Error("expected checkpoint")
+    await runStore.mutate(runId, loadedBeforeFault.checkpoint.revision, (checkpoint) => ({
+      ...checkpoint,
+      config: {
+        ...checkpoint.config,
+        authority: {
+          ...checkpoint.config.authority,
+          tools: registry
+            .listWithDescriptors()
+            .map(({ schema, descriptor }) =>
+              freezeToolAuthority({ descriptor, safeName: schema.name, modelSchema: schema })
+            ),
+        },
+      },
+    }))
 
     let crashedOnce = false
     const depsWithFault = makeDeps(provider, registry, {

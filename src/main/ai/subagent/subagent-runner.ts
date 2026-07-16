@@ -24,7 +24,7 @@ export interface SubagentRunInput {
 export interface SubagentRunResult {
   summary: string
   childRunId: string
-  outcome: "end_turn" | "max_steps" | "aborted" | "budget_exceeded"
+  outcome: "end_turn" | "max_steps" | "aborted" | "budget_exceeded" | "error"
 }
 
 export interface SubagentRunnerOptions {

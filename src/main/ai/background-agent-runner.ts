@@ -36,7 +36,7 @@ export interface BackgroundAgentRunInput {
 
 export interface BackgroundAgentRunResult {
   messages: ChatMessage[]
-  stopReason: "end_turn" | "max_steps" | "aborted" | "budget_exceeded"
+  stopReason: "end_turn" | "max_steps" | "aborted" | "budget_exceeded" | "error"
   usage: TokenUsage
 }
 
