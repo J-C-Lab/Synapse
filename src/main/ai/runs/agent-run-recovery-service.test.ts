@@ -319,6 +319,39 @@ describe("agentRunRecoveryService.resume — automatic disposition", () => {
     expect(loaded.checkpoint.status).toBe("running")
     expect(loaded.checkpoint.recovery).toEqual({ kind: "automatic" })
   })
+
+  it("migrates a legacy background deadline before classification and blocks it when expired", async () => {
+    const legacy = baseCheckpoint("background-expired")
+    await runStore.create(
+      sealCheckpointIntegrity({
+        ...legacy,
+        identity: { ...legacy.identity, origin: "background-agent" },
+        createdAt: 1,
+        updatedAt: 1,
+        config: {
+          ...legacy.config,
+          backgroundExecution: { maxToolCallsPerRun: 2, timeoutMs: 10 },
+        },
+      })
+    )
+
+    const summaries = await makeService().listRecoverable()
+
+    expect(summaries).toContainEqual(
+      expect.objectContaining({
+        runId: "background-expired",
+        recovery: { kind: "blocked", reason: "deadline-expired" },
+      })
+    )
+    const loaded = await runStore.load("background-expired")
+    expect(loaded.ok && loaded.checkpoint.config.deadlineAt).toBe(11)
+    expect(loaded.ok && loaded.checkpoint.backgroundExecutionLedger).toEqual({
+      toolCallsConsumed: 0,
+    })
+    await expect(makeService().resume("background-expired")).rejects.toMatchObject({
+      reason: "deadline-expired",
+    })
+  })
 })
 
 describe("agentRunRecoveryService.resume — blocked disposition", () => {
@@ -384,6 +417,45 @@ describe("agentRunRecoveryService.resume — requires_review", () => {
     await expect(makeService().resume("r1", { kind: "retry" })).rejects.toThrow(
       ConversationConflictUnresumableError
     )
+  })
+
+  it("records Retry on a running requires-review checkpoint without a running transition", async () => {
+    await seedRun("r-running-review", { status: "running" })
+    const service = makeService({
+      buildClassifierInput: neverDriftingClassifierInput({
+        currentWorkspaceRootSetHash: "changed",
+      }),
+    })
+
+    await service.resume("r-running-review", { kind: "retry" })
+
+    const loaded = await runStore.load("r-running-review")
+    expect(loaded.ok && loaded.checkpoint.status).toBe("running")
+    expect(loaded.ok && loaded.checkpoint.recovery).toEqual({ kind: "automatic" })
+    expect(loaded.ok && loaded.checkpoint.revision).toBe(3)
+  })
+
+  it("records Mark failed on a running unknown-outcome review and resolves the call", async () => {
+    await seedRun("r-running-unknown", {
+      status: "running",
+      toolBatches: [
+        {
+          modelStep: 0,
+          assistantMessageId: "a1",
+          resultCarrierMessageId: "c1",
+          calls: [unresolvedCall("unknown")],
+        },
+      ],
+    })
+
+    await makeService().resume("r-running-unknown", { kind: "mark_failed" })
+
+    const loaded = await runStore.load("r-running-unknown")
+    expect(loaded.ok && loaded.checkpoint.status).toBe("running")
+    expect(loaded.ok && loaded.checkpoint.recovery).toEqual({ kind: "automatic" })
+    expect(loaded.ok && loaded.checkpoint.toolBatches[0]?.calls[0]?.resolution).toMatchObject({
+      reason: "user-marked-failed",
+    })
   })
 
   it("mark_failed resolves the stuck call and clears the run back to running", async () => {

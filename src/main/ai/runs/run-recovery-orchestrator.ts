@@ -159,7 +159,6 @@ export async function continueBackgroundOrSubagentRun(
       })
       .map(({ schema }) => schema)
 
-  const provider = await deps.buildProvider(checkpoint.config.providerId)
   const backgroundExecution = checkpoint.config.backgroundExecution
   if (origin === "background-agent" && !backgroundExecution) {
     throw new Error(`background run ${runId} lacks its durable execution policy`)
@@ -169,8 +168,13 @@ export async function continueBackgroundOrSubagentRun(
       ? undefined
       : Math.max(0, checkpoint.config.deadlineAt - now())
   const controller = new AbortController()
+  // The normal recovery path classifies an expired migrated deadline before
+  // dispatching here. Keep this synchronous abort as the defensive boundary
+  // for any direct caller: setTimeout(0) is too late to prevent first-turn
+  // work from observing a live signal.
+  if (remainingTimeoutMs === 0) controller.abort()
   const timeout =
-    remainingTimeoutMs === undefined
+    remainingTimeoutMs === undefined || remainingTimeoutMs === 0
       ? undefined
       : setTimeout(() => controller.abort(), remainingTimeoutMs)
   const eventEmitter = await createRunEventEmitter(
@@ -186,6 +190,18 @@ export async function continueBackgroundOrSubagentRun(
   )
 
   try {
+    // runInteractiveTurn observes this signal before its first model step.
+    // Avoid even constructing a live provider for an already-expired direct
+    // continuation; normal recovery never reaches this branch because it
+    // classifies the migrated deadline as blocked beforehand.
+    const provider: ChatProvider = controller.signal.aborted
+      ? {
+          id: checkpoint.config.providerId,
+          async *stream() {
+            throw new Error("expired background run must not dispatch a provider request")
+          },
+        }
+      : await deps.buildProvider(checkpoint.config.providerId)
     const outcome = await runInteractiveTurn(
       {
         model: {

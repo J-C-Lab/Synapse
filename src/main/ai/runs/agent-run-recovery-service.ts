@@ -97,10 +97,16 @@ export class AgentRunRecoveryService {
         })
         continue
       }
-      const checkpoint = entry.result.checkpoint
+      let checkpoint = entry.result.checkpoint
       if (isTerminalRunStatus(checkpoint.status) && checkpoint.finalization?.phase === "complete") {
         continue
       }
+
+      // Complete the narrowly-audited v1 execution migration before any
+      // recovery classification. In particular, the derived absolute
+      // deadline must participate in classification rather than allowing an
+      // expired old run to auto-resume into a 0ms timer.
+      checkpoint = await this.migrateLegacyBackgroundExecution(checkpoint)
 
       const { checkpoint: reclassified } = await this.reclassify(checkpoint)
       summaries.push({
@@ -124,6 +130,7 @@ export class AgentRunRecoveryService {
   async resume(runId: string, decision?: RecoveryDecision): Promise<void> {
     let checkpoint = await this.loadOk(runId)
     if (isTerminalRunStatus(checkpoint.status)) return
+    checkpoint = await this.migrateLegacyBackgroundExecution(checkpoint)
 
     const reclassified = await this.reclassify(checkpoint)
     checkpoint = reclassified.checkpoint
@@ -133,14 +140,6 @@ export class AgentRunRecoveryService {
       throw new RecoveryBlockedError(disposition.reason)
     }
 
-    if (checkpoint.status === "running") {
-      if (disposition.kind === "automatic") return
-      if (disposition.reason === "conversation-conflict") {
-        throw new ConversationConflictUnresumableError(runId)
-      }
-      throw new RecoveryDecisionRequiredError(disposition.reason)
-    }
-
     if (disposition.kind === "requires_review") {
       if (disposition.reason === "conversation-conflict") {
         throw new ConversationConflictUnresumableError(runId)
@@ -148,11 +147,20 @@ export class AgentRunRecoveryService {
       if (!decision) {
         throw new RecoveryDecisionRequiredError(disposition.reason)
       }
-      if (
-        checkpoint.status === "suspended_unknown_tool_outcome" &&
-        decision.kind === "mark_failed"
-      ) {
+      if (disposition.reason === "unknown-tool-outcome" && decision.kind === "mark_failed") {
         checkpoint = await this.markStuckCallsFailed(runId, checkpoint)
+      }
+      if (checkpoint.status === "running") {
+        // A running checkpoint has no legal running -> running transition,
+        // but the explicit user decision must still be durable. This same-
+        // state CAS records it by clearing the review disposition; a later
+        // interruption will be freshly classified against current state.
+        await this.deps.runStore.mutate(runId, checkpoint.revision, (cp) => ({
+          ...cp,
+          recovery: { kind: "automatic" },
+          updatedAt: this.deps.now(),
+        }))
+        return
       }
       // decision.kind === "retry" needs no ledger mutation: the tool-batch
       // runner already treats a latest attempt in "unknown" state (with an
@@ -160,6 +168,8 @@ export class AgentRunRecoveryService {
       // that was ever stopping it was the run sitting in
       // suspended_unknown_tool_outcome, cleared by the status mutation below.
     }
+
+    if (checkpoint.status === "running") return
 
     await this.transitionToRunning(runId, checkpoint, { hasRecoveryDecision: true })
   }
@@ -205,6 +215,23 @@ export class AgentRunRecoveryService {
     const result = await this.deps.runStore.load(runId)
     if (!result.ok) throw new Error(`checkpoint for run ${runId} is ${result.reason}`)
     return result.checkpoint
+  }
+
+  private async migrateLegacyBackgroundExecution(
+    checkpoint: AgentRunCheckpointV1
+  ): Promise<AgentRunCheckpointV1> {
+    if (
+      checkpoint.identity.origin !== "background-agent" ||
+      checkpoint.config.backgroundExecution === undefined ||
+      (checkpoint.backgroundExecutionLedger !== undefined &&
+        checkpoint.config.deadlineAt !== undefined)
+    ) {
+      return checkpoint
+    }
+    return this.deps.runStore.migrateLegacyBackgroundExecution(
+      checkpoint.identity.runId,
+      checkpoint.revision
+    )
   }
 
   private async reclassify(

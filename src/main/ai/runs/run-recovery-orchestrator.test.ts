@@ -10,6 +10,7 @@ import { emptyUsage } from "../providers/types"
 import { upsertRunTrace } from "../run-trace-store"
 import { AiToolRegistry } from "../tool-registry"
 import { AgentRunStore } from "./agent-run-store"
+import { setupBackgroundRun } from "./background-run-setup"
 import { setupInteractiveRun } from "./interactive-run-setup"
 import { RunEventStore } from "./run-event-store"
 import {
@@ -109,6 +110,60 @@ function fakeProvider(text: string) {
 }
 
 describe("continueBackgroundOrSubagentRun", () => {
+  it("synchronously aborts an expired background deadline without constructing a provider", async () => {
+    const checkpoint = await setupBackgroundRun(
+      {
+        runStore,
+        budgetStore,
+        tools: new AiToolRegistry(fakeHost()),
+        now: () => 0,
+      },
+      {
+        runId: "background-expired",
+        workspaceId: "ws-1",
+        invocationId: "inv-1",
+        triggerInstanceId: "instance-1",
+        pluginId: "com.example.plugin",
+        triggerId: "trigger-1",
+        pluginIdentity: {
+          pluginId: "com.example.plugin",
+          publisherId: "unsigned",
+          signingKeyFingerprint: "local:user",
+          capabilityDeclarationHash: "declaration-v1",
+        },
+        allowedUses: [],
+        instruction: "must not start",
+        event: {},
+        providerId: "fake",
+        model: "fake-model",
+        maxOutputTokens: 1,
+        runBudgetTokens: 10,
+        maxSteps: 1,
+        maxToolCallsPerRun: 0,
+        timeoutMs: 1,
+        executionWorkspaces: [],
+      }
+    )
+    const buildProvider = vi.fn(async () => fakeProvider("unreachable"))
+
+    await continueBackgroundOrSubagentRun(
+      {
+        runStore,
+        budgetStore,
+        eventStore,
+        upsertTrace,
+        tools: fakeHost(),
+        buildProvider,
+        now: () => 10,
+      },
+      checkpoint
+    )
+
+    expect(buildProvider).not.toHaveBeenCalled()
+    const final = await runStore.load("background-expired")
+    expect(final.ok && final.checkpoint.status).toBe("cancelled")
+  })
+
   it("drives a freshly-created (interrupted before its first step) subagent checkpoint to completion", async () => {
     await seedParentRun("parent-1")
     const host = fakeHost()
