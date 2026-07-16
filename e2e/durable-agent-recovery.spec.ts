@@ -32,6 +32,48 @@ function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex")
 }
 
+// Playwright does not resolve the main-process path aliases. This small
+// fixture builder mirrors canonical-json.ts and sealCheckpointIntegrity().
+function canonicalStringify(value: unknown): string {
+  if (value === null) return "null"
+  if (typeof value === "boolean") return value ? "true" : "false"
+  if (typeof value === "number" || typeof value === "string") return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(canonicalStringify).join(",")}]`
+  if (typeof value === "object" && value) {
+    const record = value as Record<string, unknown>
+    return `{${Object.keys(record)
+      .filter((key) => record[key] !== undefined)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalStringify(record[key])}`)
+      .join(",")}}`
+  }
+  throw new Error(`fixture canonical JSON cannot encode ${typeof value}`)
+}
+
+function canonicalHash(value: unknown): string {
+  return sha256(`v1:${canonicalStringify(value)}`)
+}
+
+function sealFixtureCheckpoint(checkpoint: Record<string, unknown>): Record<string, unknown> {
+  const config = checkpoint.config as Record<string, unknown>
+  const authority = config.authority as Record<string, unknown>
+  return {
+    ...checkpoint,
+    config: {
+      ...config,
+      authority: {
+        ...authority,
+        integrityHash: canonicalHash({
+          schemaVersion: authority.schemaVersion,
+          principal: authority.principal,
+          capabilities: authority.capabilities,
+          tools: authority.tools,
+        }),
+      },
+    },
+  }
+}
+
 /** A minimal, schema-valid AgentRunCheckpointV1 as raw JSON — deliberately
  *  NOT imported from src/main/ai/runs/checkpoint-schema.ts, since that module
  *  (like the rest of main) is reached through `@synapse/*` tsconfig path
@@ -46,7 +88,7 @@ function sha256(text: string): string {
 function seedCheckpointJson(runId: string): Record<string, unknown> {
   const systemPromptText = "You are helpful."
   const baseSha = sha256(systemPromptText)
-  return {
+  return sealFixtureCheckpoint({
     schemaVersion: 1,
     revision: 1,
     identity: { runId, rootRunId: runId, origin: "interactive" },
@@ -118,7 +160,7 @@ function seedCheckpointJson(runId: string): Record<string, unknown> {
     modelSteps: [],
     toolBatches: [],
     activatedSkills: [],
-  }
+  })
 }
 
 async function seedRun(userDir: string, runId: string): Promise<void> {
@@ -153,12 +195,33 @@ async function seedInteractiveToolRun(userDir: string, runId: string, conversati
       schemaVersion: 1,
       principal: { kind: "interactive", actor: "user" },
       capabilities: [],
-      tools: [],
-      integrityHash: "h",
+      tools: [
+        {
+          fqName: "read_file",
+          safeName: "read_file",
+          provenance: "host",
+          ownerId: "synapse-host",
+          ownerVersion: "0.2.0",
+          modelSchemaHash: canonicalHash({
+            name: "read_file",
+            description: "read_file",
+            inputSchema: { type: "object" },
+          }),
+          annotationsHash: canonicalHash({}),
+          invocationAdapterId: "host-tool",
+          invocationAdapterVersion: "1",
+          replayGuarantee: "none",
+        },
+      ],
+      integrityHash: "",
     },
   }
   checkpoint.messages = [
     { messageId: "u1", message: { role: "user", content: [{ type: "text", text: "go" }] } },
+    {
+      messageId: "a1",
+      message: { role: "assistant", content: [{ type: "text", text: "Reading" }] },
+    },
   ]
   checkpoint.toolBatches = [
     {
@@ -191,7 +254,11 @@ async function seedInteractiveToolRun(userDir: string, runId: string, conversati
 
   const runDir = path.join(userDir, "ai", "runs", runId)
   await fs.mkdir(runDir, { recursive: true })
-  await fs.writeFile(path.join(runDir, "checkpoint.json"), JSON.stringify(checkpoint), "utf-8")
+  await fs.writeFile(
+    path.join(runDir, "checkpoint.json"),
+    JSON.stringify(sealFixtureCheckpoint(checkpoint)),
+    "utf-8"
+  )
 
   const conversation = {
     schemaVersion: 2,

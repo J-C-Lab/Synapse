@@ -1,4 +1,5 @@
 import type { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
+import type { EstimatorQuarantineStore } from "../estimator-quarantine-store"
 import type { ChatMessage, ChatProvider } from "../providers/types"
 import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "../run-trace-store"
 import type { AgentRunStore } from "../runs/agent-run-store"
@@ -35,6 +36,7 @@ export interface SubagentRunnerOptions {
   model?: string
   now?: () => number
   recordRun?: (trace: RunTrace) => void
+  estimatorQuarantine?: EstimatorQuarantineStore
 }
 
 export class SubagentRunner {
@@ -64,6 +66,9 @@ export class SubagentRunner {
         maxSteps: input.maxSteps,
       }
     )
+    if (checkpoint.config.runBudgetTokens !== undefined) {
+      await this.options.estimatorQuarantine?.assertAllowed(checkpoint.config.resolvedProfile)
+    }
 
     const outcome = await runInteractiveTurn(
       {
@@ -107,6 +112,11 @@ export class SubagentRunner {
           releaseArtifactRunPin: false,
           adoptionLeaseIds: [],
         }),
+        quarantineEstimatorProfile: async (failedCheckpoint) => {
+          await this.options.estimatorQuarantine?.quarantine(
+            failedCheckpoint.config.resolvedProfile
+          )
+        },
       },
       childRunId
     )

@@ -1,5 +1,6 @@
 import type { AgentRunEvent } from "@synapse/agent-protocol"
 import type { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
+import type { EstimatorQuarantineStore } from "../estimator-quarantine-store"
 import type { ChatProvider } from "../providers/types"
 import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "../run-trace-store"
 import type { ToolHostPort } from "../tool-registry"
@@ -8,6 +9,7 @@ import type { AgentRunStore } from "./agent-run-store"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
 import type { RunEventStore } from "./run-event-store"
 import { AiToolRegistry } from "../tool-registry"
+import { StaleRevisionError } from "./agent-run-store"
 import { freezeToolAuthority, toolIdentityMatches } from "./authority-snapshot"
 import { runInteractiveTurn } from "./interactive-run-driver"
 import { createRunEventEmitter } from "./run-event-emitter"
@@ -105,6 +107,7 @@ export interface GenericRunContinuationDeps {
   /** Real-time push side of the subscribeRun channel (P1-2) — see
    *  run-event-emitter.ts. */
   onEvent?: (event: AgentRunEvent) => void
+  estimatorQuarantine?: EstimatorQuarantineStore
 }
 
 /** Re-drives an interrupted background-agent or subagent checkpoint to
@@ -149,11 +152,18 @@ export async function continueBackgroundOrSubagentRun(
   if (origin === "background-agent" && !backgroundExecution) {
     throw new Error(`background run ${runId} lacks its durable execution policy`)
   }
-  let remainingToolCalls = backgroundExecution?.maxToolCallsPerRun ?? Number.POSITIVE_INFINITY
+  if (origin === "background-agent" && checkpoint.backgroundExecutionLedger === undefined) {
+    throw new Error(`background run ${runId} lacks its durable tool debit ledger`)
+  }
+  const remainingTimeoutMs =
+    checkpoint.config.deadlineAt === undefined
+      ? undefined
+      : Math.max(0, checkpoint.config.deadlineAt - now())
   const controller = new AbortController()
-  const timeout = backgroundExecution
-    ? setTimeout(() => controller.abort(), backgroundExecution.timeoutMs)
-    : undefined
+  const timeout =
+    remainingTimeoutMs === undefined
+      ? undefined
+      : setTimeout(() => controller.abort(), remainingTimeoutMs)
   const eventEmitter = await createRunEventEmitter(
     deps.eventStore,
     {
@@ -196,11 +206,26 @@ export async function continueBackgroundOrSubagentRun(
                   invocationId: checkpoint.identity.invocationId,
                   triggerInstanceId: checkpoint.identity.triggerInstanceId,
                 },
-          resolver: () => {
+          resolver: async () => {
             if (origin === "subagent") return "allow"
-            if (remainingToolCalls <= 0) return "deny"
-            remainingToolCalls -= 1
-            return "allow"
+            for (;;) {
+              const loaded = await deps.runStore.load(runId)
+              if (!loaded.ok)
+                throw new Error(`background run ${runId} checkpoint is ${loaded.reason}`)
+              const consumed = loaded.checkpoint.backgroundExecutionLedger?.toolCallsConsumed
+              if (consumed === undefined || consumed >= backgroundExecution!.maxToolCallsPerRun)
+                return "deny"
+              try {
+                await deps.runStore.mutate(runId, loaded.checkpoint.revision, (cp) => ({
+                  ...cp,
+                  backgroundExecutionLedger: { toolCallsConsumed: consumed + 1 },
+                  updatedAt: now(),
+                }))
+                return "allow"
+              } catch (err) {
+                if (!(err instanceof StaleRevisionError)) throw err
+              }
+            }
           },
           requestApproval: () => {
             throw new Error(`${origin} runs never prompt for interactive approval`)
@@ -226,6 +251,9 @@ export async function continueBackgroundOrSubagentRun(
           releaseArtifactRunPin: false,
           adoptionLeaseIds: [],
         }),
+        quarantineEstimatorProfile: async (failedCheckpoint) => {
+          await deps.estimatorQuarantine?.quarantine(failedCheckpoint.config.resolvedProfile)
+        },
       },
       runId
     )

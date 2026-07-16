@@ -211,6 +211,8 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
       pluginId,
       manifestTool: tool,
       provenance: "plugin" as const,
+      ownerVersion: this.entries.get(pluginId)?.manifest?.version ?? "unversioned",
+      replayGuarantee: "none" as const,
     }))
   }
 

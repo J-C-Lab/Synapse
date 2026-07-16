@@ -10,9 +10,11 @@ import type { PlanStep } from "../plan/plan-types"
 import type { TokenUsage } from "../providers/types"
 import type { RunTrace } from "../run-trace-store"
 import type { FrozenAuthoritySnapshotV1 } from "./authority-snapshot"
+import type { CanonicalJson } from "./canonical-json"
 import type { FrozenContextSnapshotV1 } from "./context-snapshot"
 import type { DurableChatMessage } from "./durable-messages"
 import { authorityIntegrityHash } from "./authority-snapshot"
+import { canonicalHash } from "./canonical-json"
 import { contextSha256, contextSnapshotIntegrityMatches } from "./context-snapshot"
 
 // The authoritative recovery snapshot for one durable run (design
@@ -246,6 +248,11 @@ export interface AgentRunCheckpointV1 {
   toolBatches: ToolBatchLedger[]
   activatedSkills: SkillActivationSnapshot[]
 
+  /** Monotonic, checkpointed debit ledger for the background trigger's
+   * per-run tool allowance.  This is deliberately outside frozen config:
+   * policy is immutable, consumption is durable state. */
+  backgroundExecutionLedger?: { toolCallsConsumed: number }
+
   activeChildTaskId?: string
 
   conversationCommit?: {
@@ -338,6 +345,7 @@ const KNOWN_REVIEW_REASONS: ReadonlySet<string> = new Set([
 ])
 const KNOWN_BLOCKED_REASONS: ReadonlySet<string> = new Set([
   "unsupported-checkpoint-version",
+  "checkpoint-malformed",
   "conversation-deleted-or-missing",
   "authority-revoked",
   "authority-adapter-incompatible",
@@ -412,12 +420,12 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value)
 }
 
-function isOptionalFiniteNumber(value: unknown): boolean {
-  return value === undefined || isFiniteNumber(value)
-}
-
 function isNonNegativeNumber(value: unknown): boolean {
   return isFiniteNumber(value) && value >= 0
+}
+
+function isNonNegativeInteger(value: unknown): boolean {
+  return isNonNegativeNumber(value) && Number.isInteger(value)
 }
 
 function isOptionalNonNegativeNumber(value: unknown): boolean {
@@ -464,6 +472,22 @@ function hasCrossFieldInvariants(checkpoint: AgentRunCheckpointV1): boolean {
   for (const step of checkpoint.modelSteps) {
     if (modelSteps.has(step.step)) return false
     modelSteps.add(step.step)
+    // A just-prepared first attempt legally exists while nextStep still
+    // points at that same step; nextStep advances only after settlement.
+    if (step.step > checkpoint.nextStep) return false
+    const attemptIds = new Set<string>()
+    for (const attempt of step.attempts) {
+      if (attemptIds.has(attempt.attemptId)) return false
+      attemptIds.add(attempt.attemptId)
+      if (!modelAttemptAdmissionIsConsistent(attempt)) return false
+      if (
+        (attempt.state === "response_staged" || attempt.state === "budget_settled") &&
+        (!attempt.assistantMessageId ||
+          messages.get(attempt.assistantMessageId)?.message.role !== "assistant")
+      ) {
+        return false
+      }
+    }
     if (step.acceptedAttemptId !== undefined) {
       const accepted = step.attempts.find((attempt) => attempt.attemptId === step.acceptedAttemptId)
       if (!accepted || accepted.state !== "budget_settled") return false
@@ -486,10 +510,63 @@ function hasCrossFieldInvariants(checkpoint: AgentRunCheckpointV1): boolean {
       if (toolUseIds.has(call.toolUseId)) return false
       toolUseIds.add(call.toolUseId)
       const resolution = call.resolution
+      const frozen = checkpoint.config.authority.tools.find(
+        (tool) => tool.fqName === call.fqName && tool.safeName === call.safeName
+      )
+      // A model can name a tool outside its frozen catalog. It is recorded
+      // only as a terminal invalid-tool-call with no execution attempt; it
+      // is never approvable/invokable authority. Every executable/retryable
+      // ledger entry must bind to frozen authority below.
+      const isPureInvalidModelTool =
+        !frozen &&
+        resolution.status === "resolved" &&
+        resolution.reason === "invalid-tool-call" &&
+        call.attempts.length === 0
+      if (
+        !isPureInvalidModelTool &&
+        (!frozen ||
+          canonicalHash(call.annotations as unknown as CanonicalJson) !== frozen.annotationsHash ||
+          (frozen.annotations !== undefined &&
+            canonicalHash(frozen.annotations as unknown as CanonicalJson) !==
+              frozen.annotationsHash) ||
+          call.replayGuarantee !== frozen.replayGuarantee)
+      ) {
+        return false
+      }
+      const attemptIds = new Set<string>()
+      for (const attempt of call.attempts) {
+        if (attemptIds.has(attempt.attemptId)) return false
+        attemptIds.add(attempt.attemptId)
+      }
       if (
         resolution.status === "resolved" &&
         resolution.attemptId !== undefined &&
         !call.attempts.some((attempt) => attempt.attemptId === resolution.attemptId)
+      ) {
+        return false
+      }
+      if (
+        resolution.status === "resolved" &&
+        resolution.reason === "executed" &&
+        (resolution.attemptId === undefined ||
+          !call.attempts.some((attempt) => {
+            if (
+              attempt.attemptId !== resolution.attemptId ||
+              attempt.state.status !== "completed"
+            ) {
+              return false
+            }
+            return (
+              canonicalHash(attempt.state.result as unknown as CanonicalJson) ===
+              canonicalHash(resolution.result as unknown as CanonicalJson)
+            )
+          }))
+      ) {
+        return false
+      }
+      if (
+        resolution.status === "unresolved" &&
+        call.attempts.some((attempt) => attempt.state.status === "completed")
       ) {
         return false
       }
@@ -505,6 +582,9 @@ function hasCrossFieldInvariants(checkpoint: AgentRunCheckpointV1): boolean {
     ) {
       return false
     }
+    if (finalization.traceHash !== canonicalHash(finalization.trace as unknown as CanonicalJson)) {
+      return false
+    }
     if (
       (finalization.phase === "complete" && checkpoint.status !== finalization.desiredStatus) ||
       (finalization.phase !== "complete" && checkpoint.status !== "terminalizing")
@@ -515,20 +595,42 @@ function hasCrossFieldInvariants(checkpoint: AgentRunCheckpointV1): boolean {
   return true
 }
 
+function modelAttemptAdmissionIsConsistent(attempt: ModelRequestAttempt): boolean {
+  const admissionState = attempt.admission.state
+  if (attempt.state === "prepared") return admissionState === "planned"
+  if (
+    attempt.state === "held" ||
+    attempt.state === "dispatched" ||
+    attempt.state === "response_staged"
+  ) {
+    return admissionState === "held"
+  }
+  if (attempt.state === "unknown_response")
+    return admissionState === "held" || admissionState === "forfeited"
+  return admissionState === "settled"
+}
+
 function hasValidShape(v: Record<string, unknown>): boolean {
-  if (typeof v.revision !== "number") return false
+  if (!isNonNegativeInteger(v.revision)) return false
   if (!isValidIdentity(v.identity)) return false
   if (typeof v.status !== "string" || !KNOWN_STATUSES.has(v.status as AgentRunStatus)) return false
   if (!isValidRecovery(v.recovery)) return false
-  if (typeof v.createdAt !== "number" || typeof v.updatedAt !== "number") return false
+  if (!isNonNegativeInteger(v.createdAt) || !isNonNegativeInteger(v.updatedAt)) return false
   if (!isValidConfig(v.config)) return false
   if (!Array.isArray(v.messages) || !v.messages.every(isValidDurableMessage)) return false
   if (!isValidTokenUsage(v.usage)) return false
-  if (typeof v.nextStep !== "number") return false
+  if (!isNonNegativeInteger(v.nextStep)) return false
   if (v.plan !== undefined && !isValidPlan(v.plan)) return false
   if (!Array.isArray(v.modelSteps) || !v.modelSteps.every(isValidModelStepLedger)) return false
   if (!Array.isArray(v.toolBatches) || !v.toolBatches.every(isValidToolBatchLedger)) return false
   if (!Array.isArray(v.activatedSkills) || !v.activatedSkills.every(isValidSkillActivation)) {
+    return false
+  }
+  if (
+    v.backgroundExecutionLedger !== undefined &&
+    (!isRecord(v.backgroundExecutionLedger) ||
+      !isNonNegativeInteger(v.backgroundExecutionLedger.toolCallsConsumed))
+  ) {
     return false
   }
   if (!isOptionalString(v.activeChildTaskId)) return false
@@ -564,20 +666,21 @@ function isValidRecovery(v: unknown): boolean {
 function isValidModelCapabilityProfile(v: unknown): boolean {
   if (!isRecord(v)) return false
   if (!isString(v.profileId) || !isString(v.providerId) || !isString(v.modelPattern)) return false
-  if (!isNonNegativeNumber(v.contextWindowTokens)) return false
-  if (!isNonNegativeNumber(v.defaultMaxOutputTokens)) return false
-  if (!isOptionalNonNegativeNumber(v.maxToolSchemaBytes)) return false
+  if (!isNonNegativeInteger(v.contextWindowTokens)) return false
+  if (!isNonNegativeInteger(v.defaultMaxOutputTokens)) return false
+  if (v.maxToolSchemaBytes !== undefined && !isNonNegativeInteger(v.maxToolSchemaBytes))
+    return false
   if (!isBoolean(v.supportsPromptCaching)) return false
   if (!isBoolean(v.supportsParallelToolCalls)) return false
   if (!isBoolean(v.supportsReasoningStream)) return false
   if (!isRecord(v.tokenBudgeting)) return false
   if (!isString(v.tokenBudgeting.upperBoundEstimatorId)) return false
   if (!isString(v.tokenBudgeting.upperBoundEstimatorVersion)) return false
-  if (!isNonNegativeNumber(v.tokenBudgeting.providerFramingReserveTokens)) return false
+  if (!isNonNegativeInteger(v.tokenBudgeting.providerFramingReserveTokens)) return false
   if (!isRecord(v.contextPolicy)) return false
   if (!isFraction(v.contextPolicy.summarizeAtFraction)) return false
   if (!isFraction(v.contextPolicy.keepRecentFraction)) return false
-  if (!isNonNegativeNumber(v.contextPolicy.hardReserveTokens)) return false
+  if (!isNonNegativeInteger(v.contextPolicy.hardReserveTokens)) return false
   return true
 }
 
@@ -604,6 +707,10 @@ function isValidFrozenToolAuthority(v: unknown): boolean {
   if (v.provenance !== "host" && v.provenance !== "plugin" && v.provenance !== "mcp") return false
   if (!isString(v.ownerId) || !isString(v.ownerVersion)) return false
   if (!isString(v.modelSchemaHash) || !isString(v.annotationsHash)) return false
+  if (v.annotations !== undefined) {
+    if (!isRecord(v.annotations)) return false
+    if (canonicalHash(v.annotations as CanonicalJson) !== v.annotationsHash) return false
+  }
   if (
     v.requiredCapabilities !== undefined &&
     (!Array.isArray(v.requiredCapabilities) ||
@@ -657,26 +764,26 @@ function isValidConfig(v: unknown): boolean {
   if (v.schemaVersion !== 1) return false
   if (!isString(v.providerId) || !isString(v.model)) return false
   if (!isValidModelCapabilityProfile(v.resolvedProfile)) return false
-  if (!isNonNegativeNumber(v.maxOutputTokens)) return false
+  if (!isNonNegativeInteger(v.maxOutputTokens)) return false
   if (!isOptionalNonNegativeNumber(v.runBudgetTokens)) return false
-  if (!isOptionalFiniteNumber(v.deadlineAt)) return false
-  if (!isNonNegativeNumber(v.maxSteps)) return false
+  if (v.deadlineAt !== undefined && !isNonNegativeInteger(v.deadlineAt)) return false
+  if (!isNonNegativeInteger(v.maxSteps)) return false
   if (!isRecord(v.contextCompression)) return false
   if (!isBoolean(v.contextCompression.enabled)) return false
-  if (!isNonNegativeNumber(v.contextCompression.thresholdTokens)) return false
+  if (!isNonNegativeInteger(v.contextCompression.thresholdTokens)) return false
   if (!isFraction(v.contextCompression.keepRecentFraction)) return false
-  if (!isNonNegativeNumber(v.contextCompression.hardReserveTokens)) return false
+  if (!isNonNegativeInteger(v.contextCompression.hardReserveTokens)) return false
   if (!isRecord(v.workspaceBinding)) return false
   if (!isOptionalString(v.workspaceBinding.workspaceId)) return false
-  if (!isNonNegativeNumber(v.workspaceBinding.bindingRevision)) return false
+  if (!isNonNegativeInteger(v.workspaceBinding.bindingRevision)) return false
   if (!isStringArray(v.workspaceBinding.rootIds)) return false
   if (!isString(v.workspaceBinding.rootSetHash)) return false
   if (!isValidAuthority(v.authority)) return false
   if (!isValidContext(v.context)) return false
   if (v.backgroundExecution !== undefined) {
     if (!isRecord(v.backgroundExecution)) return false
-    if (!isNonNegativeNumber(v.backgroundExecution.maxToolCallsPerRun)) return false
-    if (!isNonNegativeNumber(v.backgroundExecution.timeoutMs)) return false
+    if (!isNonNegativeInteger(v.backgroundExecution.maxToolCallsPerRun)) return false
+    if (!isNonNegativeInteger(v.backgroundExecution.timeoutMs)) return false
   }
   return true
 }
@@ -710,10 +817,10 @@ function isValidDurableMessage(v: unknown): boolean {
 function isValidTokenUsage(v: unknown): boolean {
   if (!isRecord(v)) return false
   return (
-    isNonNegativeNumber(v.inputTokens) &&
-    isNonNegativeNumber(v.outputTokens) &&
-    isNonNegativeNumber(v.cacheCreationInputTokens) &&
-    isNonNegativeNumber(v.cacheReadInputTokens)
+    isNonNegativeInteger(v.inputTokens) &&
+    isNonNegativeInteger(v.outputTokens) &&
+    isNonNegativeInteger(v.cacheCreationInputTokens) &&
+    isNonNegativeInteger(v.cacheReadInputTokens)
   )
 }
 
@@ -798,7 +905,7 @@ function isValidToolCallResolution(v: unknown): boolean {
 
 function isValidToolCallLedgerEntry(v: unknown): boolean {
   if (!isRecord(v)) return false
-  if (!isNonNegativeNumber(v.ordinal)) return false
+  if (!isNonNegativeInteger(v.ordinal)) return false
   if (!isString(v.toolUseId) || !isString(v.safeName) || !isString(v.fqName)) return false
   if (!("input" in v)) return false
   if (!isRecord(v.annotations)) return false
@@ -811,7 +918,7 @@ function isValidToolCallLedgerEntry(v: unknown): boolean {
 
 function isValidToolBatchLedger(v: unknown): boolean {
   if (!isRecord(v)) return false
-  if (!isNonNegativeNumber(v.modelStep)) return false
+  if (!isNonNegativeInteger(v.modelStep)) return false
   if (!isString(v.assistantMessageId)) return false
   if (!Array.isArray(v.calls) || !v.calls.every(isValidToolCallLedgerEntry)) return false
   // Ordinals must be exactly 0..n-1 in order — the ordered-execution
@@ -821,7 +928,8 @@ function isValidToolBatchLedger(v: unknown): boolean {
     return false
   }
   if (!isString(v.resultCarrierMessageId)) return false
-  if (!isOptionalNonNegativeNumber(v.materializedAtRevision)) return false
+  if (v.materializedAtRevision !== undefined && !isNonNegativeInteger(v.materializedAtRevision))
+    return false
   return true
 }
 
@@ -829,12 +937,12 @@ function isValidModelBudgetAdmission(v: unknown): boolean {
   if (!isRecord(v)) return false
   if (!isString(v.operationId) || !isString(v.accountId)) return false
   if (!isString(v.estimatorId) || !isString(v.estimatorVersion)) return false
-  if (!isNonNegativeNumber(v.inputUpperBoundTokens)) return false
-  if (!isNonNegativeNumber(v.maxOutputTokens)) return false
-  if (!isNonNegativeNumber(v.heldTokens)) return false
+  if (!isNonNegativeInteger(v.inputUpperBoundTokens)) return false
+  if (!isNonNegativeInteger(v.maxOutputTokens)) return false
+  if (!isNonNegativeInteger(v.heldTokens)) return false
   if (!isString(v.state) || !KNOWN_ADMISSION_STATES.has(v.state)) return false
-  if (!isOptionalNonNegativeNumber(v.ledgerRevision)) return false
-  if (!isOptionalNonNegativeNumber(v.actualTokens)) return false
+  if (v.ledgerRevision !== undefined && !isNonNegativeInteger(v.ledgerRevision)) return false
+  if (v.actualTokens !== undefined && !isNonNegativeInteger(v.actualTokens)) return false
   return true
 }
 
@@ -850,7 +958,7 @@ function isValidModelRequestAttempt(v: unknown): boolean {
 
 function isValidModelStepLedger(v: unknown): boolean {
   if (!isRecord(v)) return false
-  if (!isNonNegativeNumber(v.step)) return false
+  if (!isNonNegativeInteger(v.step)) return false
   if (!Array.isArray(v.attempts) || !v.attempts.every(isValidModelRequestAttempt)) return false
   if (!isOptionalString(v.acceptedAttemptId)) return false
   return true

@@ -67,16 +67,32 @@ export class AgentRunRecoveryService {
   constructor(private readonly deps: AgentRunRecoveryServiceDeps) {}
 
   /** Scans every non-terminal or incomplete-finalization checkpoint,
-   *  reclassifies it, persists the disposition, and returns a summary row
-   *  per run. Corrupt/unsupported-version checkpoints have no identity to
-   *  summarize; they're skipped here and must be surfaced separately by
-   *  whatever drives the startup scan (e.g. logging the raw scan result). */
+   * reclassifies it, persists the disposition, and returns a summary row per
+   * run. Even an unreadable checkpoint gets a blocked row keyed by its safe
+   * directory runId, so it can be diagnosed and explicitly abandoned. */
   async listRecoverable(): Promise<AgentRunSummary[]> {
     const entries = await this.deps.runStore.scan()
     const summaries: AgentRunSummary[] = []
 
     for (const entry of entries) {
-      if (!entry.result.ok) continue
+      if (!entry.result.ok) {
+        summaries.push({
+          runId: entry.runId,
+          rootRunId: entry.runId,
+          origin: "interactive",
+          status: "failed",
+          recovery: {
+            kind: "blocked",
+            reason:
+              entry.result.reason === "unsupported-schema-version"
+                ? "unsupported-checkpoint-version"
+                : "checkpoint-malformed",
+          },
+          createdAt: 0,
+          updatedAt: 0,
+        })
+        continue
+      }
       const checkpoint = entry.result.checkpoint
       if (isTerminalRunStatus(checkpoint.status) && checkpoint.finalization?.phase === "complete") {
         continue
@@ -140,7 +156,12 @@ export class AgentRunRecoveryService {
    *  with desired status "cancelled". Reusing finalizeRun (Task 11) means
    *  abandon gets the exact same idempotent/resumable guarantees for free. */
   async abandon(runId: string): Promise<void> {
-    const checkpoint = await this.loadOk(runId)
+    const raw = await this.deps.runStore.load(runId)
+    if (!raw.ok) {
+      await this.deps.runStore.discard(runId)
+      return
+    }
+    const checkpoint = raw.checkpoint
     if (isTerminalRunStatus(checkpoint.status)) return
 
     if (checkpoint.finalization) {

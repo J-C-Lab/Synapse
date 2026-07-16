@@ -9,6 +9,7 @@ import type {
 } from "@synapse/marketplace-types"
 import type { ClipboardContent, ToolResult } from "@synapse/plugin-sdk"
 import type { RootBudgetLedgerStore } from "../ai/budget/root-budget-ledger"
+import type { EstimatorQuarantineStore } from "../ai/estimator-quarantine-store"
 import type { ExecutionToolHostSource } from "../ai/execution/execution-tool-host"
 import type { MemoryToolSource } from "../ai/memory/memory-tools"
 import type { ChatProvider } from "../ai/providers/types"
@@ -125,6 +126,7 @@ export interface PluginHostOptions {
   reservedAccelerators?: () => readonly string[]
   /** Supplies the currently selected chat provider/model for trigger-woken agents. */
   backgroundAgentProvider?: () => Promise<{ provider: ChatProvider; model?: string }>
+  estimatorQuarantine?: () => EstimatorQuarantineStore | undefined
   /** Forwards per-run traces from background-agent runs to the host recorder. */
   recordRun?: (trace: import("../ai/run-trace-store").RunTrace) => void
   /** Durable run/budget stores background-agent runs persist their checkpoint
@@ -583,6 +585,7 @@ export class PluginHost {
       budgetStore: this.options.budgetStore,
       upsertTrace: this.options.upsertTrace,
       workspaceRoots: this.options.workspaceRoots,
+      estimatorQuarantine: this.options.estimatorQuarantine?.(),
     })
     await runner.run({
       pluginId: request.pluginId,

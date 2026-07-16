@@ -38,6 +38,7 @@ export type RecoveryReviewReason =
 
 export type RecoveryBlockedReason =
   | "unsupported-checkpoint-version"
+  | "checkpoint-malformed"
   | "conversation-deleted-or-missing"
   | "authority-revoked"
   | "authority-adapter-incompatible"

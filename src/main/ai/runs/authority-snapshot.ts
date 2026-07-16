@@ -1,4 +1,4 @@
-import type { NormalizedCapability } from "@synapse/plugin-manifest"
+import type { NormalizedCapability, ToolAnnotations } from "@synapse/plugin-manifest"
 import type { RegisteredToolDescriptor } from "../../plugins/types"
 import type { ProviderToolSchema } from "../providers/types"
 import type { CanonicalJson } from "./canonical-json"
@@ -42,6 +42,7 @@ export interface FrozenToolAuthority {
   ownerVersion: string
   modelSchemaHash: string
   annotationsHash: string
+  annotations?: ToolAnnotations
   /** Declared per-tool capability subset, or `undefined` when the tool was
    *  not independently scoped and instead inherits the owning plugin's full
    *  grant at call time. `undefined` must be read as "as wide as whatever
@@ -205,12 +206,12 @@ function deriveOwnerId(
   return `mcp:${slash === -1 ? withoutPrefix : withoutPrefix.slice(0, slash)}`
 }
 
-function deriveOwnerVersion(descriptor: Pick<RegisteredToolDescriptor, "provenance">): string {
-  // Only the host's own version is reliably known at this layer today; a
-  // plugin/MCP server's declared version is not yet threaded through
-  // RegisteredToolDescriptor. "unknown" is honest rather than fabricated
-  // precision — a later task can plumb the real value through.
-  return descriptor.provenance === "host" ? PLUGIN_HOST_VERSION : "unknown"
+function deriveOwnerVersion(
+  descriptor: Pick<RegisteredToolDescriptor, "provenance" | "ownerVersion">
+): string {
+  return descriptor.provenance === "host"
+    ? PLUGIN_HOST_VERSION
+    : (descriptor.ownerVersion ?? "unversioned")
 }
 
 function deriveInvocationAdapterId(
@@ -246,12 +247,13 @@ export function freezeToolAuthority(input: {
     annotationsHash: canonicalHash(
       (descriptor.manifestTool.annotations ?? {}) as unknown as CanonicalJson
     ),
+    annotations: descriptor.manifestTool.annotations ?? {},
     requiredCapabilities: descriptor.manifestTool.capabilities?.map(freezeCapabilityGrant),
     invocationAdapterId: deriveInvocationAdapterId(descriptor),
     invocationAdapterVersion: "1",
     // Every existing tool adapter starts unreplayable; nothing today proves
     // dedupe-and-result-replay, so nothing may claim it.
-    replayGuarantee: "none",
+    replayGuarantee: descriptor.replayGuarantee ?? "none",
   }
 }
 
@@ -360,11 +362,18 @@ export function toolIdentityMatches(
   current: FrozenToolAuthority
 ): boolean {
   return (
+    current.fqName === frozen.fqName &&
+    current.safeName === frozen.safeName &&
+    current.provenance === frozen.provenance &&
     current.modelSchemaHash === frozen.modelSchemaHash &&
     current.annotationsHash === frozen.annotationsHash &&
     current.ownerId === frozen.ownerId &&
+    current.ownerVersion === frozen.ownerVersion &&
     current.invocationAdapterId === frozen.invocationAdapterId &&
-    current.invocationAdapterVersion === frozen.invocationAdapterVersion
+    current.invocationAdapterVersion === frozen.invocationAdapterVersion &&
+    current.replayGuarantee === frozen.replayGuarantee &&
+    canonicalHash((current.requiredCapabilities ?? []) as unknown as CanonicalJson) ===
+      canonicalHash((frozen.requiredCapabilities ?? []) as unknown as CanonicalJson)
   )
 }
 
@@ -388,13 +397,7 @@ export function compareToolAuthority(
 ): ToolAuthorityComparison {
   if (!current) return { kind: "removed" }
 
-  if (
-    current.modelSchemaHash !== frozen.modelSchemaHash ||
-    current.annotationsHash !== frozen.annotationsHash ||
-    current.ownerId !== frozen.ownerId ||
-    current.invocationAdapterId !== frozen.invocationAdapterId ||
-    current.invocationAdapterVersion !== frozen.invocationAdapterVersion
-  ) {
+  if (!toolIdentityMatches(frozen, current)) {
     return { kind: "changed" }
   }
 

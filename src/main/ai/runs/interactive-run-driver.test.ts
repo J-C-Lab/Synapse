@@ -164,6 +164,16 @@ function fakeRegistry(
   return registry
 }
 
+function frozenTools(
+  registry: AiToolRegistry
+): AgentRunCheckpointV1["config"]["authority"]["tools"] {
+  return registry
+    .listWithDescriptors()
+    .map(({ descriptor, schema }) =>
+      freezeToolAuthority({ descriptor, safeName: schema.name, modelSchema: schema })
+    )
+}
+
 async function seedRun(
   runId: string,
   options: {
@@ -241,7 +251,8 @@ describe("runInteractiveTurn — happy paths", () => {
 
   it("drives a tool-call turn through the batch, then a second model step to end_turn", async () => {
     const runId = "run-2"
-    await seedRun(runId)
+    const registry = fakeRegistry({ read_file: () => "contents" })
+    await seedRun(runId, { authorityTools: frozenTools(registry) })
     const provider = fakeProvider([
       {
         type: "message",
@@ -259,8 +270,6 @@ describe("runInteractiveTurn — happy paths", () => {
         stopReason: "end_turn",
       },
     ])
-    const registry = fakeRegistry({ read_file: () => "contents" })
-
     const outcome = await runInteractiveTurn(makeDeps(provider, registry), runId)
 
     expect(outcome.kind).toBe("finalized")

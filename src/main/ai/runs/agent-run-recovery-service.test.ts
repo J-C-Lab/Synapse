@@ -91,7 +91,24 @@ function baseCheckpoint(
         schemaVersion: 1,
         principal: { kind: "interactive", actor: "user" },
         capabilities: [],
-        tools: [],
+        tools: [
+          {
+            fqName: "read_file",
+            safeName: "read_file",
+            provenance: "host",
+            ownerId: "synapse-host",
+            ownerVersion: "0.2.0",
+            modelSchemaHash: canonicalHash({
+              name: "read_file",
+              description: "read_file",
+              inputSchema: { type: "object" },
+            } as unknown as CanonicalJson),
+            annotationsHash: canonicalHash({}),
+            invocationAdapterId: "host-tool",
+            invocationAdapterVersion: "1",
+            replayGuarantee: "none",
+          },
+        ],
         integrityHash: "h",
       },
       context: {
@@ -222,7 +239,7 @@ describe("agentRunRecoveryService.listRecoverable", () => {
         stopReason: "end_turn",
         endedAt: 2,
         trace: trace("done-1"),
-        traceHash: "h",
+        traceHash: canonicalHash(trace("done-1") as unknown as CanonicalJson),
         resourceReleasePlan: releasePlan(),
       },
     })
@@ -244,7 +261,7 @@ describe("agentRunRecoveryService.listRecoverable", () => {
         stopReason: "end_turn",
         endedAt: 2,
         trace: trace("stuck-terminalizing"),
-        traceHash: "h",
+        traceHash: canonicalHash(trace("stuck-terminalizing") as unknown as CanonicalJson),
         resourceReleasePlan: releasePlan(),
       },
     })

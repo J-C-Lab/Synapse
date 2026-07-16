@@ -129,6 +129,16 @@ export class AgentRunStore {
     return validated
   }
 
+  /** Removes only the validated run-id directory. Used for an explicitly
+   * abandoned corrupt/unsupported checkpoint, which cannot participate in
+   * normal finalization because it is not safe to deserialize. */
+  async discard(runId: string): Promise<void> {
+    if (!isSafeRunId(runId)) throw new InvalidRunIdError(runId)
+    await this.withLock(runId, async () => {
+      await fs.rm(this.runDir(runId), { recursive: true, force: true })
+    })
+  }
+
   async mutate(
     runId: string,
     expectedRevision: number,

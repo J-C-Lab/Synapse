@@ -1,5 +1,6 @@
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
 import { describe, expect, it } from "vitest"
+import { canonicalHash } from "./canonical-json"
 import { sealCheckpointIntegrity, validateCheckpoint } from "./checkpoint-schema"
 
 function minimalCheckpoint(): AgentRunCheckpointV1 {
@@ -368,7 +369,14 @@ describe("validateCheckpoint", () => {
           outcome: "end_turn",
           toolCalls: [],
         },
-        traceHash: "h",
+        traceHash: canonicalHash({
+          runId: "run-1",
+          origin: "interactive",
+          startedAt: 1,
+          endedAt: 1,
+          outcome: "end_turn",
+          toolCalls: [],
+        }),
         resourceReleasePlan: {
           budgetOperationIds: [],
           skillPackageLeaseIds: [],
@@ -399,7 +407,14 @@ describe("validateCheckpoint", () => {
           outcome: "end_turn",
           toolCalls: [],
         },
-        traceHash: "h",
+        traceHash: canonicalHash({
+          runId: "run-1",
+          origin: "interactive",
+          startedAt: 1,
+          endedAt: 1,
+          outcome: "end_turn",
+          toolCalls: [],
+        }),
         resourceReleasePlan: {
           budgetOperationIds: [],
           skillPackageLeaseIds: [],

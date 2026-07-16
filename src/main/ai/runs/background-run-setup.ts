@@ -164,6 +164,9 @@ export async function setupBackgroundRun(
         maxToolCallsPerRun: input.maxToolCallsPerRun,
         timeoutMs: input.timeoutMs,
       },
+      // The deadline is a creation-time commitment. Recovery must consume
+      // what remains of this absolute deadline, never grant a fresh timeout.
+      deadlineAt: now + input.timeoutMs,
     },
     messages: durableMessages,
     usage: {
@@ -176,6 +179,7 @@ export async function setupBackgroundRun(
     modelSteps: [],
     toolBatches: [],
     activatedSkills: [],
+    backgroundExecutionLedger: { toolCallsConsumed: 0 },
   }
 
   const created = await deps.runStore.create(checkpoint)

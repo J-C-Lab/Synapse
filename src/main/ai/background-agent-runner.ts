@@ -1,6 +1,7 @@
 import type { AgentTriggerBudget, NormalizedCapability, TriggerUse } from "@synapse/plugin-manifest"
 import type { GrantIdentity } from "../plugins/grant-store"
 import type { RootBudgetLedgerStore } from "./budget/root-budget-ledger"
+import type { EstimatorQuarantineStore } from "./estimator-quarantine-store"
 import type { ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
 import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "./run-trace-store"
 import type { AgentRunStore } from "./runs/agent-run-store"
@@ -15,7 +16,9 @@ import {
 } from "@synapse/plugin-manifest"
 import { AgentBudgetLedger } from "../plugins/agent-budget"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
+import { resolveModelCapabilityProfile } from "./providers/model-capability-profile"
 import { emptyUsage } from "./providers/types"
+import { StaleRevisionError } from "./runs/agent-run-store"
 import { setupBackgroundRun } from "./runs/background-run-setup"
 import { toChatMessages } from "./runs/durable-messages"
 import { runInteractiveTurn } from "./runs/interactive-run-driver"
@@ -54,6 +57,7 @@ export interface BackgroundAgentRunnerOptions {
   /** Forwarded to run-trace-store so background runs are traced too. */
   recordRun?: (trace: RunTrace) => void
   workspaceRoots: Pick<WorkspaceRootStore, "listForWorkspace">
+  estimatorQuarantine?: EstimatorQuarantineStore
 }
 
 export class BackgroundAgentRunner {
@@ -76,13 +80,21 @@ export class BackgroundAgentRunner {
 
     const resolvedRoots = await this.options.workspaceRoots.listForWorkspace(input.workspaceId)
     const runBudget = input.agent.maxTokensPerRun > 0 ? input.agent.maxTokensPerRun : undefined
+    if (runBudget !== undefined) {
+      await this.options.estimatorQuarantine?.assertAllowed(
+        resolveModelCapabilityProfile(
+          this.options.provider.id,
+          this.options.model ?? DEFAULT_ANTHROPIC_MODEL
+        )
+      )
+    }
     const tools = new AiToolRegistry(this.limitedTools(input.allowedUses))
 
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), input.agent.timeoutMs)
     const abortInput = () => controller.abort()
     input.signal?.addEventListener("abort", abortInput, { once: true })
 
+    let timeout: ReturnType<typeof setTimeout> | undefined
     try {
       const checkpoint = await setupBackgroundRun(
         {
@@ -118,6 +130,10 @@ export class BackgroundAgentRunner {
           executionWorkspaces: resolvedRoots,
         }
       )
+      const deadlineAt = checkpoint.config.deadlineAt
+      if (deadlineAt !== undefined) {
+        timeout = setTimeout(() => controller.abort(), Math.max(0, deadlineAt - this.now()))
+      }
 
       const outcome = await runInteractiveTurn(
         {
@@ -144,8 +160,32 @@ export class BackgroundAgentRunner {
             // check), which always resolves definitively, so
             // requestApproval is unreachable in practice; it throws rather
             // than silently allowing/denying if that assumption ever breaks.
-            resolver: () =>
-              this.ledger.tryDebitToolCall(start.runId, input.agent) ? "allow" : "deny",
+            resolver: async () => {
+              // Persist the debit before a call can be dispatched. A process
+              // death can waste one slot, but can never mint a fresh allowance.
+              for (;;) {
+                const loaded = await this.options.runStore.load(start.runId)
+                if (!loaded.ok)
+                  throw new Error(`background run ${start.runId} checkpoint is ${loaded.reason}`)
+                const consumed = loaded.checkpoint.backgroundExecutionLedger?.toolCallsConsumed
+                if (consumed === undefined || consumed >= input.agent.maxToolCallsPerRun)
+                  return "deny"
+                try {
+                  await this.options.runStore.mutate(
+                    start.runId,
+                    loaded.checkpoint.revision,
+                    (cp) => ({
+                      ...cp,
+                      backgroundExecutionLedger: { toolCallsConsumed: consumed + 1 },
+                      updatedAt: this.now(),
+                    })
+                  )
+                  return "allow"
+                } catch (err) {
+                  if (!(err instanceof StaleRevisionError)) throw err
+                }
+              }
+            },
             requestApproval: () => {
               throw new Error("background-agent runs never prompt for interactive approval")
             },
@@ -160,6 +200,11 @@ export class BackgroundAgentRunner {
             releaseArtifactRunPin: false,
             adoptionLeaseIds: [],
           }),
+          quarantineEstimatorProfile: async (failedCheckpoint) => {
+            await this.options.estimatorQuarantine?.quarantine(
+              failedCheckpoint.config.resolvedProfile
+            )
+          },
         },
         start.runId
       )
@@ -182,7 +227,7 @@ export class BackgroundAgentRunner {
         usage: outcome.checkpoint.usage,
       }
     } finally {
-      clearTimeout(timeout)
+      if (timeout) clearTimeout(timeout)
       input.signal?.removeEventListener("abort", abortInput)
       this.ledger.finish(start.runId)
     }

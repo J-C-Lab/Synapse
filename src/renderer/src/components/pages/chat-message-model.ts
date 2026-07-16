@@ -190,20 +190,38 @@ export function mergeDurableRunSnapshot(
   )
   for (const [step, calls] of [...byStep.entries()].sort(([a], [b]) => a - b)) {
     const text = assistantTextById.get(calls[0]?.assistantMessageId ?? "")
-    next.push({
-      id: `durable-run:${snapshot.identity.runId}:step:${step}`,
-      role: "assistant",
-      blocks: [
-        ...(text ? [{ kind: "text" as const, text }] : []),
-        ...calls.map((call) => ({
-          kind: "tool" as const,
-          id: call.toolUseId,
-          name: call.safeName,
-          input: {},
-          status: toolCardStatus(call),
-        })),
-      ],
-    })
+    const stepId = `durable-run:${snapshot.identity.runId}:step:${step}`
+    const assistantMessageId = calls[0]?.assistantMessageId
+    const textOnlyId = assistantMessageId
+      ? `durable-run:${snapshot.identity.runId}:message:${assistantMessageId}`
+      : undefined
+    const existingTextIndex = textOnlyId
+      ? next.findIndex((message) => message.id === textOnlyId)
+      : -1
+    const toolBlocks = calls.map((call) => ({
+      kind: "tool" as const,
+      id: call.toolUseId,
+      name: call.safeName,
+      input: {},
+      status: toolCardStatus(call),
+    }))
+    if (existingTextIndex >= 0) {
+      // A response_staged snapshot may first surface assistant text before
+      // tool_requested arrives. Promote that exact placeholder into the
+      // step message instead of rendering its text twice.
+      const existing = next[existingTextIndex]!
+      next[existingTextIndex] = {
+        ...existing,
+        id: stepId,
+        blocks: [...existing.blocks, ...toolBlocks],
+      }
+    } else {
+      next.push({
+        id: stepId,
+        role: "assistant",
+        blocks: [...(text ? [{ kind: "text" as const, text }] : []), ...toolBlocks],
+      })
+    }
   }
   const assistantMessageIdsWithTools = new Set(
     snapshot.toolCalls.map((call) => call.assistantMessageId).filter(Boolean)

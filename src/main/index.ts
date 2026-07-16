@@ -287,6 +287,7 @@ let approvalRegistry!: ApprovalRegistry
 let lan: LanService
 let agent: AgentService
 let agentRunRecoveryService: AgentRunRecoveryService
+let estimatorQuarantine: EstimatorQuarantineStore | undefined
 let sharedMemoryTools: MemoryToolSource | undefined
 let sharedExecutionTools: ExecutionToolHostSource | undefined
 let runTraceRecorder: (trace: RunTrace) => void = () => {}
@@ -303,7 +304,12 @@ let makeSubagentProvider: () => Promise<{ provider: ChatProvider; model: string 
  *  from every caller — see run-recovery-orchestrator.ts's module header for
  *  why background-agent/subagent continuation is intentionally degraded
  *  relative to interactive. */
-let continueAnyRun: (runId: string) => void = () => {}
+interface ContinuingAnyRun {
+  completion: Promise<void>
+  ownership: Promise<void>
+}
+const continuingAnyRuns = new Map<string, ContinuingAnyRun>()
+let continueAnyRun: (runId: string) => Promise<void> = async () => {}
 // Shared across initPluginHost() (background-agent runs) and
 // createAgentService() (interactive runs, and the subagent runner it wires
 // up) — one durable checkpoint/budget store pair per app run, not a
@@ -900,6 +906,7 @@ function initPluginHost(): PluginHost {
       approve: capabilityService.capabilityApprover,
     },
     backgroundAgentProvider: () => agent.createBackgroundAgentProvider(),
+    estimatorQuarantine: () => estimatorQuarantine,
     memoryTools: () => sharedMemoryTools,
     executionTools: () => sharedExecutionTools,
     recordRun: (trace) => runTraceRecorder(trace),
@@ -1028,6 +1035,7 @@ async function createAgentService(): Promise<AgentService> {
         budgetStore: agentBudgetStore,
         upsertTrace: (input) => upsertRunTrace(runsDir, input),
         recordRun,
+        estimatorQuarantine,
       }).run(inp)
     },
   })
@@ -1036,7 +1044,7 @@ async function createAgentService(): Promise<AgentService> {
   // (`mcp:<id>/<tool>`), built-in memory tools (`memory:…`), and optionally
   // sandboxed local execution (`execution:…`). Invocations route by ownership.
   const aiSettings = new AiSettingsStore(aiSettingsFilePath(userDataDir), DEFAULT_PROVIDER_ID)
-  const estimatorQuarantine = new EstimatorQuarantineStore(estimatorQuarantineFilePath(userDataDir))
+  estimatorQuarantine = new EstimatorQuarantineStore(estimatorQuarantineFilePath(userDataDir))
   // Live circuit-breaker tuning (P3). Held in a mutable holder the host reads
   // afresh per new breaker; setToolResilience updates it and resets breakers so
   // the change takes effect immediately. Seeded from persisted settings below.
@@ -1246,21 +1254,45 @@ async function createAgentService(): Promise<AgentService> {
   emitPlanForRun = (runId, steps) => agentService.emitPlanForRun(runId, steps)
   makeSubagentProvider = () => agentService.createBackgroundAgentProvider()
 
-  continueAnyRun = (runId: string): void => {
-    void (async () => {
+  continueAnyRun = (runId: string): Promise<void> => {
+    const existing = continuingAnyRuns.get(runId)
+    if (existing) return existing.ownership
+    let establishOwnership!: () => void
+    let rejectOwnership!: (reason: unknown) => void
+    const ownership = new Promise<void>((resolve, reject) => {
+      establishOwnership = resolve
+      rejectOwnership = reject
+    })
+    const entry: ContinuingAnyRun = {
+      ownership,
+      completion: Promise.resolve(),
+    }
+    const completion = (async () => {
       let result: Awaited<ReturnType<typeof agentRunStore.load>>
       try {
         result = await agentRunStore.load(runId)
       } catch (err) {
         logger.child("runs").warn("continueAnyRun: failed to load checkpoint", { runId, err })
+        rejectOwnership(err)
         return
       }
-      if (!result.ok) return
+      if (!result.ok) {
+        establishOwnership()
+        return
+      }
       const checkpoint = result.checkpoint
       try {
         if (checkpoint.identity.origin === "interactive") {
+          // AgentService owns the conversation lease barrier. Joining it
+          // here keeps this process-wide map authoritative for every origin.
+          await agentService.continueRunThroughOwnership(runId)
+          establishOwnership()
           await agentService.continueRun(runId)
         } else {
+          // Inserting this entry before any await is the execution ownership
+          // barrier for background/subagent runs, which have no conversation
+          // lease. Never allow a second Resume to start another driver.
+          establishOwnership()
           await continueBackgroundOrSubagentRun(
             {
               runStore: agentRunStore,
@@ -1270,6 +1302,7 @@ async function createAgentService(): Promise<AgentService> {
               recordRun,
               tools: resilientToolHost,
               onEvent: broadcastRunEvent,
+              estimatorQuarantine,
               buildProvider: async (providerId) => {
                 const apiKey = await credentials.get(providerId)
                 if (!apiKey) throw new AgentMissingKeyError()
@@ -1282,6 +1315,7 @@ async function createAgentService(): Promise<AgentService> {
           )
         }
       } catch (err) {
+        rejectOwnership(err)
         logger.child("runs").warn("continueAnyRun: run failed to resume", {
           runId,
           origin: checkpoint.identity.origin,
@@ -1289,6 +1323,14 @@ async function createAgentService(): Promise<AgentService> {
         })
       }
     })()
+    entry.completion = completion.finally(() => {
+      if (continuingAnyRuns.get(runId) === entry) continuingAnyRuns.delete(runId)
+    })
+    continuingAnyRuns.set(runId, entry)
+    // Completion is intentionally detached; callers only await durable
+    // execution ownership so app startup never waits for provider latency.
+    void entry.completion.catch(() => {})
+    return ownership
   }
 
   // Kick off the startup recovery scan now, without blocking app readiness on
@@ -1306,14 +1348,7 @@ async function createAgentService(): Promise<AgentService> {
         recovery: agentRunRecoveryService,
         runStore: agentRunStore,
         continueRun: async (checkpoint) => {
-          if (checkpoint.identity.origin === "interactive") {
-            // The startup barrier must wait until the recovered driver has
-            // fenced its conversation lease, not merely until a detached
-            // promise was scheduled. The turn itself remains asynchronous.
-            await agentService.continueRunThroughOwnership(checkpoint.identity.runId)
-            return
-          }
-          continueAnyRun(checkpoint.identity.runId)
+          await continueAnyRun(checkpoint.identity.runId)
         },
         onError: (runId, err) =>
           logger.child("runs").warn("failed to auto-resume run", { runId, err }),

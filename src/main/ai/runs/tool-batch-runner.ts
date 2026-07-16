@@ -237,17 +237,37 @@ async function createBatch(
 
   const calls: ToolCallLedgerEntry[] = toolUseBlocks.map((block, ordinal) => {
     const descriptor = deps.tools.describe(block.name)
+    const frozen = descriptor
+      ? checkpoint.config.authority.tools.find((tool) => tool.fqName === descriptor.fqName)
+      : checkpoint.config.authority.tools.find((tool) => tool.safeName === block.name)
+    const invalid = frozen === undefined
     return {
       ordinal,
       toolUseId: block.id,
       safeName: block.name,
-      fqName: descriptor?.fqName ?? block.name,
+      fqName: frozen?.fqName ?? descriptor?.fqName ?? block.name,
       input: block.input,
-      annotations: descriptor?.manifestTool.annotations ?? {},
-      replayGuarantee: descriptor ? invocationAdapterFor(descriptor).replayGuarantee : "none",
+      annotations: frozen?.annotations ?? descriptor?.manifestTool.annotations ?? {},
+      replayGuarantee:
+        frozen?.replayGuarantee ??
+        (descriptor ? invocationAdapterFor(descriptor).replayGuarantee : "none"),
       approval: { status: "not_required" },
       attempts: [],
-      resolution: { status: "unresolved" },
+      // Never persist an unresolved authority-less call: it could otherwise
+      // be resumed into a newly installed tool. The only representation of a
+      // model hallucinating an out-of-catalog name is a terminal synthetic
+      // denial, with no approval or execution attempt.
+      resolution: invalid
+        ? {
+            status: "resolved" as const,
+            reason: "invalid-tool-call" as const,
+            result: {
+              isError: true,
+              preview: "This tool call could not be resolved to a known tool.",
+              complete: true,
+            },
+          }
+        : { status: "unresolved" as const },
     }
   })
 
