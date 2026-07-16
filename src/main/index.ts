@@ -675,6 +675,13 @@ function broadcastAiChatEvent(event: unknown): void {
   broadcast("ai:chat:event", event)
 }
 
+/** Real-time push side of the subscribeRun channel (P1-2). Every window
+ *  receives every run's events (matching ai:chat:event's existing pattern);
+ *  the renderer filters by runId client-side. */
+function broadcastRunEvent(event: unknown): void {
+  broadcast("runs:event", event)
+}
+
 // Build the auto-update service around electron-updater's singleton. Manual
 // flow: we surface "available"/"downloaded" to the renderer and only download
 // or restart on the user's request. State changes stream on `updates:event`.
@@ -1141,6 +1148,7 @@ async function createAgentService(): Promise<AgentService> {
     budgetStore: agentBudgetStore,
     upsertTrace: (input) => upsertRunTrace(runsDir, input),
     eventStore: agentEventStore,
+    onRunEvent: broadcastRunEvent,
     getToolHealth: () => resilientToolHost.snapshots(),
     onToolResilienceChange: (cfg) => {
       toolResilience = cfg
@@ -1201,6 +1209,7 @@ async function createAgentService(): Promise<AgentService> {
               upsertTrace: (input) => upsertRunTrace(runsDir, input),
               recordRun,
               tools: resilientToolHost,
+              onEvent: broadcastRunEvent,
               buildProvider: async (providerId) => {
                 const apiKey = await credentials.get(providerId)
                 if (!apiKey) throw new AgentMissingKeyError()
@@ -1213,13 +1222,11 @@ async function createAgentService(): Promise<AgentService> {
           )
         }
       } catch (err) {
-        logger
-          .child("runs")
-          .warn("continueAnyRun: run failed to resume", {
-            runId,
-            origin: checkpoint.identity.origin,
-            err,
-          })
+        logger.child("runs").warn("continueAnyRun: run failed to resume", {
+          runId,
+          origin: checkpoint.identity.origin,
+          err,
+        })
       }
     })()
   }

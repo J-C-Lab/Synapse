@@ -1,3 +1,4 @@
+import type { AgentRunEvent } from "@synapse/agent-protocol"
 import type { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import type { ChatProvider } from "../providers/types"
 import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "../run-trace-store"
@@ -100,6 +101,9 @@ export interface GenericRunContinuationDeps {
    *  is configured for that provider. */
   buildProvider: (providerId: string) => Promise<ChatProvider>
   now?: () => number
+  /** Real-time push side of the subscribeRun channel (P1-2) — see
+   *  run-event-emitter.ts. */
+  onEvent?: (event: AgentRunEvent) => void
 }
 
 /** Re-drives an interrupted background-agent or subagent checkpoint to
@@ -132,7 +136,9 @@ export async function continueBackgroundOrSubagentRun(
       rootRunId: checkpoint.identity.rootRunId,
       conversationId: checkpoint.identity.conversationId,
     },
-    now
+    now,
+    undefined,
+    deps.onEvent
   )
 
   const outcome = await runInteractiveTurn(

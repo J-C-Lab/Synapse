@@ -211,6 +211,11 @@ const electronAPI = {
   resumeRun: (runId: string, decision?: { kind: "retry" | "mark_failed" }) =>
     ipcRenderer.invoke("runs:resume", { runId, decision }),
   abandonRun: (runId: string) => ipcRenderer.invoke("runs:abandon", runId),
+  onRunEvent: (handler: (event: unknown) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
+    ipcRenderer.on("runs:event", listener)
+    return () => ipcRenderer.removeListener("runs:event", listener)
+  },
   listWorkspaceRoots: (workspaceId: string) =>
     ipcRenderer.invoke("ai:list-workspace-roots", workspaceId),
   getMcpOnboardingAvailability: (workspaceId: string) =>

@@ -859,6 +859,7 @@ declare global {
         decision?: { kind: "retry" | "mark_failed" }
       ) => Promise<SynapseResumeRunResult>
       abandonRun: (runId: string) => Promise<void>
+      onRunEvent: (handler: (event: AgentRunEvent) => void) => () => void
       listWorkspaceRoots: (workspaceId: string) => Promise<SynapseWorkspaceRoot[]>
       getMcpOnboardingAvailability: (
         workspaceId: string

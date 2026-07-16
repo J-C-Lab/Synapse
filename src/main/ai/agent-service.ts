@@ -1,3 +1,4 @@
+import type { AgentRunEvent } from "@synapse/agent-protocol"
 import type { AiSettingsStore, ToolResilienceSettings } from "./ai-settings-store"
 import type { ApprovalDecision } from "./approval-gate"
 import type { ApprovalStore } from "./approval-store"
@@ -77,6 +78,12 @@ export interface AgentServiceOptions {
   /** Durable append-only event journal — renderer-facing run projections
    *  (Task 15) read from this. */
   eventStore: RunEventStore
+  /** Real-time push side of the subscribeRun channel (P1-2) — fired for
+   *  every event as it's durably appended, so a subscribed renderer window
+   *  never has to poll. Optional: omitting it keeps event emission fully
+   *  poll-only (getRunEventsSince still works), matching every pre-P1-2
+   *  caller. */
+  onRunEvent?: (event: AgentRunEvent) => void
   /** Strict, idempotent terminal-finalization trace write (design §"Terminal
    *  finalization across stores"). Distinct from `recordRun` below, which is
    *  a best-effort convenience callback fired with the same trace. */
@@ -625,7 +632,9 @@ export class AgentService {
           rootRunId: checkpoint.identity.rootRunId,
           conversationId,
         },
-        this.now
+        this.now,
+        undefined,
+        this.options.onRunEvent
       )
       if (params.emitRunStarted) {
         await eventEmitter.emit({

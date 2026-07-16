@@ -1,5 +1,11 @@
-import type { AgentRunSnapshot, AgentRunSummary } from "@synapse/agent-protocol"
-import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
+import type {
+  AgentRunMessageSummary,
+  AgentRunModelStepSummary,
+  AgentRunSnapshot,
+  AgentRunSummary,
+  AgentRunToolCallSummary,
+} from "@synapse/agent-protocol"
+import type { AgentRunCheckpointV1, ToolCallLedgerEntry } from "./checkpoint-schema"
 
 // Pure projections from the host-only AgentRunCheckpointV1 into the
 // renderer-safe shapes defined in @synapse/agent-protocol. Never exposes
@@ -42,6 +48,10 @@ export function toAgentRunSnapshot(
     // forward-compatible with them.
     childTasks: [],
     artifacts: [],
+    messages: messageSummaries(checkpoint),
+    toolCalls: toolCallSummaries(checkpoint),
+    currentModelStep: currentModelStepSummary(checkpoint),
+    finalizationPhase: checkpoint.finalization?.phase,
   }
 }
 
@@ -53,4 +63,67 @@ function pendingApprovalIds(checkpoint: AgentRunCheckpointV1): string[] {
     }
   }
   return ids
+}
+
+function messageSummaries(checkpoint: AgentRunCheckpointV1): AgentRunMessageSummary[] {
+  return checkpoint.messages.map((entry, ordinal) => ({
+    messageId: entry.messageId,
+    role: entry.message.role,
+    ordinal,
+  }))
+}
+
+function toolCallSummaries(checkpoint: AgentRunCheckpointV1): AgentRunToolCallSummary[] {
+  const summaries: AgentRunToolCallSummary[] = []
+  for (const batch of checkpoint.toolBatches) {
+    for (const call of batch.calls) {
+      summaries.push({
+        ordinal: call.ordinal,
+        modelStep: batch.modelStep,
+        toolUseId: call.toolUseId,
+        safeName: call.safeName,
+        fqName: call.fqName,
+        status: toolCallStatus(call),
+        ...(call.resolution.status === "resolved"
+          ? {
+              isError: call.resolution.result.isError,
+              resultPreview: call.resolution.result.preview,
+            }
+          : {}),
+      })
+    }
+  }
+  return summaries
+}
+
+function toolCallStatus(call: ToolCallLedgerEntry): AgentRunToolCallSummary["status"] {
+  if (call.resolution.status === "resolved") {
+    if (
+      call.resolution.reason === "approval-denied" ||
+      call.resolution.reason === "policy-denied"
+    ) {
+      return "denied"
+    }
+    return "completed"
+  }
+  if (call.approval.status === "pending") return "pending_approval"
+  const latest = call.attempts[call.attempts.length - 1]
+  if (!latest) return "approved"
+  if (latest.state.status === "started") return "running"
+  if (latest.state.status === "unknown") return "unknown"
+  return "approved"
+}
+
+function currentModelStepSummary(
+  checkpoint: AgentRunCheckpointV1
+): AgentRunModelStepSummary | undefined {
+  const step = checkpoint.modelSteps[checkpoint.modelSteps.length - 1]
+  if (!step) return undefined
+  const attempt = step.attempts[step.attempts.length - 1]
+  if (!attempt) return undefined
+  return {
+    step: step.step,
+    state: attempt.state,
+    assistantMessageId: attempt.assistantMessageId,
+  }
 }

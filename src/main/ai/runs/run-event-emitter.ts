@@ -50,7 +50,13 @@ export async function createRunEventEmitter(
   store: RunEventStore,
   identity: RunEventIdentity,
   now: () => number,
-  newId: () => string = randomUUID
+  newId: () => string = randomUUID,
+  /** Fired synchronously after a successful durable append — the real-time
+   *  push side of the subscribeRun channel (P1-2). Never awaited and never
+   *  allowed to throw back into the caller: a renderer-push failure must
+   *  never break the agent driver, which is exactly why the event journal
+   *  itself is written first and this hook second. */
+  onEvent?: (event: AgentRunEvent) => void
 ): Promise<RunEventEmitter> {
   const existing = await store.readAll(identity.runId)
   let sequence = existing.length > 0 ? existing[existing.length - 1]!.sequence : 0
@@ -71,6 +77,11 @@ export async function createRunEventEmitter(
         persisted: true,
       } as AgentRunEvent
       await store.append(identity.runId, event)
+      try {
+        onEvent?.(event)
+      } catch {
+        // A broadcast-side failure must never surface as a driver failure.
+      }
     },
   }
 }

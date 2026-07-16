@@ -162,4 +162,228 @@ describe("toAgentRunSnapshot", () => {
     const checkpoint = minimalCheckpoint({ plan: [{ title: "step 1", status: "pending" }] })
     expect(toAgentRunSnapshot(checkpoint, 0).plan).toEqual([{ title: "step 1", status: "pending" }])
   })
+
+  it("projects structural message correlation (id/role/ordinal), never content", () => {
+    const checkpoint = minimalCheckpoint({
+      messages: [
+        { messageId: "u1", message: { role: "user", content: [{ type: "text", text: "hi" }] } },
+        {
+          messageId: "a1",
+          message: { role: "assistant", content: [{ type: "text", text: "hello" }] },
+        },
+      ],
+    })
+    expect(toAgentRunSnapshot(checkpoint, 0).messages).toEqual([
+      { messageId: "u1", role: "user", ordinal: 0 },
+      { messageId: "a1", role: "assistant", ordinal: 1 },
+    ])
+  })
+
+  it("derives each tool call's status/preview from approval + resolution + latest attempt", () => {
+    const checkpoint = minimalCheckpoint({
+      toolBatches: [
+        {
+          modelStep: 2,
+          assistantMessageId: "a1",
+          resultCarrierMessageId: "r1",
+          calls: [
+            {
+              ordinal: 0,
+              toolUseId: "t1",
+              safeName: "waiting",
+              fqName: "waiting",
+              input: {},
+              annotations: {},
+              replayGuarantee: "none",
+              approval: { status: "pending", approvalId: "approval-1", requestedAt: 1 },
+              attempts: [],
+              resolution: { status: "unresolved" },
+            },
+            {
+              ordinal: 1,
+              toolUseId: "t2",
+              safeName: "running_now",
+              fqName: "running_now",
+              input: {},
+              annotations: {},
+              replayGuarantee: "none",
+              approval: { status: "not_required" },
+              attempts: [
+                {
+                  attemptId: "a1",
+                  invocationId: "i1",
+                  invocationFingerprint: "f1",
+                  state: { status: "started", startedAt: 1 },
+                },
+              ],
+              resolution: { status: "unresolved" },
+            },
+            {
+              ordinal: 2,
+              toolUseId: "t3",
+              safeName: "done_ok",
+              fqName: "done_ok",
+              input: {},
+              annotations: {},
+              replayGuarantee: "none",
+              approval: { status: "not_required" },
+              attempts: [],
+              resolution: {
+                status: "resolved",
+                reason: "executed",
+                result: { isError: false, preview: "42", complete: true },
+              },
+            },
+            {
+              ordinal: 3,
+              toolUseId: "t4",
+              safeName: "denied_one",
+              fqName: "denied_one",
+              input: {},
+              annotations: {},
+              replayGuarantee: "none",
+              approval: { status: "resolved", allowed: false, remember: "once", resolvedAt: 1 },
+              attempts: [],
+              resolution: {
+                status: "resolved",
+                reason: "approval-denied",
+                result: { isError: true, preview: "denied", complete: true },
+              },
+            },
+          ],
+        },
+      ],
+    })
+
+    const toolCalls = toAgentRunSnapshot(checkpoint, 0).toolCalls
+    expect(toolCalls).toEqual([
+      {
+        ordinal: 0,
+        modelStep: 2,
+        toolUseId: "t1",
+        safeName: "waiting",
+        fqName: "waiting",
+        status: "pending_approval",
+      },
+      {
+        ordinal: 1,
+        modelStep: 2,
+        toolUseId: "t2",
+        safeName: "running_now",
+        fqName: "running_now",
+        status: "running",
+      },
+      {
+        ordinal: 2,
+        modelStep: 2,
+        toolUseId: "t3",
+        safeName: "done_ok",
+        fqName: "done_ok",
+        status: "completed",
+        isError: false,
+        resultPreview: "42",
+      },
+      {
+        ordinal: 3,
+        modelStep: 2,
+        toolUseId: "t4",
+        safeName: "denied_one",
+        fqName: "denied_one",
+        status: "denied",
+        isError: true,
+        resultPreview: "denied",
+      },
+    ])
+  })
+
+  it("surfaces the latest model step's latest attempt as currentModelStep", () => {
+    const checkpoint = minimalCheckpoint({
+      modelSteps: [
+        {
+          step: 0,
+          acceptedAttemptId: "a1",
+          attempts: [
+            {
+              attemptId: "a1",
+              requestHash: "h1",
+              state: "budget_settled",
+              admission: {
+                operationId: "op1",
+                accountId: "root",
+                estimatorId: "e",
+                estimatorVersion: "1",
+                inputUpperBoundTokens: 10,
+                maxOutputTokens: 10,
+                heldTokens: 0,
+                state: "settled",
+              },
+            },
+          ],
+        },
+        {
+          step: 1,
+          attempts: [
+            {
+              attemptId: "a2",
+              requestHash: "h2",
+              state: "dispatched",
+              assistantMessageId: "a2-msg",
+              admission: {
+                operationId: "op2",
+                accountId: "root",
+                estimatorId: "e",
+                estimatorVersion: "1",
+                inputUpperBoundTokens: 10,
+                maxOutputTokens: 10,
+                heldTokens: 10,
+                state: "held",
+              },
+            },
+          ],
+        },
+      ],
+    })
+    expect(toAgentRunSnapshot(checkpoint, 0).currentModelStep).toEqual({
+      step: 1,
+      state: "dispatched",
+      assistantMessageId: "a2-msg",
+    })
+  })
+
+  it("is undefined for currentModelStep when no model step has started yet", () => {
+    expect(toAgentRunSnapshot(minimalCheckpoint(), 0).currentModelStep).toBeUndefined()
+  })
+
+  it("passes through the finalization phase once finalization has started", () => {
+    const checkpoint = minimalCheckpoint({
+      finalization: {
+        finalizationId: "f1",
+        desiredStatus: "completed",
+        phase: "trace_upserted",
+        outcome: "end_turn",
+        stopReason: "end_turn",
+        endedAt: 1,
+        trace: {
+          runId: "run-1",
+          origin: "interactive",
+          startedAt: 1,
+          endedAt: 1,
+          outcome: "end_turn",
+          toolCalls: [],
+        },
+        traceHash: "h",
+        resourceReleasePlan: {
+          budgetOperationIds: [],
+          skillPackageLeaseIds: [],
+          releaseArtifactRunPin: false,
+          adoptionLeaseIds: [],
+        },
+      },
+    })
+    expect(toAgentRunSnapshot(checkpoint, 0).finalizationPhase).toBe("trace_upserted")
+  })
+
+  it("leaves finalizationPhase undefined before finalization starts", () => {
+    expect(toAgentRunSnapshot(minimalCheckpoint(), 0).finalizationPhase).toBeUndefined()
+  })
 })

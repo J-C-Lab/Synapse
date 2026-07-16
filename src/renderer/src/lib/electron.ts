@@ -716,6 +716,12 @@ export async function abandonRun(runId: string): Promise<void> {
   await api().abandonRun(runId)
 }
 
+/** Real-time push side of the snapshot-then-subscribe pattern (P1-2) —
+ *  fires for every run's events, not just one; callers filter by runId. */
+export function onRunEvent(handler: (event: AgentRunEvent) => void): () => void {
+  return api().onRunEvent(handler)
+}
+
 export async function createAiWorkspace(name: string): Promise<AiWorkspace> {
   return api().createAiWorkspace(name)
 }
