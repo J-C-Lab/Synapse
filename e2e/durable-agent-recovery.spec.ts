@@ -22,14 +22,11 @@ import {
 // page) discovers and can act on it — not a mocked electron module, a real
 // IPC round-trip.
 //
-// Deliberately scoped down from "resumes from snapshot/event cursor and does
-// not duplicate a tool card": that phrasing describes a chat-page mid-
-// conversation reconnect, which needs a seeded conversation plus an
-// in-progress tool-call UI to prove non-duplication against — a much larger
-// fixture with no deterministic-LLM-injection hook available for the real
-// app. What's proven here is the layer underneath that UI: the durable store
-// on disk really is what the renderer's recovery panel reads and mutates
-// through real IPC, with no in-memory state bridging the two.
+// The first test proves the recovery-panel/control-plane leg. The companion
+// test below proves the user-facing chat leg too: a seeded paused tool call
+// hydrates from snapshot/event cursor after a real renderer reload without
+// duplicating its tool card. Together they cover both halves of Task 16's
+// Electron restart acceptance surface without a test-only IPC shortcut.
 
 function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex")
@@ -40,20 +37,19 @@ function sha256(text: string): string {
  *  (like the rest of main) is reached through `@synapse/*` tsconfig path
  *  aliases that Playwright's own module resolution has no reason to know
  *  about. Mirrors the shape durable-run-child.ts's minimalCheckpoint()
- *  already proves the real store accepts. `origin: "background-agent"` is
- *  deliberate: main/index.ts's buildClassifierInput compares that origin's
- *  frozen authority against itself (a documented limitation, see Task 15),
- *  so this fixture only needs to be internally consistent, never needs to
- *  match "real" live tool/capability state to classify as recoverable. The
- *  context snapshot's hashes are real sha256 (not placeholders) because
- *  classifyRunRecovery's contextSnapshotIsIntact check re-derives them. */
+ *  already proves the real store accepts. It is interactive deliberately:
+ *  that is a real, source-complete automatic-recovery authority. A synthetic
+ *  background run without its durable plugin/trigger identity must now block
+ *  fail-closed, so using one here would test an invalid fixture rather than
+ *  startup continuation. The context snapshot's hashes are real sha256 (not
+ *  placeholders) because classifyRunRecovery re-derives them. */
 function seedCheckpointJson(runId: string): Record<string, unknown> {
   const systemPromptText = "You are helpful."
   const baseSha = sha256(systemPromptText)
   return {
     schemaVersion: 1,
     revision: 1,
-    identity: { runId, rootRunId: runId, origin: "background-agent" },
+    identity: { runId, rootRunId: runId, origin: "interactive" },
     status: "waiting_approval",
     recovery: { kind: "automatic" },
     createdAt: 1,
@@ -94,7 +90,7 @@ function seedCheckpointJson(runId: string): Record<string, unknown> {
       workspaceBinding: { bindingRevision: 0, rootIds: [], rootSetHash: "h" },
       authority: {
         schemaVersion: 1,
-        principal: { kind: "internal-agent", actor: "background" },
+        principal: { kind: "interactive", actor: "user" },
         capabilities: [],
         tools: [],
         integrityHash: "h",
