@@ -30,7 +30,11 @@ import { runInteractiveTurn } from "../interactive-run-driver"
 import { finalizeRun } from "../run-finalizer"
 import { SIMULATED_CRASH_EXIT_CODE } from "./fault-points"
 
-export type ChildScenario = "three_call_batch" | "model_dispatch_crash" | "finalization_phases"
+export type ChildScenario =
+  | "three_call_batch"
+  | "approval_denied"
+  | "model_dispatch_crash"
+  | "finalization_phases"
 
 export interface ChildConfig {
   baseDir: string
@@ -122,7 +126,10 @@ function minimalCheckpoint(runId: string, tools: AiToolRegistry): AgentRunCheckp
   }
 }
 
-function toolDescriptor(name: string): RegisteredToolDescriptor {
+function toolDescriptor(
+  name: string,
+  annotations: RegisteredToolDescriptor["manifestTool"]["annotations"] = { readOnlyHint: true }
+): RegisteredToolDescriptor {
   return {
     fqName: name,
     pluginId: "host",
@@ -131,7 +138,7 @@ function toolDescriptor(name: string): RegisteredToolDescriptor {
       name,
       description: `desc ${name}`,
       inputSchema: { type: "object" },
-      annotations: { readOnlyHint: true },
+      annotations,
     },
   }
 }
@@ -147,7 +154,11 @@ function recordLine(filePath: string, value: unknown): void {
 function buildRegistry(config: ChildConfig): AiToolRegistry {
   const toolCallsPath = path.join(config.baseDir, "tool-invocations.jsonl")
   const descriptors: RegisteredToolDescriptor[] =
-    config.scenario === "three_call_batch" ? [toolDescriptor("probe")] : []
+    config.scenario === "three_call_batch"
+      ? [toolDescriptor("probe")]
+      : config.scenario === "approval_denied"
+        ? [toolDescriptor("confirm_probe", { requiresConfirmation: true })]
+        : []
   const registry = new AiToolRegistry({
     listTools: () => descriptors,
     invokeTool: async (fqName: string, input: unknown, options: ToolInvocationOptions) => {
@@ -168,6 +179,12 @@ function responseFor(config: ChildConfig, messages: ChatMessage[]): ChatMessage 
         { type: "tool_use", id: "t2", name: "probe", input: { n: 2 } },
         { type: "tool_use", id: "t3", name: "probe", input: { n: 3 } },
       ],
+    }
+  }
+  if (config.scenario === "approval_denied" && messages.length <= 1) {
+    return {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "approval-tool", name: "confirm_probe", input: {} }],
     }
   }
   // model_dispatch_crash and finalization_phases are both single, trivial,
@@ -247,10 +264,8 @@ async function main(): Promise<void> {
       toolBatch: {
         tools,
         caller: { kind: "agent", runId: config.runId },
-        resolver: () => "allow",
-        requestApproval: () => {
-          throw new Error("no approval flow in this scenario")
-        },
+        resolver: config.scenario === "approval_denied" ? undefined : () => "allow",
+        requestApproval: async () => ({ allowed: false, remember: "once" }),
         now: Date.now,
         fault: (point) => crashIfMatches(config, "toolBatch", point),
       },

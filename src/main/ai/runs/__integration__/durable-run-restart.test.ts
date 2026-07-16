@@ -189,6 +189,23 @@ describe("crash matrix — three-call tool batch (real process crash + resume)",
   }, 30_000)
 })
 
+describe("crash matrix — pending and denied approval (real process crash + resume)", () => {
+  const faultPoints: DurableFaultPoint[] = [
+    { subsystem: "toolBatch", point: "after_approval_pending" },
+    { subsystem: "toolBatch", point: "after_approval_resolved" },
+  ]
+
+  it.each(faultPoints)(
+    "preserves the denial without executing the tool after crashing at $point",
+    (crashAt) => {
+      crashThenResume(dir, "run-approval-denied", "approval_denied", crashAt)
+      expect(readResult(dir)).toEqual({ kind: "finalized", stopReason: "end_turn" })
+      expect(readJsonl(path.join(dir, "tool-invocations.jsonl"))).toHaveLength(0)
+    },
+    30_000
+  )
+})
+
 describe("crash matrix — model-step hold/dispatch (real process crash + resume)", () => {
   const faultPoints: DurableFaultPoint[] = [
     { subsystem: "model", point: "after_hold" },
