@@ -317,6 +317,27 @@ export function compareCapabilityGrant(
   return "revoked"
 }
 
+/** The identity-only subset of {@link compareToolAuthority}'s first check
+ *  (schema/annotations/owner/adapter — never capability narrowing, which
+ *  needs a live capabilities map this call's callers don't have). Used at
+ *  dispatch/approval/invoke time (P1-5) to make the run's frozen tool
+ *  catalog actually load-bearing, not just a comparison artifact recovery
+ *  classification reads — a tool call is only ever approved or executed
+ *  against the exact identity the run's authority froze at creation, never
+ *  whatever a live safeName happens to resolve to right now. */
+export function toolIdentityMatches(
+  frozen: FrozenToolAuthority,
+  current: FrozenToolAuthority
+): boolean {
+  return (
+    current.modelSchemaHash === frozen.modelSchemaHash &&
+    current.annotationsHash === frozen.annotationsHash &&
+    current.ownerId === frozen.ownerId &&
+    current.invocationAdapterId === frozen.invocationAdapterId &&
+    current.invocationAdapterVersion === frozen.invocationAdapterVersion
+  )
+}
+
 export type ToolAuthorityComparison =
   | { kind: "unchanged" }
   | { kind: "narrowed" }

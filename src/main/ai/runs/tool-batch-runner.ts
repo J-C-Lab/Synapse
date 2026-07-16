@@ -1,4 +1,5 @@
 import type { ToolCaller, ToolResult } from "@synapse/plugin-sdk"
+import type { RegisteredToolDescriptor } from "../../plugins/types"
 import type { AiToolRegistry } from "../tool-registry"
 import type { AgentRunStore } from "./agent-run-store"
 import type { CanonicalJson } from "./canonical-json"
@@ -19,9 +20,40 @@ import type { RunEventEmitter } from "./run-event-emitter"
 import { randomUUID } from "node:crypto"
 import { renderLabeledToolResult } from "../agent-runtime"
 import { invocationAdapterFor } from "../tool-registry"
+import { freezeToolAuthority, toolIdentityMatches } from "./authority-snapshot"
 import { canonicalHash } from "./canonical-json"
 import { decideDurableApproval } from "./durable-approval"
 import { isValidRunStatusTransition } from "./run-types"
+
+/** Resolves a call's frozen fqName against the LIVE registry and verifies
+ *  the live tool's identity (schema/annotations/owner/adapter) still
+ *  matches exactly what this run's authority froze at creation — never a
+ *  bare presence check. A tool that vanished, or whose safeName now
+ *  resolves to a different tool, or whose owning plugin updated in place,
+ *  is treated identically to "the tool disappeared" (undefined): the caller
+ *  already handles that as invalid-tool-call. This is what makes the
+ *  frozen catalog (checkpoint.config.authority.tools) actually load-bearing
+ *  at dispatch/approval/invoke time, not just a comparison artifact startup
+ *  recovery classification reads. */
+function resolveVerifiedDescriptor(
+  deps: Pick<ToolBatchDeps, "tools">,
+  checkpoint: AgentRunCheckpointV1,
+  call: ToolCallLedgerEntry
+): RegisteredToolDescriptor | undefined {
+  const frozen = checkpoint.config.authority.tools.find((t) => t.fqName === call.fqName)
+  if (!frozen) return undefined
+  const entry = deps.tools
+    .listWithDescriptors()
+    .find(({ descriptor }) => descriptor.fqName === call.fqName)
+  if (!entry) return undefined
+  const current = freezeToolAuthority({
+    descriptor: entry.descriptor,
+    safeName: frozen.safeName,
+    modelSchema: entry.schema,
+  })
+  if (!toolIdentityMatches(frozen, current)) return undefined
+  return entry.descriptor
+}
 
 // Ordered multi-tool execution ledger (design §"Ordered `ToolBatchLedger`
 // with per-ordinal approval/execution/result state and atomic result-carrier
@@ -280,7 +312,7 @@ async function approvalPhase(
   })
 
   if (call.approval.status === "not_required" && call.attempts.length === 0) {
-    const descriptor = deps.tools.describe(call.safeName)
+    const descriptor = resolveVerifiedDescriptor(deps, checkpoint, call)
     if (!descriptor) {
       await resolveWithoutExecution(deps, runId, modelStep, ordinal, "invalid-tool-call")
       return "resolved"
@@ -426,7 +458,15 @@ async function executionPhase(
   const latest = call.attempts[call.attempts.length - 1]
 
   if (latest && latest.state.status === "started") {
-    const recovered = await recoverInterruptedAttempt(deps, runId, modelStep, ordinal, call, latest)
+    const recovered = await recoverInterruptedAttempt(
+      deps,
+      runId,
+      modelStep,
+      ordinal,
+      call,
+      latest,
+      checkpoint
+    )
     if (recovered.kind === "suspended") return recovered
     checkpoint = recovered.checkpoint
     call = requireBatch(checkpoint, modelStep).calls[ordinal]!
@@ -434,7 +474,7 @@ async function executionPhase(
     // "not-found" recovery: fall through to start a brand-new attempt below.
   }
 
-  const descriptor = deps.tools.describe(call.safeName)
+  const descriptor = resolveVerifiedDescriptor(deps, checkpoint, call)
   if (!descriptor) {
     await resolveWithoutExecution(deps, runId, modelStep, ordinal, "invalid-tool-call")
     return { kind: "resolved", checkpoint: await loadOk(deps, runId) }
@@ -537,9 +577,10 @@ async function recoverInterruptedAttempt(
   modelStep: number,
   ordinal: number,
   call: ToolCallLedgerEntry,
-  latest: ToolExecutionAttempt
+  latest: ToolExecutionAttempt,
+  runCheckpoint: AgentRunCheckpointV1
 ): Promise<CallAdvanceResult | CallSuspendResult> {
-  const descriptor = deps.tools.describe(call.safeName)
+  const descriptor = resolveVerifiedDescriptor(deps, runCheckpoint, call)
   const adapter = descriptor
     ? invocationAdapterFor(descriptor)
     : {

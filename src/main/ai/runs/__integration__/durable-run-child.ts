@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url"
 import { createRootBudgetLedger, RootBudgetLedgerStore } from "../../budget/root-budget-ledger"
 import { AiToolRegistry } from "../../tool-registry"
 import { AgentRunStore } from "../agent-run-store"
+import { freezeToolAuthority } from "../authority-snapshot"
 import { runInteractiveTurn } from "../interactive-run-driver"
 import { finalizeRun } from "../run-finalizer"
 import { SIMULATED_CRASH_EXIT_CODE } from "./fault-points"
@@ -40,7 +41,7 @@ export interface ChildConfig {
   crashAt?: DurableFaultPoint
 }
 
-function minimalCheckpoint(runId: string): AgentRunCheckpointV1 {
+function minimalCheckpoint(runId: string, tools: AiToolRegistry): AgentRunCheckpointV1 {
   return {
     schemaVersion: 1,
     revision: 0,
@@ -87,7 +88,15 @@ function minimalCheckpoint(runId: string): AgentRunCheckpointV1 {
         schemaVersion: 1,
         principal: { kind: "interactive", actor: "user" },
         capabilities: [],
-        tools: [],
+        // Frozen from the SAME registry the child actually dispatches
+        // against, matching production (setupInteractiveRun et al.) and
+        // required by the frozen-tool-authority identity check (P1-5)
+        // tool-batch-runner.ts now enforces at approval/execution time.
+        tools: tools
+          .listWithDescriptors()
+          .map(({ schema, descriptor }) =>
+            freezeToolAuthority({ descriptor, safeName: schema.name, modelSchema: schema })
+          ),
         integrityHash: "h",
       },
       context: {
@@ -220,7 +229,7 @@ async function main(): Promise<void> {
   const provider = buildProvider(config)
 
   if (config.createCheckpoint) {
-    await runStore.create(minimalCheckpoint(config.runId))
+    await runStore.create(minimalCheckpoint(config.runId, tools))
     await budgetStore.create(createRootBudgetLedger(config.runId, 100_000))
   }
 

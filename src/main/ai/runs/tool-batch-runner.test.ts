@@ -9,6 +9,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AiToolRegistry } from "../tool-registry"
 import { AgentRunStore } from "./agent-run-store"
+import { freezeToolAuthority } from "./authority-snapshot"
 import { advanceToolBatch } from "./tool-batch-runner"
 
 function fakeEmitter(): RunEventEmitter & { events: AgentRunEvent[] } {
@@ -56,9 +57,24 @@ function toolDescriptor(
   }
 }
 
+/** Mirrors production authority-freezing (setupInteractiveRun et al.):
+ *  every tool the registry currently reports becomes a frozen authority
+ *  entry, derived through the exact same freezeToolAuthority the real
+ *  dispatch/approval/invoke identity check (P1-5) compares against — so a
+ *  test's checkpoint fixture and its live registry are guaranteed
+ *  consistent unless the test deliberately swaps the registry afterward. */
+function authorityToolsFor(registry: AiToolRegistry) {
+  return registry
+    .listWithDescriptors()
+    .map(({ schema, descriptor }) =>
+      freezeToolAuthority({ descriptor, safeName: schema.name, modelSchema: schema })
+    )
+}
+
 function checkpointWithAssistantToolCalls(
   runId: string,
-  calls: Array<{ id: string; name: string; input: unknown }>
+  calls: Array<{ id: string; name: string; input: unknown }>,
+  registry: AiToolRegistry
 ): AgentRunCheckpointV1 {
   return {
     schemaVersion: 1,
@@ -106,7 +122,7 @@ function checkpointWithAssistantToolCalls(
         schemaVersion: 1,
         principal: { kind: "interactive", actor: "user" },
         capabilities: [],
-        tools: [],
+        tools: authorityToolsFor(registry),
         integrityHash: "h",
       },
       context: {
@@ -215,16 +231,17 @@ function baseDeps(registry: AiToolRegistry, overrides: Partial<ToolBatchDeps> = 
 
 async function seed(
   runId: string,
+  registry: AiToolRegistry,
   calls: Array<{ id: string; name: string; input: unknown }>
 ): Promise<void> {
-  await runStore.create(checkpointWithAssistantToolCalls(runId, calls))
+  await runStore.create(checkpointWithAssistantToolCalls(runId, calls, registry))
 }
 
 describe("advanceToolBatch — happy path", () => {
   it("creates the whole ledger up front, resolves an auto-allowed read-only call, and materializes one ordered result message", async () => {
     const runId = "run-1"
     const { registry, invoke } = makeRegistry(["read_file"], { read_file: () => "contents" })
-    await seed(runId, [{ id: "t1", name: "read_file", input: { path: "a.txt" } }])
+    await seed(runId, registry, [{ id: "t1", name: "read_file", input: { path: "a.txt" } }])
 
     const outcome = await advanceToolBatch(baseDeps(registry), runId, 0)
 
@@ -252,7 +269,7 @@ describe("advanceToolBatch — happy path", () => {
   it("processes three tools in provider order and materializes exactly one carrier message covering all three", async () => {
     const runId = "run-2"
     const { registry } = makeRegistry(["a", "b", "c"], { a: () => "A", b: () => "B", c: () => "C" })
-    await seed(runId, [
+    await seed(runId, registry, [
       { id: "t1", name: "a", input: {} },
       { id: "t2", name: "b", input: {} },
       { id: "t3", name: "c", input: {} },
@@ -275,7 +292,7 @@ describe("advanceToolBatch — onToolCall/onToolResult event hooks", () => {
   it("fires onToolCall once per call in order right after batch creation", async () => {
     const runId = "run-events-1"
     const { registry } = makeRegistry(["a", "b"], { a: () => "A", b: () => "B" })
-    await seed(runId, [
+    await seed(runId, registry, [
       { id: "t1", name: "a", input: { x: 1 } },
       { id: "t2", name: "b", input: { y: 2 } },
     ])
@@ -292,7 +309,7 @@ describe("advanceToolBatch — onToolCall/onToolResult event hooks", () => {
   it("does not re-fire onToolCall for an already-created batch on resume", async () => {
     const runId = "run-events-2"
     const { registry } = makeRegistry(["a"], { a: () => "A" })
-    await seed(runId, [{ id: "t1", name: "a", input: {} }])
+    await seed(runId, registry, [{ id: "t1", name: "a", input: {} }])
     const calls: unknown[] = []
 
     await advanceToolBatch(baseDeps(registry, { onToolCall: (c) => calls.push(c) }), runId, 0)
@@ -307,7 +324,7 @@ describe("advanceToolBatch — onToolCall/onToolResult event hooks", () => {
       a: () => "A",
       denied: () => "should not run",
     })
-    await seed(runId, [
+    await seed(runId, registry, [
       { id: "t1", name: "a", input: {} },
       { id: "t2", name: "denied", input: {} },
     ])
@@ -332,7 +349,7 @@ describe("advanceToolBatch — onToolCall/onToolResult event hooks", () => {
 describe("advanceToolBatch — executionAuditDecision", () => {
   it("passes 'allow' for an auto-allowed (never-asked) call", async () => {
     const { registry, invoke } = makeRegistry(["read_file"], { read_file: () => "contents" })
-    await seed("run-audit-1", [{ id: "t1", name: "read_file", input: {} }])
+    await seed("run-audit-1", registry, [{ id: "t1", name: "read_file", input: {} }])
 
     await advanceToolBatch(baseDeps(registry), "run-audit-1", 0)
 
@@ -355,7 +372,7 @@ describe("advanceToolBatch — executionAuditDecision", () => {
     const invoke = vi.fn(async () => ({ content: [{ type: "text" as const, text: "ok" }] }))
     const registry = new AiToolRegistry({ listTools: () => [descriptor], invokeTool: invoke })
     registry.list()
-    await seed("run-audit-2", [{ id: "t1", name: "ask_me", input: {} }])
+    await seed("run-audit-2", registry, [{ id: "t1", name: "ask_me", input: {} }])
 
     await advanceToolBatch(
       baseDeps(registry, { requestApproval: async () => ({ allowed: true, remember: "once" }) }),
@@ -374,7 +391,7 @@ describe("advanceToolBatch — executionAuditDecision", () => {
 describe("advanceToolBatch — cancellation", () => {
   it("forwards deps.signal into the tool invocation so a live cancel can interrupt it", async () => {
     const { registry, invoke } = makeRegistry(["read_file"], { read_file: () => "contents" })
-    await seed("run-signal-1", [{ id: "t1", name: "read_file", input: {} }])
+    await seed("run-signal-1", registry, [{ id: "t1", name: "read_file", input: {} }])
     const controller = new AbortController()
 
     await advanceToolBatch(baseDeps(registry, { signal: controller.signal }), "run-signal-1", 0)
@@ -391,7 +408,7 @@ describe("advanceToolBatch — denial/policy without execution", () => {
   it("resolves a policy-denied call synthetically with no execution attempt", async () => {
     const runId = "run-3"
     const { registry, invoke } = makeRegistry(["dangerous"], { dangerous: () => "should not run" })
-    await seed(runId, [{ id: "t1", name: "dangerous", input: {} }])
+    await seed(runId, registry, [{ id: "t1", name: "dangerous", input: {} }])
 
     const outcome = await advanceToolBatch(baseDeps(registry, { resolver: () => "deny" }), runId, 0)
 
@@ -404,7 +421,6 @@ describe("advanceToolBatch — denial/policy without execution", () => {
 
   it("resolves a human-denied call synthetically with no execution attempt", async () => {
     const runId = "run-4"
-    await seed(runId, [{ id: "t1", name: "writeish", input: {} }])
     const descriptor = toolDescriptor("writeish", {
       manifestTool: {
         name: "writeish",
@@ -421,6 +437,7 @@ describe("advanceToolBatch — denial/policy without execution", () => {
       invokeTool: invoke,
     })
     registryWithDestructive.list()
+    await seed(runId, registryWithDestructive, [{ id: "t1", name: "writeish", input: {} }])
 
     const outcome = await advanceToolBatch(
       baseDeps(registryWithDestructive, {
@@ -454,7 +471,7 @@ describe("advanceToolBatch — approval persistence", () => {
       invokeTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
     })
     registry.list()
-    await seed(runId, [{ id: "t1", name: "ask_me", input: {} }])
+    await seed(runId, registry, [{ id: "t1", name: "ask_me", input: {} }])
 
     const seenApprovalIds: string[] = []
     await advanceToolBatch(
@@ -530,7 +547,7 @@ describe("advanceToolBatch — three-tool crash matrix", () => {
         },
         {}
       )
-      await seed(runId, [
+      await seed(runId, registry, [
         { id: "t1", name: "a", input: {} },
         { id: "t2", name: "b", input: {} },
         { id: "t3", name: "c", input: {} },
@@ -598,7 +615,7 @@ describe("advanceToolBatch — unknown tool outcome suspension", () => {
       },
     })
     registry.list()
-    await seed(runId, [{ id: "t1", name: "flaky", input: {} }])
+    await seed(runId, registry, [{ id: "t1", name: "flaky", input: {} }])
 
     // Manually park the checkpoint in a "started, never completed" state to
     // simulate an interrupted attempt from a prior process.
@@ -650,7 +667,7 @@ describe("advanceToolBatch — durable event emission", () => {
   it("emits tool_requested then tool_started/tool_completed for an auto-allowed call", async () => {
     const runId = "run-events-1"
     const { registry } = makeRegistry(["read_file"], { read_file: () => "contents" })
-    await seed(runId, [{ id: "t1", name: "read_file", input: { path: "a.txt" } }])
+    await seed(runId, registry, [{ id: "t1", name: "read_file", input: { path: "a.txt" } }])
     const emitter = fakeEmitter()
 
     await advanceToolBatch(baseDeps(registry, { eventEmitter: emitter }), runId, 0)
@@ -683,7 +700,7 @@ describe("advanceToolBatch — durable event emission", () => {
       { write_file: () => "ok" },
       { requiresConfirmation: true }
     )
-    await seed(runId, [{ id: "t1", name: "write_file", input: {} }])
+    await seed(runId, registry, [{ id: "t1", name: "write_file", input: {} }])
     const emitter = fakeEmitter()
 
     await advanceToolBatch(
@@ -713,8 +730,91 @@ describe("advanceToolBatch — durable event emission", () => {
   it("never throws when eventEmitter is omitted (every existing caller keeps working)", async () => {
     const runId = "run-events-3"
     const { registry } = makeRegistry(["read_file"], { read_file: () => "contents" })
-    await seed(runId, [{ id: "t1", name: "read_file", input: {} }])
+    await seed(runId, registry, [{ id: "t1", name: "read_file", input: {} }])
     const outcome = await advanceToolBatch(baseDeps(registry), runId, 0)
     expect(outcome.kind).toBe("materialized")
+  })
+})
+
+describe("advanceToolBatch — frozen tool authority identity (P1-5)", () => {
+  it("refuses to approve a call whose live tool identity no longer matches what the run's authority froze", async () => {
+    const runId = "run-drift-approval"
+    const { registry } = makeRegistry(["ask_me"], { ask_me: () => "ok" }, {})
+    await seed(runId, registry, [{ id: "t1", name: "ask_me", input: {} }])
+
+    // Simulates a plugin update landing between the model's tool call and
+    // this call's approval/execution: same safeName, different schema —
+    // the exact "live safeName now resolves to a different tool" case the
+    // frozen-authority identity check exists to catch.
+    const driftedRegistry = new AiToolRegistry({
+      listTools: () => [
+        toolDescriptor("ask_me", {
+          manifestTool: {
+            name: "ask_me",
+            description: "a completely different tool now",
+            inputSchema: { type: "object", properties: { extra: { type: "string" } } },
+            annotations: {},
+          },
+        }),
+      ],
+      invokeTool: async () => ({ content: [{ type: "text" as const, text: "should not run" }] }),
+    })
+    driftedRegistry.list()
+
+    const outcome = await advanceToolBatch(baseDeps(driftedRegistry), runId, 0)
+
+    expect(outcome.kind).toBe("materialized")
+    const call = outcome.checkpoint.toolBatches[0]!.calls[0]!
+    expect(call.resolution).toMatchObject({ status: "resolved", reason: "invalid-tool-call" })
+    expect(call.attempts).toEqual([])
+  })
+
+  it("refuses to execute a call whose live tool identity no longer matches what the run's authority froze", async () => {
+    const runId = "run-drift-execution"
+    const { registry, invoke } = makeRegistry(
+      ["read_file"],
+      { read_file: () => "contents" },
+      {
+        readOnlyHint: true,
+      }
+    )
+    await seed(runId, registry, [{ id: "t1", name: "read_file", input: {} }])
+
+    const driftedRegistry = new AiToolRegistry({
+      listTools: () => [
+        toolDescriptor("read_file", {
+          manifestTool: {
+            name: "read_file",
+            description: "desc read_file",
+            inputSchema: { type: "object" },
+            // Annotation drift alone (readOnlyHint dropped) is enough to
+            // change the frozen identity hash.
+            annotations: {},
+          },
+        }),
+      ],
+      invokeTool: invoke,
+    })
+    driftedRegistry.list()
+
+    const outcome = await advanceToolBatch(baseDeps(driftedRegistry), runId, 0)
+
+    expect(outcome.kind).toBe("materialized")
+    const call = outcome.checkpoint.toolBatches[0]!.calls[0]!
+    expect(call.resolution).toMatchObject({ status: "resolved", reason: "invalid-tool-call" })
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it("still executes normally when the live tool is byte-for-byte identical to what was frozen", async () => {
+    const runId = "run-no-drift"
+    const { registry, invoke } = makeRegistry(["read_file"], { read_file: () => "contents" })
+    await seed(runId, registry, [{ id: "t1", name: "read_file", input: {} }])
+
+    const outcome = await advanceToolBatch(baseDeps(registry), runId, 0)
+
+    expect(outcome.kind).toBe("materialized")
+    const call = outcome.checkpoint.toolBatches[0]!.calls[0]!
+    expect(call.resolution).toMatchObject({ status: "resolved", reason: "executed" })
+    expect(invoke).toHaveBeenCalledTimes(1)
   })
 })

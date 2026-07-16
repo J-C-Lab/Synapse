@@ -87,6 +87,17 @@ export interface ModelStepDeps {
 
 export class InsufficientEstimateError extends Error {}
 
+/** Thrown when the live tool catalog at dispatch time no longer matches
+ *  what was frozen into requestHash at prepare time (P1-5) — a plugin
+ *  update or registry mutation landed in the async gap between the two.
+ *  Fails closed rather than silently dispatching a request estimated and
+ *  budget-admitted against a tool set the model is no longer actually
+ *  being offered. The checkpoint is left "dispatched" (already durably
+ *  marked so by markDispatched before this runs), so a retry correctly
+ *  routes through the existing unknown_response/forfeit/re-prepare
+ *  recovery path — see ensureForfeitedAndPrepareNext. */
+export class ToolCatalogDriftError extends Error {}
+
 export interface ModelStepOutcome {
   kind: "settled"
   checkpoint: AgentRunCheckpointV1
@@ -293,6 +304,18 @@ async function callProviderAndStage(
 
   const { system, messages } = outgoingRequestContext(checkpoint)
   const tools = deps.tools()
+  // The frozen catalog is only actually load-bearing at dispatch time if
+  // it's enforced here, not just recorded — see ToolCatalogDriftError's
+  // docstring. Compares against what prepareAttempt hashed, never a second
+  // independent read that could silently diverge from it.
+  if (
+    requestHashFor(system, messages, tools, checkpoint.config.maxOutputTokens) !==
+    attempt.requestHash
+  ) {
+    throw new ToolCatalogDriftError(
+      `tool catalog changed between prepare and dispatch for run ${checkpoint.identity.runId} step ${step}`
+    )
+  }
 
   let assistantMessage: ChatMessage | undefined
   let usage: TokenUsage = emptyUsage()

@@ -15,7 +15,11 @@ import {
   RootBudgetLedgerStore,
 } from "../budget/root-budget-ledger"
 import { AgentRunStore } from "./agent-run-store"
-import { advanceModelStep, InsufficientEstimateError } from "./model-step-runner"
+import {
+  advanceModelStep,
+  InsufficientEstimateError,
+  ToolCatalogDriftError,
+} from "./model-step-runner"
 
 let dir: string
 let runStore: AgentRunStore
@@ -364,6 +368,56 @@ describe("advanceModelStep — admission failure closes before dispatch", () => 
     await expect(advanceModelStep(baseDeps(provider), runId)).rejects.toThrow(
       InsufficientEstimateError
     )
+  })
+})
+
+describe("advanceModelStep — frozen tool catalog enforcement at dispatch (P1-5)", () => {
+  it("throws ToolCatalogDriftError rather than dispatching when the live tool catalog changed between prepare and dispatch", async () => {
+    const runId = "run-drift"
+    await seedRun(runId, 10_000)
+    const provider = fakeProvider({ inputTokens: 20, outputTokens: 10 })
+
+    // prepareAttempt sees no tools (hashed into attempt.requestHash);
+    // callProviderAndStage's independent deps.tools() call sees a tool that
+    // wasn't there a moment ago — the exact "prepared 时的 requestHash 使用
+    // 一次 live tools，真正 dispatch 又重新读取 live tools" gap.
+    let callCount = 0
+    const deps: ModelStepDeps = {
+      ...baseDeps(provider),
+      tools: () => {
+        callCount += 1
+        return callCount === 1
+          ? []
+          : [{ name: "new_tool", description: "d", inputSchema: { type: "object" as const } }]
+      },
+    }
+
+    await expect(advanceModelStep(deps, runId)).rejects.toThrow(ToolCatalogDriftError)
+    expect(provider.calls).toHaveLength(0)
+
+    const checkpoint = await runStore.load(runId)
+    // markDispatched already durably recorded "dispatched" before the drift
+    // check runs — the SAME state a genuine interrupted dispatch leaves, so
+    // a retry correctly routes through the existing forfeit/re-prepare
+    // recovery path rather than needing a new one.
+    expect(checkpoint.ok && checkpoint.checkpoint.modelSteps[0]?.attempts[0]?.state).toBe(
+      "dispatched"
+    )
+  })
+
+  it("dispatches normally when the tool catalog is unchanged between prepare and dispatch", async () => {
+    const runId = "run-no-drift"
+    await seedRun(runId, 10_000)
+    const provider = fakeProvider({ inputTokens: 20, outputTokens: 10 })
+    const stableTools = [
+      { name: "read_file", description: "d", inputSchema: { type: "object" as const } },
+    ]
+    const deps: ModelStepDeps = { ...baseDeps(provider), tools: () => stableTools }
+
+    const result = await advanceModelStep(deps, runId)
+
+    expect(result.kind).toBe("settled")
+    expect(provider.calls).toHaveLength(1)
   })
 })
 
