@@ -1,3 +1,4 @@
+import type { FileHandle } from "node:fs/promises"
 import type { ArtifactQuotaLimits, StatDiskSpace } from "./artifact-quota"
 import type {
   AgentArtifactRef,
@@ -160,6 +161,57 @@ function isValidManifest(v: unknown): v is ArtifactManifestV1 {
   return true
 }
 
+// A 36-char placeholder matching randomUUID()'s fixed length exactly, so the
+// estimate below doesn't need a real artifactId (not yet known when this is
+// first called, and its length is constant regardless of value anyway).
+const PLACEHOLDER_ARTIFACT_ID = "00000000-0000-0000-0000-000000000000"
+
+// The longest ArtifactTruncationReason value — used as a draft placeholder
+// so the estimate below never undercounts regardless of which reason (if
+// any) the real capture ends up with.
+const LONGEST_TRUNCATION_REASON: ArtifactTruncationReason = "producer-aborted"
+
+/**
+ * Deterministic upper-bound estimate of one artifact's `manifest.json`
+ * serialized size, computed almost entirely from `metadata` — known before
+ * any reservation or streaming happens — plus worst-case placeholders for
+ * the handful of fields only known once streaming completes (`sha256`,
+ * `capturedBytes`, `createdAt`, `complete`, `truncationReason`).
+ *
+ * This exists so the manifest's own disk footprint is never left
+ * unaccounted (review Issue 1) *and* so a producer-controlled,
+ * effectively-unbounded field — `mediaType` or `delegateToRunIds` — can
+ * never silently exceed a fixed configured headroom (review Issue 2): both
+ * are measured at their real length here, so the reservation this drives
+ * scales with the real input instead of assuming a guessed constant is
+ * always enough. It reuses the *real* manifest shape/serialization path
+ * (not a hand-derived byte-overhead constant) so it can never drift out of
+ * sync with what `writeJsonFile` actually writes.
+ */
+export function estimateManifestReserveBytes(metadata: ArtifactMetadata): number {
+  const draftRef: AgentArtifactRef = {
+    uri: artifactUri(metadata.runId, PLACEHOLDER_ARTIFACT_ID),
+    runId: metadata.runId,
+    artifactId: PLACEHOLDER_ARTIFACT_ID,
+    kind: metadata.kind,
+    mediaType: metadata.mediaType,
+    capturedBytes: Number.MAX_SAFE_INTEGER,
+    sourceBytes: metadata.sourceBytes,
+    complete: false,
+    truncationReason: LONGEST_TRUNCATION_REASON,
+    sha256: "0".repeat(64),
+    createdAt: Number.MAX_SAFE_INTEGER,
+    expiresAt: metadata.expiresAt ?? Number.MAX_SAFE_INTEGER,
+  }
+  const draftManifest: ArtifactManifestV1 = {
+    envelopeVersion: 1,
+    ref: draftRef,
+    owner: metadata.owner,
+    delegateToRunIds: [...(metadata.delegateToRunIds ?? [])],
+  }
+  return Buffer.byteLength(`${JSON.stringify(draftManifest, null, 2)}\n`, "utf-8")
+}
+
 /** Reconstructs a proper same-realm `Uint8Array` view over any typed-array-
  *  like input. Deliberately avoids `instanceof Uint8Array`: a producer built
  *  under jsdom's `TextEncoder` (tests) or a different vm context yields a
@@ -214,28 +266,57 @@ export class ArtifactStore implements AgentArtifactStore {
       )
     }
 
+    // artifactId is always a fresh crypto-random UUID, never derived from
+    // caller-supplied path segments — the traversal/containment defenses in
+    // resolveContainedPath exist to re-verify at *read* time, when a
+    // symlink/junction could have been planted into an existing run
+    // directory after creation. At this write-time point there is nothing
+    // an attacker could yet have influenced (the directory we're about to
+    // create doesn't exist until this call creates it), so no independent
+    // realpath check is needed here.
     const artifactId = randomUUID()
     const artifactDir = path.join(this.runDirPath(metadata.runId), artifactId)
     await fs.mkdir(artifactDir, { recursive: true })
 
     const reserveOperationId = `capture:${metadata.runId}:${artifactId}`
-    let grantedBytes = 0
+    // The manifest headroom is sized off *this call's* actual metadata
+    // (mediaType/delegateToRunIds are producer-controlled and effectively
+    // unbounded in length) rather than trusting a fixed configured floor to
+    // always be enough — see estimateManifestReserveBytes.
+    const effectiveLimits: ArtifactQuotaLimits = {
+      ...this.limits,
+      manifestReserveBytes: Math.max(
+        this.limits.manifestReserveBytes,
+        estimateManifestReserveBytes(metadata)
+      ),
+    }
+
+    let grantedBytes: number
     let limitingReason: ArtifactTruncationReason | undefined
-    let deniedReason: ArtifactTruncationReason | undefined
     try {
       const receipt = await this.quotaStore.reserve({
         operationId: reserveOperationId,
         runId: metadata.runId,
         artifactId,
-        limits: this.limits,
+        limits: effectiveLimits,
       })
       grantedBytes = receipt.grantedBytes
       limitingReason = receipt.limitingReason
     } catch (err) {
       if (!(err instanceof ArtifactQuotaExceededError)) throw err
-      deniedReason = err.reason
+      // Not even the manifest's own headroom fits anywhere — genuinely
+      // nothing is safe to write or account for. Abort the producer and
+      // reject rather than fabricate an unaccounted checkpoint.
+      await producer.abort(err.reason)
+      throw err
     }
 
+    // Reservation above always succeeds from this point on (it only ever
+    // throws when even the manifest can't fit, handled above) — so every
+    // path below, including a fully payload-denied `grantedBytes: 0`, goes
+    // through the same open/stream/settle/write-manifest flow. There is no
+    // separate "denied" branch that would skip settling and leave the
+    // manifest's bytes untracked.
     const tempPath = path.join(artifactDir, TEMP_FILE)
     const finalPath = path.join(artifactDir, DATA_FILE)
     const hash = createHash("sha256")
@@ -243,12 +324,19 @@ export class ArtifactStore implements AgentArtifactStore {
     let complete = true
     let truncationReason: ArtifactTruncationReason | undefined
 
-    if (deniedReason) {
+    let handle: FileHandle | undefined
+    try {
+      handle = await fs.open(tempPath, "w")
+    } catch {
+      // Give an open failure the same checkpointed-incomplete-ref treatment
+      // as a mid-stream write failure, rather than letting it propagate as
+      // a raw rejection outside the design's "always finalize an incomplete
+      // ref" rule.
       complete = false
-      truncationReason = deniedReason
-      await fs.writeFile(tempPath, new Uint8Array(0))
-    } else {
-      const handle = await fs.open(tempPath, "w")
+      truncationReason = "write-error"
+    }
+
+    if (handle) {
       let bytesSinceDiskCheck = 0
       try {
         for await (const rawChunk of toAsyncIterable(input)) {
@@ -296,6 +384,11 @@ export class ArtifactStore implements AgentArtifactStore {
       } finally {
         await handle.close()
       }
+    } else {
+      // open() itself failed — nothing was written, but a (possibly empty)
+      // temp file must still exist for the rename below to produce a
+      // uniform on-disk artifact.
+      await fs.writeFile(tempPath, new Uint8Array(0)).catch(() => {})
     }
 
     if (!complete) {
@@ -327,16 +420,16 @@ export class ArtifactStore implements AgentArtifactStore {
 
     // The manifest is real bytes on disk too — settle its actual measured
     // size (matching atomic-json-store.ts's `${JSON.stringify(v, null, 2)}\n`
-    // encoding exactly) alongside the payload in the same settle operation,
-    // rather than leaving metadata unaccounted against the run/global ledger.
-    if (!deniedReason) {
-      const manifestBytes = Buffer.byteLength(`${JSON.stringify(manifest, null, 2)}\n`, "utf-8")
-      await this.quotaStore.settle({
-        operationId: `${reserveOperationId}:settle`,
-        reserveOperationId,
-        actualBytes: capturedBytes + manifestBytes,
-      })
-    }
+    // encoding exactly) alongside the payload in the same settle operation.
+    // settleArtifactCapacity throws ArtifactQuotaOverrunError rather than
+    // silently clamping if this ever exceeds the reserved headroom — which
+    // estimateManifestReserveBytes is specifically designed to prevent.
+    const manifestBytes = Buffer.byteLength(`${JSON.stringify(manifest, null, 2)}\n`, "utf-8")
+    await this.quotaStore.settle({
+      operationId: `${reserveOperationId}:settle`,
+      reserveOperationId,
+      actualBytes: capturedBytes + manifestBytes,
+    })
 
     await writeJsonFile(this.manifestPath(metadata.runId, artifactId), manifest)
     return ref

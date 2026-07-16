@@ -99,6 +99,19 @@ export class UnknownArtifactReservationError extends Error {
   }
 }
 
+/** A settle() call asked to commit more bytes than its reservation ever
+ *  granted. This must never be silently clamped down — that would let real
+ *  disk usage exceed what the ledger ever accounted for, defeating the
+ *  hard-ceiling guarantee. Surfacing it loudly means an under-sized
+ *  reservation (e.g. a manifest whose real size exceeded its estimated
+ *  headroom) is a visible bug, not silently-absorbed drift. */
+export class ArtifactQuotaOverrunError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "ArtifactQuotaOverrunError"
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Pure ledger shape and operations
 
@@ -187,9 +200,19 @@ export interface ReserveOutcome {
   receipt: ArtifactQuotaOperationReceipt
 }
 
-/** Reserves the largest amount the four constraints simultaneously allow, up
- *  to the per-artifact ceiling. Throws `ArtifactQuotaExceededError` if that
- *  amount is zero — never grants a zero-byte reservation. */
+/**
+ * Reserves the largest payload amount the four constraints simultaneously
+ * allow, up to the per-artifact ceiling — **plus** a fixed manifest headroom
+ * that is always reserved whenever there is room for it, independent of
+ * whether the payload itself gets any room at all. This is deliberate: a
+ * denied-payload capture must still be able to write and account for its
+ * (small) `manifest.json`, so metadata bytes are never left untracked on the
+ * disk-exhausted / quota-exhausted path (see Issue 1 in review). Only throws
+ * `ArtifactQuotaExceededError` when even the manifest headroom itself cannot
+ * fit anywhere — true, total exhaustion where nothing is safe to write.
+ * `grantedBytes` (the payload figure callers truncate their stream against)
+ * may legitimately be zero without throwing.
+ */
 export function reserveArtifactCapacity(
   ledger: ArtifactQuotaLedgerV1,
   input: ReserveInput
@@ -204,22 +227,38 @@ export function reserveArtifactCapacity(
 
   const run = runUsage(ledger, input.runId)
   const manifestReserve = input.limits.manifestReserveBytes
+
+  const runRemainingTotal = input.limits.perRunBytes - run.reservedBytes - run.committedBytes
+  const globalRemainingTotal =
+    input.limits.globalBytes - ledger.globalReservedBytes - ledger.globalCommittedBytes
+  const diskRemainingTotal =
+    input.disk.freeBytes - freeSpaceReserveBytes(input.disk.totalBytes, input.limits)
+
+  // True exhaustion: not even the manifest's own headroom fits anywhere.
+  // This is the one case a capture cannot produce a checkpointed ref for at
+  // all — genuinely nothing (not even metadata) is safe to write.
+  const manifestCandidates: Array<{ bytes: number; reason: QuotaLimitReason }> = [
+    { bytes: runRemainingTotal, reason: "run-limit" },
+    { bytes: globalRemainingTotal, reason: "global-limit" },
+    { bytes: diskRemainingTotal, reason: "disk-reserve" },
+  ]
+  let manifestBinding = manifestCandidates[0]!
+  for (const candidate of manifestCandidates) {
+    if (candidate.bytes < manifestBinding.bytes) manifestBinding = candidate
+  }
+  if (manifestBinding.bytes < manifestReserve) {
+    throw new ArtifactQuotaExceededError(
+      manifestBinding.reason,
+      `cannot reserve even manifest headroom for run ${input.runId}: ${manifestBinding.reason} exhausted`
+    )
+  }
+
   // Every remaining-capacity candidate is narrowed by the manifest headroom
-  // up front — the payload ceiling (perArtifactBytes) is not, since that one
-  // is a payload-only cap. This guarantees the *total* (payload + manifest)
-  // never breaches run/global/disk even though grantedBytes below still
-  // reports the payload-only figure callers truncate their stream against.
-  const runRemaining =
-    input.limits.perRunBytes - run.reservedBytes - run.committedBytes - manifestReserve
-  const globalRemaining =
-    input.limits.globalBytes -
-    ledger.globalReservedBytes -
-    ledger.globalCommittedBytes -
-    manifestReserve
-  const diskRemaining =
-    input.disk.freeBytes -
-    freeSpaceReserveBytes(input.disk.totalBytes, input.limits) -
-    manifestReserve
+  // that's already been proven to fit above — the payload ceiling
+  // (perArtifactBytes) is not, since that one is a payload-only cap.
+  const runRemaining = runRemainingTotal - manifestReserve
+  const globalRemaining = globalRemainingTotal - manifestReserve
+  const diskRemaining = diskRemainingTotal - manifestReserve
 
   const candidates: Array<{ bytes: number; reason: QuotaLimitReason }> = [
     { bytes: input.limits.perArtifactBytes, reason: "artifact-limit" },
@@ -231,20 +270,15 @@ export function reserveArtifactCapacity(
   for (const candidate of candidates) {
     if (candidate.bytes < binding.bytes) binding = candidate
   }
+  // Legitimately zero (no throw): the payload may be fully denied while the
+  // manifest headroom above was still successfully reserved.
   const grantedBytes = Math.max(0, Math.floor(binding.bytes))
   const limitingReason = grantedBytes < input.limits.perArtifactBytes ? binding.reason : undefined
 
-  if (grantedBytes <= 0) {
-    throw new ArtifactQuotaExceededError(
-      binding.reason,
-      `cannot reserve artifact capacity for run ${input.runId}: ${binding.reason} exhausted`
-    )
-  }
-
   // The ledger reserves the payload grant *plus* the manifest headroom as
   // one total; settle() later commits the manifest's actual measured size
-  // (clamped to this total), so unused headroom is released exactly like
-  // unused payload capacity.
+  // (which must never exceed this total — see ArtifactQuotaOverrunError),
+  // so unused headroom is released exactly like unused payload capacity.
   const totalReservedBytes = grantedBytes + manifestReserve
 
   const receipt: ArtifactQuotaOperationReceipt = {
@@ -287,7 +321,15 @@ export interface SettleInput {
 /** Moves a pending reservation's actual usage into committed totals and
  *  releases whatever was reserved but never used. Used both for a normal
  *  successful capture and for releasing an aborted/failed one (actualBytes
- *  simply ends up 0 or partial in that case). */
+ *  simply ends up 0 or partial in that case).
+ *
+ *  Never clamps an overrun: `actualBytes` exceeding what was reserved throws
+ *  `ArtifactQuotaOverrunError` rather than silently capping the commit at
+ *  `pending.bytes`. A caller (capture()'s payload accounting) that only ever
+ *  asks to settle at most what it itself reserved will never hit this; it
+ *  exists so a mis-sized reservation is a loud, typed failure instead of
+ *  quietly letting committed bytes exceed what the ledger ever accounted
+ *  for. */
 export function settleArtifactCapacity(
   ledger: ArtifactQuotaLedgerV1,
   input: SettleInput
@@ -298,7 +340,13 @@ export function settleArtifactCapacity(
   const pending = ledger.pendingReservations[input.reserveOperationId]
   if (!pending) throw new UnknownArtifactReservationError(input.reserveOperationId)
 
-  const actualBytes = Math.max(0, Math.min(input.actualBytes, pending.bytes))
+  if (input.actualBytes > pending.bytes) {
+    throw new ArtifactQuotaOverrunError(
+      `settle for reservation ${input.reserveOperationId} requested ${input.actualBytes} bytes, ` +
+        `exceeding the ${pending.bytes} bytes actually reserved`
+    )
+  }
+  const actualBytes = Math.max(0, input.actualBytes)
   const releasedBytes = pending.bytes - actualBytes
   const run = runUsage(ledger, pending.runId)
 

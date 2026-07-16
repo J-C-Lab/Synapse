@@ -7,7 +7,7 @@ import { join } from "node:path"
 import process from "node:process"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { ArtifactQuotaStore } from "./artifact-quota"
-import { artifactsRoot, ArtifactStore } from "./artifact-store"
+import { artifactsRoot, ArtifactStore, estimateManifestReserveBytes } from "./artifact-store"
 import { ArtifactReadError } from "./artifact-types"
 
 let dir: string
@@ -208,11 +208,16 @@ describe("artifactStore.capture — truncation and allocation limits", () => {
     expect(ref.sha256).toBe(createHash("sha256").update(bytesOf("01234")).digest("hex"))
   })
 
-  it("truncates at the per-run ceiling and records run-limit", async () => {
+  it("truncates at the per-run ceiling (which must still leave room for the manifest itself) and records run-limit", async () => {
+    const manifestReserve = estimateManifestReserveBytes(metadata())
     const limits = {
       perArtifactBytes: 1000,
-      perRunBytes: 5,
-      globalBytes: 10_000,
+      // Room for exactly one manifest plus 5 payload bytes — the manifest
+      // headroom is always reserved first (Issue 1 fix), so a run budget
+      // that couldn't also fit a manifest would reject outright instead of
+      // gracefully truncating the payload.
+      perRunBytes: manifestReserve + 5,
+      globalBytes: 1_000_000,
       minFreeBytes: 0,
       minFreeFraction: 0,
       manifestReserveBytes: 0,
@@ -224,77 +229,108 @@ describe("artifactStore.capture — truncation and allocation limits", () => {
     expect(ref.capturedBytes).toBe(5)
   })
 
-  it("throws ArtifactQuotaExceededError semantics through a fully-denied reservation (zero bytes, still checkpointed)", async () => {
+  it("rejects capture entirely when not even the manifest headroom fits anywhere (true exhaustion, Issue 1)", async () => {
+    const manifestReserve = estimateManifestReserveBytes(metadata())
     const limits = {
       perArtifactBytes: 1000,
-      perRunBytes: 10,
-      globalBytes: 10_000,
+      // Deliberately less than even one manifest needs — nothing (not even
+      // metadata) can be safely written or accounted for.
+      perRunBytes: manifestReserve - 1,
+      globalBytes: 1_000_000,
       minFreeBytes: 0,
       minFreeFraction: 0,
       manifestReserveBytes: 0,
     }
     const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk, quotaLimits: limits })
-    await store.capture(bytesOf("0123456789"), metadata(), noopProducer()) // consumes the whole 10-byte run budget
     const producer = noopProducer()
-    const ref = await store.capture(
-      bytesOf("more data"),
-      metadata({ runId: "run-1", owner: owner() }),
-      producer
-    )
-    expect(ref.complete).toBe(false)
-    expect(ref.capturedBytes).toBe(0)
-    expect(ref.truncationReason).toBe("run-limit")
+    await expect(store.capture(bytesOf("0123456789"), metadata(), producer)).rejects.toMatchObject({
+      reason: "run-limit",
+    })
     expect(producer.aborts).toEqual(["run-limit"])
-    // Still checkpointed and readable, even though nothing was captured.
-    const read = await store.read(ref, { start: 0 }, caller())
-    expect(read.length).toBe(0)
+
+    // No manifest.json or data.bin was ever written for this rejected
+    // capture — the untracked-metadata write Issue 1 fixes never happens.
+    // (An empty per-artifact directory may still exist from the initial
+    // mkdir before the reservation was attempted; that holds no untracked
+    // bytes and isn't what this test guards against.)
+    const artifactIds = await fs.readdir(join(dir, "run-1")).catch(() => [])
+    for (const artifactId of artifactIds) {
+      const entries = await fs.readdir(join(dir, "run-1", artifactId))
+      expect(entries).toEqual([])
+    }
+  })
+
+  it("rejects a second capture once a prior one has nearly exhausted a run's budget (its own manifest no longer fits)", async () => {
+    const manifestReserve = estimateManifestReserveBytes(metadata())
+    const limits = {
+      perArtifactBytes: 1000,
+      // Exactly enough for one full manifest + one full 10-byte payload —
+      // no slack left for a second manifest at all, since the first
+      // capture's real (nonzero) manifest bytes are now committed too.
+      perRunBytes: manifestReserve + 10,
+      globalBytes: 1_000_000,
+      minFreeBytes: 0,
+      minFreeFraction: 0,
+      manifestReserveBytes: 0,
+    }
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk, quotaLimits: limits })
+    const first = await store.capture(bytesOf("0123456789"), metadata(), noopProducer())
+    expect(first.complete).toBe(true)
+    expect(first.capturedBytes).toBe(10)
+
+    const producer = noopProducer()
+    await expect(
+      store.capture(bytesOf("more"), metadata({ runId: "run-1", owner: owner() }), producer)
+    ).rejects.toMatchObject({ reason: "run-limit" })
+    expect(producer.aborts).toEqual(["run-limit"])
   })
 
   it("truncates at the global ceiling across two different runs and records global-limit", async () => {
-    // The manifest's own committed bytes count toward the same global
-    // ledger as the payload (Issue 2 fix), so this test measures the real
-    // manifest overhead first rather than guessing a constant — using the
-    // exact same runId ("run-a") and payload length the real test uses below
-    // so the probe manifest is byte-identical in size to the real one
-    // (every field's length matches: fixed-width sha256 hex, fixed-width
-    // UUID artifactId, identical owner shape, identical capturedBytes digit
-    // count, no truncationReason in either since neither truncates).
+    const metadataA = metadata({
+      runId: "run-a",
+      owner: owner({ runId: "run-a", rootRunId: "run-a" }),
+    })
+    const metadataB = metadata({
+      runId: "run-b",
+      owner: owner({ runId: "run-b", rootRunId: "run-b" }),
+    })
+    // run-a and run-b use same-length runId strings, so capture()'s
+    // per-call manifest headroom estimate (Issue 2 fix) is identical for
+    // both — this is what run-b's own reservation will actually ask for.
+    const manifestReserve = estimateManifestReserveBytes(metadataA)
+    expect(estimateManifestReserveBytes(metadataB)).toBe(manifestReserve)
+
+    // Measure run-a's REAL total committed bytes (payload + its real,
+    // possibly-smaller-than-the-worst-case-estimate manifest size) under
+    // ample limits, so the tight globalBytes below can be derived exactly
+    // rather than guessed.
     const probeStore = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
-    const probeRef = await probeStore.capture(
-      bytesOf("12345"),
-      metadata({ runId: "run-a", owner: owner({ runId: "run-a", rootRunId: "run-a" }) }),
-      noopProducer()
-    )
-    const manifestBytes = (await fs.stat(join(dir, "run-a", probeRef.artifactId, "manifest.json")))
-      .size
+    const probeRef = await probeStore.capture(bytesOf("12345"), metadataA, noopProducer())
+    const probeManifestBytes = (
+      await fs.stat(join(dir, "run-a", probeRef.artifactId, "manifest.json"))
+    ).size
+    const runACommitted = probeRef.capturedBytes + probeManifestBytes
     await fs.rm(dir, { recursive: true, force: true })
     await fs.mkdir(dir, { recursive: true })
 
-    // globalBytes is sized so that after run-a's total commit (5-byte
-    // payload + its manifest) and reserving the same manifest headroom again
-    // for run-b, exactly 3 payload bytes of global room remain for run-b.
+    // globalBytes leaves exactly 3 payload bytes of room for run-b after
+    // run-a's real total commit and run-b's own manifest headroom
+    // reservation (the worst-case estimate, since that's what gets reserved
+    // up front regardless of the real size).
     const limits = {
       perArtifactBytes: 1_000_000,
       perRunBytes: 1_000_000,
-      globalBytes: 8 + 2 * manifestBytes,
+      globalBytes: runACommitted + manifestReserve + 3,
       minFreeBytes: 0,
       minFreeFraction: 0,
-      manifestReserveBytes: manifestBytes,
+      manifestReserveBytes: 0,
     }
     const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk, quotaLimits: limits })
-    const first = await store.capture(
-      bytesOf("12345"),
-      metadata({ runId: "run-a", owner: owner({ runId: "run-a", rootRunId: "run-a" }) }),
-      noopProducer()
-    )
+    const first = await store.capture(bytesOf("12345"), metadataA, noopProducer())
     expect(first.complete).toBe(true)
     expect(first.capturedBytes).toBe(5)
 
-    const ref = await store.capture(
-      bytesOf("0123456789"),
-      metadata({ runId: "run-b", owner: owner({ runId: "run-b", rootRunId: "run-b" }) }),
-      noopProducer()
-    )
+    const ref = await store.capture(bytesOf("0123456789"), metadataB, noopProducer())
     expect(ref.complete).toBe(false)
     expect(ref.truncationReason).toBe("global-limit")
     expect(ref.capturedBytes).toBe(3)
@@ -330,7 +366,7 @@ describe("artifactStore.capture — truncation and allocation limits", () => {
     expect(receipt.grantedBytes).toBeLessThan(limits.perRunBytes - 1)
   })
 
-  it("denies the reservation outright when free disk space is already below the watermark", async () => {
+  it("rejects capture outright when free disk space is already below the watermark (not even the manifest fits)", async () => {
     const lowDisk = async () => ({ freeBytes: 10, totalBytes: 1_000_000 })
     const store = new ArtifactStore(dir, {
       statDiskSpace: lowDisk,
@@ -344,10 +380,9 @@ describe("artifactStore.capture — truncation and allocation limits", () => {
       },
     })
     const producer = noopProducer()
-    const ref = await store.capture(bytesOf("0123456789"), metadata(), producer)
-    expect(ref.complete).toBe(false)
-    expect(ref.truncationReason).toBe("disk-reserve")
-    expect(ref.capturedBytes).toBe(0)
+    await expect(store.capture(bytesOf("0123456789"), metadata(), producer)).rejects.toMatchObject({
+      reason: "disk-reserve",
+    })
     expect(producer.aborts).toEqual(["disk-reserve"])
   })
 
@@ -360,7 +395,10 @@ describe("artifactStore.capture — truncation and allocation limits", () => {
         perArtifactBytes: 1_000_000,
         perRunBytes: 1_000_000,
         globalBytes: 1_000_000,
-        minFreeBytes: 500,
+        // Low enough that the initial reserve (free=1000) still leaves room
+        // for the manifest headroom (~658 bytes for this test's metadata);
+        // the mid-stream drop below is what triggers the truncation.
+        minFreeBytes: 100,
         minFreeFraction: 0,
         manifestReserveBytes: 0,
       },
@@ -369,7 +407,7 @@ describe("artifactStore.capture — truncation and allocation limits", () => {
     })
     async function* input(): AsyncIterable<Uint8Array> {
       yield bytesOf("a")
-      free = 100 // drop below the 500-byte watermark before the next chunk
+      free = 50 // drop below the 100-byte watermark before the next chunk
       yield bytesOf("b")
     }
     const producer = noopProducer()
@@ -422,10 +460,15 @@ describe("artifactStore.capture — producer abort and write failure", () => {
 })
 
 describe("artifactStore.capture — concurrency", () => {
-  it("serializes two concurrent captures against the same run's budget so combined committed bytes never exceed it", async () => {
+  it("serializes two concurrent captures against the same run's budget so only one can also fit its own manifest", async () => {
+    const manifestReserve = estimateManifestReserveBytes(metadata())
     const limits = {
       perArtifactBytes: 100,
-      perRunBytes: 150,
+      // Exactly one manifest + one full 100-byte payload, no slack for a
+      // second manifest — deterministic regardless of the real (nonzero)
+      // manifest size, since any nonzero commit from the first capture
+      // leaves less than manifestReserve of room for the second.
+      perRunBytes: manifestReserve + 100,
       globalBytes: 1_000_000,
       minFreeBytes: 0,
       minFreeFraction: 0,
@@ -433,17 +476,20 @@ describe("artifactStore.capture — concurrency", () => {
     }
     const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk, quotaLimits: limits })
     const bigChunk = new Uint8Array(100).fill(65)
-    const [a, b] = await Promise.all([
+    const results = await Promise.allSettled([
       store.capture(bigChunk, metadata(), noopProducer()),
       store.capture(bigChunk, metadata(), noopProducer()),
     ])
-    expect(a.capturedBytes + b.capturedBytes).toBeLessThanOrEqual(150)
-    expect(a.capturedBytes + b.capturedBytes).toBe(150)
-    const complete = [a, b].filter((r) => r.complete)
-    const incomplete = [a, b].filter((r) => !r.complete)
-    expect(complete).toHaveLength(1)
-    expect(incomplete).toHaveLength(1)
-    expect(incomplete[0]?.truncationReason).toBe("run-limit")
+    const fulfilled = results.filter(
+      (r): r is PromiseFulfilledResult<Awaited<ReturnType<ArtifactStore["capture"]>>> =>
+        r.status === "fulfilled"
+    )
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected")
+    expect(fulfilled).toHaveLength(1)
+    expect(rejected).toHaveLength(1)
+    expect(fulfilled[0]?.value.complete).toBe(true)
+    expect(fulfilled[0]?.value.capturedBytes).toBe(100)
+    expect(rejected[0]?.reason).toMatchObject({ reason: "run-limit" })
   })
 })
 
@@ -606,9 +652,12 @@ describe("artifactStore — traversal, forgery, and corruption defenses", () => 
 
 describe("artifactStore.collectEligible", () => {
   it("reconciles an abandoned reservation left over from a crash and removes an orphaned temp file", async () => {
+    const manifestReserve = estimateManifestReserveBytes(metadata())
     const limits = {
       perArtifactBytes: 100,
-      perRunBytes: 100,
+      // Room for the simulated 100-byte crashed reservation *and*, once
+      // reconciled, a real fresh capture's own manifest + payload.
+      perRunBytes: manifestReserve + 100,
       globalBytes: 1_000_000,
       minFreeBytes: 0,
       minFreeFraction: 0,

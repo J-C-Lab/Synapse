@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
   ArtifactQuotaExceededError,
   ArtifactQuotaOperationCorruptionError,
+  ArtifactQuotaOverrunError,
   ArtifactQuotaStore,
   DEFAULT_ARTIFACT_QUOTA_LIMITS,
   freeSpaceReserveBytes,
@@ -87,9 +88,14 @@ describe("artifactQuotaStore.reserve", () => {
     expect(second.limitingReason).toBe("global-limit")
   })
 
-  it("throws ArtifactQuotaExceededError with reason run-limit when a run is already full", async () => {
+  it("throws ArtifactQuotaExceededError with reason run-limit when a run has no room even for the manifest headroom", async () => {
     const store = new ArtifactQuotaStore(dir, ampleDisk)
-    const limits = limitsWith({ perArtifactBytes: 1000, perRunBytes: 1000, globalBytes: 1_000_000 })
+    const limits = limitsWith({
+      perArtifactBytes: 1000,
+      perRunBytes: 1000,
+      globalBytes: 1_000_000,
+      manifestReserveBytes: 50,
+    })
     await store.reserve({ operationId: "op-1", runId: "run-1", artifactId: "art-1", limits })
     await expect(
       store.reserve({ operationId: "op-2", runId: "run-1", artifactId: "art-2", limits })
@@ -97,6 +103,28 @@ describe("artifactQuotaStore.reserve", () => {
     await expect(
       store.reserve({ operationId: "op-3", runId: "run-1", artifactId: "art-3", limits })
     ).rejects.toMatchObject({ reason: "run-limit" })
+  })
+
+  it("grants zero payload bytes without throwing when a run only has room left for the manifest headroom (Issue 1 fix)", async () => {
+    const store = new ArtifactQuotaStore(dir, ampleDisk)
+    const limits = limitsWith({
+      perArtifactBytes: 1000,
+      // Sized so the first reservation takes 1000 payload + 50 manifest
+      // (1050 of 1100), leaving exactly 50 — enough for a second
+      // reservation's manifest headroom, but nothing at all for its payload.
+      perRunBytes: 1100,
+      globalBytes: 1_000_000,
+      manifestReserveBytes: 50,
+    })
+    await store.reserve({ operationId: "op-1", runId: "run-1", artifactId: "art-1", limits })
+    const second = await store.reserve({
+      operationId: "op-2",
+      runId: "run-1",
+      artifactId: "art-2",
+      limits,
+    })
+    expect(second.grantedBytes).toBe(0)
+    expect(second.limitingReason).toBe("run-limit")
   })
 
   it("throws ArtifactQuotaExceededError with reason disk-reserve when free space is below the watermark", async () => {
@@ -281,12 +309,43 @@ describe("artifactQuotaStore.settle", () => {
       })
     ).rejects.toThrow()
   })
+
+  it("throws ArtifactQuotaOverrunError rather than silently clamping when actualBytes exceeds what was reserved (Issue 2)", async () => {
+    const store = new ArtifactQuotaStore(dir, ampleDisk)
+    const limits = limitsWith({ perArtifactBytes: 100, perRunBytes: 1000, globalBytes: 100_000 })
+    const reserved = await store.reserve({
+      operationId: "op-1",
+      runId: "run-1",
+      artifactId: "art-1",
+      limits,
+    })
+    expect(reserved.grantedBytes).toBe(100)
+    await expect(
+      store.settle({ operationId: "settle-1", reserveOperationId: "op-1", actualBytes: 101 })
+    ).rejects.toThrow(ArtifactQuotaOverrunError)
+
+    // The overrun attempt must not have silently mutated committed totals —
+    // a corrected, in-bounds settle afterward still works normally.
+    const settled = await store.settle({
+      operationId: "settle-2",
+      reserveOperationId: "op-1",
+      actualBytes: 100,
+    })
+    expect(settled.actualBytes).toBe(100)
+  })
 })
 
 describe("artifactQuotaStore.reconcileAbandoned", () => {
   it("releases every never-settled reservation back to free capacity", async () => {
     const store = new ArtifactQuotaStore(dir, ampleDisk)
-    const limits = limitsWith({ perArtifactBytes: 1000, perRunBytes: 1000, globalBytes: 100_000 })
+    const limits = limitsWith({
+      perArtifactBytes: 1000,
+      perRunBytes: 1000,
+      globalBytes: 100_000,
+      // Nonzero so a fully-reserved run genuinely has no room even for a
+      // manifest, and a second reservation throws rather than granting 0.
+      manifestReserveBytes: 1,
+    })
     await store.reserve({ operationId: "op-1", runId: "run-1", artifactId: "art-1", limits })
 
     // Run is now fully reserved; a second reservation must fail until reconciled.
@@ -304,7 +363,8 @@ describe("artifactQuotaStore.reconcileAbandoned", () => {
       artifactId: "art-3",
       limits,
     })
-    expect(afterReconcile.grantedBytes).toBe(1000)
+    // perArtifactBytes(1000) minus the 1-byte manifestReserveBytes headroom.
+    expect(afterReconcile.grantedBytes).toBe(999)
   })
 
   it("survives a fresh store instance reloading the persisted ledger (crash-restart simulation)", async () => {
