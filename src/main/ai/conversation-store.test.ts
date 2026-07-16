@@ -7,6 +7,7 @@ import {
   ConversationLeaseConflictError,
   ConversationNotFoundError,
   ConversationStore,
+  ConversationTombstonedError,
 } from "./conversation-store"
 
 let dir: string
@@ -98,6 +99,17 @@ describe("conversationStore — legacy-compatible projection", () => {
     await s.delete("gone")
     expect(await s.get("gone")).toBeUndefined()
     expect(await s.list()).toEqual([])
+  })
+
+  it("never resurrects a tombstone through the legacy save path", async () => {
+    const s = store()
+    await s.save({ id: "gone", workspaceId: "default", messages: [], createdAt: 1, updatedAt: 1 })
+    await s.delete("gone")
+
+    await expect(
+      s.save({ id: "gone", workspaceId: "default", messages: [], createdAt: 2, updatedAt: 2 })
+    ).rejects.toThrow(ConversationTombstonedError)
+    expect(await s.get("gone")).toBeUndefined()
   })
 })
 

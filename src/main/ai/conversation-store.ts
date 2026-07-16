@@ -78,6 +78,15 @@ export class ConversationNotFoundError extends Error {
   }
 }
 
+/** A tombstone is permanent for an id. Callers must choose a new id instead
+ * of silently turning a deleted conversation back into an active record. */
+export class ConversationTombstonedError extends Error {
+  constructor(id: string) {
+    super(`Conversation is tombstoned: ${id}`)
+    this.name = "ConversationTombstonedError"
+  }
+}
+
 export type ConversationLeaseConflictReason =
   | "conversation-tombstoned"
   | "stale-content-revision"
@@ -124,6 +133,7 @@ export class ConversationStore {
     return this.withLock(conversation.id, async () => {
       const now = this.now()
       const existing = await this.readForMutation(conversation.id)
+      if (existing?.state === "deleted") throw new ConversationTombstonedError(conversation.id)
       const previousMessages = existing?.messages ?? []
       const messages = toDurableMessages(previousMessages, conversation.messages)
       const base: ConversationRecordV2 =
