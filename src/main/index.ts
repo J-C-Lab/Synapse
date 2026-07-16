@@ -1162,6 +1162,13 @@ async function createAgentService(): Promise<AgentService> {
   emitPlanForRun = (runId, steps) => agentService.emitPlanForRun(runId, steps)
   makeSubagentProvider = () => agentService.createBackgroundAgentProvider()
 
+  // Kick off the startup recovery scan now, without blocking app readiness on
+  // it — chat() internally awaits this same promise before starting any new
+  // turn, so a stale/terminalizing conversation lease from a prior process
+  // can never be raced by a fresh interactive turn arriving right after
+  // launch.
+  void agentService.reconcileRunsAtStartup(agentRunRecoveryService)
+
   return agentService
 }
 

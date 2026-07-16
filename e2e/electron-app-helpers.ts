@@ -227,6 +227,21 @@ export async function launchSynapse(options: { mode: LaunchMode }): Promise<Laun
   return instrumentLaunch(launchPromise, userDir, { ownsUserDir: true })
 }
 
+/** Launch the unpacked dev-mode app (repo root) against a CALLER-PROVIDED,
+ *  already-existing user-data directory. Unlike `launchSynapse`, the caller
+ *  owns the directory's entire lifecycle (creation, seeding, deletion) — this
+ *  is what a durable-recovery proof needs: seed a checkpoint on disk BEFORE
+ *  the app's very first launch, so the running app itself discovers and
+ *  lists it as recoverable, rather than a test-only shortcut proving nothing
+ *  about the real startup scan. */
+export async function launchSynapseDevAtUserDir(userDir: string): Promise<LaunchedApp> {
+  if (!existsSync(userDir)) {
+    throw new Error(`launchSynapseDevAtUserDir: user-data directory not found: ${userDir}`)
+  }
+  const launchPromise = electron.launch({ args: [REPO_ROOT, `--user-data-dir=${userDir}`] })
+  return instrumentLaunch(launchPromise, userDir, { ownsUserDir: false })
+}
+
 function launchPackagedAt(userDir: string): Promise<ElectronApplication> {
   assertPackagedHostSupported()
   const executablePath = resolvePackagedExecutable()
