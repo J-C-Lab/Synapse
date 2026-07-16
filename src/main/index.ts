@@ -70,6 +70,7 @@ import { AgentRunStore } from "./ai/runs/agent-run-store"
 import { freezeAuthoritySnapshot } from "./ai/runs/authority-snapshot"
 import { buildTraceFromCheckpoint } from "./ai/runs/interactive-run-driver"
 import { rootSetHashFor } from "./ai/runs/interactive-run-setup"
+import { rebuildRecoveryAuthority } from "./ai/runs/recovery-authority"
 import { RunEventStore } from "./ai/runs/run-event-store"
 import { finalizeRun } from "./ai/runs/run-finalizer"
 import {
@@ -1109,17 +1110,9 @@ async function createAgentService(): Promise<AgentService> {
         : undefined
       // Interactive runs share the one global tool registry + a fixed
       // principal, so their current authority is exactly reconstructible.
-      // Background-agent/subagent runs are narrowed at spawn time (trigger
-      // capability filtering, spawn_subagent's tool intersection) from
-      // inputs the checkpoint doesn't retain — there is no way to
-      // reconstruct "the tools this specific run would get if started
-      // today" from the checkpoint alone. For those origins this compares
-      // the run's own frozen authority against itself (never narrower,
-      // never wider), a documented limitation: authority-narrowing since
-      // the run started won't be caught for those two origins, though the
-      // conversation-existence/workspace-binding/context-integrity/
-      // deadline/unknown-tool-outcome checks above are unaffected and still
-      // apply to every origin.
+      const parent = checkpoint.identity.parentRunId
+        ? await agentRunStore.load(checkpoint.identity.parentRunId)
+        : undefined
       const currentAuthority =
         checkpoint.identity.origin === "interactive"
           ? freezeAuthoritySnapshot({
@@ -1131,7 +1124,11 @@ async function createAgentService(): Promise<AgentService> {
                 modelSchema: schema,
               })),
             })
-          : checkpoint.config.authority
+          : rebuildRecoveryAuthority(
+              checkpoint,
+              agentTools,
+              parent?.ok ? parent.checkpoint : undefined
+            )
       return {
         currentAuthority,
         conversationExists,
