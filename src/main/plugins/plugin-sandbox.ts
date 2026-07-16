@@ -458,7 +458,11 @@ export class PluginSandbox {
       }) as Promise<T> | T
     } catch (err) {
       if (isVmTimeout(err)) {
-        throw new PluginSandboxError(`Plugin call exceeded ${this.invokeTimeoutMs}ms`)
+        // The vm's synchronous watchdog and withTimeout's async wall-clock
+        // watchdog describe the same public failure: a command hook exceeded
+        // its invocation budget. Keep the typed error stable regardless of
+        // which watchdog wins under CPU contention.
+        throw new PluginInvocationTimeoutError(`Plugin call exceeded ${this.invokeTimeoutMs}ms`)
       }
       throw err
     } finally {
