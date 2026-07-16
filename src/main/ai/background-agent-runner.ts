@@ -113,6 +113,8 @@ export class BackgroundAgentRunner {
           maxOutputTokens: runBudget !== undefined ? Math.min(4096, runBudget) : 4096,
           runBudgetTokens: runBudget,
           maxSteps: input.agent.maxToolCallsPerRun + 1,
+          maxToolCallsPerRun: input.agent.maxToolCallsPerRun,
+          timeoutMs: input.agent.timeoutMs,
           executionWorkspaces: resolvedRoots,
         }
       )

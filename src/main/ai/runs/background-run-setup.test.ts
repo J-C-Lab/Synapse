@@ -66,6 +66,8 @@ function baseInput(overrides: Partial<BackgroundRunSetupInput> = {}): Background
     model: "claude-x",
     maxOutputTokens: 1024,
     maxSteps: 6,
+    maxToolCallsPerRun: 5,
+    timeoutMs: 30_000,
     executionWorkspaces: [],
     allowedUses: overrides.allowedUses ?? [],
     pluginIdentity: overrides.pluginIdentity ?? {

@@ -8,6 +8,7 @@ import type { AgentRunStore } from "./agent-run-store"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
 import type { RunEventStore } from "./run-event-store"
 import { AiToolRegistry } from "../tool-registry"
+import { freezeToolAuthority, toolIdentityMatches } from "./authority-snapshot"
 import { runInteractiveTurn } from "./interactive-run-driver"
 import { createRunEventEmitter } from "./run-event-emitter"
 import { finalizeRun } from "./run-finalizer"
@@ -138,8 +139,33 @@ export async function continueBackgroundOrSubagentRun(
     listTools: () => deps.tools.listTools().filter((d) => allowedFqNames.has(d.fqName)),
     invokeTool: (fqName, input, options) => deps.tools.invokeTool(fqName, input, options),
   })
+  const modelTools = () =>
+    narrowedTools
+      .listWithDescriptors()
+      .filter(({ descriptor, schema }) => {
+        const frozen = checkpoint.config.authority.tools.find(
+          (tool) => tool.fqName === descriptor.fqName
+        )
+        return (
+          frozen !== undefined &&
+          toolIdentityMatches(
+            frozen,
+            freezeToolAuthority({ descriptor, safeName: schema.name, modelSchema: schema })
+          )
+        )
+      })
+      .map(({ schema }) => schema)
 
   const provider = await deps.buildProvider(checkpoint.config.providerId)
+  const backgroundExecution = checkpoint.config.backgroundExecution
+  if (origin === "background-agent" && !backgroundExecution) {
+    throw new Error(`background run ${runId} lacks its durable execution policy`)
+  }
+  let remainingToolCalls = backgroundExecution?.maxToolCallsPerRun ?? Number.POSITIVE_INFINITY
+  const controller = new AbortController()
+  const timeout = backgroundExecution
+    ? setTimeout(() => controller.abort(), backgroundExecution.timeoutMs)
+    : undefined
   const eventEmitter = await createRunEventEmitter(
     deps.eventStore,
     {
@@ -152,68 +178,73 @@ export async function continueBackgroundOrSubagentRun(
     deps.onEvent
   )
 
-  const outcome = await runInteractiveTurn(
-    {
-      model: {
-        runStore: deps.runStore,
-        budgetStore: deps.budgetStore,
-        provider,
-        tools: () => narrowedTools.list(),
-        now,
-        maxSteps: checkpoint.config.maxSteps,
-        eventEmitter,
-      },
-      toolBatch: {
-        tools: narrowedTools,
-        caller:
-          origin === "subagent"
-            ? {
-                kind: "subagent",
-                runId,
-                parentRunId: checkpoint.identity.parentRunId,
-                conversationId: checkpoint.identity.conversationId,
-                workspaceId: checkpoint.identity.workspaceId,
-              }
-            : {
-                kind: "background-agent",
-                runId,
-                workspaceId: checkpoint.identity.workspaceId,
-                invocationId: checkpoint.identity.invocationId,
-                triggerInstanceId: checkpoint.identity.triggerInstanceId,
-              },
-        // Matches both runners' original behavior exactly: neither ever had
-        // an interactive UI to prompt through, so both always resolved
-        // definitively without one. The original per-call ledger throttle
-        // (background-agent) doesn't survive a restart (it was ephemeral,
-        // process-local) — see the module header.
-        resolver: () => "allow",
-        requestApproval: () => {
-          throw new Error(`${origin} runs never prompt for interactive approval`)
+  try {
+    const outcome = await runInteractiveTurn(
+      {
+        model: {
+          runStore: deps.runStore,
+          budgetStore: deps.budgetStore,
+          provider,
+          tools: modelTools,
+          now,
+          maxSteps: checkpoint.config.maxSteps,
+          eventEmitter,
         },
-        now,
-        eventEmitter,
-      },
-      finalize: (rid, input) =>
-        finalizeRun(
-          {
-            runStore: deps.runStore,
-            upsertTrace: deps.upsertTrace,
-            releaseResources: async () => {},
-            now,
+        toolBatch: {
+          tools: narrowedTools,
+          caller:
+            origin === "subagent"
+              ? {
+                  kind: "subagent",
+                  runId,
+                  parentRunId: checkpoint.identity.parentRunId,
+                  conversationId: checkpoint.identity.conversationId,
+                  workspaceId: checkpoint.identity.workspaceId,
+                }
+              : {
+                  kind: "background-agent",
+                  runId,
+                  workspaceId: checkpoint.identity.workspaceId,
+                  invocationId: checkpoint.identity.invocationId,
+                  triggerInstanceId: checkpoint.identity.triggerInstanceId,
+                },
+          resolver: () => {
+            if (origin === "subagent") return "allow"
+            if (remainingToolCalls <= 0) return "deny"
+            remainingToolCalls -= 1
+            return "allow"
           },
-          rid,
-          input
-        ),
-      buildResourceReleasePlan: () => ({
-        budgetOperationIds: [],
-        skillPackageLeaseIds: [],
-        releaseArtifactRunPin: false,
-        adoptionLeaseIds: [],
-      }),
-    },
-    runId
-  )
+          requestApproval: () => {
+            throw new Error(`${origin} runs never prompt for interactive approval`)
+          },
+          now,
+          eventEmitter,
+        },
+        signal: controller.signal,
+        finalize: (rid, input) =>
+          finalizeRun(
+            {
+              runStore: deps.runStore,
+              upsertTrace: deps.upsertTrace,
+              releaseResources: async () => {},
+              now,
+            },
+            rid,
+            input
+          ),
+        buildResourceReleasePlan: () => ({
+          budgetOperationIds: [],
+          skillPackageLeaseIds: [],
+          releaseArtifactRunPin: false,
+          adoptionLeaseIds: [],
+        }),
+      },
+      runId
+    )
 
-  const trace = outcome.checkpoint.finalization?.trace
-  if (trace) deps.recordRun?.(trace)
+    const trace = outcome.checkpoint.finalization?.trace
+    if (trace) deps.recordRun?.(trace)
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
 }

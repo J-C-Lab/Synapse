@@ -50,6 +50,8 @@ export interface BackgroundRunSetupInput {
   maxOutputTokens: number
   runBudgetTokens?: number
   maxSteps: number
+  maxToolCallsPerRun: number
+  timeoutMs: number
   executionWorkspaces: readonly WorkspaceRootRecord[]
 }
 
@@ -158,6 +160,10 @@ export async function setupBackgroundRun(
       },
       authority,
       context,
+      backgroundExecution: {
+        maxToolCallsPerRun: input.maxToolCallsPerRun,
+        timeoutMs: input.timeoutMs,
+      },
     },
     messages: durableMessages,
     usage: {

@@ -69,6 +69,7 @@ export interface FrozenRunConfigV1 {
   }
   authority: FrozenAuthoritySnapshotV1
   context: FrozenContextSnapshotV1
+  backgroundExecution?: { maxToolCallsPerRun: number; timeoutMs: number }
 }
 
 export type ToolApprovalState =
@@ -562,6 +563,11 @@ function isValidConfig(v: unknown): boolean {
   if (!isString(v.workspaceBinding.rootSetHash)) return false
   if (!isValidAuthority(v.authority)) return false
   if (!isValidContext(v.context)) return false
+  if (v.backgroundExecution !== undefined) {
+    if (!isRecord(v.backgroundExecution)) return false
+    if (!isNonNegativeNumber(v.backgroundExecution.maxToolCallsPerRun)) return false
+    if (!isNonNegativeNumber(v.backgroundExecution.timeoutMs)) return false
+  }
   return true
 }
 

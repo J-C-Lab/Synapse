@@ -31,6 +31,7 @@ import { logger } from "../logging"
 import { DEFAULT_TOOL_RESILIENCE } from "./ai-settings-store"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./providers/catalog"
+import { freezeToolAuthority, toolIdentityMatches } from "./runs/authority-snapshot"
 import { runInteractiveTurn } from "./runs/interactive-run-driver"
 import { setupInteractiveRun } from "./runs/interactive-run-setup"
 import { createRunEventEmitter } from "./runs/run-event-emitter"
@@ -693,7 +694,7 @@ export class AgentService {
             runStore: this.options.runStore,
             budgetStore: this.options.budgetStore,
             provider,
-            tools: () => this.options.tools.list(),
+            tools: () => this.modelToolsFor(checkpoint),
             now: this.now,
             maxSteps: checkpoint.config.maxSteps,
             onTextDelta: (delta) => textBatcher.push(delta),
@@ -772,6 +773,27 @@ export class AgentService {
       now: this.now,
       eventEmitter,
     }
+  }
+
+  /** The provider may only see tools that this run froze at creation and
+   * whose live descriptor still has the same dispatch/schema identity. */
+  private modelToolsFor(checkpoint: AgentRunCheckpointV1): ProviderToolSchema[] {
+    const frozenByName = new Map(
+      checkpoint.config.authority.tools.map((tool) => [tool.fqName, tool])
+    )
+    return this.options.tools
+      .listWithDescriptors()
+      .filter(({ descriptor, schema }) => {
+        const frozen = frozenByName.get(descriptor.fqName)
+        return (
+          frozen !== undefined &&
+          toolIdentityMatches(
+            frozen,
+            freezeToolAuthority({ descriptor, safeName: schema.name, modelSchema: schema })
+          )
+        )
+      })
+      .map(({ schema }) => schema)
   }
 
   /** The durable tool-batch runner's hard-policy resolver — permanent/
