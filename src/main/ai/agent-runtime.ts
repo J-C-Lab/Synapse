@@ -1,4 +1,4 @@
-import type { WorkspaceInstruction } from "./context/workspace-instructions"
+import type { ToolResult } from "@synapse/plugin-sdk"
 import type { WorkspaceRootRecord } from "./execution/types"
 import type { EnvelopeTier } from "./guardrails/untrusted-content"
 import type { PlanStep } from "./plan/plan-types"
@@ -11,12 +11,12 @@ import type { AiToolRegistry } from "./tool-registry"
 import process from "node:process"
 import { logger } from "../logging"
 import { truncateToolResultText } from "./context/tool-result-budget"
-import { loadWorkspaceInstructions } from "./context/workspace-instructions"
 import { labelUntrustedContent } from "./guardrails/untrusted-content"
 import { streamWithDeadlines } from "./provider-stream-deadlines"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
 import { addUsage, emptyUsage, totalTokens } from "./providers/types"
 import { buildRunTrace, toToolCaller } from "./run-provenance"
+import { assembleFromContextSnapshot, buildContextSnapshot } from "./runs/context-snapshot"
 import { renderToolResultText } from "./tool-registry"
 
 // The agent loop: stream a turn → if the model called tools, run them through
@@ -56,9 +56,35 @@ const UNTRUSTED_CONTEXT_NOTICE =
 // Default-on as of 2026-07-07 — two independent real-key eval runs showed
 // tool-result injection compliance go from 3x-reproduced obeyed:1 to a clean
 // obeyed:0. SYNAPSE_UNTRUSTED_ENVELOPE_V2=0 remains as an explicit kill switch.
-function envelopeTierForToolResult(toolFqName: string): EnvelopeTier {
+export function envelopeTierForToolResult(toolFqName: string): EnvelopeTier {
   if (process.env.SYNAPSE_UNTRUSTED_ENVELOPE_V2 === "0") return "legacy"
   return toolFqName.startsWith("memory:") ? "legacy" : "strong"
+}
+
+export interface RenderedToolResult {
+  /** Bounded, labeled text — exactly what the model sees as this call's result. */
+  text: string
+  isError: boolean
+}
+
+/** Renders a raw ToolResult into the bounded, untrusted-labeled text the
+ *  model sees. Shared by AgentRuntime's in-memory loop and the durable
+ *  tool-batch runner so both paths produce byte-identical output for the
+ *  same underlying result. */
+export function renderLabeledToolResult(
+  result: ToolResult,
+  toolFqName: string,
+  options: { maxToolResultChars?: number } = {}
+): RenderedToolResult {
+  const isError = result.isError ?? false
+  const text = renderToolResultText(result) || "(no output)"
+  const bounded = truncateToolResultText(text, { maxChars: options.maxToolResultChars })
+  const labeled = labelUntrustedContent(
+    `tool-result:${toolFqName}`,
+    bounded,
+    envelopeTierForToolResult(toolFqName)
+  )
+  return { text: labeled, isError }
 }
 
 function executionGuidance(workspaces: readonly WorkspaceRootRecord[]): string {
@@ -76,6 +102,19 @@ export function buildSystemPrompt(
     ROUTING_GUIDANCE_PLAN +
     (workspaces.length > 0 ? executionGuidance(workspaces) : "")
   return `${base}\n\n${guidance}`
+}
+
+/** The exact composed base system text a fresh interactive run uses today
+ *  (default prompt + routing guidance + untrusted-context notice) — shared
+ *  with the durable interactive-run-setup path (runs/interactive-run-
+ *  setup.ts) so both produce byte-identical system prompts for the same
+ *  execution workspaces. */
+export function buildDefaultSystemText(
+  executionWorkspaces: readonly WorkspaceRootRecord[]
+): string {
+  return (
+    buildSystemPrompt(DEFAULT_SYSTEM_PROMPT, { executionWorkspaces }) + UNTRUSTED_CONTEXT_NOTICE
+  )
 }
 
 export interface AgentRuntimeOptions {
@@ -157,7 +196,6 @@ export class AgentRuntime {
     const base = options.system ?? this.options.defaultSystem ?? DEFAULT_SYSTEM_PROMPT
     const executionWorkspaces = this.options.executionWorkspaces?.() ?? []
     const instructionRoots = this.options.workspaceInstructionRoots?.() ?? executionWorkspaces
-    const instructionContext = await this.workspaceInstructionContext(instructionRoots)
     // Every tool result is labeled via labelUntrustedContent in runOneTool,
     // unconditionally — not just when workspace instructions happen to also be
     // configured. The notice must therefore always be present on any run that
@@ -165,7 +203,19 @@ export class AgentRuntime {
     // explanation of what it means (a real, keyed-eval-confirmed gap: a run
     // with no workspace instructions gave the model zero indication that a
     // labeled tool result should be treated as data, not instructions).
-    const system = buildSystemPrompt(base, { executionWorkspaces }) + UNTRUSTED_CONTEXT_NOTICE
+    const baseSystemText =
+      buildSystemPrompt(base, { executionWorkspaces }) + UNTRUSTED_CONTEXT_NOTICE
+    // Freezes the base prompt and every workspace-instruction source (already
+    // envelope-wrapped) exactly once, in stable order — see runs/context-snapshot.ts.
+    // A future durable run persists this snapshot instead of recomputing it;
+    // today's caller still assembles from it immediately, so a fresh run's
+    // bytes are unchanged.
+    const contextSnapshot = await buildContextSnapshot({
+      baseSystemText,
+      instructionWorkspaces: instructionRoots,
+    })
+    const { system, instructionContextText: instructionContext } =
+      assembleFromContextSnapshot(contextSnapshot)
     let usage = emptyUsage()
 
     const finish = (stopReason: AgentRunResult["stopReason"]): AgentRunResult => {
@@ -288,18 +338,13 @@ export class AgentRuntime {
         executionAuditDecision: outcome.executionAuditDecision,
         signal: options.signal,
       })
-      const isError = result.isError ?? false
-      options.onEvent?.({ type: "tool_result", id: call.id, isError })
-      record(!isError, isError ? "tool-error" : undefined)
-      const text = renderToolResultText(result) || "(no output)"
-      const bounded = truncateToolResultText(text, { maxChars: this.options.maxToolResultChars })
       const toolFqName = this.resolveToolName(call.name)
-      const labeled = labelUntrustedContent(
-        `tool-result:${toolFqName}`,
-        bounded,
-        envelopeTierForToolResult(toolFqName)
-      )
-      return toolResult(call.id, labeled, isError)
+      const rendered = renderLabeledToolResult(result, toolFqName, {
+        maxToolResultChars: this.options.maxToolResultChars,
+      })
+      options.onEvent?.({ type: "tool_result", id: call.id, isError: rendered.isError })
+      record(!rendered.isError, rendered.isError ? "tool-error" : undefined)
+      return toolResult(call.id, rendered.text, rendered.isError)
     } catch (err) {
       options.onEvent?.({ type: "tool_result", id: call.id, isError: true })
       const message = err instanceof Error ? err.message : String(err)
@@ -310,15 +355,6 @@ export class AgentRuntime {
 
   private resolveToolName(safeName: string): string {
     return this.options.tools.describe(safeName)?.fqName ?? safeName
-  }
-
-  private async workspaceInstructionContext(
-    workspaces: readonly WorkspaceRootRecord[]
-  ): Promise<string> {
-    const primaryOnly = workspaces.filter((workspace) => workspace.role === "primary")
-    const instructions = await loadWorkspaceInstructions([...primaryOnly])
-    if (instructions.length === 0) return ""
-    return instructions.map((instruction) => renderWorkspaceInstruction(instruction)).join("\n\n")
   }
 }
 
@@ -332,12 +368,14 @@ function toolResult(toolUseId: string, content: string, isError: boolean): ChatC
   return { type: "tool_result", toolUseId, content, isError }
 }
 
-function renderWorkspaceInstruction(instruction: WorkspaceInstruction): string {
-  const source = `workspace:${instruction.workspaceId}/${instruction.fileName}`
-  return labelUntrustedContent(source, instruction.text)
-}
-
-function injectUntrustedContext(messages: ChatMessage[], contextText: string): ChatMessage[] {
+/** Injects frozen workspace-instruction text onto the latest user text
+ *  message, transiently for one outgoing provider request — never persisted
+ *  into durable message history. Shared with the durable model-step runner
+ *  (runs/model-step-runner.ts) so both paths inject byte-identically. */
+export function injectUntrustedContext(
+  messages: ChatMessage[],
+  contextText: string
+): ChatMessage[] {
   if (!contextText.trim()) return messages
   const targetIndex = findLatestUserTextMessage(messages)
   const contextBlock: ChatContentBlock = { type: "text", text: contextText }

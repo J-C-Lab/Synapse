@@ -1,35 +1,43 @@
-import type { AgentEvent, ToolApprovalOutcome } from "./agent-runtime"
+import type { AgentRunEvent } from "@synapse/agent-protocol"
 import type { AiSettingsStore, ToolResilienceSettings } from "./ai-settings-store"
 import type { ApprovalDecision } from "./approval-gate"
 import type { ApprovalStore } from "./approval-store"
+import type { RootBudgetLedgerStore } from "./budget/root-budget-ledger"
 import type {
   ConversationStore,
   ConversationSummary,
   StoredConversation,
 } from "./conversation-store"
 import type { AiCredentialStore } from "./credential-store"
+import type { EstimatorQuarantineStore } from "./estimator-quarantine-store"
 import type { WorkspaceRootRecord } from "./execution/types"
 import type { McpClientManager, McpServerStatus } from "./mcp-client-manager"
 import type { McpServerConfig, McpServerConfigStore } from "./mcp-server-config-store"
 import type { PlanStep } from "./plan/plan-types"
 import type { RunPlanRegistry } from "./plan/run-plan-registry"
 import type { ProviderDescriptor } from "./providers/catalog"
-import type { ChatMessage, ChatProvider, ProviderToolSchema, TokenUsage } from "./providers/types"
-import type { RunTrace } from "./run-trace-store"
+import type { ChatProvider, ProviderToolSchema, TokenUsage } from "./providers/types"
+import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "./run-trace-store"
+import type { AgentRunStore } from "./runs/agent-run-store"
+import type { AgentRunCheckpointV1 } from "./runs/checkpoint-schema"
+import type { DurableApprovalPolicyInput } from "./runs/durable-approval"
+import type { RunEventStore } from "./runs/run-event-store"
+import type { RunFinalizerDeps } from "./runs/run-finalizer"
 import type { ToolStatSnapshot } from "./tool-circuit-breaker"
 import type { AiToolRegistry } from "./tool-registry"
 import type { WorkspaceRootStore } from "./workspace/workspace-root-store"
 import type { Workspace, WorkspaceStore } from "./workspace/workspace-store"
 import { randomUUID } from "node:crypto"
 import { logger } from "../logging"
-import { AgentRuntime } from "./agent-runtime"
 import { DEFAULT_TOOL_RESILIENCE } from "./ai-settings-store"
-import { decideApproval } from "./approval-gate"
-import { ContextCompressor } from "./context/context-compressor"
-import { summarizeViaProvider } from "./context/summarize-via-provider"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./providers/catalog"
-import { buildInteractiveRun } from "./run-provenance"
+import { resolveModelCapabilityProfile } from "./providers/model-capability-profile"
+import { freezeToolAuthority, toolIdentityMatches } from "./runs/authority-snapshot"
+import { runInteractiveTurn } from "./runs/interactive-run-driver"
+import { setupInteractiveRun } from "./runs/interactive-run-setup"
+import { createRunEventEmitter } from "./runs/run-event-emitter"
+import { finalizeRun } from "./runs/run-finalizer"
 import { DEFAULT_WORKSPACE } from "./workspace/workspace-store"
 
 // Assembles the AI pieces (credentials + provider catalog + tools + runtime +
@@ -66,6 +74,23 @@ export interface AgentServiceOptions {
   credentials: AiCredentialStore
   tools: AiToolRegistry
   conversations: ConversationStore
+  /** Durable checkpoint store — every interactive turn's run of record. */
+  runStore: AgentRunStore
+  /** Durable per-root-run token budget ledger. */
+  budgetStore: RootBudgetLedgerStore
+  /** Durable append-only event journal — renderer-facing run projections
+   *  (Task 15) read from this. */
+  eventStore: RunEventStore
+  /** Real-time push side of the subscribeRun channel (P1-2) — fired for
+   *  every event as it's durably appended, so a subscribed renderer window
+   *  never has to poll. Optional: omitting it keeps event emission fully
+   *  poll-only (getRunEventsSince still works), matching every pre-P1-2
+   *  caller. */
+  onRunEvent?: (event: AgentRunEvent) => void
+  /** Strict, idempotent terminal-finalization trace write (design §"Terminal
+   *  finalization across stores"). Distinct from `recordRun` below, which is
+   *  a best-effort convenience callback fired with the same trace. */
+  upsertTrace: (input: TraceUpsertInput) => TraceUpsertReceipt
   workspaces?: Pick<WorkspaceStore, "exists" | "isActive"> &
     Partial<Pick<WorkspaceStore, "list" | "create" | "rename" | "archive" | "unarchive">>
   sendEvent: (event: AiChatEvent) => void
@@ -109,14 +134,12 @@ export interface AgentServiceOptions {
   getLatestPlan?: (conversationId: string) => PlanStep[] | undefined
   /** The in-run plan store, so chat() can clear it per turn and expose getPlan. */
   planRegistry?: RunPlanRegistry
-  /** Fired at the start of each interactive turn with the resolved per-run token budget. */
-  onTurnStart?: (ctx: { runId: string; budgetTokens: number | undefined }) => void
-  /** Fired when an interactive turn ends so per-run budget state can be cleared. */
-  onTurnEnd?: (ctx: { runId: string }) => void
   /** Per-tool circuit-breaker health snapshots, surfaced to the renderer. */
   getToolHealth?: () => ToolStatSnapshot[]
   /** Applied when tool-resilience settings change so the live host can retune. */
   onToolResilienceChange?: (settings: ToolResilienceSettings) => void
+  /** Persistent circuit breaker for profiles whose estimator under-reserved. */
+  estimatorQuarantine?: EstimatorQuarantineStore
 }
 
 export class AgentMissingKeyError extends Error {
@@ -127,7 +150,7 @@ export class AgentMissingKeyError extends Error {
 }
 
 interface PendingApproval {
-  resolve: (outcome: ToolApprovalOutcome) => void
+  resolve: (outcome: { allowed: boolean; remember: RememberScope }) => void
   fqName: string
   conversationId: string
   input: unknown
@@ -156,16 +179,56 @@ export interface AiStatus {
 }
 
 export class AgentService {
-  private readonly aborts = new Map<string, AbortController>()
+  /** runId → its AbortController. Run-id-keyed (not conversation-id-keyed):
+   *  cancellation now targets the specific durable run in flight, consulted
+   *  via `conversationRuns` below rather than assumed unique per conversation. */
+  private readonly runAborts = new Map<string, AbortController>()
+  /** conversationId → the runId currently active for it, so `cancel()`'s
+   *  public conversation-scoped API can find the right AbortController. */
+  private readonly conversationRuns = new Map<string, string>()
   /** runId → conversationId for the currently active turn(s). */
   private readonly activeRunConversations = new Map<string, string>()
   private readonly pendingApprovals = new Map<string, PendingApproval>()
   private readonly conversationAllow = new Map<string, Set<string>>()
   private readonly permanentAllow = new Set<string>()
+  /** Process-local execution ownership. A recovered checkpoint may be
+   * requested by startup and an IPC click concurrently; only the first
+   * driver may enter provider/tool execution for a run id. */
+  private readonly continuingRuns = new Map<
+    string,
+    {
+      completion: Promise<{ stopReason: string; usage: TokenUsage }>
+      /** Resolves only after this continuation has fenced its conversation
+       * lease (or established it has no lease). Startup uses this rather
+       * than mistaking a fire-and-forget dispatch for recovery ownership. */
+      ownership: Promise<void>
+    }
+  >()
   private permanentAllowLoaded = false
-  private approvalCounter = 0
+  private startupReconciliation: Promise<void> | undefined
 
   constructor(private readonly options: AgentServiceOptions) {}
+
+  /**
+   * Startup readiness barrier (design §"Run recovery service and startup
+   * UX"): runs the recovery scan at most once and makes every later chat()
+   * call await it, so a stale/terminalizing conversation lease from a prior
+   * process is never raced by a fresh interactive turn. Never called by
+   * default — every caller that doesn't wire a recovery service keeps
+   * working exactly as before; chat() just skips the (unset) barrier.
+   */
+  async reconcileRunsAtStartup(recovery: {
+    listRecoverable: () => Promise<unknown>
+  }): Promise<void> {
+    if (!this.startupReconciliation) {
+      this.startupReconciliation = recovery.listRecoverable().then(() => undefined)
+    }
+    await this.startupReconciliation
+  }
+
+  private async ensureStartupReconciled(): Promise<void> {
+    if (this.startupReconciliation) await this.startupReconciliation
+  }
 
   /** Seed permanentAllow from the persisted store once (lazy). */
   private async ensurePermanentAllowLoaded(): Promise<void> {
@@ -421,17 +484,29 @@ export class AgentService {
     return { id, workspaceId }
   }
 
-  /** Delete a stored conversation. Cancels it first if a turn is in flight. */
+  /** Delete is a durable user decision: write the tombstone before signalling
+   * an in-process cancellation, so a crash between the two can never let the
+   * old run revive the conversation on startup. */
   async deleteConversation(id: string): Promise<void> {
-    this.cancel(id)
     await this.options.conversations.delete(id)
+    this.cancel(id)
   }
 
-  /** Run one chat turn, streaming events. Resolves when the turn completes. */
+  /** Run one chat turn, streaming events. Resolves when the turn completes.
+   *
+   *  Runs through the durable pipeline (design §"Replace AgentService.chat()'s
+   *  in-memory run setup"): setupInteractiveRun() acquires the conversation
+   *  lease and creates the checkpoint, runInteractiveTurn() drives it to a
+   *  terminal outcome and finalizes it (commits the conversation, upserts the
+   *  trace, releases resources) via finalizeRun(). A conversation that never
+   *  existed is created empty first, matching the old persist()-based
+   *  get-or-create behavior — chat() has never required an explicit
+   *  createConversation() call first. */
   async chat(
     conversationId: string,
     text: string
   ): Promise<{ stopReason: string; usage: TokenUsage }> {
+    await this.ensureStartupReconciled()
     const { providerId, model } = await this.selection()
     const apiKey = await this.options.credentials.get(providerId)
     if (!apiKey) throw new AgentMissingKeyError()
@@ -439,90 +514,414 @@ export class AgentService {
     const settings = this.options.settings ? await this.options.settings.get() : undefined
     const budgetTokens = settings?.budgetTokens ?? 0
     const resolvedBudget = budgetTokens > 0 ? budgetTokens : undefined
-
-    const runId = randomUUID()
-    this.registerRun(runId, conversationId)
-    this.options.onTurnStart?.({ runId, budgetTokens: resolvedBudget })
-
+    if (resolvedBudget !== undefined) {
+      await this.options.estimatorQuarantine?.assertAllowed(
+        resolveModelCapabilityProfile(providerId, model)
+      )
+    }
     const cfg = settings?.contextCompression
-    const compressor =
-      cfg?.enabled && cfg.thresholdTokens > 0
-        ? new ContextCompressor({
-            thresholdTokens: cfg.thresholdTokens,
-            summarize: async (older) => {
-              const provider = this.createProviderFor(providerId, apiKey)
-              return summarizeViaProvider(provider, model, older)
-            },
-          })
-        : undefined
 
     const existing = await this.options.conversations.get(conversationId)
     const workspaceId = existing?.workspaceId ?? "default"
-    const provenance = buildInteractiveRun({ runId, conversationId, workspaceId })
+    if (!existing) {
+      await this.options.conversations.save({
+        id: conversationId,
+        workspaceId,
+        messages: [],
+        createdAt: this.now(),
+        updatedAt: this.now(),
+      })
+    }
     const resolvedExecutionRoots = (await this.options.getExecutionWorkspaces?.(workspaceId)) ?? []
 
-    const runtime = new AgentRuntime({
-      provider: this.createProviderFor(providerId, apiKey),
-      tools: this.options.tools,
-      model,
-      budgetTokens: resolvedBudget,
-      executionWorkspaces: () => resolvedExecutionRoots,
-      recordRun: this.options.recordRun,
-      getPlan: (id) => this.getPlan(id),
-      compress: compressor ? compressor.compress.bind(compressor) : undefined,
-    })
-    const messages: ChatMessage[] = existing?.messages ? [...existing.messages] : []
-    messages.push({ role: "user", content: [{ type: "text", text }] })
-
-    const controller = new AbortController()
-    this.aborts.set(conversationId, controller)
-
-    const textBatcher = createTextDeltaBatcher((delta) =>
-      this.options.sendEvent({ type: "text", conversationId, delta })
-    )
+    const runId = randomUUID()
 
     try {
-      const result = await runtime.run({
-        provenance,
-        messages,
-        signal: controller.signal,
-        onText: (delta) => textBatcher.push(delta),
-        onEvent: (event) => {
-          textBatcher.flush()
-          this.forwardAgentEvent(conversationId, event)
+      const checkpoint = await setupInteractiveRun(
+        {
+          runStore: this.options.runStore,
+          budgetStore: this.options.budgetStore,
+          conversations: this.options.conversations,
+          tools: this.options.tools,
+          now: this.now,
         },
-        approve: (request) => this.approve(conversationId, request.toolName, request.input),
-      })
-      textBatcher.flush()
-      await this.persist(conversationId, existing, result.messages, workspaceId)
-      this.options.sendEvent({
-        type: "done",
+        {
+          runId,
+          conversationId,
+          workspaceId,
+          text,
+          providerId,
+          model,
+          maxOutputTokens: 4096,
+          runBudgetTokens: resolvedBudget,
+          maxSteps: 10,
+          contextCompression: {
+            enabled: cfg?.enabled ?? false,
+            thresholdTokens: cfg?.thresholdTokens ?? 0,
+            keepRecentFraction: 0.5,
+            hardReserveTokens: 0,
+          },
+          executionWorkspaces: resolvedExecutionRoots,
+        }
+      )
+
+      return await this.driveRun({
+        runId,
         conversationId,
-        stopReason: result.stopReason,
-        usage: result.usage,
+        checkpoint,
+        providerId,
+        apiKey,
+        emitRunStarted: { workspaceId },
       })
-      return { stopReason: result.stopReason, usage: result.usage }
     } catch (err) {
-      textBatcher.flush()
       this.options.sendEvent({
         type: "error",
         conversationId,
         message: err instanceof Error ? err.message : String(err),
       })
       throw err
+    }
+  }
+
+  /** Re-drives an already-persisted, non-terminal interactive checkpoint from
+   *  wherever it left off — the real continuation `AgentRunRecoveryService
+   *  .resume()` never performed on its own (that method only flips the
+   *  durable status field back to "running"). Reconstructs the provider from
+   *  the checkpoint's own FROZEN providerId/model (design intent: a resume
+   *  replays what the run already committed to, not whatever the live
+   *  settings happen to be today) rather than `this.selection()`. Called by
+   *  the startup auto-resume orchestrator and by the `runs:resume` IPC
+   *  handler, never awaited by their callers — a slow resumed turn must never
+   *  block the caller. */
+  continueRun(runId: string): Promise<{ stopReason: string; usage: TokenUsage }> {
+    const existing = this.continuingRuns.get(runId)
+    if (existing) return existing.completion
+    let establishOwnership!: () => void
+    let rejectOwnership!: (error: unknown) => void
+    const ownership = new Promise<void>((resolve, reject) => {
+      establishOwnership = resolve
+      rejectOwnership = reject
+    })
+    // Most direct callers await completion rather than the ownership signal;
+    // retain a handled rejection branch for a setup failure before a startup
+    // caller gets a chance to join it.
+    void ownership.catch(() => {})
+    const completion = this.continueRunOwned(runId, establishOwnership)
+    const entry = { completion, ownership }
+    this.continuingRuns.set(runId, entry)
+    void completion
+      .finally(() => {
+        rejectOwnership(new Error(`continuation ${runId} ended before establishing ownership`))
+        if (this.continuingRuns.get(runId) === entry) this.continuingRuns.delete(runId)
+      })
+      .catch(() => {})
+    return completion
+  }
+
+  /** Starts (or joins) a continuation and waits only for its durable
+   * ownership barrier, never for the provider/tool turn to finish. */
+  async continueRunThroughOwnership(runId: string): Promise<void> {
+    this.continueRun(runId)
+    await this.continuingRuns.get(runId)!.ownership
+  }
+
+  private async continueRunOwned(
+    runId: string,
+    onOwnershipEstablished: () => void
+  ): Promise<{ stopReason: string; usage: TokenUsage }> {
+    const result = await this.options.runStore.load(runId)
+    if (!result.ok) {
+      throw new Error(`cannot continue run ${runId}: checkpoint is ${result.reason}`)
+    }
+    const checkpoint = result.checkpoint
+    if (checkpoint.identity.origin !== "interactive") {
+      throw new Error(
+        `continueRun is for interactive-origin runs only (run ${runId} is ${checkpoint.identity.origin})`
+      )
+    }
+    const conversationId = checkpoint.identity.conversationId
+    if (!conversationId) {
+      throw new Error(`interactive run ${runId} has no bound conversationId — cannot continue it`)
+    }
+    const { providerId } = checkpoint.config
+    const apiKey = await this.options.credentials.get(providerId)
+    if (!apiKey) throw new AgentMissingKeyError()
+
+    try {
+      return await this.driveRun({
+        runId,
+        conversationId,
+        checkpoint,
+        providerId,
+        apiKey,
+        onOwnershipEstablished,
+      })
+    } catch (err) {
+      this.options.sendEvent({
+        type: "error",
+        conversationId,
+        message: err instanceof Error ? err.message : String(err),
+      })
+      throw err
+    }
+  }
+
+  /** The shared turn body every interactive run (fresh or resumed) drives
+   *  through: provider + event-emitter construction, the durable outer loop,
+   *  and renderer event forwarding. `emitRunStarted` is only passed for a
+   *  genuinely new run — a resumed run's `run_started` event was already
+   *  emitted the first time it was created. */
+  private async driveRun(params: {
+    runId: string
+    conversationId: string
+    checkpoint: AgentRunCheckpointV1
+    providerId: string
+    apiKey: string
+    emitRunStarted?: { workspaceId: string }
+    onOwnershipEstablished?: () => void
+  }): Promise<{ stopReason: string; usage: TokenUsage }> {
+    const { runId, conversationId, checkpoint, providerId, apiKey } = params
+    this.registerRun(runId, conversationId)
+    this.conversationRuns.set(conversationId, runId)
+
+    const controller = new AbortController()
+    this.runAborts.set(runId, controller)
+    let stopLeaseHeartbeat: (() => void) | undefined
+
+    const textBatcher = createTextDeltaBatcher((delta) =>
+      this.options.sendEvent({ type: "text", conversationId, delta })
+    )
+
+    try {
+      const provider = this.createProviderFor(providerId, apiKey)
+      const eventEmitter = await createRunEventEmitter(
+        this.options.eventStore,
+        {
+          runId,
+          rootRunId: checkpoint.identity.rootRunId,
+          conversationId,
+        },
+        this.now,
+        undefined,
+        this.options.onRunEvent
+      )
+      const lease = checkpoint.conversationCommit
+      if (lease) {
+        // Recovery must fence itself before the very first provider/tool
+        // operation. Waiting for the periodic heartbeat leaves a window in
+        // which a fresh chat can acquire an expired lease after startup.
+        await this.options.conversations.renewRunLease(
+          conversationId,
+          runId,
+          lease.leaseFencingToken
+        )
+        params.onOwnershipEstablished?.()
+        // The store lease lasts 30 seconds. Renew well inside that window;
+        // a stale fencing token means another owner won, so immediately stop
+        // this driver before it can issue another provider/tool operation.
+        let renewing = false
+        const timer = setInterval(() => {
+          if (renewing || controller.signal.aborted) return
+          renewing = true
+          void this.options.conversations
+            .renewRunLease(conversationId, runId, lease.leaseFencingToken)
+            .catch(() => controller.abort())
+            .finally(() => {
+              renewing = false
+            })
+        }, 10_000)
+        stopLeaseHeartbeat = () => clearInterval(timer)
+      } else {
+        params.onOwnershipEstablished?.()
+      }
+      if (params.emitRunStarted) {
+        await eventEmitter.emit({
+          type: "run_started",
+          origin: "interactive",
+          workspaceId: params.emitRunStarted.workspaceId,
+        })
+      }
+
+      const outcome = await runInteractiveTurn(
+        {
+          model: {
+            runStore: this.options.runStore,
+            budgetStore: this.options.budgetStore,
+            provider,
+            tools: () => this.modelToolsFor(checkpoint),
+            assertEstimatorAllowed: async (cp) => {
+              await this.options.estimatorQuarantine?.assertAllowed(cp.config.resolvedProfile)
+            },
+            now: this.now,
+            maxSteps: checkpoint.config.maxSteps,
+            onTextDelta: (delta) => textBatcher.push(delta),
+            eventEmitter,
+          },
+          toolBatch: {
+            tools: this.options.tools,
+            caller: { kind: "agent", conversationId, runId },
+            resolver: (policyInput) =>
+              this.resolveDurableApprovalPolicy(conversationId, policyInput),
+            requestApproval: (approvalId, policyInput) =>
+              this.requestDurableApproval(conversationId, approvalId, policyInput, textBatcher),
+            now: this.now,
+            onToolCall: (call) => {
+              textBatcher.flush()
+              const fqName = this.options.tools.describe(call.name)?.fqName ?? call.name
+              this.options.sendEvent({
+                type: "tool_call",
+                conversationId,
+                id: call.id,
+                name: fqName,
+                input: call.input,
+              })
+            },
+            onToolResult: (result) => {
+              textBatcher.flush()
+              this.options.sendEvent({
+                type: "tool_result",
+                conversationId,
+                id: result.id,
+                isError: result.isError,
+              })
+            },
+            eventEmitter,
+          },
+          signal: controller.signal,
+          finalize: (rid, input) => finalizeRun(this.finalizerDeps(eventEmitter), rid, input),
+          buildResourceReleasePlan: () => ({
+            budgetOperationIds: [],
+            skillPackageLeaseIds: [],
+            releaseArtifactRunPin: false,
+            adoptionLeaseIds: [],
+          }),
+          quarantineEstimatorProfile: async (failedCheckpoint) => {
+            // An unlimited run can observe an incompatibility too, but only
+            // finite admissions rely on the bound. Persisting it here still
+            // blocks every later finite run of this exact estimator version.
+            await this.options.estimatorQuarantine?.quarantine(
+              failedCheckpoint.config.resolvedProfile
+            )
+          },
+        },
+        runId
+      )
+
+      const trace = outcome.checkpoint.finalization?.trace
+      if (trace) this.options.recordRun?.(trace)
+
+      const stopReason: string =
+        outcome.kind === "suspended_unknown_tool_outcome" ? "suspended" : outcome.stopReason
+      const usage = outcome.checkpoint.usage
+      // A fast provider can finish before the coalescing timer fires. The
+      // terminal event is an ordering boundary, so synchronously drain any
+      // buffered text before publishing `done` instead of relying on the
+      // timer (or the finally block) to win that race.
+      textBatcher.flush()
+      this.options.sendEvent({ type: "done", conversationId, stopReason, usage })
+      return { stopReason, usage }
     } finally {
+      stopLeaseHeartbeat?.()
+      textBatcher.flush()
       textBatcher.dispose()
-      this.aborts.delete(conversationId)
+      this.runAborts.delete(runId)
+      if (this.conversationRuns.get(conversationId) === runId) {
+        this.conversationRuns.delete(conversationId)
+      }
       this.failPendingApprovals(conversationId)
       this.activeRunConversations.delete(runId)
       this.options.planRegistry?.clear(runId)
-      this.options.onTurnEnd?.({ runId })
     }
+  }
+
+  private finalizerDeps(eventEmitter?: RunFinalizerDeps["eventEmitter"]): RunFinalizerDeps {
+    return {
+      runStore: this.options.runStore,
+      conversation: this.options.conversations,
+      upsertTrace: this.options.upsertTrace,
+      releaseResources: async () => {},
+      now: this.now,
+      eventEmitter,
+    }
+  }
+
+  /** The provider may only see tools that this run froze at creation and
+   * whose live descriptor still has the same dispatch/schema identity. */
+  private modelToolsFor(checkpoint: AgentRunCheckpointV1): ProviderToolSchema[] {
+    const frozenByName = new Map(
+      checkpoint.config.authority.tools.map((tool) => [tool.fqName, tool])
+    )
+    return this.options.tools
+      .listWithDescriptors()
+      .filter(({ descriptor, schema }) => {
+        const frozen = frozenByName.get(descriptor.fqName)
+        return (
+          frozen !== undefined &&
+          toolIdentityMatches(
+            frozen,
+            freezeToolAuthority({ descriptor, safeName: schema.name, modelSchema: schema })
+          )
+        )
+      })
+      .map(({ schema }) => schema)
+  }
+
+  /** The durable tool-batch runner's hard-policy resolver — permanent/
+   *  conversation "always allow" and the injected approvalResolver policy
+   *  hook, ahead of the annotation heuristic. Mirrors the first stages of
+   *  the old in-memory approve() exactly. */
+  private async resolveDurableApprovalPolicy(
+    conversationId: string,
+    policyInput: DurableApprovalPolicyInput
+  ): Promise<ApprovalDecision | undefined> {
+    await this.ensurePermanentAllowLoaded()
+    if (
+      this.permanentAllow.has(policyInput.fqName) ||
+      this.allowSet(conversationId).has(policyInput.fqName)
+    ) {
+      return "allow"
+    }
+    const policyDecision = await this.options.approvalResolver?.({
+      conversationId,
+      safeName: policyInput.safeName,
+      fqName: policyInput.fqName,
+      input: policyInput.input,
+    })
+    if (policyDecision === "deny" || policyDecision === "allow") return policyDecision
+    return undefined
+  }
+
+  /** Only reached for a call the policy resolver and annotation heuristic
+   *  both left as "ask" — persists the pending approval and emits the same
+   *  approval_request event the renderer already handles. */
+  private requestDurableApproval(
+    conversationId: string,
+    approvalId: string,
+    policyInput: DurableApprovalPolicyInput,
+    textBatcher: TextDeltaBatcher
+  ): Promise<{ allowed: boolean; remember: RememberScope }> {
+    return new Promise((resolve) => {
+      this.pendingApprovals.set(approvalId, {
+        resolve,
+        fqName: policyInput.fqName,
+        conversationId,
+        input: policyInput.input,
+      })
+      textBatcher.flush()
+      this.options.sendEvent({
+        type: "approval_request",
+        conversationId,
+        approvalId,
+        toolName: policyInput.fqName,
+        input: policyInput.input,
+      })
+    })
   }
 
   /** Cancel an in-flight turn. */
   cancel(conversationId: string): void {
-    this.aborts.get(conversationId)?.abort()
+    const runId = this.conversationRuns.get(conversationId)
+    if (runId) this.runAborts.get(runId)?.abort()
     this.failPendingApprovals(conversationId)
   }
 
@@ -553,9 +952,7 @@ export class AgentService {
     if (allow && remember === "conversation") {
       this.allowSet(pending.conversationId).add(pending.fqName)
     }
-    pending.resolve(
-      allow ? { allowed: true, executionAuditDecision: "approved" } : { allowed: false }
-    )
+    pending.resolve({ allowed: allow, remember })
   }
 
   /** Tools the user has permanently allowed (persisted "always" decisions). */
@@ -571,83 +968,6 @@ export class AgentService {
     await this.options.approvals?.remove(fqName)
   }
 
-  private async approve(
-    conversationId: string,
-    safeName: string,
-    input: unknown
-  ): Promise<ToolApprovalOutcome> {
-    await this.ensurePermanentAllowLoaded()
-    const descriptor = this.options.tools.describe(safeName)
-    const fqName = descriptor?.fqName ?? safeName
-
-    if (this.permanentAllow.has(fqName) || this.allowSet(conversationId).has(fqName)) {
-      return { allowed: true, executionAuditDecision: "allow" }
-    }
-
-    // Deterministic policy runs before the annotation gate: it can hard-deny a
-    // command (never prompting) or auto-allow a recognized safe one.
-    const policyDecision = await this.options.approvalResolver?.({
-      conversationId,
-      safeName,
-      fqName,
-      input,
-    })
-    if (policyDecision === "deny") return { allowed: false }
-    if (policyDecision === "allow") return { allowed: true, executionAuditDecision: "allow" }
-
-    if (decideApproval(descriptor?.manifestTool.annotations) === "allow") {
-      return { allowed: true, executionAuditDecision: "allow" }
-    }
-
-    const approvalId = `apr_${++this.approvalCounter}`
-    return new Promise<ToolApprovalOutcome>((resolve) => {
-      this.pendingApprovals.set(approvalId, { resolve, fqName, conversationId, input })
-      this.options.sendEvent({
-        type: "approval_request",
-        conversationId,
-        approvalId,
-        toolName: fqName,
-        input,
-      })
-    })
-  }
-
-  private forwardAgentEvent(conversationId: string, event: AgentEvent): void {
-    if (event.type === "tool_call") {
-      const fqName = this.options.tools.describe(event.name)?.fqName ?? event.name
-      this.options.sendEvent({
-        type: "tool_call",
-        conversationId,
-        id: event.id,
-        name: fqName,
-        input: event.input,
-      })
-    } else {
-      this.options.sendEvent({
-        type: "tool_result",
-        conversationId,
-        id: event.id,
-        isError: event.isError,
-      })
-    }
-  }
-
-  private async persist(
-    conversationId: string,
-    existing: StoredConversation | undefined,
-    messages: ChatMessage[],
-    workspaceId: string
-  ): Promise<void> {
-    await this.options.conversations.save({
-      id: conversationId,
-      title: existing?.title ?? deriveTitle(messages),
-      workspaceId: existing?.workspaceId ?? workspaceId,
-      messages,
-      createdAt: existing?.createdAt ?? this.now(),
-      updatedAt: this.now(),
-    })
-  }
-
   private allowSet(conversationId: string): Set<string> {
     let set = this.conversationAllow.get(conversationId)
     if (!set) {
@@ -661,25 +981,20 @@ export class AgentService {
     for (const [id, pending] of this.pendingApprovals) {
       if (pending.conversationId === conversationId) {
         this.pendingApprovals.delete(id)
-        pending.resolve({ allowed: false })
+        pending.resolve({ allowed: false, remember: "once" })
       }
     }
   }
 }
 
-function deriveTitle(messages: ChatMessage[]): string {
-  const firstUser = messages.find((message) => message.role === "user")
-  const text = firstUser?.content.find((block) => block.type === "text")
-  const raw = text && text.type === "text" ? text.text.trim() : ""
-  if (!raw) return "New conversation"
-  return raw.length > 60 ? `${raw.slice(0, 60)}…` : raw
+interface TextDeltaBatcher {
+  push: (delta: string) => void
+  flush: () => void
+  dispose: () => void
 }
 
 /** Coalesce high-frequency provider text deltas before IPC to the renderer. */
-function createTextDeltaBatcher(
-  send: (delta: string) => void,
-  intervalMs = 32
-): { push: (delta: string) => void; flush: () => void; dispose: () => void } {
+function createTextDeltaBatcher(send: (delta: string) => void, intervalMs = 32): TextDeltaBatcher {
   let buffer = ""
   let timer: ReturnType<typeof setTimeout> | null = null
 

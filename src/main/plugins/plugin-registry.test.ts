@@ -227,6 +227,8 @@ describe("pluginRegistry", () => {
         pluginId: "com.synapse.test",
         manifestTool: toolDef("greet"),
         provenance: "plugin",
+        ownerVersion: "0.1.0",
+        replayGuarantee: "none",
       },
     ])
 

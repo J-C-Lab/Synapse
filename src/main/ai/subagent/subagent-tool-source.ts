@@ -15,7 +15,6 @@ const DEFAULT_MAX_STEPS = 8
 export interface SpawnSubagentOptions {
   runSubagent: (input: SubagentRunInput) => Promise<SubagentRunResult>
   parentTools: () => AiToolRegistry
-  budgetTokens?: (runId: string) => number | undefined
 }
 
 const DESCRIPTOR: RegisteredToolDescriptor = {
@@ -123,11 +122,9 @@ export class SpawnSubagentToolSource implements ToolHostSource {
 
     const result = await this.options.runSubagent({
       parentRunId: caller.runId,
-      parentConversationId: caller.conversationId ?? "",
       instruction,
       tools: new Registry(filteredHost),
       maxSteps,
-      budgetTokens: this.options.budgetTokens?.(caller.runId),
       signal: options?.signal,
     })
 

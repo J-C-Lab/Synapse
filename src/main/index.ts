@@ -13,7 +13,11 @@ import { spawn } from "node:child_process"
 import * as path from "node:path"
 import process from "node:process"
 import { pathToFileURL } from "node:url"
-import { derivePluginProfile, profileToAgentText } from "@synapse/plugin-manifest"
+import {
+  derivePluginProfile,
+  profileToAgentText,
+  triggerUseToCapability,
+} from "@synapse/plugin-manifest"
 import {
   app,
   BrowserWindow,
@@ -30,16 +34,21 @@ import {
   shell,
 } from "electron"
 import electronUpdater from "electron-updater"
-import { AgentService } from "./ai/agent-service"
+import { AgentMissingKeyError, AgentService } from "./ai/agent-service"
 import {
   aiSettingsFilePath,
   AiSettingsStore,
   DEFAULT_TOOL_RESILIENCE,
 } from "./ai/ai-settings-store"
 import { aiApprovalsFilePath, ApprovalStore } from "./ai/approval-store"
+import { RootBudgetLedgerStore } from "./ai/budget/root-budget-ledger"
 import { asFallbackSource, CompositeToolHost } from "./ai/composite-tool-host"
 import { ConversationStore } from "./ai/conversation-store"
 import { aiCredentialFilePath, AiCredentialStore } from "./ai/credential-store"
+import {
+  estimatorQuarantineFilePath,
+  EstimatorQuarantineStore,
+} from "./ai/estimator-quarantine-store"
 import { ExecutionApprovalResolver } from "./ai/execution/execution-approval"
 import { executionLogFilePath, ExecutionLogStore } from "./ai/execution/execution-log-store"
 import { EXECUTION_FQ_PREFIX, ExecutionToolHostSource } from "./ai/execution/execution-tool-host"
@@ -58,8 +67,28 @@ import {
 } from "./ai/plugin-introspection-tools"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/catalog"
 import { ResilientToolHost } from "./ai/resilient-tool-host"
-import { RunBudgetRegistry } from "./ai/run-budget-registry"
-import { getLatestPlan, recordRun as persistRunTrace, runTraceDir } from "./ai/run-trace-store"
+import {
+  getLatestPlan,
+  recordRun as persistRunTrace,
+  runTraceDir,
+  upsertRunTrace,
+} from "./ai/run-trace-store"
+import { AgentRunRecoveryService } from "./ai/runs/agent-run-recovery-service"
+import { AgentRunStore } from "./ai/runs/agent-run-store"
+import {
+  freezeAuthoritySnapshot,
+  withFrozenAuthorityCapabilities,
+} from "./ai/runs/authority-snapshot"
+import { backgroundPrincipal } from "./ai/runs/background-run-setup"
+import { buildTraceFromCheckpoint } from "./ai/runs/interactive-run-driver"
+import { rootSetHashFor } from "./ai/runs/interactive-run-setup"
+import { rebuildRecoveryAuthority } from "./ai/runs/recovery-authority"
+import { RunEventStore } from "./ai/runs/run-event-store"
+import { finalizeRun } from "./ai/runs/run-finalizer"
+import {
+  autoResumeRecoverableRuns,
+  continueBackgroundOrSubagentRun,
+} from "./ai/runs/run-recovery-orchestrator"
 import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
@@ -257,6 +286,8 @@ let hostResourceIpcService!: HostResourceIpcService
 let approvalRegistry!: ApprovalRegistry
 let lan: LanService
 let agent: AgentService
+let agentRunRecoveryService: AgentRunRecoveryService
+let estimatorQuarantine: EstimatorQuarantineStore | undefined
 let sharedMemoryTools: MemoryToolSource | undefined
 let sharedExecutionTools: ExecutionToolHostSource | undefined
 let runTraceRecorder: (trace: RunTrace) => void = () => {}
@@ -267,7 +298,29 @@ let emitPlanForRun: (
 let makeSubagentProvider: () => Promise<{ provider: ChatProvider; model: string }> = async () => {
   throw new Error("subagent provider not wired")
 }
-const runBudgetRegistry = new RunBudgetRegistry()
+/** Origin-aware recovery orchestrator dispatch (P1-1): drives an
+ *  already-resumed (status flipped back to "running") checkpoint's durable
+ *  loop forward, choosing the right continuation by origin. Fire-and-forget
+ *  from every caller — see run-recovery-orchestrator.ts's module header for
+ *  why background-agent/subagent continuation is intentionally degraded
+ *  relative to interactive. */
+interface ContinuingAnyRun {
+  completion: Promise<void>
+  ownership: Promise<void>
+}
+const continuingAnyRuns = new Map<string, ContinuingAnyRun>()
+let continueAnyRun: (runId: string) => Promise<void> = async () => {}
+// Shared across initPluginHost() (background-agent runs) and
+// createAgentService() (interactive runs, and the subagent runner it wires
+// up) — one durable checkpoint/budget store pair per app run, not a
+// per-caller copy, since the CAS/lease machinery each store owns is only
+// correct when every caller mutating a given runId goes through the same
+// in-memory lock map.
+const agentRunStore = new AgentRunStore(path.join(app.getPath("userData"), "ai", "runs"))
+const agentBudgetStore = new RootBudgetLedgerStore(
+  path.join(app.getPath("userData"), "ai", "budget")
+)
+const agentEventStore = new RunEventStore(path.join(app.getPath("userData"), "ai", "events"))
 let accountService: MarketplaceAccountService
 let marketplaceTokens: MarketplaceTokenStore | undefined
 // External MCP servers feeding tools to the built-in agent (P5). Held at module
@@ -447,9 +500,17 @@ function registerIpc(): void {
     workspaces: new WorkspaceStore(path.join(app.getPath("userData"), "ai")),
     spawnConnectionTest: (descriptor) => runMcpConnectionTest(descriptor, 10_000),
   })
-  registerRunsIpc(ipcMain, runTraceDir(app.getPath("userData")), {
-    isTrustedSender: isTrustedIpcSender,
-  })
+  registerRunsIpc(
+    ipcMain,
+    runTraceDir(app.getPath("userData")),
+    {
+      runStore: agentRunStore,
+      eventStore: agentEventStore,
+      recovery: agentRunRecoveryService,
+      continueRun: (runId) => continueAnyRun(runId),
+    },
+    { isTrustedSender: isTrustedIpcSender }
+  )
   if (memoryService)
     registerMemoryIpc(ipcMain, memoryService, { isTrustedSender: isTrustedIpcSender })
   updateService = setupAutoUpdates()
@@ -631,6 +692,13 @@ function broadcast(channel: string, payload: unknown): void {
 
 function broadcastAiChatEvent(event: unknown): void {
   broadcast("ai:chat:event", event)
+}
+
+/** Real-time push side of the subscribeRun channel (P1-2). Every window
+ *  receives every run's events (matching ai:chat:event's existing pattern);
+ *  the renderer filters by runId client-side. */
+function broadcastRunEvent(event: unknown): void {
+  broadcast("runs:event", event)
 }
 
 // Build the auto-update service around electron-updater's singleton. Manual
@@ -838,10 +906,13 @@ function initPluginHost(): PluginHost {
       approve: capabilityService.capabilityApprover,
     },
     backgroundAgentProvider: () => agent.createBackgroundAgentProvider(),
+    estimatorQuarantine: () => estimatorQuarantine,
     memoryTools: () => sharedMemoryTools,
     executionTools: () => sharedExecutionTools,
     recordRun: (trace) => runTraceRecorder(trace),
-    runBudgetRegistry,
+    runStore: agentRunStore,
+    budgetStore: agentBudgetStore,
+    upsertTrace: (input) => upsertRunTrace(runTraceDir(userDataDir), input),
     workspaceRoots: workspaceRootStore,
     workspaces,
     reservedAccelerators: () => [launcher.getSettings().hotkey],
@@ -955,10 +1026,17 @@ async function createAgentService(): Promise<AgentService> {
   let agentTools!: AiToolRegistry
   const subagentSource = new SpawnSubagentToolSource({
     parentTools: () => agentTools,
-    budgetTokens: (runId) => runBudgetRegistry.get(runId),
     runSubagent: async (inp) => {
       const { provider, model } = await makeSubagentProvider()
-      return new SubagentRunner({ provider, model, recordRun }).run(inp)
+      return new SubagentRunner({
+        provider,
+        model,
+        runStore: agentRunStore,
+        budgetStore: agentBudgetStore,
+        upsertTrace: (input) => upsertRunTrace(runsDir, input),
+        recordRun,
+        estimatorQuarantine,
+      }).run(inp)
     },
   })
 
@@ -966,6 +1044,7 @@ async function createAgentService(): Promise<AgentService> {
   // (`mcp:<id>/<tool>`), built-in memory tools (`memory:…`), and optionally
   // sandboxed local execution (`execution:…`). Invocations route by ownership.
   const aiSettings = new AiSettingsStore(aiSettingsFilePath(userDataDir), DEFAULT_PROVIDER_ID)
+  estimatorQuarantine = new EstimatorQuarantineStore(estimatorQuarantineFilePath(userDataDir))
   // Live circuit-breaker tuning (P3). Held in a mutable holder the host reads
   // afresh per new breaker; setToolResilience updates it and resets breakers so
   // the change takes effect immediately. Seeded from persisted settings below.
@@ -1019,9 +1098,126 @@ async function createAgentService(): Promise<AgentService> {
     }
   })
 
+  const conversations = new ConversationStore(path.join(userDataDir, "ai", "conversations"))
+
+  agentRunRecoveryService = new AgentRunRecoveryService({
+    runStore: agentRunStore,
+    now: Date.now,
+    finalize: (runId, input) =>
+      finalizeRun(
+        {
+          runStore: agentRunStore,
+          conversation: conversations,
+          upsertTrace: (upsertInput) => upsertRunTrace(runsDir, upsertInput),
+          releaseResources: async () => {},
+          now: Date.now,
+        },
+        runId,
+        input
+      ),
+    buildAbandonTrace: (checkpoint) => buildTraceFromCheckpoint(checkpoint, "aborted"),
+    buildFailureTrace: (checkpoint) => buildTraceFromCheckpoint(checkpoint, "error"),
+    buildAbandonResourcePlan: () => ({
+      budgetOperationIds: [],
+      skillPackageLeaseIds: [],
+      releaseArtifactRunPin: false,
+      adoptionLeaseIds: [],
+    }),
+    reconcileCorruptRun: (runId) => agentBudgetStore.reconcileAbandonedRun(runId),
+    buildClassifierInput: async (checkpoint) => {
+      const conversationExists = checkpoint.identity.conversationId
+        ? (await conversations.get(checkpoint.identity.conversationId)) !== undefined
+        : undefined
+      const currentWorkspaceRootSetHash = checkpoint.identity.workspaceId
+        ? rootSetHashFor(await workspaceRootStore.listForWorkspace(checkpoint.identity.workspaceId))
+        : undefined
+      const revokedAuthority = () =>
+        freezeAuthoritySnapshot({
+          // Deliberately different from every frozen source principal: this
+          // makes a vanished source block before any continuation can run.
+          principal: { kind: "revoked-source", actor: "background" },
+          capabilities: [],
+          tools: [],
+        })
+      const currentAuthorityFor = async (
+        candidate: typeof checkpoint,
+        seen = new Set<string>()
+      ): Promise<typeof checkpoint.config.authority> => {
+        if (seen.has(candidate.identity.runId)) return revokedAuthority()
+        const ancestry = new Set(seen).add(candidate.identity.runId)
+
+        if (candidate.identity.origin === "interactive") {
+          return freezeAuthoritySnapshot({
+            principal: { kind: "interactive", actor: "user" },
+            capabilities: [],
+            tools: agentTools.listWithDescriptors().map(({ schema, descriptor }) => ({
+              descriptor,
+              safeName: schema.name,
+              modelSchema: schema,
+            })),
+          })
+        }
+
+        if (candidate.identity.origin === "background-agent") {
+          const pluginId = candidate.identity.pluginId
+          const currentPluginIdentity = pluginId
+            ? plugins.currentActiveIdentityForPlugin(pluginId)
+            : undefined
+          if (!pluginId || !currentPluginIdentity) return revokedAuthority()
+          const capabilities = candidate.identity.triggerId
+            ? (
+                plugins.getTriggerDeclaration(pluginId, candidate.identity.triggerId)?.uses ?? []
+              ).map(triggerUseToCapability)
+            : []
+          return rebuildRecoveryAuthority(
+            candidate,
+            agentTools,
+            undefined,
+            capabilities,
+            backgroundPrincipal(pluginId, currentPluginIdentity)
+          )
+        }
+
+        const parentRunId = candidate.identity.parentRunId
+        if (!parentRunId) return revokedAuthority()
+        const parentResult = await agentRunStore.load(parentRunId)
+        if (!parentResult.ok) return revokedAuthority()
+        const parentCurrentAuthority = await currentAuthorityFor(parentResult.checkpoint, ancestry)
+        if (parentCurrentAuthority.principal.kind === "revoked-source") return revokedAuthority()
+        // The subagent's own principal is stable (it is an execution role,
+        // not a grant source). Its tools and capabilities instead derive
+        // recursively from the parent's current authority, then intersect
+        // with the child's immutable creation-time ceiling.
+        return withFrozenAuthorityCapabilities(
+          rebuildRecoveryAuthority(
+            candidate,
+            agentTools,
+            parentResult.checkpoint,
+            [],
+            candidate.config.authority.principal,
+            parentCurrentAuthority
+          ),
+          parentCurrentAuthority.capabilities
+        )
+      }
+      const currentAuthority = await currentAuthorityFor(checkpoint)
+      return {
+        currentAuthority,
+        conversationExists,
+        currentWorkspaceRootSetHash,
+        now: Date.now(),
+      }
+    },
+  })
+
   const agentService = new AgentService({
     credentials,
     tools: agentTools,
+    runStore: agentRunStore,
+    budgetStore: agentBudgetStore,
+    upsertTrace: (input) => upsertRunTrace(runsDir, input),
+    eventStore: agentEventStore,
+    onRunEvent: broadcastRunEvent,
     getToolHealth: () => resilientToolHost.snapshots(),
     onToolResilienceChange: (cfg) => {
       toolResilience = cfg
@@ -1040,21 +1236,16 @@ async function createAgentService(): Promise<AgentService> {
         fqName: ctx.fqName,
         input: ctx.input,
       }),
-    conversations: new ConversationStore(path.join(userDataDir, "ai", "conversations")),
+    conversations,
     workspaces: new WorkspaceStore(path.join(userDataDir, "ai")),
     providers: defaultProviderCatalog(),
     settings: aiSettings,
+    estimatorQuarantine,
     approvals: new ApprovalStore(aiApprovalsFilePath(userDataDir)),
     sendEvent: broadcastAiChatEvent,
     recordRun,
     getLatestPlan: (conversationId) => getLatestPlan(runsDir, conversationId),
     planRegistry,
-    onTurnStart: ({ runId, budgetTokens }) => {
-      runBudgetRegistry.set(runId, budgetTokens)
-    },
-    onTurnEnd: ({ runId }) => {
-      runBudgetRegistry.clear(runId)
-    },
     mcp: {
       // Encrypt env/header secrets at rest with the OS keychain.
       configs: mcpConfigStore,
@@ -1064,6 +1255,109 @@ async function createAgentService(): Promise<AgentService> {
 
   emitPlanForRun = (runId, steps) => agentService.emitPlanForRun(runId, steps)
   makeSubagentProvider = () => agentService.createBackgroundAgentProvider()
+
+  continueAnyRun = (runId: string): Promise<void> => {
+    const existing = continuingAnyRuns.get(runId)
+    if (existing) return existing.ownership
+    let establishOwnership!: () => void
+    let rejectOwnership!: (reason: unknown) => void
+    const ownership = new Promise<void>((resolve, reject) => {
+      establishOwnership = resolve
+      rejectOwnership = reject
+    })
+    const entry: ContinuingAnyRun = {
+      ownership,
+      completion: Promise.resolve(),
+    }
+    const completion = (async () => {
+      let result: Awaited<ReturnType<typeof agentRunStore.load>>
+      try {
+        result = await agentRunStore.load(runId)
+      } catch (err) {
+        logger.child("runs").warn("continueAnyRun: failed to load checkpoint", { runId, err })
+        rejectOwnership(err)
+        return
+      }
+      if (!result.ok) {
+        establishOwnership()
+        return
+      }
+      const checkpoint = result.checkpoint
+      try {
+        if (checkpoint.identity.origin === "interactive") {
+          // AgentService owns the conversation lease barrier. Joining it
+          // here keeps this process-wide map authoritative for every origin.
+          await agentService.continueRunThroughOwnership(runId)
+          establishOwnership()
+          await agentService.continueRun(runId)
+        } else {
+          // Inserting this entry before any await is the execution ownership
+          // barrier for background/subagent runs, which have no conversation
+          // lease. Never allow a second Resume to start another driver.
+          establishOwnership()
+          await continueBackgroundOrSubagentRun(
+            {
+              runStore: agentRunStore,
+              budgetStore: agentBudgetStore,
+              eventStore: agentEventStore,
+              upsertTrace: (input) => upsertRunTrace(runsDir, input),
+              recordRun,
+              tools: resilientToolHost,
+              onEvent: broadcastRunEvent,
+              estimatorQuarantine,
+              buildProvider: async (providerId) => {
+                const apiKey = await credentials.get(providerId)
+                if (!apiKey) throw new AgentMissingKeyError()
+                const descriptor = defaultProviderCatalog().find((p) => p.id === providerId)
+                if (!descriptor) throw new Error(`Unknown provider: ${providerId}`)
+                return descriptor.create(apiKey)
+              },
+            },
+            checkpoint
+          )
+        }
+      } catch (err) {
+        rejectOwnership(err)
+        logger.child("runs").warn("continueAnyRun: run failed to resume", {
+          runId,
+          origin: checkpoint.identity.origin,
+          err,
+        })
+      }
+    })()
+    entry.completion = completion.finally(() => {
+      if (continuingAnyRuns.get(runId) === entry) continuingAnyRuns.delete(runId)
+    })
+    continuingAnyRuns.set(runId, entry)
+    // Completion is intentionally detached; callers only await durable
+    // execution ownership so app startup never waits for provider latency.
+    void entry.completion.catch(() => {})
+    return ownership
+  }
+
+  // Kick off the startup recovery scan now, without blocking app readiness on
+  // it — chat() internally awaits this same promise before starting any new
+  // turn, so a stale/terminalizing conversation lease from a prior process
+  // can never be raced by a fresh interactive turn arriving right after
+  // launch. The scan itself now also drives real recovery, not just
+  // classification: every run classified "automatic" gets resumed AND
+  // continued (P1-1) — reconcileRunsAtStartup's own listRecoverable() plumbing
+  // is repurposed to run that whole sequence, so chat() still only ever waits
+  // for this (fast) dispatch phase, never for the continuations it kicks off.
+  void agentService.reconcileRunsAtStartup({
+    listRecoverable: async () => {
+      await autoResumeRecoverableRuns({
+        recovery: agentRunRecoveryService,
+        runStore: agentRunStore,
+        continueRun: async (checkpoint) => {
+          await continueAnyRun(checkpoint.identity.runId)
+        },
+        onError: (runId, err) =>
+          logger.child("runs").warn("failed to auto-resume run", { runId, err }),
+      })
+      return []
+    },
+  })
 
   return agentService
 }

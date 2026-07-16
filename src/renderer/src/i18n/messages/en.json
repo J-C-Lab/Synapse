@@ -756,7 +756,15 @@
     "detailPlan": "Plan",
     "conversationGone": "This conversation no longer exists.",
     "parentUnavailable": "Parent run trace is unavailable. It may have aged out of retention or failed to persist.",
-    "noChildRuns": "No child runs."
+    "noChildRuns": "No child runs.",
+    "recoverableTitle": "Recoverable runs",
+    "recoverableResume": "Resume",
+    "recoverableAbandon": "Abandon",
+    "recoverableBlocked": "Blocked: {{reason}}",
+    "recoverableConflict": "Conversation conflict — this run can only be abandoned.",
+    "recoverableDecisionRequired": "Needs a decision: {{reason}}",
+    "recoverableRetry": "Retry",
+    "recoverableMarkFailed": "Mark failed"
   },
   "launcher": {
     "placeholder": "Search apps and commands…",

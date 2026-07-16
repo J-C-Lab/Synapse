@@ -11,6 +11,7 @@ import process from "node:process"
 import { describe, expect, it } from "vitest"
 import { AgentService } from "../agent-service"
 import { AiSettingsStore } from "../ai-settings-store"
+import { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import { asFallbackSource, CompositeToolHost } from "../composite-tool-host"
 import { ConversationStore } from "../conversation-store"
 import { AiCredentialStore } from "../credential-store"
@@ -18,6 +19,9 @@ import { MemoryService } from "../memory/memory-service"
 import { MemoryStore } from "../memory/memory-store"
 import { MemoryToolSource } from "../memory/memory-tools"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "../providers/catalog"
+import { upsertRunTrace } from "../run-trace-store"
+import { AgentRunStore } from "../runs/agent-run-store"
+import { RunEventStore } from "../runs/run-event-store"
 import { AiToolRegistry } from "../tool-registry"
 import { checkAsrCeiling } from "./asr-baseline"
 import { loadBaseline } from "./baselines"
@@ -230,6 +234,11 @@ async function runInjectionAsr(dir: string): Promise<void> {
       credentials,
       tools: new AiToolRegistry(composite),
       conversations: new ConversationStore(path.join(dir, `conv-${surfaceCase.surface}`)),
+      runStore: new AgentRunStore(path.join(dir, `runs-${surfaceCase.surface}`)),
+      budgetStore: new RootBudgetLedgerStore(path.join(dir, `budget-${surfaceCase.surface}`)),
+      upsertTrace: (input) =>
+        upsertRunTrace(path.join(dir, `traces-${surfaceCase.surface}`), input),
+      eventStore: new RunEventStore(path.join(dir, `events-${surfaceCase.surface}`)),
       providers: defaultProviderCatalog(),
       settings,
       getExecutionWorkspaces: async (_workspaceId) => workspaces,

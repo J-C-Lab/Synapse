@@ -9,8 +9,11 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { RootBudgetLedgerStore } from "../ai/budget/root-budget-ledger"
 import { MemoryToolSource } from "../ai/memory/memory-tools"
 import { emptyUsage } from "../ai/providers/types"
+import { upsertRunTrace } from "../ai/run-trace-store"
+import { AgentRunStore } from "../ai/runs/agent-run-store"
 import { modelToolName } from "../ai/tool-registry"
 import { CapabilityIpcService } from "../ipc/capabilities"
 import { buildGrantIdentity } from "./capability-governance"
@@ -52,6 +55,15 @@ const noopFsWatchAdapter: FsWatchAdapter = {
 function fakeProvider(onStream?: () => void): ChatProvider {
   return {
     id: "fake",
+    // Required for background-agent-trigger tests: their manifests configure
+    // finite maxTokensPerRun, and durable admission fails closed for a
+    // finite-budget run whose provider can't guarantee an upper bound.
+    estimateRequestUpperBound: () => ({
+      estimatorId: "fake",
+      estimatorVersion: "1",
+      inputUpperBoundTokens: 0,
+      maxOutputTokens: 100,
+    }),
     async *stream() {
       onStream?.()
       const content: ChatContentBlock[] = [{ type: "text", text: "done" }]
@@ -65,6 +77,19 @@ function fakeProvider(onStream?: () => void): ChatProvider {
   }
 }
 
+function runsSupport(baseDir: string): {
+  runStore: AgentRunStore
+  budgetStore: RootBudgetLedgerStore
+  upsertTrace: ConstructorParameters<typeof PluginHost>[0]["upsertTrace"]
+} {
+  const runsDir = path.join(baseDir, "ai-runs")
+  return {
+    runStore: new AgentRunStore(runsDir),
+    budgetStore: new RootBudgetLedgerStore(path.join(baseDir, "ai-budget")),
+    upsertTrace: (input) => upsertRunTrace(runsDir, input),
+  }
+}
+
 function hostOptions(
   overrides: Partial<ConstructorParameters<typeof PluginHost>[0]> = {}
 ): ConstructorParameters<typeof PluginHost>[0] {
@@ -75,6 +100,7 @@ function hostOptions(
     adapters: noopAdapters,
     hotkeyAdapter: createHeadlessHotkeyAdapter(),
     workspaceRoots: { listForWorkspace: async () => [] },
+    ...runsSupport(dir),
     workspaces: {
       get: async (id: string) =>
         id === "default"
@@ -1010,6 +1036,11 @@ describe("pluginHost trigger registration", () => {
       registerCron: () => () => {},
     }
     const providerStreamed = vi.fn()
+    // recordRun fires only after the durable run's finalization (checkpoint
+    // completion, trace upsert, resource release) has fully settled — unlike
+    // providerStreamed, waiting on this ensures the run's async fs writes are
+    // done before the test's afterEach tries to remove the temp dir.
+    const runRecorded = vi.fn()
     const host = new PluginHost(
       hostOptions({
         migrationMarker: migrationAlreadyDone(),
@@ -1019,6 +1050,7 @@ describe("pluginHost trigger registration", () => {
           provider: fakeProvider(providerStreamed),
           model: "fake-model",
         }),
+        recordRun: runRecorded,
       })
     )
     const sandboxDispatch = vi.spyOn(host.sandbox, "dispatchTrigger")
@@ -1049,6 +1081,7 @@ describe("pluginHost trigger registration", () => {
     fires.tick?.({ scheduledAt: 0, firedAt: 1, driftMs: 0 })
 
     await vi.waitFor(() => expect(providerStreamed).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(runRecorded).toHaveBeenCalledTimes(1))
     expect(sandboxDispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         pluginId,
@@ -1142,6 +1175,7 @@ describe("github inbox bundled plugin", () => {
       hotkeyAdapter: createHeadlessHotkeyAdapter(),
       fsWatchAdapter: noopFsWatchAdapter,
       workspaceRoots: { listForWorkspace: async () => [] },
+      ...runsSupport(dir),
       capabilityGovernance: {
         userDataDir: dir,
         approve: async () => ({ allow: true }),
@@ -1261,6 +1295,15 @@ function providerWithToolCall(toolName: string, input: unknown = { query: "hi" }
   const turns = [{ toolUses: [{ id: "t1", name: toolName, input }] }, { text: "done" }]
   return {
     id: "fake",
+    // The manifest configures a finite maxTokensPerRun; durable admission
+    // fails closed for a finite-budget run whose provider can't guarantee
+    // an upper bound.
+    estimateRequestUpperBound: () => ({
+      estimatorId: "fake",
+      estimatorVersion: "1",
+      inputUpperBoundTokens: 0,
+      maxOutputTokens: 100,
+    }),
     async *stream() {
       const turn = turns[index++] ?? { text: "done" }
       const content: ChatContentBlock[] = []
@@ -1303,6 +1346,10 @@ describe("dispatchBackgroundAgent — memory:read/execution:read wiring", () => 
       registerCron: () => () => {},
     }
     const pluginId = "com.synapse.agent-trigger"
+    // recordRun fires only after the durable run's finalization has fully
+    // settled — waiting on it too (not just memory.search) ensures the run's
+    // async fs writes are done before afterEach removes the temp dir.
+    const runRecorded = vi.fn()
     const host = new PluginHost(
       hostOptions({
         migrationMarker: migrationAlreadyDone(),
@@ -1313,6 +1360,7 @@ describe("dispatchBackgroundAgent — memory:read/execution:read wiring", () => 
           provider: providerWithToolCall(memorySearchToolName),
           model: "fake-model",
         }),
+        recordRun: runRecorded,
       })
     )
     await writeHostPlugin({
@@ -1334,6 +1382,7 @@ describe("dispatchBackgroundAgent — memory:read/execution:read wiring", () => 
     fires.tick?.({ scheduledAt: 0, firedAt: 1, driftMs: 0 })
 
     await vi.waitFor(() => expect(memory.search).toHaveBeenCalled())
+    await vi.waitFor(() => expect(runRecorded).toHaveBeenCalled())
   })
 
   it("a declared-but-unconfirmed capability is denied, not silently used", async () => {
@@ -1358,6 +1407,7 @@ describe("dispatchBackgroundAgent — memory:read/execution:read wiring", () => 
       registerCron: () => () => {},
     }
     const pluginId = "com.synapse.agent-trigger"
+    const runRecorded = vi.fn()
     const host = new PluginHost(
       hostOptions({
         migrationMarker: migrationAlreadyDone(),
@@ -1368,6 +1418,7 @@ describe("dispatchBackgroundAgent — memory:read/execution:read wiring", () => 
           provider: providerWithToolCall(memorySearchToolName),
           model: "fake-model",
         }),
+        recordRun: runRecorded,
       })
     )
     await writeHostPlugin({
@@ -1383,7 +1434,10 @@ describe("dispatchBackgroundAgent — memory:read/execution:read wiring", () => 
     await host.createTriggerInstance(pluginId, "tick", "default")
     fires.tick?.({ scheduledAt: 0, firedAt: 1, driftMs: 0 })
 
-    await vi.waitFor(() => expect(fires.tick).toBeDefined())
+    // The denied capability still runs the surrounding run to completion
+    // (the tool call itself resolves as a synthetic denial) — wait for
+    // finalization so afterEach doesn't race the run's async fs writes.
+    await vi.waitFor(() => expect(runRecorded).toHaveBeenCalled())
     expect(memory.search).not.toHaveBeenCalled()
   })
 })

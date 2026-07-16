@@ -62,6 +62,8 @@ export interface McpClientPort {
   close: () => Promise<void>
   /** Present only for a connection that advertised the roots capability. */
   notifyRootsChanged?: () => Promise<void>
+  /** MCP initialize response identity, when the transport exposes it. */
+  serverVersion?: () => string | undefined
 }
 
 export type McpClientFactory = (
@@ -188,7 +190,8 @@ export class McpClientManager implements ToolHostSource {
       await client.connect()
       const { tools } = await client.listTools()
       conn.client = client
-      conn.tools = tools.map((tool) => toDescriptor(config.id, tool))
+      const ownerVersion = client.serverVersion?.() ?? "unversioned"
+      conn.tools = tools.map((tool) => toDescriptor(config.id, tool, ownerVersion))
       conn.state = "connected"
       for (const descriptor of conn.tools) {
         const projected = projectModelVisibleTool({
@@ -225,12 +228,18 @@ function toArguments(input: unknown): Record<string, unknown> {
   return {}
 }
 
-function toDescriptor(serverId: string, tool: McpToolDefinition): RegisteredToolDescriptor {
+function toDescriptor(
+  serverId: string,
+  tool: McpToolDefinition,
+  ownerVersion: string
+): RegisteredToolDescriptor {
   return {
     fqName: `${MCP_FQ_PREFIX}${serverId}/${tool.name}`,
     pluginId: `${MCP_FQ_PREFIX}${serverId}`,
     manifestTool: toManifestTool(tool),
     provenance: "mcp-client",
+    ownerVersion,
+    replayGuarantee: "none",
   }
 }
 

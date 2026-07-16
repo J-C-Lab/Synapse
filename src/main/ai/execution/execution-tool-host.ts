@@ -2,10 +2,12 @@ import type { JsonSchema } from "@synapse/plugin-manifest"
 import type { ToolResult } from "@synapse/plugin-sdk"
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../../plugins/types"
 import type { ToolHostSource } from "../composite-tool-host"
+import type { ExecutionBackend } from "./execution-backend"
 import type { ExecutionLogStore } from "./execution-log-store"
 import type { WorkspaceRootRecord } from "./types"
 import { classifyCommand } from "./command-policy"
-import { runCommand, truncatePreview } from "./command-runner"
+import { truncatePreview } from "./command-runner"
+import { createLocalPolicyExecutionBackend } from "./execution-backend"
 import { listFiles, readFile, searchFiles } from "./file-tools"
 import { applyPatch } from "./patch-tools"
 import { WorkspacePolicy } from "./workspace-policy"
@@ -25,6 +27,10 @@ export interface ExecutionToolHostSourceOptions {
    *  hidden and invocations are denied even if roots exist. */
   isAllowed?: () => boolean
   now?: () => number
+  /** Dispatch seam for run_command — defaults to the local, non-isolated
+   *  policy backend. Command policy, workspace containment, approval, and
+   *  audit all stay in front of this call. */
+  backend?: ExecutionBackend
 }
 
 const objectSchema = (
@@ -124,8 +130,11 @@ const TOOL_DESCRIPTORS: RegisteredToolDescriptor[] = [
 
 export class ExecutionToolHostSource implements ToolHostSource {
   private anyRootsExist = false
+  private readonly backend: ExecutionBackend
 
-  constructor(private readonly options: ExecutionToolHostSourceOptions) {}
+  constructor(private readonly options: ExecutionToolHostSourceOptions) {
+    this.backend = options.backend ?? createLocalPolicyExecutionBackend()
+  }
 
   /** Refreshes the in-memory "does any root exist anywhere" gate `listTools()`
    *  reads synchronously. Call once at startup and again after any root is
@@ -270,15 +279,16 @@ export class ExecutionToolHostSource implements ToolHostSource {
     }
 
     const startedAt = this.now()
-    const result = await runCommand(
-      policy,
+    const result = await this.backend.invoke(
       {
+        invocationId: crypto.randomUUID(),
         rootId,
         command,
         cwd: typeof input.cwd === "string" ? input.cwd : undefined,
         timeoutMs: typeof input.timeoutMs === "number" ? input.timeoutMs : undefined,
+        signal: options.signal,
       },
-      options.signal
+      policy
     )
     const stdout = truncatePreview(result.stdout)
     const stderr = truncatePreview(result.stderr)

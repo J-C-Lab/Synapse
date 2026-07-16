@@ -42,6 +42,7 @@ export const createStdioMcpClient: McpClientFactory = (
     callTool: (params, options) =>
       client.callTool(params, undefined, { signal: options?.signal }) as Promise<McpCallResult>,
     close: () => client.close(),
+    serverVersion: () => client.getServerVersion()?.version,
     notifyRootsChanged: () => notifyRootsChangedIfEnabled(client, config),
   }
 }

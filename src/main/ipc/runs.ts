@@ -1,9 +1,25 @@
+import type { AgentRunEvent, AgentRunSnapshot, AgentRunSummary } from "@synapse/agent-protocol"
 import type { ToolPrincipal } from "@synapse/plugin-sdk"
 import type { IpcMain, IpcMainInvokeEvent } from "electron"
 import type { PlanStep, PlanStepStatus } from "../ai/plan/plan-types"
 import type { RunTrace, RunTraceErrorCategory } from "../ai/run-trace-store"
+import type {
+  AgentRunRecoveryService,
+  RecoveryDecision,
+} from "../ai/runs/agent-run-recovery-service"
+import type { AgentRunStore } from "../ai/runs/agent-run-store"
+import type { RunEventStore } from "../ai/runs/run-event-store"
 import { getRunTrace, listRuns } from "../ai/run-trace-store"
+import {
+  ConversationConflictUnresumableError,
+  RecoveryBlockedError,
+  RecoveryDecisionRequiredError,
+} from "../ai/runs/agent-run-recovery-service"
+import { RunNotFoundError } from "../ai/runs/agent-run-store"
+import { toAgentRunSnapshot } from "../ai/runs/run-projection"
 import { requireString } from "./validation"
+
+const RECOVERY_DECISION_KINDS = new Set<string>(["retry", "mark_failed"])
 
 const ORIGINS = new Set<string>(["interactive", "background-agent", "subagent", "mcp"])
 const OUTCOMES = new Set<string>(["end_turn", "max_steps", "aborted", "budget_exceeded", "error"])
@@ -170,6 +186,80 @@ export function normalizeRunListQuery(input: unknown): RunListQuery {
   return { parentRunId }
 }
 
+export interface EventsSinceQuery {
+  runId: string
+  afterSequence: number
+}
+
+export function normalizeEventsSinceQuery(input: unknown): EventsSinceQuery {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("payload must be an object")
+  }
+  const v = input as Record<string, unknown>
+  const runId = requireString(v.runId, "runId")
+  if (
+    typeof v.afterSequence !== "number" ||
+    !Number.isInteger(v.afterSequence) ||
+    v.afterSequence < 0
+  ) {
+    throw new Error("afterSequence must be a non-negative integer")
+  }
+  return { runId, afterSequence: v.afterSequence }
+}
+
+export interface ResumeRunQuery {
+  runId: string
+  decision?: RecoveryDecision
+}
+
+function normalizeRecoveryDecision(value: unknown): RecoveryDecision | undefined {
+  if (value === undefined) return undefined
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("decision must be an object")
+  }
+  const v = value as Record<string, unknown>
+  if (typeof v.kind !== "string" || !RECOVERY_DECISION_KINDS.has(v.kind)) {
+    throw new Error('decision.kind must be "retry" or "mark_failed"')
+  }
+  return { kind: v.kind } as RecoveryDecision
+}
+
+export function normalizeResumeQuery(input: unknown): ResumeRunQuery {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("payload must be an object")
+  }
+  const v = input as Record<string, unknown>
+  return {
+    runId: requireString(v.runId, "runId"),
+    decision: normalizeRecoveryDecision(v.decision),
+  }
+}
+
+/** Mirrors the plain-promise (no ok/error envelope) convention every other
+ *  AI/runs endpoint already uses (see src/renderer/src/lib/electron.ts) —
+ *  except resume, whose failure modes are meaningful, typed outcomes a
+ *  recovery UI needs to branch on (blocked vs. needs-a-decision vs.
+ *  conversation-conflict), not exceptional — so this is the one endpoint
+ *  that returns a discriminated result instead of throwing across IPC. */
+export type ResumeRunResult =
+  | { ok: true }
+  | { ok: false; reason: "blocked"; blockedReason: string }
+  | { ok: false; reason: "decision_required"; reviewReason: string }
+  | { ok: false; reason: "conversation_conflict_unresumable" }
+
+export interface RunsDurableDeps {
+  runStore: AgentRunStore
+  eventStore: RunEventStore
+  recovery: AgentRunRecoveryService
+  /** Fire-and-forget: actually drives the run's durable loop forward after a
+   *  successful resume — `recovery.resume()` itself only flips the status
+   *  field back to "running". Errors are the continuator's own
+   *  responsibility to log; the IPC response must never wait on a full turn
+   *  completing. Optional so callers that haven't wired origin-aware
+   *  continuation yet keep the pre-existing status-flip-only behavior. */
+  continueRun?: (runId: string) => void
+}
+
 export interface RegisterRunsIpcOptions {
   isTrustedSender: (event: IpcMainInvokeEvent) => boolean
 }
@@ -177,6 +267,7 @@ export interface RegisterRunsIpcOptions {
 export function registerRunsIpc(
   ipcMain: IpcMain,
   runsDir: string,
+  durable: RunsDurableDeps,
   options: RegisterRunsIpcOptions
 ): void {
   const guard = (event: IpcMainInvokeEvent): void => {
@@ -203,5 +294,64 @@ export function registerRunsIpc(
     guard(event)
     const trace = getRunTrace(runsDir, requireString(runId, "runId"))
     return trace ? normalizeRunTraceForRenderer(trace) : undefined
+  })
+
+  ipcMain.handle(
+    "runs:getSnapshot",
+    async (event, runId: unknown): Promise<AgentRunSnapshot | undefined> => {
+      guard(event)
+      const id = requireString(runId, "runId")
+      let result: Awaited<ReturnType<typeof durable.runStore.load>>
+      try {
+        result = await durable.runStore.load(id)
+      } catch (err) {
+        if (err instanceof RunNotFoundError) return undefined
+        throw err
+      }
+      if (!result.ok) return undefined
+      const events = await durable.eventStore.readAll(id)
+      const lastSequence = events.length > 0 ? events[events.length - 1]!.sequence : 0
+      return toAgentRunSnapshot(result.checkpoint, lastSequence)
+    }
+  )
+
+  ipcMain.handle(
+    "runs:getEventsSince",
+    async (event, payload: unknown): Promise<AgentRunEvent[]> => {
+      guard(event)
+      const query = normalizeEventsSinceQuery(payload)
+      return durable.eventStore.readAfter(query.runId, query.afterSequence)
+    }
+  )
+
+  ipcMain.handle("runs:listRecoverable", async (event): Promise<AgentRunSummary[]> => {
+    guard(event)
+    return durable.recovery.listRecoverable()
+  })
+
+  ipcMain.handle("runs:resume", async (event, payload: unknown): Promise<ResumeRunResult> => {
+    guard(event)
+    const query = normalizeResumeQuery(payload)
+    try {
+      await durable.recovery.resume(query.runId, query.decision)
+      durable.continueRun?.(query.runId)
+      return { ok: true }
+    } catch (err) {
+      if (err instanceof RecoveryBlockedError) {
+        return { ok: false, reason: "blocked", blockedReason: err.reason }
+      }
+      if (err instanceof RecoveryDecisionRequiredError) {
+        return { ok: false, reason: "decision_required", reviewReason: err.reason }
+      }
+      if (err instanceof ConversationConflictUnresumableError) {
+        return { ok: false, reason: "conversation_conflict_unresumable" }
+      }
+      throw err
+    }
+  })
+
+  ipcMain.handle("runs:abandon", async (event, runId: unknown): Promise<void> => {
+    guard(event)
+    await durable.recovery.abandon(requireString(runId, "runId"))
   })
 }

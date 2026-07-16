@@ -175,6 +175,11 @@ export interface RegisteredToolDescriptor {
   pluginId: string
   manifestTool: ManifestTool
   provenance: ToolProvenance
+  /** Immutable owner release identity. Plugin manifests and MCP initialize
+   * responses populate this; host tools derive the host version centrally. */
+  ownerVersion?: string
+  /** Strongest replay promise made by this adapter for this tool. */
+  replayGuarantee?: "none" | "dedupe-and-result-replay"
 }
 
 /** A registered tool plus a bound runner — the public shape AI callers consume. */

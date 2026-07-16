@@ -2,12 +2,17 @@ import type {
   ChatContentBlock,
   ChatMessage,
   ChatProvider,
+  ChatProviderDescriptor,
   ProviderRequest,
   ProviderStreamEvent,
   ProviderToolSchema,
+  RequestEstimateInput,
+  RequestUpperBoundEstimate,
   TokenUsage,
 } from "./types"
 import OpenAI from "openai"
+import { resolveModelCapabilityProfile } from "./model-capability-profile"
+import { byteUpperBoundEstimator } from "./request-estimator"
 
 // OpenAI adapter (P5b). Maps the provider-neutral IR to the Chat Completions
 // API, streams text deltas, and accumulates streamed tool calls into the IR's
@@ -70,11 +75,22 @@ export interface OpenAiProviderOptions {
 
 export class OpenAiProvider implements ChatProvider {
   readonly id: string
+  readonly descriptor: ChatProviderDescriptor
   private readonly client: OpenAiChatClient
 
   constructor(options: OpenAiProviderOptions) {
     this.id = options.id ?? "openai"
     this.client = options.client ?? defaultClient(options.apiKey, options.baseURL)
+    this.descriptor = {
+      providerId: this.id,
+      estimatorId: byteUpperBoundEstimator.id,
+      estimatorVersion: byteUpperBoundEstimator.version,
+    }
+  }
+
+  estimateRequestUpperBound(input: RequestEstimateInput): RequestUpperBoundEstimate | undefined {
+    const profile = resolveModelCapabilityProfile(this.id, input.model)
+    return byteUpperBoundEstimator.estimate(input, profile)
   }
 
   async *stream(req: ProviderRequest): AsyncIterable<ProviderStreamEvent> {

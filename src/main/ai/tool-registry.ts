@@ -1,9 +1,12 @@
 import type { ToolResult } from "@synapse/plugin-sdk"
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../plugins/types"
 import type { ProviderToolSchema } from "./providers/types"
+import type { InvocationRecoveryAdapter } from "./tools/invocation-recovery"
 import { createHash } from "node:crypto"
 import { logger } from "../logging"
 import { projectModelVisibleTool, warnOnce } from "./guardrails/tool-metadata"
+import { frozenProvenance } from "./runs/authority-snapshot"
+import { noneRecoveryAdapter } from "./tools/invocation-recovery"
 
 // Bridges the plugin tool surface to what a model can call. Plugin fqNames look
 // like `com.example.hello-world/greet`, which contain `.` and `/` and so fail
@@ -34,7 +37,15 @@ export class AiToolRegistry {
 
   /** Current tools as model-facing schemas. Rebuilds the reverse map. */
   list(): ProviderToolSchema[] {
-    return this.refresh().map(({ schema }) => schema)
+    return this.listWithDescriptors().map(({ schema }) => schema)
+  }
+
+  /** Same as {@link list}, paired with the descriptor each schema came from —
+   *  what run-authority freezing (see runs/authority-snapshot.ts) needs to
+   *  derive owner identity, required capabilities, and adapter metadata per
+   *  visible tool. */
+  listWithDescriptors(): { schema: ProviderToolSchema; descriptor: RegisteredToolDescriptor }[] {
+    return this.refresh()
   }
 
   /** The plugin descriptor behind a model-facing name (for approval/annotations). */
@@ -134,6 +145,16 @@ export function modelToolName(
   const source = descriptor.provenance === "mcp-client" ? "mcp" : "plugin"
   const digest = createHash("sha256").update(descriptor.fqName).digest("hex").slice(0, 20)
   return `external_${source}_${digest}`
+}
+
+/** The invocation-recovery adapter behind a tool descriptor. Every existing
+ *  host/plugin/MCP tool source declares "none" today — see
+ *  tools/invocation-recovery.ts for why an invocation id alone is never
+ *  sufficient to claim more. */
+export function invocationAdapterFor(
+  descriptor: Pick<RegisteredToolDescriptor, "provenance">
+): InvocationRecoveryAdapter {
+  return noneRecoveryAdapter(frozenProvenance(descriptor.provenance))
 }
 
 export function uniqueName(base: string, used: Set<string>): string {

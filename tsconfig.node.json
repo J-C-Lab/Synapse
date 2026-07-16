@@ -10,6 +10,7 @@
       "@synapse/plugin-sdk": ["./packages/plugin-sdk/src/index.ts"],
       "@synapse/plugin-manifest": ["./packages/plugin-manifest/src/index.ts"],
       "@synapse/marketplace-types": ["./packages/marketplace-types/src/index.ts"],
+      "@synapse/agent-protocol": ["./packages/agent-protocol/src/index.ts"],
       "@main/*": ["./src/main/*"],
       "@preload/*": ["./src/preload/*"]
     },
@@ -28,6 +29,7 @@
     "packages/plugin-sdk/src/**/*",
     "packages/plugin-manifest/src/**/*",
     "packages/marketplace-types/src/**/*",
+    "packages/agent-protocol/src/**/*",
     "electron.vite.config.ts"
   ],
   "exclude": ["packages/plugin-sdk/src/__examples__/**"]

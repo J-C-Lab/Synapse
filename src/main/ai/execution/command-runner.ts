@@ -8,6 +8,12 @@ import { sandboxCommandEnv } from "./command-env"
 const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_OUTPUT_CHARS = 32_000
 
+/** The honest reality this module implements: a real shell spawned as the
+ *  host user, with the host's full filesystem/network access — never a
+ *  sandbox. execution-backend.ts's local-policy descriptor is built from
+ *  this constant so the two can never silently drift apart. */
+export const COMMAND_RUNNER_ISOLATION = "none" as const
+
 export interface CommandRunInput {
   rootId: string
   command: string

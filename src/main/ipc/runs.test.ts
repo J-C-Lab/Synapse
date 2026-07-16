@@ -1,5 +1,19 @@
-import { describe, expect, it } from "vitest"
+import type { RecoveryDecision } from "../ai/runs/agent-run-recovery-service"
+import { promises as fs } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
+  ConversationConflictUnresumableError,
+  RecoveryBlockedError,
+  RecoveryDecisionRequiredError,
+} from "../ai/runs/agent-run-recovery-service"
+import { AgentRunStore } from "../ai/runs/agent-run-store"
+import { sealCheckpointIntegrity } from "../ai/runs/checkpoint-schema"
+import { RunEventStore } from "../ai/runs/run-event-store"
+import {
+  normalizeEventsSinceQuery,
+  normalizeResumeQuery,
   normalizeRunListQuery,
   normalizeRunTraceForRenderer,
   registerRunsIpc,
@@ -193,16 +207,303 @@ describe("registerRunsIpc", () => {
 
   it("rejects an untrusted sender on both channels", () => {
     const ipcMain = fakeIpcMain()
-    registerRunsIpc(ipcMain as never, "/tmp/does-not-matter", { isTrustedSender: () => false })
+    registerRunsIpc(ipcMain as never, "/tmp/does-not-matter", {} as never, {
+      isTrustedSender: () => false,
+    })
     expect(() => ipcMain.handlers.get("runs:list")?.({})).toThrow()
     expect(() => ipcMain.handlers.get("runs:get")?.({}, "r1")).toThrow()
   })
 
   it("runs:get with a path-traversal-shaped runId resolves undefined, not a thrown error", async () => {
     const ipcMain = fakeIpcMain()
-    registerRunsIpc(ipcMain as never, "/tmp/does-not-matter", { isTrustedSender: () => true })
+    registerRunsIpc(ipcMain as never, "/tmp/does-not-matter", {} as never, {
+      isTrustedSender: () => true,
+    })
     await expect(
       Promise.resolve(ipcMain.handlers.get("runs:get")?.({}, "../escape"))
     ).resolves.toBeUndefined()
+  })
+})
+
+describe("normalizeEventsSinceQuery", () => {
+  it("accepts a well-formed payload", () => {
+    expect(normalizeEventsSinceQuery({ runId: "r1", afterSequence: 3 })).toEqual({
+      runId: "r1",
+      afterSequence: 3,
+    })
+  })
+
+  it("rejects a negative or non-integer afterSequence", () => {
+    expect(() => normalizeEventsSinceQuery({ runId: "r1", afterSequence: -1 })).toThrow()
+    expect(() => normalizeEventsSinceQuery({ runId: "r1", afterSequence: 1.5 })).toThrow()
+  })
+})
+
+describe("normalizeResumeQuery", () => {
+  it("accepts a payload with no decision", () => {
+    expect(normalizeResumeQuery({ runId: "r1" })).toEqual({ runId: "r1", decision: undefined })
+  })
+
+  it("accepts a valid decision kind", () => {
+    expect(normalizeResumeQuery({ runId: "r1", decision: { kind: "retry" } })).toEqual({
+      runId: "r1",
+      decision: { kind: "retry" },
+    })
+  })
+
+  it("rejects an unrecognized decision kind", () => {
+    expect(() => normalizeResumeQuery({ runId: "r1", decision: { kind: "bogus" } })).toThrow()
+  })
+})
+
+describe("registerRunsIpc — durable endpoints", () => {
+  function fakeIpcMain() {
+    const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+    return {
+      handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => unknown) => {
+        handlers.set(channel, fn)
+      },
+      handlers,
+    }
+  }
+
+  let dir: string
+  let runStore: AgentRunStore
+  let eventStore: RunEventStore
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(join(tmpdir(), "synapse-runs-ipc-"))
+    runStore = new AgentRunStore(join(dir, "runs"))
+    eventStore = new RunEventStore(join(dir, "events"))
+  })
+
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  function minimalCheckpoint(runId: string) {
+    return sealCheckpointIntegrity({
+      schemaVersion: 1 as const,
+      revision: 0,
+      identity: { runId, rootRunId: runId, origin: "interactive" as const },
+      status: "running" as const,
+      recovery: { kind: "automatic" as const },
+      createdAt: 1,
+      updatedAt: 2,
+      config: {
+        schemaVersion: 1 as const,
+        providerId: "fake",
+        model: "fake-model",
+        resolvedProfile: {
+          profileId: "p1",
+          providerId: "fake",
+          modelPattern: "*",
+          contextWindowTokens: 100_000,
+          defaultMaxOutputTokens: 1024,
+          supportsPromptCaching: false,
+          supportsParallelToolCalls: false,
+          supportsReasoningStream: false,
+          tokenBudgeting: {
+            upperBoundEstimatorId: "byte-upper-bound",
+            upperBoundEstimatorVersion: "1",
+            providerFramingReserveTokens: 10,
+          },
+          contextPolicy: {
+            summarizeAtFraction: 0.75,
+            keepRecentFraction: 0.5,
+            hardReserveTokens: 100,
+          },
+        },
+        maxOutputTokens: 256,
+        maxSteps: 10,
+        contextCompression: {
+          enabled: false,
+          thresholdTokens: 0,
+          keepRecentFraction: 0.5,
+          hardReserveTokens: 0,
+        },
+        workspaceBinding: { bindingRevision: 0, rootIds: [], rootSetHash: "h" },
+        authority: {
+          schemaVersion: 1 as const,
+          principal: { kind: "interactive", actor: "user" as const },
+          capabilities: [],
+          tools: [],
+          integrityHash: "h",
+        },
+        context: {
+          schemaVersion: 1 as const,
+          baseSystemPrompt: { normalizedText: "hi", sha256: "h" },
+          workspaceInstructions: [],
+          aggregateHash: "h",
+        },
+      },
+      messages: [],
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      },
+      nextStep: 1,
+      modelSteps: [],
+      toolBatches: [],
+      activatedSkills: [],
+    })
+  }
+
+  function fakeRecovery(overrides: {
+    listRecoverable?: () => Promise<unknown[]>
+    resume?: (runId: string, decision?: RecoveryDecision) => Promise<void>
+    abandon?: (runId: string) => Promise<void>
+  }) {
+    return {
+      listRecoverable: overrides.listRecoverable ?? (async () => []),
+      resume: overrides.resume ?? (async () => {}),
+      abandon: overrides.abandon ?? (async () => {}),
+    }
+  }
+
+  function register(recovery: ReturnType<typeof fakeRecovery>) {
+    const ipcMain = fakeIpcMain()
+    registerRunsIpc(
+      ipcMain as never,
+      "/tmp/does-not-matter",
+      { runStore, eventStore, recovery: recovery as never },
+      { isTrustedSender: () => true }
+    )
+    return ipcMain
+  }
+
+  it("runs:getSnapshot projects a real checkpoint and the journal's last sequence", async () => {
+    await runStore.create(minimalCheckpoint("run-1"))
+    await eventStore.append("run-1", {
+      schemaVersion: 1,
+      eventId: "e1",
+      runId: "run-1",
+      rootRunId: "run-1",
+      sequence: 1,
+      timestamp: 1000,
+      persisted: true,
+      type: "run_started",
+      origin: "interactive",
+    })
+
+    const ipcMain = register(fakeRecovery({}))
+    const snapshot = await ipcMain.handlers.get("runs:getSnapshot")?.({}, "run-1")
+    expect(snapshot).toMatchObject({ status: "running", lastSequence: 1 })
+  })
+
+  it("runs:getSnapshot resolves undefined for a run that doesn't exist", async () => {
+    const ipcMain = register(fakeRecovery({}))
+    const snapshot = await ipcMain.handlers.get("runs:getSnapshot")?.({}, "missing")
+    expect(snapshot).toBeUndefined()
+  })
+
+  it("runs:getEventsSince returns only events after the given sequence", async () => {
+    await eventStore.append("run-1", {
+      schemaVersion: 1,
+      eventId: "e1",
+      runId: "run-1",
+      rootRunId: "run-1",
+      sequence: 1,
+      timestamp: 1000,
+      persisted: true,
+      type: "run_started",
+      origin: "interactive",
+    })
+    await eventStore.append("run-1", {
+      schemaVersion: 1,
+      eventId: "e2",
+      runId: "run-1",
+      rootRunId: "run-1",
+      sequence: 2,
+      timestamp: 1001,
+      persisted: true,
+      type: "run_completed",
+      outcome: "completed",
+    })
+
+    const ipcMain = register(fakeRecovery({}))
+    const events = await ipcMain.handlers.get("runs:getEventsSince")?.(
+      {},
+      { runId: "run-1", afterSequence: 1 }
+    )
+    expect((events as { type: string }[]).map((e) => e.type)).toEqual(["run_completed"])
+  })
+
+  it("runs:listRecoverable delegates to the recovery service", async () => {
+    const ipcMain = register(fakeRecovery({ listRecoverable: async () => [{ runId: "r1" }] }))
+    const result = await ipcMain.handlers.get("runs:listRecoverable")?.({})
+    expect(result).toEqual([{ runId: "r1" }])
+  })
+
+  it("runs:resume returns ok:true on success", async () => {
+    const ipcMain = register(fakeRecovery({}))
+    const result = await ipcMain.handlers.get("runs:resume")?.({}, { runId: "r1" })
+    expect(result).toEqual({ ok: true })
+  })
+
+  it("runs:resume maps RecoveryBlockedError to a typed blocked result", async () => {
+    const ipcMain = register(
+      fakeRecovery({
+        resume: async () => {
+          throw new RecoveryBlockedError("deadline-expired")
+        },
+      })
+    )
+    const result = await ipcMain.handlers.get("runs:resume")?.({}, { runId: "r1" })
+    expect(result).toEqual({ ok: false, reason: "blocked", blockedReason: "deadline-expired" })
+  })
+
+  it("runs:resume maps RecoveryDecisionRequiredError to a typed decision_required result", async () => {
+    const ipcMain = register(
+      fakeRecovery({
+        resume: async () => {
+          throw new RecoveryDecisionRequiredError("tool-removed-or-changed")
+        },
+      })
+    )
+    const result = await ipcMain.handlers.get("runs:resume")?.({}, { runId: "r1" })
+    expect(result).toEqual({
+      ok: false,
+      reason: "decision_required",
+      reviewReason: "tool-removed-or-changed",
+    })
+  })
+
+  it("runs:resume maps ConversationConflictUnresumableError to a typed result", async () => {
+    const ipcMain = register(
+      fakeRecovery({
+        resume: async () => {
+          throw new ConversationConflictUnresumableError("r1")
+        },
+      })
+    )
+    const result = await ipcMain.handlers.get("runs:resume")?.({}, { runId: "r1" })
+    expect(result).toEqual({ ok: false, reason: "conversation_conflict_unresumable" })
+  })
+
+  it("runs:resume rethrows an unrecognized error rather than swallowing it", async () => {
+    const ipcMain = register(
+      fakeRecovery({
+        resume: async () => {
+          throw new Error("boom")
+        },
+      })
+    )
+    await expect(ipcMain.handlers.get("runs:resume")?.({}, { runId: "r1" })).rejects.toThrow("boom")
+  })
+
+  it("runs:abandon delegates to the recovery service", async () => {
+    let calledWith: string | undefined
+    const ipcMain = register(
+      fakeRecovery({
+        abandon: async (runId) => {
+          calledWith = runId
+        },
+      })
+    )
+    await ipcMain.handlers.get("runs:abandon")?.({}, "r1")
+    expect(calledWith).toBe("r1")
   })
 })

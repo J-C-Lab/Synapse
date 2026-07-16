@@ -1,0 +1,721 @@
+import type { ToolCaller, ToolResult } from "@synapse/plugin-sdk"
+import type { RegisteredToolDescriptor } from "../../plugins/types"
+import type { AiToolRegistry } from "../tool-registry"
+import type { AgentRunStore } from "./agent-run-store"
+import type { CanonicalJson } from "./canonical-json"
+import type {
+  AgentRunCheckpointV1,
+  PersistedToolResult,
+  ToolBatchLedger,
+  ToolCallLedgerEntry,
+  ToolCallResolution,
+  ToolExecutionAttempt,
+} from "./checkpoint-schema"
+import type {
+  DurableApprovalPolicyInput,
+  DurableApprovalResolver,
+  RememberScope,
+} from "./durable-approval"
+import type { RunEventEmitter } from "./run-event-emitter"
+import { randomUUID } from "node:crypto"
+import { renderLabeledToolResult } from "../agent-runtime"
+import { invocationAdapterFor } from "../tool-registry"
+import { freezeToolAuthority, toolIdentityMatches } from "./authority-snapshot"
+import { canonicalHash } from "./canonical-json"
+import { decideDurableApproval } from "./durable-approval"
+import { isValidRunStatusTransition } from "./run-types"
+
+/** Resolves a call's frozen fqName against the LIVE registry and verifies
+ *  the live tool's identity (schema/annotations/owner/adapter) still
+ *  matches exactly what this run's authority froze at creation — never a
+ *  bare presence check. A tool that vanished, or whose safeName now
+ *  resolves to a different tool, or whose owning plugin updated in place,
+ *  is treated identically to "the tool disappeared" (undefined): the caller
+ *  already handles that as invalid-tool-call. This is what makes the
+ *  frozen catalog (checkpoint.config.authority.tools) actually load-bearing
+ *  at dispatch/approval/invoke time, not just a comparison artifact startup
+ *  recovery classification reads. */
+function resolveVerifiedDescriptor(
+  deps: Pick<ToolBatchDeps, "tools">,
+  checkpoint: AgentRunCheckpointV1,
+  call: ToolCallLedgerEntry
+): RegisteredToolDescriptor | undefined {
+  const frozen = checkpoint.config.authority.tools.find((t) => t.fqName === call.fqName)
+  if (!frozen) return undefined
+  const entry = deps.tools
+    .listWithDescriptors()
+    .find(({ descriptor }) => descriptor.fqName === call.fqName)
+  if (!entry) return undefined
+  const current = freezeToolAuthority({
+    descriptor: entry.descriptor,
+    safeName: frozen.safeName,
+    modelSchema: entry.schema,
+  })
+  if (!toolIdentityMatches(frozen, current)) return undefined
+  return entry.descriptor
+}
+
+// Ordered multi-tool execution ledger (design §"Ordered `ToolBatchLedger`
+// with per-ordinal approval/execution/result state and atomic result-carrier
+// materialization"). Calls from one assistant message are processed strictly
+// in order, one at a time — approval and execution for ordinal N+1 never
+// starts before ordinal N is terminal — so recovery only ever has to resume
+// exactly one in-flight call, never reconcile two concurrent ones.
+
+export type ToolBatchFaultPoint =
+  | "after_batch_created"
+  | "after_approval_pending"
+  | "after_approval_resolved"
+  | "after_attempt_started"
+  | "after_attempt_completed"
+  | "after_materialized"
+
+export interface ToolBatchDeps {
+  runStore: AgentRunStore
+  tools: AiToolRegistry
+  caller: ToolCaller
+  /** Hard policy resolver layered ahead of the annotation heuristic — see
+   *  durable-approval.ts. Omit to rely on the heuristic alone. */
+  resolver?: DurableApprovalResolver
+  requestApproval: (
+    approvalId: string,
+    input: DurableApprovalPolicyInput
+  ) => Promise<{ allowed: boolean; remember: RememberScope }>
+  now: () => number
+  newId?: () => string
+  /** Named crash-recovery test seams — never set in production. */
+  fault?: (point: ToolBatchFaultPoint) => void
+  maxToolResultChars?: number
+  /** Caller-supplied cancellation, forwarded into the tool invocation so a
+   *  live cancel can interrupt a running call — matches AgentRuntime's
+   *  existing runOneTool, which has always passed this through. */
+  signal?: AbortSignal
+  /** Fired once per call, in order, right after the whole batch's ledger is
+   *  durably created — purely observational (live UI projection), never
+   *  re-fired for a call the ledger already knew about on resume. */
+  onToolCall?: (call: { id: string; name: string; input: unknown }) => void
+  /** Fired once a call's resolution becomes durable, whatever the reason
+   *  (executed, denied, invalid, or a conforming adapter's replayed prior
+   *  result) — purely observational, fired after the persisting write. */
+  onToolResult?: (call: { id: string; isError: boolean }) => void
+  /** Emits tool_requested/approval_pending/approval_resolved/tool_started/
+   *  tool_completed to the durable event journal — purely observational
+   *  (renderer projection), never awaited for correctness. Omitted by
+   *  callers that don't need durable event history (most existing tests). */
+  eventEmitter?: RunEventEmitter
+}
+
+export type ToolBatchOutcome =
+  | { kind: "materialized"; checkpoint: AgentRunCheckpointV1 }
+  | { kind: "suspended_unknown_tool_outcome"; checkpoint: AgentRunCheckpointV1; ordinal: number }
+
+/** Advances (creating if necessary) the tool batch for `modelStep` until
+ *  every call is terminal and the ordered result carrier is materialized, or
+ *  until a call's execution outcome can't be recovered and the run must
+ *  suspend for an explicit human decision. */
+export async function advanceToolBatch(
+  deps: ToolBatchDeps,
+  runId: string,
+  modelStep: number
+): Promise<ToolBatchOutcome> {
+  let checkpoint = await loadOk(deps, runId)
+
+  if (!findBatch(checkpoint, modelStep)) {
+    checkpoint = await createBatch(deps, runId, checkpoint, modelStep)
+    deps.fault?.("after_batch_created")
+    for (const call of requireBatch(checkpoint, modelStep).calls) {
+      deps.onToolCall?.({ id: call.toolUseId, name: call.safeName, input: call.input })
+      await deps.eventEmitter?.emit({
+        type: "tool_requested",
+        modelStep,
+        ordinal: call.ordinal,
+        assistantMessageId: requireBatch(checkpoint, modelStep).assistantMessageId,
+        toolUseId: call.toolUseId,
+        safeName: call.safeName,
+        fqName: call.fqName,
+      })
+    }
+  }
+
+  const callCount = requireBatch(checkpoint, modelStep).calls.length
+  for (let ordinal = 0; ordinal < callCount; ordinal++) {
+    const call = requireBatch(checkpoint, modelStep).calls[ordinal]!
+    if (call.resolution.status === "resolved") continue
+
+    const outcome = await advanceCall(deps, runId, modelStep, ordinal)
+    if (outcome.kind === "suspended") {
+      return { kind: "suspended_unknown_tool_outcome", checkpoint: outcome.checkpoint, ordinal }
+    }
+    checkpoint = outcome.checkpoint
+  }
+
+  const batch = requireBatch(checkpoint, modelStep)
+  if (batch.materializedAtRevision === undefined) {
+    checkpoint = await materializeBatch(deps, runId, checkpoint, modelStep)
+    deps.fault?.("after_materialized")
+  }
+
+  return { kind: "materialized", checkpoint }
+}
+
+async function loadOk(deps: ToolBatchDeps, runId: string): Promise<AgentRunCheckpointV1> {
+  const result = await deps.runStore.load(runId)
+  if (!result.ok) throw new Error(`checkpoint for run ${runId} is ${result.reason}`)
+  return result.checkpoint
+}
+
+function findBatch(
+  checkpoint: AgentRunCheckpointV1,
+  modelStep: number
+): ToolBatchLedger | undefined {
+  return checkpoint.toolBatches.find((batch) => batch.modelStep === modelStep)
+}
+
+function requireBatch(checkpoint: AgentRunCheckpointV1, modelStep: number): ToolBatchLedger {
+  const batch = findBatch(checkpoint, modelStep)
+  if (!batch) throw new Error(`no tool batch for model step ${modelStep}`)
+  return batch
+}
+
+function newId(deps: ToolBatchDeps): string {
+  return deps.newId?.() ?? randomUUID()
+}
+
+async function mutateCheckpoint(
+  deps: ToolBatchDeps,
+  runId: string,
+  mutator: (checkpoint: AgentRunCheckpointV1) => AgentRunCheckpointV1
+): Promise<AgentRunCheckpointV1> {
+  const current = await loadOk(deps, runId)
+  return deps.runStore.mutate(runId, current.revision, mutator)
+}
+
+function updateCall(
+  checkpoint: AgentRunCheckpointV1,
+  modelStep: number,
+  ordinal: number,
+  update: (call: ToolCallLedgerEntry) => ToolCallLedgerEntry
+): AgentRunCheckpointV1 {
+  return {
+    ...checkpoint,
+    toolBatches: checkpoint.toolBatches.map((batch) =>
+      batch.modelStep !== modelStep
+        ? batch
+        : { ...batch, calls: batch.calls.map((call, i) => (i === ordinal ? update(call) : call)) }
+    ),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ledger creation
+
+async function createBatch(
+  deps: ToolBatchDeps,
+  runId: string,
+  checkpoint: AgentRunCheckpointV1,
+  modelStep: number
+): Promise<AgentRunCheckpointV1> {
+  const step = checkpoint.modelSteps.find((s) => s.step === modelStep)
+  if (!step?.acceptedAttemptId) {
+    throw new Error(`model step ${modelStep} has no accepted attempt to build a tool batch from`)
+  }
+  const attempt = step.attempts.find((a) => a.attemptId === step.acceptedAttemptId)
+  if (!attempt?.assistantMessageId) {
+    throw new Error(`model step ${modelStep}'s accepted attempt has no assistant message`)
+  }
+  const assistantMessage = checkpoint.messages.find(
+    (m) => m.messageId === attempt.assistantMessageId
+  )
+  if (!assistantMessage) {
+    throw new Error(`assistant message ${attempt.assistantMessageId} not found`)
+  }
+
+  const toolUseBlocks = assistantMessage.message.content.filter(
+    (block): block is { type: "tool_use"; id: string; name: string; input: unknown } =>
+      block.type === "tool_use"
+  )
+
+  const calls: ToolCallLedgerEntry[] = toolUseBlocks.map((block, ordinal) => {
+    const descriptor = deps.tools.describe(block.name)
+    const frozen = descriptor
+      ? checkpoint.config.authority.tools.find((tool) => tool.fqName === descriptor.fqName)
+      : checkpoint.config.authority.tools.find((tool) => tool.safeName === block.name)
+    const invalid = frozen === undefined
+    return {
+      ordinal,
+      toolUseId: block.id,
+      safeName: block.name,
+      fqName: frozen?.fqName ?? descriptor?.fqName ?? block.name,
+      input: block.input,
+      annotations: frozen?.annotations ?? descriptor?.manifestTool.annotations ?? {},
+      replayGuarantee:
+        frozen?.replayGuarantee ??
+        (descriptor ? invocationAdapterFor(descriptor).replayGuarantee : "none"),
+      approval: { status: "not_required" },
+      attempts: [],
+      // Never persist an unresolved authority-less call: it could otherwise
+      // be resumed into a newly installed tool. The only representation of a
+      // model hallucinating an out-of-catalog name is a terminal synthetic
+      // denial, with no approval or execution attempt.
+      resolution: invalid
+        ? {
+            status: "resolved" as const,
+            reason: "invalid-tool-call" as const,
+            result: {
+              isError: true,
+              preview: "This tool call could not be resolved to a known tool.",
+              complete: true,
+            },
+          }
+        : { status: "unresolved" as const },
+    }
+  })
+
+  const batch: ToolBatchLedger = {
+    modelStep,
+    assistantMessageId: assistantMessage.messageId,
+    calls,
+    resultCarrierMessageId: newId(deps),
+  }
+
+  return mutateCheckpoint(deps, runId, (cp) => ({
+    ...cp,
+    toolBatches: [...cp.toolBatches, batch],
+    updatedAt: deps.now(),
+  }))
+}
+
+// ---------------------------------------------------------------------------
+// Per-call advancement
+
+interface CallAdvanceResult {
+  kind: "resolved"
+  checkpoint: AgentRunCheckpointV1
+}
+interface CallSuspendResult {
+  kind: "suspended"
+  checkpoint: AgentRunCheckpointV1
+}
+
+async function advanceCall(
+  deps: ToolBatchDeps,
+  runId: string,
+  modelStep: number,
+  ordinal: number
+): Promise<CallAdvanceResult | CallSuspendResult> {
+  const checkpoint = await approvalPhase(deps, runId, modelStep, ordinal)
+  if (checkpoint === "resolved") {
+    return { kind: "resolved", checkpoint: await loadOk(deps, runId) }
+  }
+
+  return executionPhase(deps, runId, modelStep, ordinal, checkpoint)
+}
+
+/** Drives the approval decision to a terminal state (resolved-denied handled
+ *  inline; resolved-allowed or not-required returns the checkpoint for
+ *  execution to continue). Returns the literal `"resolved"` when the call
+ *  was fully resolved without ever needing execution (a denial). */
+async function approvalPhase(
+  deps: ToolBatchDeps,
+  runId: string,
+  modelStep: number,
+  ordinal: number
+): Promise<AgentRunCheckpointV1 | "resolved"> {
+  let checkpoint = await loadOk(deps, runId)
+  const call = requireBatch(checkpoint, modelStep).calls[ordinal]!
+  if (call.resolution.status === "resolved") return "resolved"
+
+  const policyInput = (c: ToolCallLedgerEntry): DurableApprovalPolicyInput => ({
+    fqName: c.fqName,
+    safeName: c.safeName,
+    input: c.input,
+    annotations: c.annotations,
+  })
+
+  if (call.approval.status === "not_required" && call.attempts.length === 0) {
+    const descriptor = resolveVerifiedDescriptor(deps, checkpoint, call)
+    if (!descriptor) {
+      await resolveWithoutExecution(deps, runId, modelStep, ordinal, "invalid-tool-call")
+      return "resolved"
+    }
+
+    const decision = await decideDurableApproval(policyInput(call), deps.resolver)
+    if (decision === "deny") {
+      await resolveWithoutExecution(deps, runId, modelStep, ordinal, "policy-denied")
+      return "resolved"
+    }
+    if (decision === "allow") {
+      // Already "not_required" — nothing to persist before execution.
+      return loadOk(deps, runId)
+    }
+
+    const approvalId = newId(deps)
+    checkpoint = await mutateCheckpoint(deps, runId, (cp) =>
+      updateCall(cp, modelStep, ordinal, (c) => ({
+        ...c,
+        approval: { status: "pending", approvalId, requestedAt: deps.now() },
+      }))
+    )
+    deps.fault?.("after_approval_pending")
+    await deps.eventEmitter?.emit({
+      type: "approval_pending",
+      approvalId,
+      modelStep,
+      ordinal,
+      toolUseId: call.toolUseId,
+      safeName: call.safeName,
+    })
+
+    const decided = await deps.requestApproval(approvalId, policyInput(call))
+    checkpoint = await mutateCheckpoint(deps, runId, (cp) =>
+      updateCall(cp, modelStep, ordinal, (c) => ({
+        ...c,
+        approval: {
+          status: "resolved",
+          approvalId,
+          allowed: decided.allowed,
+          remember: decided.remember,
+          resolvedAt: deps.now(),
+        },
+      }))
+    )
+    deps.fault?.("after_approval_resolved")
+    await deps.eventEmitter?.emit({
+      type: "approval_resolved",
+      approvalId,
+      allowed: decided.allowed,
+      remember: decided.remember,
+    })
+
+    if (!decided.allowed) {
+      await resolveWithoutExecution(deps, runId, modelStep, ordinal, "approval-denied")
+      return "resolved"
+    }
+    return loadOk(deps, runId)
+  }
+
+  if (call.approval.status === "pending") {
+    const approvalId = call.approval.approvalId
+    const decided = await deps.requestApproval(approvalId, policyInput(call))
+    checkpoint = await mutateCheckpoint(deps, runId, (cp) =>
+      updateCall(cp, modelStep, ordinal, (c) => ({
+        ...c,
+        approval: {
+          status: "resolved",
+          approvalId,
+          allowed: decided.allowed,
+          remember: decided.remember,
+          resolvedAt: deps.now(),
+        },
+      }))
+    )
+    deps.fault?.("after_approval_resolved")
+    await deps.eventEmitter?.emit({
+      type: "approval_resolved",
+      approvalId,
+      allowed: decided.allowed,
+      remember: decided.remember,
+    })
+
+    if (!decided.allowed) {
+      await resolveWithoutExecution(deps, runId, modelStep, ordinal, "approval-denied")
+      return "resolved"
+    }
+    return loadOk(deps, runId)
+  }
+
+  if (call.approval.status === "resolved" && !call.approval.allowed) {
+    await resolveWithoutExecution(deps, runId, modelStep, ordinal, "approval-denied")
+    return "resolved"
+  }
+
+  // approval already resolved+allowed, or not_required with an attempt
+  // already under way — nothing left to decide, proceed to execution.
+  return checkpoint
+}
+
+async function resolveWithoutExecution(
+  deps: ToolBatchDeps,
+  runId: string,
+  modelStep: number,
+  ordinal: number,
+  reason: "invalid-tool-call" | "policy-denied" | "approval-denied"
+): Promise<void> {
+  const result: PersistedToolResult = {
+    isError: true,
+    preview: syntheticDenialText(reason),
+    complete: true,
+  }
+  const resolution: ToolCallResolution = { status: "resolved", reason, result }
+  const checkpoint = await mutateCheckpoint(deps, runId, (cp) =>
+    updateCall(cp, modelStep, ordinal, (c) => ({ ...c, resolution }))
+  )
+  const call = requireBatch(checkpoint, modelStep).calls[ordinal]!
+  deps.onToolResult?.({ id: call.toolUseId, isError: true })
+}
+
+function syntheticDenialText(
+  reason: "invalid-tool-call" | "policy-denied" | "approval-denied"
+): string {
+  switch (reason) {
+    case "invalid-tool-call":
+      return "This tool call could not be resolved to a known tool."
+    case "policy-denied":
+      return "This tool call was denied by policy before execution."
+    case "approval-denied":
+      return "This tool call was denied approval by the user."
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Execution
+
+async function executionPhase(
+  deps: ToolBatchDeps,
+  runId: string,
+  modelStep: number,
+  ordinal: number,
+  checkpoint: AgentRunCheckpointV1
+): Promise<CallAdvanceResult | CallSuspendResult> {
+  let call = requireBatch(checkpoint, modelStep).calls[ordinal]!
+  const latest = call.attempts[call.attempts.length - 1]
+
+  if (latest && latest.state.status === "started") {
+    const recovered = await recoverInterruptedAttempt(
+      deps,
+      runId,
+      modelStep,
+      ordinal,
+      call,
+      latest,
+      checkpoint
+    )
+    if (recovered.kind === "suspended") return recovered
+    checkpoint = recovered.checkpoint
+    call = requireBatch(checkpoint, modelStep).calls[ordinal]!
+    if (call.resolution.status === "resolved") return { kind: "resolved", checkpoint }
+    // "not-found" recovery: fall through to start a brand-new attempt below.
+  }
+
+  const descriptor = resolveVerifiedDescriptor(deps, checkpoint, call)
+  if (!descriptor) {
+    await resolveWithoutExecution(deps, runId, modelStep, ordinal, "invalid-tool-call")
+    return { kind: "resolved", checkpoint: await loadOk(deps, runId) }
+  }
+
+  const attemptId = newId(deps)
+  const invocationId = newId(deps)
+  const invocationFingerprint = canonicalHash({
+    fqName: call.fqName,
+    input: (call.input ?? null) as CanonicalJson,
+  })
+  const newAttempt: ToolExecutionAttempt = {
+    attemptId,
+    invocationId,
+    invocationFingerprint,
+    state: { status: "started", startedAt: deps.now() },
+  }
+
+  checkpoint = await mutateCheckpoint(deps, runId, (cp) =>
+    updateCall(cp, modelStep, ordinal, (c) => ({ ...c, attempts: [...c.attempts, newAttempt] }))
+  )
+  deps.fault?.("after_attempt_started")
+  await deps.eventEmitter?.emit({
+    type: "tool_started",
+    ordinal,
+    toolUseId: call.toolUseId,
+    attemptId,
+  })
+
+  // "approved" only when this call was actually asked and the answer was
+  // allow; "not_required" (auto-allowed by the annotation heuristic or a
+  // resolver) is "allow" — matches the distinction execution-tool-host.ts's
+  // audit log makes between an auto-allowed call and a user-confirmed one.
+  const executionAuditDecision = call.approval.status === "resolved" ? "approved" : "allow"
+
+  let toolResult: ToolResult | undefined
+  let executionError: unknown
+  try {
+    toolResult = await deps.tools.invoke(call.safeName, call.input, {
+      caller: deps.caller,
+      executionAuditDecision,
+      signal: deps.signal,
+    })
+  } catch (err) {
+    executionError = err
+  }
+
+  const rendered = executionError
+    ? {
+        text: executionError instanceof Error ? executionError.message : String(executionError),
+        isError: true,
+      }
+    : renderLabeledToolResult(toolResult!, call.fqName, {
+        maxToolResultChars: deps.maxToolResultChars,
+      })
+
+  const persistedResult: PersistedToolResult = {
+    isError: rendered.isError,
+    preview: rendered.text,
+    complete: true,
+  }
+  const completedAt = deps.now()
+
+  checkpoint = await mutateCheckpoint(deps, runId, (cp) =>
+    updateCall(cp, modelStep, ordinal, (c) => ({
+      ...c,
+      attempts: c.attempts.map((a) =>
+        a.attemptId === attemptId
+          ? {
+              ...a,
+              state: {
+                status: "completed",
+                startedAt: a.state.startedAt,
+                completedAt,
+                result: persistedResult,
+              },
+            }
+          : a
+      ),
+      resolution: { status: "resolved", reason: "executed", result: persistedResult, attemptId },
+    }))
+  )
+  deps.fault?.("after_attempt_completed")
+  deps.onToolResult?.({ id: call.toolUseId, isError: persistedResult.isError })
+  await deps.eventEmitter?.emit({
+    type: "tool_completed",
+    ordinal,
+    toolUseId: call.toolUseId,
+    attemptId,
+    isError: persistedResult.isError,
+    complete: persistedResult.complete,
+  })
+
+  return { kind: "resolved", checkpoint }
+}
+
+async function recoverInterruptedAttempt(
+  deps: ToolBatchDeps,
+  runId: string,
+  modelStep: number,
+  ordinal: number,
+  call: ToolCallLedgerEntry,
+  latest: ToolExecutionAttempt,
+  runCheckpoint: AgentRunCheckpointV1
+): Promise<CallAdvanceResult | CallSuspendResult> {
+  const descriptor = resolveVerifiedDescriptor(deps, runCheckpoint, call)
+  const adapter = descriptor
+    ? invocationAdapterFor(descriptor)
+    : {
+        provenance: "host" as const,
+        replayGuarantee: "none" as const,
+        recoverInvocation: async () => ({ status: "unknown" as const }),
+      }
+
+  const recovery = await adapter.recoverInvocation(
+    latest.invocationId,
+    latest.invocationFingerprint
+  )
+
+  // Trust the frozen guarantee recorded on the call at ledger-creation time,
+  // not whatever the live adapter reports now — recovery decisions about a
+  // specific past invocation must be judged by the contract that was in
+  // force when it started, matching the frozen-authority-snapshot approach
+  // used elsewhere (see authority-snapshot.ts).
+  const conforms = call.replayGuarantee === "dedupe-and-result-replay"
+
+  if (recovery.status === "prior-result" && conforms) {
+    const result = recovery.result as PersistedToolResult
+    const completedAt = deps.now()
+    const checkpoint = await mutateCheckpoint(deps, runId, (cp) =>
+      updateCall(cp, modelStep, ordinal, (c) => ({
+        ...c,
+        attempts: c.attempts.map((a) =>
+          a.attemptId === latest.attemptId
+            ? {
+                ...a,
+                state: { status: "completed", startedAt: a.state.startedAt, completedAt, result },
+              }
+            : a
+        ),
+        resolution: { status: "resolved", reason: "executed", result, attemptId: latest.attemptId },
+      }))
+    )
+    deps.onToolResult?.({ id: call.toolUseId, isError: result.isError })
+    await deps.eventEmitter?.emit({
+      type: "tool_completed",
+      ordinal,
+      toolUseId: call.toolUseId,
+      attemptId: latest.attemptId,
+      isError: result.isError,
+      complete: result.complete,
+    })
+    return { kind: "resolved", checkpoint }
+  }
+
+  if (recovery.status === "not-found" && conforms) {
+    // Authoritatively never ran — safe to execute fresh with a new attempt.
+    // The interrupted attempt itself is left as "started"; a fresh attempt
+    // is appended and executed by the caller (executionPhase's fall-through).
+    return { kind: "resolved", checkpoint: await loadOk(deps, runId) }
+  }
+
+  const checkpoint = await mutateCheckpoint(deps, runId, (cp) => {
+    const withUnknownAttempt = updateCall(cp, modelStep, ordinal, (c) => ({
+      ...c,
+      attempts: c.attempts.map((a) =>
+        a.attemptId === latest.attemptId
+          ? {
+              ...a,
+              state: { status: "unknown", startedAt: a.state.startedAt, reason: "process-exit" },
+            }
+          : a
+      ),
+    }))
+    if (!isValidRunStatusTransition(cp.status, "suspended_unknown_tool_outcome"))
+      return withUnknownAttempt
+    return {
+      ...withUnknownAttempt,
+      status: "suspended_unknown_tool_outcome",
+      updatedAt: deps.now(),
+    }
+  })
+  return { kind: "suspended", checkpoint }
+}
+
+// ---------------------------------------------------------------------------
+// Materialization
+
+async function materializeBatch(
+  deps: ToolBatchDeps,
+  runId: string,
+  checkpoint: AgentRunCheckpointV1,
+  modelStep: number
+): Promise<AgentRunCheckpointV1> {
+  return mutateCheckpoint(deps, runId, (cp) => {
+    const batch = requireBatch(cp, modelStep)
+    const content = batch.calls.map((call) => {
+      if (call.resolution.status !== "resolved") {
+        throw new Error(`materializeBatch: call ${call.ordinal} is not resolved`)
+      }
+      return {
+        type: "tool_result" as const,
+        toolUseId: call.toolUseId,
+        content: call.resolution.result.preview,
+        isError: call.resolution.result.isError,
+      }
+    })
+
+    return {
+      ...cp,
+      toolBatches: cp.toolBatches.map((b) =>
+        b.modelStep === modelStep ? { ...b, materializedAtRevision: cp.revision + 1 } : b
+      ),
+      messages: [
+        ...cp.messages,
+        { messageId: batch.resultCarrierMessageId, message: { role: "user" as const, content } },
+      ],
+      updatedAt: deps.now(),
+    }
+  })
+}

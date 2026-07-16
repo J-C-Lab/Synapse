@@ -1,7 +1,12 @@
 import type { OpenAiChatClient, OpenAiStreamChunk } from "./openai-provider"
-import type { ProviderRequest, ProviderStreamEvent } from "./types"
+import type { ProviderRequest, ProviderStreamEvent, RequestEstimateInput } from "./types"
+import { Buffer } from "node:buffer"
 import { describe, expect, it, vi } from "vitest"
 import { buildCompletionParams, OpenAiProvider } from "./openai-provider"
+import {
+  BYTE_UPPER_BOUND_ESTIMATOR_ID,
+  BYTE_UPPER_BOUND_ESTIMATOR_VERSION,
+} from "./request-estimator"
 
 function fakeClient(chunks: OpenAiStreamChunk[]): {
   client: OpenAiChatClient
@@ -130,5 +135,137 @@ describe("openAiProvider", () => {
     }
 
     expect(phases).toEqual(["headers", "activity", "activity"])
+  })
+})
+
+function estimateInput(overrides: Partial<RequestEstimateInput> = {}): RequestEstimateInput {
+  return {
+    model: "gpt-4.1",
+    systemText: "be helpful",
+    messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    tools: [],
+    maxOutputTokens: 256,
+    ...overrides,
+  }
+}
+
+function plausibleActualTokens(input: RequestEstimateInput): number {
+  const bytes =
+    Buffer.byteLength(input.systemText, "utf8") +
+    input.messages.reduce(
+      (sum, m) =>
+        sum +
+        m.content.reduce((s, block) => {
+          if (block.type === "text") return s + Buffer.byteLength(block.text, "utf8")
+          if (block.type === "tool_result") return s + Buffer.byteLength(block.content, "utf8")
+          return s + Buffer.byteLength(JSON.stringify(block.input), "utf8")
+        }, 0),
+      0
+    ) +
+    input.tools.reduce((sum, t) => sum + Buffer.byteLength(JSON.stringify(t), "utf8"), 0)
+  return Math.ceil(bytes / 3.5)
+}
+
+describe("openAiProvider — descriptor and estimateRequestUpperBound", () => {
+  it("declares an immutable descriptor tagged with the instance's catalog id", () => {
+    const { client } = fakeClient([])
+    const provider = new OpenAiProvider({ client, id: "zhipu" })
+    expect(provider.descriptor).toEqual({
+      providerId: "zhipu",
+      estimatorId: BYTE_UPPER_BOUND_ESTIMATOR_ID,
+      estimatorVersion: BYTE_UPPER_BOUND_ESTIMATOR_VERSION,
+    })
+  })
+
+  it("computes an upper bound without creating any transport", () => {
+    const { client } = fakeClient([])
+    const provider = new OpenAiProvider({ client })
+    const estimate = provider.estimateRequestUpperBound(estimateInput())
+    expect(estimate?.estimatorId).toBe(BYTE_UPPER_BOUND_ESTIMATOR_ID)
+    expect(estimate?.maxOutputTokens).toBe(256)
+    expect(estimate?.inputUpperBoundTokens).toBeGreaterThan(0)
+  })
+
+  it("never exceeds the declared upper bound for Unicode, cache, multi-tool, and max-schema fixtures", async () => {
+    const maxSchemaProperties: Record<string, unknown> = {}
+    for (let i = 0; i < 40; i++) {
+      maxSchemaProperties[`field_${i}`] = { type: "string", description: "x".repeat(80) }
+    }
+
+    const fixtures: RequestEstimateInput[] = [
+      estimateInput({
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "你好世界🎉こんにちは안녕하세요".repeat(20) }],
+          },
+        ],
+      }),
+      estimateInput({
+        messages: [
+          { role: "user", content: [{ type: "text", text: "read the file" }] },
+          {
+            role: "assistant",
+            content: [{ type: "tool_use", id: "t1", name: "read_file", input: { path: "a.txt" } }],
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                toolUseId: "t1",
+                content: "line of file content\n".repeat(200),
+                isError: false,
+              },
+            ],
+          },
+        ],
+      }),
+      estimateInput({
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "tool_use", id: "t1", name: "search_files", input: { pattern: "*.ts" } },
+              { type: "tool_use", id: "t2", name: "list_files", input: { root: "src" } },
+              { type: "tool_use", id: "t3", name: "read_file", input: { path: "b.ts" } },
+            ],
+          },
+        ],
+      }),
+      estimateInput({
+        tools: [
+          {
+            name: "big_tool",
+            description: "y".repeat(2000),
+            inputSchema: { type: "object", properties: maxSchemaProperties },
+          },
+        ],
+      }),
+    ]
+
+    for (const fixture of fixtures) {
+      const { client: estimateClient } = fakeClient([])
+      const estimate = new OpenAiProvider({ client: estimateClient }).estimateRequestUpperBound(
+        fixture
+      )!
+      const actualInputTokens = plausibleActualTokens(fixture)
+
+      const { client } = fakeClient([
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+        { choices: [], usage: { prompt_tokens: actualInputTokens, completion_tokens: 50 } },
+      ])
+      const events = await collect(new OpenAiProvider({ client }), {
+        model: fixture.model,
+        system: fixture.systemText,
+        messages: fixture.messages,
+        tools: fixture.tools,
+        maxTokens: fixture.maxOutputTokens,
+      })
+      const final = events.at(-1)
+      if (final?.type !== "message") throw new Error("expected final message")
+
+      expect(final.usage.inputTokens).toBeLessThanOrEqual(estimate.inputUpperBoundTokens)
+    }
   })
 })

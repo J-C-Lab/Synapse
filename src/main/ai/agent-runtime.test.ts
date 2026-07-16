@@ -15,7 +15,12 @@ import * as os from "node:os"
 import * as path from "node:path"
 import process from "node:process"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { AgentRuntime, buildSystemPrompt } from "./agent-runtime"
+import {
+  AgentRuntime,
+  buildSystemPrompt,
+  envelopeTierForToolResult,
+  renderLabeledToolResult,
+} from "./agent-runtime"
 import { ProviderStreamDeadlineError } from "./provider-stream-deadlines"
 import { emptyUsage } from "./providers/types"
 import { buildBackgroundAgentRun, buildInteractiveRun, buildSubagentRun } from "./run-provenance"
@@ -114,6 +119,41 @@ async function tempWorkspace(): Promise<string> {
   tempDirs.push(root)
   return root
 }
+
+describe("renderLabeledToolResult", () => {
+  it("bounds, labels, and reports the error flag from a raw ToolResult", () => {
+    const rendered = renderLabeledToolResult(
+      { content: [{ type: "text", text: "file contents" }] },
+      "host:read_file"
+    )
+    expect(rendered.isError).toBe(false)
+    expect(rendered.text).toContain("<untrusted-")
+    expect(rendered.text).toContain("file contents")
+  })
+
+  it("uses the same envelope tier decision as envelopeTierForToolResult", () => {
+    const memoryResult = renderLabeledToolResult(
+      { content: [{ type: "text", text: "recalled note" }] },
+      "memory:core/search"
+    )
+    // "legacy" tier carries no reminder text; "strong" does.
+    expect(envelopeTierForToolResult("memory:core/search")).toBe("legacy")
+    expect(memoryResult.text).not.toContain("untrusted external data")
+
+    const execResult = renderLabeledToolResult(
+      { content: [{ type: "text", text: "stdout" }] },
+      "execution:core/run_command"
+    )
+    expect(envelopeTierForToolResult("execution:core/run_command")).toBe("strong")
+    expect(execResult.text).toContain("untrusted external data")
+  })
+
+  it("falls back to a placeholder for an empty result and propagates isError", () => {
+    const rendered = renderLabeledToolResult({ content: [], isError: true }, "host:t")
+    expect(rendered.isError).toBe(true)
+    expect(rendered.text).toContain("(no output)")
+  })
+})
 
 describe("buildSystemPrompt", () => {
   it("always appends the plugin-first routing guidance", () => {

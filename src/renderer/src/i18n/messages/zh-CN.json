@@ -756,7 +756,15 @@
     "detailPlan": "计划",
     "conversationGone": "该会话已不存在。",
     "parentUnavailable": "父级运行记录不可用，可能已超出保留窗口或未能成功写入。",
-    "noChildRuns": "没有子级运行。"
+    "noChildRuns": "没有子级运行。",
+    "recoverableTitle": "可恢复的运行",
+    "recoverableResume": "恢复",
+    "recoverableAbandon": "放弃",
+    "recoverableBlocked": "已阻止：{{reason}}",
+    "recoverableConflict": "会话冲突 — 该运行只能被放弃。",
+    "recoverableDecisionRequired": "需要决策：{{reason}}",
+    "recoverableRetry": "重试",
+    "recoverableMarkFailed": "标记为失败"
   },
   "launcher": {
     "placeholder": "搜索应用与命令…",

@@ -10,12 +10,28 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { RootBudgetLedgerStore } from "../ai/budget/root-budget-ledger"
 import { emptyUsage } from "../ai/providers/types"
+import { upsertRunTrace } from "../ai/run-trace-store"
+import { AgentRunStore } from "../ai/runs/agent-run-store"
 import { modelToolName } from "../ai/tool-registry"
 import { createHeadlessHotkeyAdapter } from "./headless-trigger-adapters"
 import { PluginHost } from "./plugin-host"
 
 let dir: string
+
+function runsSupport(baseDir: string): {
+  runStore: AgentRunStore
+  budgetStore: RootBudgetLedgerStore
+  upsertTrace: ConstructorParameters<typeof PluginHost>[0]["upsertTrace"]
+} {
+  const runsDir = path.join(baseDir, "ai-runs")
+  return {
+    runStore: new AgentRunStore(runsDir),
+    budgetStore: new RootBudgetLedgerStore(path.join(baseDir, "ai-budget")),
+    upsertTrace: (input) => upsertRunTrace(runsDir, input),
+  }
+}
 
 const GET_INBOX_SNAPSHOT_TOOL_NAME = modelToolName({
   fqName: "com.synapse.github-inbox/getInboxSnapshot",
@@ -52,6 +68,11 @@ describe("github inbox plugin", () => {
     }
     const seenTools: ProviderToolSchema[][] = []
     const provider = fakeDigestProvider(seenTools)
+    // recordRun fires only after the durable run's finalization (checkpoint
+    // completion, trace upsert, resource release) has fully settled — unlike
+    // the tool assertions below, waiting on this ensures the run's async fs
+    // writes are done before afterEach removes the temp dir.
+    const runRecorded = vi.fn()
     const host = new PluginHost({
       userDataDir: dir,
       resourcesDir: path.resolve("resources"),
@@ -59,6 +80,7 @@ describe("github inbox plugin", () => {
       fsWatchAdapter: noopFsWatchAdapter,
       hotkeyAdapter: createHeadlessHotkeyAdapter(),
       workspaceRoots: { listForWorkspace: async () => [] },
+      ...runsSupport(dir),
       adapters: {
         clipboard: { read: async () => undefined, write: async () => {} },
         notifications: { show: async () => {} },
@@ -74,6 +96,7 @@ describe("github inbox plugin", () => {
         prompt: async () => ({ allow: true }),
       },
       backgroundAgentProvider: async () => ({ provider, model: "fake-model" }),
+      recordRun: runRecorded,
     })
     const sandboxDispatch = vi.spyOn(host.sandbox, "dispatchTrigger")
 
@@ -94,12 +117,23 @@ describe("github inbox plugin", () => {
     await vi.waitFor(() => expect(seenTools.length).toBeGreaterThan(0))
     expect(seenTools[0].map((tool) => tool.name)).toContain(GET_INBOX_SNAPSHOT_TOOL_NAME)
     expect(seenTools[0].map((tool) => tool.name)).not.toContain(EXECUTE_GITHUB_ACTION_TOOL_NAME)
+
+    await vi.waitFor(() => expect(runRecorded).toHaveBeenCalledTimes(1))
   })
 })
 
 function fakeDigestProvider(seenTools: ProviderToolSchema[][]): ChatProvider {
   return {
     id: "fake",
+    // The manifest configures a finite maxTokensPerRun; durable admission
+    // fails closed for a finite-budget run whose provider can't guarantee
+    // an upper bound.
+    estimateRequestUpperBound: () => ({
+      estimatorId: "fake",
+      estimatorVersion: "1",
+      inputUpperBoundTokens: 0,
+      maxOutputTokens: 100,
+    }),
     async *stream(req): AsyncGenerator<any> {
       seenTools.push(req.tools)
       const content: ChatContentBlock[] = [

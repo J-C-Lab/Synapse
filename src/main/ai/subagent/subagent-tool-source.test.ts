@@ -164,21 +164,4 @@ describe("spawnSubagentToolSource", () => {
     const names = runSubagent.mock.calls[0]![0].tools.list().map((s) => s.name)
     expect(names).toEqual([READ_TOOL_NAME])
   })
-
-  it("passes the parent turn budget cap to the subagent runner", async () => {
-    const runSubagent = vi.fn<(input: SubagentRunInput) => Promise<SubagentRunResult>>(
-      async () => ({
-        summary: "ok",
-        childRunId: "c-1",
-        outcome: "end_turn",
-      })
-    )
-    const src = new SpawnSubagentToolSource({
-      runSubagent,
-      parentTools: parentRegistry,
-      budgetTokens: (runId) => (runId === "parent-1" ? 5000 : undefined),
-    })
-    await src.invokeTool(SPAWN_SUBAGENT_FQ, { instruction: "x" }, agentCaller())
-    expect(runSubagent.mock.calls[0]![0].budgetTokens).toBe(5000)
-  })
 })

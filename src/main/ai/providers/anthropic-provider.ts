@@ -2,12 +2,17 @@ import type {
   ChatContentBlock,
   ChatMessage,
   ChatProvider,
+  ChatProviderDescriptor,
   ProviderRequest,
   ProviderStreamEvent,
   ProviderToolSchema,
+  RequestEstimateInput,
+  RequestUpperBoundEstimate,
   TokenUsage,
 } from "./types"
 import Anthropic from "@anthropic-ai/sdk"
+import { resolveModelCapabilityProfile } from "./model-capability-profile"
+import { byteUpperBoundEstimator } from "./request-estimator"
 
 // Anthropic adapter. Default provider (decision: Claude-first). Translates the
 // neutral IR to the Messages API, streams text deltas, and applies prompt
@@ -42,11 +47,21 @@ export interface AnthropicProviderOptions {
 
 export class AnthropicProvider implements ChatProvider {
   readonly id = "anthropic"
+  readonly descriptor: ChatProviderDescriptor = {
+    providerId: "anthropic",
+    estimatorId: byteUpperBoundEstimator.id,
+    estimatorVersion: byteUpperBoundEstimator.version,
+  }
   private readonly client: AnthropicMessagesClient
 
   constructor(options: AnthropicProviderOptions) {
     this.client =
       options.client ?? new Anthropic({ apiKey: options.apiKey, baseURL: options.baseURL })
+  }
+
+  estimateRequestUpperBound(input: RequestEstimateInput): RequestUpperBoundEstimate | undefined {
+    const profile = resolveModelCapabilityProfile("anthropic", input.model)
+    return byteUpperBoundEstimator.estimate(input, profile)
   }
 
   async *stream(req: ProviderRequest): AsyncIterable<ProviderStreamEvent> {

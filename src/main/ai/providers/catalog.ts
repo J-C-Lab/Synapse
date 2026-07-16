@@ -70,3 +70,12 @@ export function defaultProviderCatalog(): ProviderDescriptor[] {
     },
   ]
 }
+
+/** Every {providerId, model} pair the catalog declares — the source of
+ *  truth model-capability-profile.ts checks baseline profile coverage
+ *  against, so the two lists can never silently drift apart. */
+export function catalogedModels(): Array<{ providerId: string; model: string }> {
+  return defaultProviderCatalog().flatMap((provider) =>
+    provider.models.map((model) => ({ providerId: provider.id, model }))
+  )
+}
