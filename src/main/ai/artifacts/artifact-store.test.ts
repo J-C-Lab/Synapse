@@ -5,7 +5,7 @@ import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import process from "node:process"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ArtifactQuotaStore } from "./artifact-quota"
 import { artifactsRoot, ArtifactStore, estimateManifestReserveBytes } from "./artifact-store"
 import { ArtifactReadError } from "./artifact-types"
@@ -456,6 +456,57 @@ describe("artifactStore.capture — producer abort and write failure", () => {
     expect(producer.aborts).toEqual(["write-error"])
     const read = await store.read(ref, { start: 0 }, caller())
     expect(Buffer.from(read).toString("utf-8")).toBe("partial-data-")
+  })
+
+  it("resolves with a checkpointed incomplete ref (never throws) when both fs.open and the zero-byte fallback fs.writeFile fail", async () => {
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+
+    function eaccesError(): NodeJS.ErrnoException {
+      const err = new Error("EACCES: permission denied") as NodeJS.ErrnoException
+      err.code = "EACCES"
+      return err
+    }
+
+    // EACCES/EROFS/ENOSPC/EMFILE realistically affect every call against the
+    // same path identically — mock both fs.open and fs.writeFile to reject
+    // whenever they target this artifact's data file, while leaving every
+    // other path (manifest.json, quota.json — both written via
+    // writeJsonFile's own distinct temp-file names) working normally.
+    const openSpy = vi.spyOn(fs, "open").mockRejectedValue(eaccesError())
+    const realWriteFile = fs.writeFile.bind(fs)
+    const writeFileSpy = vi
+      .spyOn(fs, "writeFile")
+      .mockImplementation(async (filePath: Parameters<typeof fs.writeFile>[0], ...rest) => {
+        const p = String(filePath)
+        if (p.endsWith("data.bin.tmp") || p.endsWith("data.bin")) {
+          throw eaccesError()
+        }
+        return realWriteFile(filePath, ...(rest as [never, never]))
+      })
+
+    try {
+      const producer = noopProducer()
+      const ref = await store.capture(bytesOf("hello"), metadata(), producer)
+      expect(ref.complete).toBe(false)
+      expect(ref.truncationReason).toBe("write-error")
+      expect(ref.capturedBytes).toBe(0)
+      expect(producer.aborts).toEqual(["write-error"])
+
+      // The quota reservation must have been settled (moved out of
+      // "pending"), not left dangling until the next reconciliation pass.
+      const ledgerRaw = JSON.parse(await fs.readFile(join(dir, "quota.json"), "utf-8")) as {
+        pendingReservations: Record<string, unknown>
+      }
+      expect(Object.keys(ledgerRaw.pendingReservations)).toHaveLength(0)
+
+      // stat() still works — the manifest itself was written successfully
+      // (only the data file writes were mocked to fail).
+      const statted = await store.stat(ref, caller())
+      expect(statted.complete).toBe(false)
+    } finally {
+      openSpy.mockRestore()
+      writeFileSpy.mockRestore()
+    }
   })
 })
 

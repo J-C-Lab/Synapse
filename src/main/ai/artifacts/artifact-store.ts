@@ -387,7 +387,10 @@ export class ArtifactStore implements AgentArtifactStore {
     } else {
       // open() itself failed — nothing was written, but a (possibly empty)
       // temp file must still exist for the rename below to produce a
-      // uniform on-disk artifact.
+      // uniform on-disk artifact. This fallback can itself fail for the
+      // same reason open() did (EACCES/EROFS/ENOSPC/EMFILE tend to affect
+      // every call against the same path identically) — swallowed here,
+      // handled by the rename guard below rather than left to throw.
       await fs.writeFile(tempPath, new Uint8Array(0)).catch(() => {})
     }
 
@@ -395,7 +398,20 @@ export class ArtifactStore implements AgentArtifactStore {
       await producer.abort(truncationReason!)
     }
 
-    await fs.rename(tempPath, finalPath)
+    // Never let this throw: if both open() and the zero-byte fallback above
+    // failed, tempPath was never created and rename() would reject with
+    // ENOENT — the exact bug this write-error path exists to avoid. Treat
+    // any rename failure as write-error (idempotent if already set) and
+    // fall back to writing an empty data file directly at its final
+    // location, so the capture still resolves with a checkpointed ref
+    // instead of throwing and leaving the reservation dangling.
+    try {
+      await fs.rename(tempPath, finalPath)
+    } catch {
+      complete = false
+      truncationReason = "write-error"
+      await fs.writeFile(finalPath, new Uint8Array(0)).catch(() => {})
+    }
 
     const ref: AgentArtifactRef = {
       uri: artifactUri(metadata.runId, artifactId),
