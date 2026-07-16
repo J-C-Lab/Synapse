@@ -253,4 +253,28 @@ describe("durable snapshot rehydration", () => {
       expect.objectContaining({ kind: "tool", id: "tool-1", status: "error" })
     )
   })
+
+  it("restores persisted in-flight assistant text even when the turn has no tool card", () => {
+    const restored = mergeDurableRunSnapshot([], {
+      ...snapshot,
+      status: "running",
+      messages: [
+        {
+          messageId: "assistant-1",
+          producedByRunId: "run-1",
+          role: "assistant",
+          ordinal: 1,
+          text: "Recovered answer before final commit.",
+        },
+      ],
+      toolCalls: [],
+    })
+    expect(restored).toEqual([
+      {
+        id: "durable-run:run-1:message:assistant-1",
+        role: "assistant",
+        blocks: [{ kind: "text", text: "Recovered answer before final commit." }],
+      },
+    ])
+  })
 })

@@ -246,11 +246,43 @@ describe("autoResumeRecoverableRuns", () => {
           checkpoint: { identity: { runId } } as never,
         }),
       },
-      continueRun: (checkpoint) => continued.push(checkpoint.identity.runId),
+      continueRun: (checkpoint) => {
+        continued.push(checkpoint.identity.runId)
+      },
     })
 
     expect(resumed).toEqual(["auto-1"])
     expect(continued).toEqual(["auto-1"])
+  })
+
+  it("waits for an awaitable continuation ownership barrier before returning", async () => {
+    let release!: () => void
+    const ownership = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let finished = false
+    const resumed = autoResumeRecoverableRuns({
+      recovery: {
+        listRecoverable: async () => [summary("auto-owned", "automatic")],
+        resume: async () => {},
+        abandon: async () => {},
+      },
+      runStore: {
+        load: async (runId: string) => ({
+          ok: true as const,
+          checkpoint: { identity: { runId } } as never,
+        }),
+      },
+      continueRun: async () => ownership,
+    }).then(() => {
+      finished = true
+    })
+
+    await Promise.resolve()
+    expect(finished).toBe(false)
+    release()
+    await resumed
+    expect(finished).toBe(true)
   })
 
   it("logs and skips a run whose resume() throws, without aborting the rest of the scan", async () => {
@@ -273,7 +305,9 @@ describe("autoResumeRecoverableRuns", () => {
           checkpoint: { identity: { runId } } as never,
         }),
       },
-      continueRun: (checkpoint) => continued.push(checkpoint.identity.runId),
+      continueRun: (checkpoint) => {
+        continued.push(checkpoint.identity.runId)
+      },
       onError: (runId, err) => errors.push({ runId, err }),
     })
 
@@ -304,7 +338,9 @@ describe("autoResumeRecoverableRuns", () => {
           checkpoint: { identity: { runId } } as never,
         }),
       },
-      continueRun: (checkpoint) => continued.push(checkpoint.identity.runId),
+      continueRun: (checkpoint) => {
+        continued.push(checkpoint.identity.runId)
+      },
     })
 
     expect(abandoned).toEqual(["finalizing-1"])

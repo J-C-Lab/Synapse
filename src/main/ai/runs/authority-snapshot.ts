@@ -61,6 +61,20 @@ export interface FrozenAuthoritySnapshotV1 {
   integrityHash: string
 }
 
+/** The integrity digest covers the authority payload, never the digest
+ * itself. Keeping this in one place prevents validation and creation from
+ * drifting into two subtly different encodings. */
+export function authorityIntegrityHash(
+  authority: Omit<FrozenAuthoritySnapshotV1, "integrityHash">
+): string {
+  return canonicalHash({
+    schemaVersion: authority.schemaVersion,
+    principal: authority.principal as unknown as CanonicalJson,
+    capabilities: authority.capabilities as unknown as CanonicalJson,
+    tools: authority.tools as unknown as CanonicalJson,
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Versioned scope comparators for declared-scope-vs-declared-scope
 // containment (recovery's "is the current grant narrower than the frozen
@@ -256,13 +270,8 @@ export function freezeAuthoritySnapshot(input: {
   const tools = input.tools
     .map((tool) => freezeToolAuthority(tool))
     .sort((a, b) => a.fqName.localeCompare(b.fqName))
-  const integrityHash = canonicalHash({
-    schemaVersion: 1,
-    principal: input.principal as unknown as CanonicalJson,
-    capabilities: capabilities as unknown as CanonicalJson,
-    tools: tools as unknown as CanonicalJson,
-  })
-  return { schemaVersion: 1, principal: input.principal, capabilities, tools, integrityHash }
+  const authority = { schemaVersion: 1 as const, principal: input.principal, capabilities, tools }
+  return { ...authority, integrityHash: authorityIntegrityHash(authority) }
 }
 
 /** Rebinds the capability side of an already-live tool snapshot while
@@ -277,11 +286,11 @@ export function withFrozenAuthorityCapabilities(
   return {
     ...authority,
     capabilities: nextCapabilities,
-    integrityHash: canonicalHash({
+    integrityHash: authorityIntegrityHash({
       schemaVersion: 1,
-      principal: authority.principal as unknown as CanonicalJson,
-      capabilities: nextCapabilities as unknown as CanonicalJson,
-      tools: authority.tools as unknown as CanonicalJson,
+      principal: authority.principal,
+      capabilities: nextCapabilities,
+      tools: authority.tools,
     }),
   }
 }

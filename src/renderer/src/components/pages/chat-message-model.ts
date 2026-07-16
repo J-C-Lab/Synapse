@@ -171,7 +171,8 @@ export function mergeDurableRunSnapshot(
   }))
 
   const missing = snapshot.toolCalls.filter((call) => !existingToolIds.has(call.toolUseId))
-  if (missing.length === 0) return withUpdatedStatuses
+  const terminal = ["completed", "cancelled", "failed"].includes(snapshot.status)
+  if (missing.length === 0 && terminal) return withUpdatedStatuses
 
   const byStep = new Map<number, AgentRunSnapshot["toolCalls"]>()
   for (const call of missing) {
@@ -181,18 +182,44 @@ export function mergeDurableRunSnapshot(
   }
 
   const next = withUpdatedStatuses.slice()
+  const existingMessageIds = new Set(next.map((message) => message.id))
+  const assistantTextById = new Map(
+    snapshot.messages
+      .filter((message) => message.role === "assistant" && message.text)
+      .map((message) => [message.messageId, message.text!] as const)
+  )
   for (const [step, calls] of [...byStep.entries()].sort(([a], [b]) => a - b)) {
+    const text = assistantTextById.get(calls[0]?.assistantMessageId ?? "")
     next.push({
       id: `durable-run:${snapshot.identity.runId}:step:${step}`,
       role: "assistant",
-      blocks: calls.map((call) => ({
-        kind: "tool",
-        id: call.toolUseId,
-        name: call.safeName,
-        input: {},
-        status: toolCardStatus(call),
-      })),
+      blocks: [
+        ...(text ? [{ kind: "text" as const, text }] : []),
+        ...calls.map((call) => ({
+          kind: "tool" as const,
+          id: call.toolUseId,
+          name: call.safeName,
+          input: {},
+          status: toolCardStatus(call),
+        })),
+      ],
     })
+  }
+  const assistantMessageIdsWithTools = new Set(
+    snapshot.toolCalls.map((call) => call.assistantMessageId).filter(Boolean)
+  )
+  for (const message of snapshot.messages) {
+    const id = `durable-run:${snapshot.identity.runId}:message:${message.messageId}`
+    if (
+      message.role !== "assistant" ||
+      message.producedByRunId !== snapshot.identity.runId ||
+      !message.text ||
+      assistantMessageIdsWithTools.has(message.messageId) ||
+      existingMessageIds.has(id)
+    ) {
+      continue
+    }
+    next.push({ id, role: "assistant", blocks: [{ kind: "text", text: message.text }] })
   }
   return next
 }

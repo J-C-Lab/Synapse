@@ -33,8 +33,34 @@ export interface FrozenContextSnapshotV1 {
   aggregateHash: string
 }
 
-function sha256(text: string): string {
+export function contextSha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex")
+}
+
+/** Validates the complete frozen context payload using the same byte-level
+ * hashes recorded at setup. */
+export function contextSnapshotIntegrityMatches(snapshot: FrozenContextSnapshotV1): boolean {
+  if (
+    snapshot.baseSystemPrompt.sha256 !== contextSha256(snapshot.baseSystemPrompt.normalizedText)
+  ) {
+    return false
+  }
+  if (
+    snapshot.workspaceInstructions.some(
+      (instruction) => instruction.sha256 !== contextSha256(instruction.normalizedText)
+    )
+  ) {
+    return false
+  }
+  return (
+    snapshot.aggregateHash ===
+    contextSha256(
+      [
+        snapshot.baseSystemPrompt.sha256,
+        ...snapshot.workspaceInstructions.map((instruction) => instruction.sha256),
+      ].join("|")
+    )
+  )
 }
 
 export interface BuildContextSnapshotOptions {
@@ -50,7 +76,7 @@ export async function buildContextSnapshot(
 ): Promise<FrozenContextSnapshotV1> {
   const baseSystemPrompt = {
     normalizedText: options.baseSystemText,
-    sha256: sha256(options.baseSystemText),
+    sha256: contextSha256(options.baseSystemText),
   }
 
   // Matches AgentRuntime's existing rule: only primary-role workspaces
@@ -70,7 +96,7 @@ export async function buildContextSnapshot(
         sourceKind: "workspace-instruction" as const,
         trust: "untrusted-workspace-instruction" as const,
         normalizedText,
-        sha256: sha256(normalizedText),
+        sha256: contextSha256(normalizedText),
       }
     }
   )
@@ -88,7 +114,7 @@ export async function buildContextSnapshot(
     )
   }
 
-  const aggregateHash = sha256(
+  const aggregateHash = contextSha256(
     [baseSystemPrompt.sha256, ...workspaceInstructions.map((entry) => entry.sha256)].join("|")
   )
 

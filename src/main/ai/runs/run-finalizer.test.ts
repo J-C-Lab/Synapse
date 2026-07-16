@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ConversationStore } from "../conversation-store"
 import { getRunTrace, upsertRunTrace } from "../run-trace-store"
 import { AgentRunStore } from "./agent-run-store"
+import { sealCheckpointIntegrity } from "./checkpoint-schema"
 import { finalizeRun } from "./run-finalizer"
 
 function fakeEmitter(): RunEventEmitter & { events: AgentRunEvent[] } {
@@ -42,7 +43,7 @@ function baseCheckpoint(
   runId: string,
   overrides: Partial<AgentRunCheckpointV1> = {}
 ): AgentRunCheckpointV1 {
-  return {
+  return sealCheckpointIntegrity({
     schemaVersion: 1,
     revision: 0,
     identity: { runId, rootRunId: runId, origin: "interactive" },
@@ -112,7 +113,7 @@ function baseCheckpoint(
     toolBatches: [],
     activatedSkills: [],
     ...overrides,
-  }
+  })
 }
 
 function trace(runId: string, overrides: Partial<RunTrace> = {}): RunTrace {

@@ -22,14 +22,13 @@ export interface RunSnapshotReducerState {
   snapshot: AgentRunSnapshot
   seenEventIds: ReadonlySet<string>
   /** approvalId → tool-use identity, recorded on approval_pending so the
-   *  later approval_resolved event can update the right batch even though
-   *  ordinals restart at zero for every model step. */
+   *  later approval_resolved event updates the exact call. */
   pendingApprovalToolUseIds: Readonly<Record<string, string>>
 }
 
 export function initRunSnapshotReducerState(snapshot: AgentRunSnapshot): RunSnapshotReducerState {
   // The snapshot carries no approvalId directly on a tool call —
-  // pendingApprovalIds is the only place it's carried — so pair them up
+  // pendingApprovalIds is the only place approval ids are carried — so pair them up
   // positionally by relative order among pending calls. Both arrays are
   // derived from the same checkpoint scan order (run-projection.ts), so this
   // pairing is exact. Without it, an approval that was already pending
@@ -105,6 +104,7 @@ function foldEvent(
             {
               ordinal: event.ordinal,
               modelStep: event.modelStep,
+              assistantMessageId: event.assistantMessageId,
               toolUseId: event.toolUseId,
               safeName: event.safeName,
               fqName: event.fqName,
@@ -119,7 +119,7 @@ function foldEvent(
       return {
         snapshot: {
           ...snapshot,
-          toolCalls: updateLatestToolCallByOrdinal(snapshot.toolCalls, event.ordinal, (call) => ({
+          toolCalls: updateToolCallByToolUseId(snapshot.toolCalls, event.toolUseId, (call) => ({
             ...call,
             status: "pending_approval",
           })),
@@ -129,7 +129,7 @@ function foldEvent(
         },
         pendingApprovalToolUseIds: {
           ...pendingApprovalToolUseIds,
-          [event.approvalId]: latestToolUseIdForOrdinal(snapshot.toolCalls, event.ordinal) ?? "",
+          [event.approvalId]: event.toolUseId,
         },
       }
 
@@ -237,25 +237,6 @@ function foldEvent(
     case "run_failed":
       return { snapshot, pendingApprovalToolUseIds }
   }
-}
-
-function updateLatestToolCallByOrdinal(
-  toolCalls: AgentRunSnapshot["toolCalls"],
-  ordinal: number,
-  update: (call: AgentRunSnapshot["toolCalls"][number]) => AgentRunSnapshot["toolCalls"][number]
-): AgentRunSnapshot["toolCalls"] {
-  const index = toolCalls.map((call) => call.ordinal).lastIndexOf(ordinal)
-  if (index === -1) return toolCalls
-  const next = [...toolCalls]
-  next[index] = update(next[index]!)
-  return next
-}
-
-function latestToolUseIdForOrdinal(
-  toolCalls: AgentRunSnapshot["toolCalls"],
-  ordinal: number
-): string | undefined {
-  return [...toolCalls].reverse().find((call) => call.ordinal === ordinal)?.toolUseId
 }
 
 function updateToolCallByToolUseId(

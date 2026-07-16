@@ -262,6 +262,26 @@ describe("agentService — durable event emission", () => {
 })
 
 describe("agentService", () => {
+  it("refuses a finite-budget turn before setup when its estimator profile is quarantined", async () => {
+    const assertAllowed = vi.fn(async () => {
+      throw new Error("estimator quarantined")
+    })
+    const svc = new AgentService({
+      credentials: credentials("sk-test"),
+      tools: new AiToolRegistry(fakeHost()),
+      conversations: conversations().store,
+      settings: {
+        get: async () => ({ activeProvider: "anthropic", models: {}, budgetTokens: 100 }),
+      } as AiSettingsStore,
+      estimatorQuarantine: { assertAllowed } as never,
+      sendEvent: () => {},
+      ...runStores(),
+    })
+
+    await expect(svc.chat("c-quarantined", "go")).rejects.toThrow("estimator quarantined")
+    expect(assertAllowed).toHaveBeenCalledOnce()
+  })
+
   it("auto-runs a read-only tool and streams events without asking", async () => {
     const host = fakeHost({ readOnlyHint: true })
     const {
@@ -1188,6 +1208,9 @@ describe("agentService", () => {
         })
 
         const continued = svc2.continueRun(runId)
+        // Startup must be able to wait for lease fencing without waiting for
+        // this approval-bound turn to finish.
+        await svc2.continueRunThroughOwnership(runId)
         await flush(events2)
         const request2 = events2.find((event) => event.type === "approval_request")
         if (request2?.type !== "approval_request") {

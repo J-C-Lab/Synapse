@@ -142,6 +142,7 @@ export interface ToolRequestedEvent extends AgentRunEventBase {
   type: "tool_requested"
   modelStep: number
   ordinal: number
+  assistantMessageId: string
   toolUseId: string
   safeName: string
   fqName: string
@@ -150,7 +151,9 @@ export interface ToolRequestedEvent extends AgentRunEventBase {
 export interface ApprovalPendingEvent extends AgentRunEventBase {
   type: "approval_pending"
   approvalId: string
+  modelStep: number
   ordinal: number
+  toolUseId: string
   safeName: string
 }
 
@@ -349,6 +352,7 @@ export function isAgentRunEvent(value: unknown): value is AgentRunEvent {
       return (
         isNonNegativeInteger(value.modelStep) &&
         isNonNegativeInteger(value.ordinal) &&
+        isString(value.assistantMessageId) &&
         isString(value.toolUseId) &&
         isString(value.safeName) &&
         isString(value.fqName)
@@ -356,7 +360,9 @@ export function isAgentRunEvent(value: unknown): value is AgentRunEvent {
     case "approval_pending":
       return (
         isString(value.approvalId) &&
+        isNonNegativeInteger(value.modelStep) &&
         isNonNegativeInteger(value.ordinal) &&
+        isString(value.toolUseId) &&
         isString(value.safeName)
       )
     case "approval_resolved":

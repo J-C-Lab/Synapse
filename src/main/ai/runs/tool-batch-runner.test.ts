@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AiToolRegistry } from "../tool-registry"
 import { AgentRunStore } from "./agent-run-store"
 import { freezeToolAuthority } from "./authority-snapshot"
+import { sealCheckpointIntegrity } from "./checkpoint-schema"
 import { advanceToolBatch } from "./tool-batch-runner"
 
 function fakeEmitter(): RunEventEmitter & { events: AgentRunEvent[] } {
@@ -76,7 +77,7 @@ function checkpointWithAssistantToolCalls(
   calls: Array<{ id: string; name: string; input: unknown }>,
   registry: AiToolRegistry
 ): AgentRunCheckpointV1 {
-  return {
+  return sealCheckpointIntegrity({
     schemaVersion: 1,
     revision: 0,
     identity: { runId, rootRunId: runId, origin: "interactive" },
@@ -181,7 +182,7 @@ function checkpointWithAssistantToolCalls(
     ],
     toolBatches: [],
     activatedSkills: [],
-  }
+  })
 }
 
 function toolHost(handlers: Record<string, (input: unknown) => Promise<unknown> | unknown>) {

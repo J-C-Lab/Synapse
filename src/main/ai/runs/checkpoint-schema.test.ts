@@ -1,9 +1,9 @@
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
 import { describe, expect, it } from "vitest"
-import { validateCheckpoint } from "./checkpoint-schema"
+import { sealCheckpointIntegrity, validateCheckpoint } from "./checkpoint-schema"
 
 function minimalCheckpoint(): AgentRunCheckpointV1 {
-  return {
+  return sealCheckpointIntegrity({
     schemaVersion: 1,
     revision: 1,
     identity: {
@@ -73,7 +73,7 @@ function minimalCheckpoint(): AgentRunCheckpointV1 {
     modelSteps: [],
     toolBatches: [],
     activatedSkills: [],
-  }
+  })
 }
 
 describe("validateCheckpoint", () => {
@@ -107,6 +107,73 @@ describe("validateCheckpoint", () => {
   it("rejects a checkpoint with a wrong-typed required field as malformed", () => {
     const bad = { ...minimalCheckpoint(), revision: "1" }
     expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("rejects authority or frozen context whose digest no longer matches its payload", () => {
+    const checkpoint = minimalCheckpoint()
+    expect(
+      validateCheckpoint({
+        ...checkpoint,
+        config: {
+          ...checkpoint.config,
+          authority: { ...checkpoint.config.authority, integrityHash: "0".repeat(64) },
+        },
+      })
+    ).toEqual({ ok: false, reason: "malformed" })
+    expect(
+      validateCheckpoint({
+        ...checkpoint,
+        config: {
+          ...checkpoint.config,
+          context: {
+            ...checkpoint.config.context,
+            baseSystemPrompt: {
+              ...checkpoint.config.context.baseSystemPrompt,
+              normalizedText: "tampered after setup",
+            },
+          },
+        },
+      })
+    ).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("rejects dangling ledger references and a finalization ledger inconsistent with status", () => {
+    const checkpoint = minimalCheckpoint()
+    expect(
+      validateCheckpoint({
+        ...checkpoint,
+        modelSteps: [{ step: 0, acceptedAttemptId: "missing", attempts: [] }],
+      })
+    ).toEqual({ ok: false, reason: "malformed" })
+    expect(
+      validateCheckpoint({
+        ...checkpoint,
+        status: "completed",
+        finalization: {
+          finalizationId: "f1",
+          desiredStatus: "failed",
+          phase: "complete",
+          outcome: "error",
+          stopReason: "error",
+          endedAt: 1,
+          trace: {
+            runId: "different-run",
+            origin: "interactive",
+            startedAt: 1,
+            endedAt: 1,
+            outcome: "error",
+            toolCalls: [],
+          },
+          traceHash: "h",
+          resourceReleasePlan: {
+            budgetOperationIds: [],
+            skillPackageLeaseIds: [],
+            releaseArtifactRunPin: false,
+            adoptionLeaseIds: [],
+          },
+        },
+      })
+    ).toEqual({ ok: false, reason: "malformed" })
   })
 
   it("rejects an unrecognized status value as malformed", () => {
@@ -316,6 +383,7 @@ describe("validateCheckpoint", () => {
   it("accepts a well-formed finalization ledger", () => {
     const good = {
       ...minimalCheckpoint(),
+      status: "completed",
       finalization: {
         finalizationId: "f1",
         desiredStatus: "completed",

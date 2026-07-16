@@ -129,6 +129,7 @@ export async function advanceToolBatch(
         type: "tool_requested",
         modelStep,
         ordinal: call.ordinal,
+        assistantMessageId: requireBatch(checkpoint, modelStep).assistantMessageId,
         toolUseId: call.toolUseId,
         safeName: call.safeName,
         fqName: call.fqName,
@@ -339,7 +340,9 @@ async function approvalPhase(
     await deps.eventEmitter?.emit({
       type: "approval_pending",
       approvalId,
+      modelStep,
       ordinal,
+      toolUseId: call.toolUseId,
       safeName: call.safeName,
     })
 

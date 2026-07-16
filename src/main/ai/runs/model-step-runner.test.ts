@@ -15,11 +15,8 @@ import {
   RootBudgetLedgerStore,
 } from "../budget/root-budget-ledger"
 import { AgentRunStore } from "./agent-run-store"
-import {
-  advanceModelStep,
-  InsufficientEstimateError,
-  ToolCatalogDriftError,
-} from "./model-step-runner"
+import { sealCheckpointIntegrity } from "./checkpoint-schema"
+import { advanceModelStep, InsufficientEstimateError } from "./model-step-runner"
 
 let dir: string
 let runStore: AgentRunStore
@@ -36,7 +33,7 @@ afterEach(async () => {
 })
 
 function minimalCheckpoint(runId: string, runBudgetTokens?: number): AgentRunCheckpointV1 {
-  return {
+  return sealCheckpointIntegrity({
     schemaVersion: 1,
     revision: 0,
     identity: { runId, rootRunId: runId, origin: "interactive" },
@@ -105,7 +102,7 @@ function minimalCheckpoint(runId: string, runBudgetTokens?: number): AgentRunChe
     modelSteps: [],
     toolBatches: [],
     activatedSkills: [],
-  }
+  })
 }
 
 function fakeProvider(usage: { inputTokens: number; outputTokens: number }): ChatProvider & {
@@ -259,7 +256,7 @@ describe("advanceModelStep — workspace-instruction context injection", () => {
       ],
       aggregateHash: "h3",
     }
-    await runStore.create(checkpoint)
+    await runStore.create(sealCheckpointIntegrity(checkpoint))
     await budgetStore.create(createRootBudgetLedger(runId, 10_000))
 
     const provider = fakeProvider({ inputTokens: 5, outputTokens: 5 })
@@ -372,15 +369,14 @@ describe("advanceModelStep — admission failure closes before dispatch", () => 
 })
 
 describe("advanceModelStep — frozen tool catalog enforcement at dispatch (P1-5)", () => {
-  it("throws ToolCatalogDriftError rather than dispatching when the live tool catalog changed between prepare and dispatch", async () => {
+  it("never exposes a tool added to the live catalog after the run was frozen", async () => {
     const runId = "run-drift"
     await seedRun(runId, 10_000)
     const provider = fakeProvider({ inputTokens: 20, outputTokens: 10 })
 
-    // prepareAttempt sees no tools (hashed into attempt.requestHash);
-    // callProviderAndStage's independent deps.tools() call sees a tool that
-    // wasn't there a moment ago — the exact "prepared 时的 requestHash 使用
-    // 一次 live tools，真正 dispatch 又重新读取 live tools" gap.
+    // The run froze an empty authority. The second live catalog read adds a
+    // tool, but the central frozen-catalog guard must remove it before both
+    // hashing and dispatching.
     let callCount = 0
     const deps: ModelStepDeps = {
       ...baseDeps(provider),
@@ -392,17 +388,9 @@ describe("advanceModelStep — frozen tool catalog enforcement at dispatch (P1-5
       },
     }
 
-    await expect(advanceModelStep(deps, runId)).rejects.toThrow(ToolCatalogDriftError)
-    expect(provider.calls).toHaveLength(0)
-
-    const checkpoint = await runStore.load(runId)
-    // markDispatched already durably recorded "dispatched" before the drift
-    // check runs — the SAME state a genuine interrupted dispatch leaves, so
-    // a retry correctly routes through the existing forfeit/re-prepare
-    // recovery path rather than needing a new one.
-    expect(checkpoint.ok && checkpoint.checkpoint.modelSteps[0]?.attempts[0]?.state).toBe(
-      "dispatched"
-    )
+    await expect(advanceModelStep(deps, runId)).resolves.toMatchObject({ kind: "settled" })
+    expect(provider.calls).toHaveLength(1)
+    expect(provider.calls[0]!.tools).toEqual([])
   })
 
   it("dispatches normally when the tool catalog is unchanged between prepare and dispatch", async () => {

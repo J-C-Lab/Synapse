@@ -6,6 +6,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { createRootBudgetLedger, RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import { AgentRunStore } from "./agent-run-store"
+import { sealCheckpointIntegrity } from "./checkpoint-schema"
 import { advanceDurableRun } from "./durable-agent-driver"
 
 let dir: string
@@ -23,7 +24,7 @@ afterEach(async () => {
 })
 
 function minimalCheckpoint(runId: string, maxSteps = 10): AgentRunCheckpointV1 {
-  return {
+  return sealCheckpointIntegrity({
     schemaVersion: 1,
     revision: 0,
     identity: { runId, rootRunId: runId, origin: "interactive" },
@@ -92,7 +93,7 @@ function minimalCheckpoint(runId: string, maxSteps = 10): AgentRunCheckpointV1 {
     modelSteps: [],
     toolBatches: [],
     activatedSkills: [],
-  }
+  })
 }
 
 function fakeProvider(reply: ProviderStreamEvent & { type: "message" }): ChatProvider & {

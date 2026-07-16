@@ -194,7 +194,7 @@ async function prepareAttempt(
   step: number
 ): Promise<AgentRunCheckpointV1> {
   const { system, messages } = outgoingRequestContext(checkpoint)
-  const tools = deps.tools()
+  const tools = frozenModelTools(checkpoint, deps.tools())
   const maxOutputTokens = checkpoint.config.maxOutputTokens
 
   const accountId = budgetAccountIdFor(checkpoint)
@@ -303,7 +303,7 @@ async function callProviderAndStage(
   await deps.fault?.("before_provider_call")
 
   const { system, messages } = outgoingRequestContext(checkpoint)
-  const tools = deps.tools()
+  const tools = frozenModelTools(checkpoint, deps.tools())
   // The frozen catalog is only actually load-bearing at dispatch time if
   // it's enforced here, not just recorded — see ToolCatalogDriftError's
   // docstring. Compares against what prepareAttempt hashed, never a second
@@ -512,4 +512,21 @@ function requestHashFor(
     tools: tools as unknown as CanonicalJson,
     maxOutputTokens,
   })
+}
+
+/** A caller may supply a live catalog, but a durable model step must never
+ * expose a tool that was not part of its frozen authority. AgentService and
+ * origin-aware recovery additionally validate descriptor ownership/version;
+ * this central guard makes the schema side fail closed for every caller,
+ * including future ones that only have provider schemas available. */
+function frozenModelTools(
+  checkpoint: AgentRunCheckpointV1,
+  liveTools: ProviderToolSchema[]
+): ProviderToolSchema[] {
+  const frozenBySafeName = new Map(
+    checkpoint.config.authority.tools.map((tool) => [tool.safeName, tool.modelSchemaHash])
+  )
+  return liveTools.filter(
+    (tool) => frozenBySafeName.get(tool.name) === canonicalHash(tool as unknown as CanonicalJson)
+  )
 }

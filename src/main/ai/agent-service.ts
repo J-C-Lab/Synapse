@@ -9,6 +9,7 @@ import type {
   StoredConversation,
 } from "./conversation-store"
 import type { AiCredentialStore } from "./credential-store"
+import type { EstimatorQuarantineStore } from "./estimator-quarantine-store"
 import type { WorkspaceRootRecord } from "./execution/types"
 import type { McpClientManager, McpServerStatus } from "./mcp-client-manager"
 import type { McpServerConfig, McpServerConfigStore } from "./mcp-server-config-store"
@@ -31,6 +32,7 @@ import { logger } from "../logging"
 import { DEFAULT_TOOL_RESILIENCE } from "./ai-settings-store"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./providers/catalog"
+import { resolveModelCapabilityProfile } from "./providers/model-capability-profile"
 import { freezeToolAuthority, toolIdentityMatches } from "./runs/authority-snapshot"
 import { runInteractiveTurn } from "./runs/interactive-run-driver"
 import { setupInteractiveRun } from "./runs/interactive-run-setup"
@@ -136,6 +138,8 @@ export interface AgentServiceOptions {
   getToolHealth?: () => ToolStatSnapshot[]
   /** Applied when tool-resilience settings change so the live host can retune. */
   onToolResilienceChange?: (settings: ToolResilienceSettings) => void
+  /** Persistent circuit breaker for profiles whose estimator under-reserved. */
+  estimatorQuarantine?: EstimatorQuarantineStore
 }
 
 export class AgentMissingKeyError extends Error {
@@ -192,7 +196,13 @@ export class AgentService {
    * driver may enter provider/tool execution for a run id. */
   private readonly continuingRuns = new Map<
     string,
-    Promise<{ stopReason: string; usage: TokenUsage }>
+    {
+      completion: Promise<{ stopReason: string; usage: TokenUsage }>
+      /** Resolves only after this continuation has fenced its conversation
+       * lease (or established it has no lease). Startup uses this rather
+       * than mistaking a fire-and-forget dispatch for recovery ownership. */
+      ownership: Promise<void>
+    }
   >()
   private permanentAllowLoaded = false
   private startupReconciliation: Promise<void> | undefined
@@ -504,6 +514,11 @@ export class AgentService {
     const settings = this.options.settings ? await this.options.settings.get() : undefined
     const budgetTokens = settings?.budgetTokens ?? 0
     const resolvedBudget = budgetTokens > 0 ? budgetTokens : undefined
+    if (resolvedBudget !== undefined) {
+      await this.options.estimatorQuarantine?.assertAllowed(
+        resolveModelCapabilityProfile(providerId, model)
+      )
+    }
     const cfg = settings?.contextCompression
 
     const existing = await this.options.conversations.get(conversationId)
@@ -580,19 +595,39 @@ export class AgentService {
    *  block the caller. */
   continueRun(runId: string): Promise<{ stopReason: string; usage: TokenUsage }> {
     const existing = this.continuingRuns.get(runId)
-    if (existing) return existing
-    const run = this.continueRunOwned(runId)
-    this.continuingRuns.set(runId, run)
-    void run
+    if (existing) return existing.completion
+    let establishOwnership!: () => void
+    let rejectOwnership!: (error: unknown) => void
+    const ownership = new Promise<void>((resolve, reject) => {
+      establishOwnership = resolve
+      rejectOwnership = reject
+    })
+    // Most direct callers await completion rather than the ownership signal;
+    // retain a handled rejection branch for a setup failure before a startup
+    // caller gets a chance to join it.
+    void ownership.catch(() => {})
+    const completion = this.continueRunOwned(runId, establishOwnership)
+    const entry = { completion, ownership }
+    this.continuingRuns.set(runId, entry)
+    void completion
       .finally(() => {
-        if (this.continuingRuns.get(runId) === run) this.continuingRuns.delete(runId)
+        rejectOwnership(new Error(`continuation ${runId} ended before establishing ownership`))
+        if (this.continuingRuns.get(runId) === entry) this.continuingRuns.delete(runId)
       })
       .catch(() => {})
-    return run
+    return completion
+  }
+
+  /** Starts (or joins) a continuation and waits only for its durable
+   * ownership barrier, never for the provider/tool turn to finish. */
+  async continueRunThroughOwnership(runId: string): Promise<void> {
+    this.continueRun(runId)
+    await this.continuingRuns.get(runId)!.ownership
   }
 
   private async continueRunOwned(
-    runId: string
+    runId: string,
+    onOwnershipEstablished: () => void
   ): Promise<{ stopReason: string; usage: TokenUsage }> {
     const result = await this.options.runStore.load(runId)
     if (!result.ok) {
@@ -613,7 +648,14 @@ export class AgentService {
     if (!apiKey) throw new AgentMissingKeyError()
 
     try {
-      return await this.driveRun({ runId, conversationId, checkpoint, providerId, apiKey })
+      return await this.driveRun({
+        runId,
+        conversationId,
+        checkpoint,
+        providerId,
+        apiKey,
+        onOwnershipEstablished,
+      })
     } catch (err) {
       this.options.sendEvent({
         type: "error",
@@ -636,6 +678,7 @@ export class AgentService {
     providerId: string
     apiKey: string
     emitRunStarted?: { workspaceId: string }
+    onOwnershipEstablished?: () => void
   }): Promise<{ stopReason: string; usage: TokenUsage }> {
     const { runId, conversationId, checkpoint, providerId, apiKey } = params
     this.registerRun(runId, conversationId)
@@ -664,6 +707,15 @@ export class AgentService {
       )
       const lease = checkpoint.conversationCommit
       if (lease) {
+        // Recovery must fence itself before the very first provider/tool
+        // operation. Waiting for the periodic heartbeat leaves a window in
+        // which a fresh chat can acquire an expired lease after startup.
+        await this.options.conversations.renewRunLease(
+          conversationId,
+          runId,
+          lease.leaseFencingToken
+        )
+        params.onOwnershipEstablished?.()
         // The store lease lasts 30 seconds. Renew well inside that window;
         // a stale fencing token means another owner won, so immediately stop
         // this driver before it can issue another provider/tool operation.
@@ -679,6 +731,8 @@ export class AgentService {
             })
         }, 10_000)
         stopLeaseHeartbeat = () => clearInterval(timer)
+      } else {
+        params.onOwnershipEstablished?.()
       }
       if (params.emitRunStarted) {
         await eventEmitter.emit({
@@ -738,6 +792,14 @@ export class AgentService {
             releaseArtifactRunPin: false,
             adoptionLeaseIds: [],
           }),
+          quarantineEstimatorProfile: async (failedCheckpoint) => {
+            // An unlimited run can observe an incompatibility too, but only
+            // finite admissions rely on the bound. Persisting it here still
+            // blocks every later finite run of this exact estimator version.
+            await this.options.estimatorQuarantine?.quarantine(
+              failedCheckpoint.config.resolvedProfile
+            )
+          },
         },
         runId
       )

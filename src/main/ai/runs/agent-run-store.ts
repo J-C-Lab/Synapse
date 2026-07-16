@@ -1,9 +1,11 @@
 import type { AgentRunStatus } from "@synapse/agent-protocol"
+import type { CanonicalJson } from "./canonical-json"
 import type { AgentRunCheckpointV1, CheckpointValidationResult } from "./checkpoint-schema"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import { isTerminalRunStatus } from "@synapse/agent-protocol"
 import { writeJsonFile } from "../../lan/atomic-json-store"
+import { canonicalHash } from "./canonical-json"
 import { validateCheckpoint } from "./checkpoint-schema"
 import { RUN_STATUS_TRANSITIONS } from "./run-types"
 
@@ -63,6 +65,16 @@ export class IllegalStatusTransitionError extends Error {
   }
 }
 
+/** Identity and frozen configuration are creation-time commitments. A
+ * revision mutator may advance ledgers and status, but can never retarget a
+ * run or smuggle broader authority/context into an existing checkpoint. */
+export class ImmutableCheckpointFieldError extends Error {
+  constructor(runId: string, field: "identity" | "config") {
+    super(`run ${runId}: immutable checkpoint ${field} was modified`)
+    this.name = "ImmutableCheckpointFieldError"
+  }
+}
+
 export interface RunScanEntry {
   runId: string
   result: CheckpointValidationResult
@@ -95,8 +107,14 @@ export class AgentRunStore {
       }
       await fs.mkdir(dir, { recursive: true })
       const initial: AgentRunCheckpointV1 = { ...checkpoint, revision: 1 }
+      const validated = validateCheckpoint(initial)
+      if (!validated.ok) {
+        throw new CheckpointCorruptionError(
+          `new checkpoint for run ${runId} is ${validated.reason}`
+        )
+      }
       await writeJsonFile(this.checkpointPath(runId), initial)
-      return initial
+      return validated.checkpoint
     })
   }
 
@@ -104,7 +122,11 @@ export class AgentRunStore {
     const raw = await readCheckpointRaw(this.checkpointPath(runId))
     if (raw.kind === "missing") throw new RunNotFoundError(runId)
     if (raw.kind === "corrupt") return { ok: false, reason: "malformed" }
-    return validateCheckpoint(raw.value)
+    const validated = validateCheckpoint(raw.value)
+    if (validated.ok && validated.checkpoint.identity.runId !== runId) {
+      return { ok: false, reason: "malformed" }
+    }
+    return validated
   }
 
   async mutate(
@@ -126,6 +148,18 @@ export class AgentRunStore {
         throw new StaleRevisionError(expectedRevision, validated.checkpoint.revision)
       }
       const mutated = mutator(validated.checkpoint)
+      if (
+        canonicalHash(mutated.identity as unknown as CanonicalJson) !==
+        canonicalHash(validated.checkpoint.identity as unknown as CanonicalJson)
+      ) {
+        throw new ImmutableCheckpointFieldError(runId, "identity")
+      }
+      if (
+        canonicalHash(mutated.config as unknown as CanonicalJson) !==
+        canonicalHash(validated.checkpoint.config as unknown as CanonicalJson)
+      ) {
+        throw new ImmutableCheckpointFieldError(runId, "config")
+      }
       // The base transition table only — never the extra ctx-gated
       // preconditions (hasRecoveryDecision, childOwnershipResolved,
       // finalizationPhase), which mutate() has no way to know and which
@@ -174,7 +208,9 @@ export class AgentRunStore {
       const result: CheckpointValidationResult =
         raw.kind === "corrupt" ? { ok: false, reason: "malformed" } : validateCheckpoint(raw.value)
 
-      if (result.ok) {
+      const identityMatchesDirectory = result.ok && result.checkpoint.identity.runId === runId
+
+      if (result.ok && identityMatchesDirectory) {
         if (filter.status && !filter.status.includes(result.checkpoint.status)) continue
         if (filter.nonTerminalOnly && isTerminalRunStatus(result.checkpoint.status)) continue
         if (
@@ -184,7 +220,10 @@ export class AgentRunStore {
           continue
         }
       }
-      out.push({ runId, result })
+      out.push({
+        runId,
+        result: identityMatchesDirectory ? result : { ok: false, reason: "malformed" },
+      })
     }
     return out
   }

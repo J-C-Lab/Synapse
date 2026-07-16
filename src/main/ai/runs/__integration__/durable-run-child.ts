@@ -26,6 +26,7 @@ import { createRootBudgetLedger, RootBudgetLedgerStore } from "../../budget/root
 import { AiToolRegistry } from "../../tool-registry"
 import { AgentRunStore } from "../agent-run-store"
 import { freezeToolAuthority } from "../authority-snapshot"
+import { sealCheckpointIntegrity } from "../checkpoint-schema"
 import { runInteractiveTurn } from "../interactive-run-driver"
 import { finalizeRun } from "../run-finalizer"
 import { SIMULATED_CRASH_EXIT_CODE } from "./fault-points"
@@ -46,7 +47,7 @@ export interface ChildConfig {
 }
 
 function minimalCheckpoint(runId: string, tools: AiToolRegistry): AgentRunCheckpointV1 {
-  return {
+  return sealCheckpointIntegrity({
     schemaVersion: 1,
     revision: 0,
     identity: { runId, rootRunId: runId, origin: "interactive" },
@@ -123,7 +124,7 @@ function minimalCheckpoint(runId: string, tools: AiToolRegistry): AgentRunCheckp
     modelSteps: [],
     toolBatches: [],
     activatedSkills: [],
-  }
+  })
 }
 
 function toolDescriptor(

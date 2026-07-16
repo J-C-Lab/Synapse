@@ -25,31 +25,17 @@ import { finalizeRun } from "./run-finalizer"
 // registry and a freshly looked-up credential, matching a normal chat()
 // turn in every way except skipping setup.
 //
-// Background-agent/subagent continuation (continueBackgroundOrSubagentRun
-// below) is honest but INTENTIONALLY DEGRADED: BackgroundAgentRunner and
-// SubagentRunner are both fire-and-forget, constructed fresh per trigger
-// fire / per spawn_subagent call, with no persistent registry mapping a
-// runId back to the exact trigger/parent context that created it (the
-// checkpoint's own identity doesn't even retain a pluginId). Reconstructing
-// the ORIGINAL scoped tool host and ledger-based per-call throttle is out of
-// scope here — it depends on the authority-reconstruction work tracked
-// separately (P1-6). What this function CAN do safely: narrow the live
-// global tool registry down to exactly the fqNames the checkpoint's own
-// frozen authority already recorded (never wider than what the run was
-// originally given) and rebuild a plain credential-based provider from the
-// checkpoint's own frozen providerId. That's strictly better than the
-// previous behavior (resume() flips the status and nothing ever drives the
-// run again), even though it drops the original trigger's ephemeral
-// per-call tool-count cap (the durable, safety-relevant token budget is
-// still fully enforced regardless, via the root budget ledger).
+// Background/subagent continuation reconstructs the frozen caller contract:
+// tool exposure is the live registry intersected with full frozen tool
+// identity, and background runs restore the persisted per-run tool cap and
+// timeout. The root ledger remains the shared token-budget authority.
 
 export interface RunRecoveryOrchestratorDeps {
   recovery: Pick<AgentRunRecoveryService, "listRecoverable" | "resume" | "abandon">
-  /** Dispatches to the right origin-specific continuation and drives it to
-   *  completion. Errors are this callback's own responsibility to log —
-   *  never awaited by the orchestrator beyond kicking it off, so one slow or
-   *  failing run can never block classification of the rest. */
-  continueRun: (checkpoint: AgentRunCheckpointV1) => void
+  /** Dispatches to the right origin-specific continuation. A callback may
+   * await only its ownership barrier (not its provider/tool turn), allowing
+   * startup to fence interactive conversation leases before chat is enabled. */
+  continueRun: (checkpoint: AgentRunCheckpointV1) => void | Promise<void>
   runStore: Pick<AgentRunStore, "load">
   onError?: (runId: string, err: unknown) => void
 }
@@ -59,8 +45,8 @@ export interface RunRecoveryOrchestratorDeps {
  *  decision through the existing recovery panel), resumes its durable status
  *  and fires its continuation. Safe to call at startup: resume() itself is
  *  cheap (a single CAS mutation, no provider calls), so this function
- *  returns quickly even though the continuations it kicks off may still be
- *  running in the background. */
+ *  returns after any supplied ownership barriers; provider/tool turns remain
+ *  asynchronous. */
 export async function autoResumeRecoverableRuns(deps: RunRecoveryOrchestratorDeps): Promise<void> {
   const summaries = await deps.recovery.listRecoverable()
   for (const summary of summaries) {
@@ -94,7 +80,10 @@ export async function autoResumeRecoverableRuns(deps: RunRecoveryOrchestratorDep
       continue
     }
     if (!result.ok) continue
-    deps.continueRun(result.checkpoint)
+    // Interactive callers can use this awaitable boundary to fence their
+    // conversation lease before startup reconciliation releases chat();
+    // background continuations still deliberately detach after dispatch.
+    await deps.continueRun(result.checkpoint)
   }
 }
 
@@ -119,8 +108,7 @@ export interface GenericRunContinuationDeps {
 }
 
 /** Re-drives an interrupted background-agent or subagent checkpoint to
- *  completion. See the module header for exactly what's degraded relative to
- *  the original live run. Never throws for a normal terminal outcome
+ * completion using the same persisted policy. Never throws for a normal terminal outcome
  *  (finalized or suspended) — only for genuine setup failures (missing
  *  credential, corrupt checkpoint), which the caller logs. */
 export async function continueBackgroundOrSubagentRun(

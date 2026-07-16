@@ -9,6 +9,7 @@ import {
   RecoveryDecisionRequiredError,
 } from "../ai/runs/agent-run-recovery-service"
 import { AgentRunStore } from "../ai/runs/agent-run-store"
+import { sealCheckpointIntegrity } from "../ai/runs/checkpoint-schema"
 import { RunEventStore } from "../ai/runs/run-event-store"
 import {
   normalizeEventsSinceQuery,
@@ -281,7 +282,7 @@ describe("registerRunsIpc — durable endpoints", () => {
   })
 
   function minimalCheckpoint(runId: string) {
-    return {
+    return sealCheckpointIntegrity({
       schemaVersion: 1 as const,
       revision: 0,
       identity: { runId, rootRunId: runId, origin: "interactive" as const },
@@ -347,7 +348,7 @@ describe("registerRunsIpc — durable endpoints", () => {
       modelSteps: [],
       toolBatches: [],
       activatedSkills: [],
-    }
+    })
   }
 
   function fakeRecovery(overrides: {

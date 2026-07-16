@@ -66,11 +66,23 @@ function pendingApprovalIds(checkpoint: AgentRunCheckpointV1): string[] {
 }
 
 function messageSummaries(checkpoint: AgentRunCheckpointV1): AgentRunMessageSummary[] {
-  return checkpoint.messages.map((entry, ordinal) => ({
-    messageId: entry.messageId,
-    role: entry.message.role,
-    ordinal,
-  }))
+  return checkpoint.messages.map((entry, ordinal) => {
+    const text =
+      entry.message.role === "assistant"
+        ? entry.message.content
+            .filter((block): block is { type: "text"; text: string } => block.type === "text")
+            .map((block) => block.text)
+            .join("")
+            .slice(0, 16_000)
+        : ""
+    return {
+      messageId: entry.messageId,
+      ...(entry.producedByRunId ? { producedByRunId: entry.producedByRunId } : {}),
+      role: entry.message.role,
+      ordinal,
+      ...(text ? { text } : {}),
+    }
+  })
 }
 
 function toolCallSummaries(checkpoint: AgentRunCheckpointV1): AgentRunToolCallSummary[] {
@@ -80,6 +92,7 @@ function toolCallSummaries(checkpoint: AgentRunCheckpointV1): AgentRunToolCallSu
       summaries.push({
         ordinal: call.ordinal,
         modelStep: batch.modelStep,
+        assistantMessageId: batch.assistantMessageId,
         toolUseId: call.toolUseId,
         safeName: call.safeName,
         fqName: call.fqName,

@@ -12,6 +12,8 @@ import type { RunTrace } from "../run-trace-store"
 import type { FrozenAuthoritySnapshotV1 } from "./authority-snapshot"
 import type { FrozenContextSnapshotV1 } from "./context-snapshot"
 import type { DurableChatMessage } from "./durable-messages"
+import { authorityIntegrityHash } from "./authority-snapshot"
+import { contextSha256, contextSnapshotIntegrityMatches } from "./context-snapshot"
 
 // The authoritative recovery snapshot for one durable run (design
 // §"Durable checkpoint store"). Host-only — never imported by the renderer.
@@ -277,6 +279,42 @@ export type CheckpointValidationResult =
   | { ok: true; checkpoint: AgentRunCheckpointV1 }
   | { ok: false; reason: "unsupported-schema-version" | "malformed" }
 
+/** Produces the deterministic integrity fields for a checkpoint payload.
+ * Setup code already creates sealed snapshots; this small helper is also
+ * useful to migration/import code that constructs a v1 checkpoint as a
+ * whole. It deliberately returns a copy so a caller cannot accidentally
+ * change data behind a digest it has already persisted. */
+export function sealCheckpointIntegrity(checkpoint: AgentRunCheckpointV1): AgentRunCheckpointV1 {
+  const context = checkpoint.config.context
+  const sealedContext: FrozenContextSnapshotV1 = {
+    ...context,
+    baseSystemPrompt: {
+      ...context.baseSystemPrompt,
+      sha256: contextSha256(context.baseSystemPrompt.normalizedText),
+    },
+    workspaceInstructions: context.workspaceInstructions.map((instruction) => ({
+      ...instruction,
+      sha256: contextSha256(instruction.normalizedText),
+    })),
+    aggregateHash: "",
+  }
+  sealedContext.aggregateHash = contextSha256(
+    [
+      sealedContext.baseSystemPrompt.sha256,
+      ...sealedContext.workspaceInstructions.map((instruction) => instruction.sha256),
+    ].join("|")
+  )
+  const authority = checkpoint.config.authority
+  const sealedAuthority: FrozenAuthoritySnapshotV1 = {
+    ...authority,
+    integrityHash: authorityIntegrityHash(authority),
+  }
+  return {
+    ...checkpoint,
+    config: { ...checkpoint.config, authority: sealedAuthority, context: sealedContext },
+  }
+}
+
 const KNOWN_STATUSES: ReadonlySet<AgentRunStatus> = new Set([
   "created",
   "running",
@@ -402,7 +440,79 @@ export function validateCheckpoint(raw: unknown): CheckpointValidationResult {
   if (!isRecord(raw)) return { ok: false, reason: "malformed" }
   if (raw.schemaVersion !== 1) return { ok: false, reason: "unsupported-schema-version" }
   if (!hasValidShape(raw)) return { ok: false, reason: "malformed" }
-  return { ok: true, checkpoint: raw as unknown as AgentRunCheckpointV1 }
+  const checkpoint = raw as unknown as AgentRunCheckpointV1
+  if (
+    checkpoint.config.authority.integrityHash !==
+      authorityIntegrityHash(checkpoint.config.authority) ||
+    !contextSnapshotIntegrityMatches(checkpoint.config.context)
+  ) {
+    return { ok: false, reason: "malformed" }
+  }
+  if (!hasCrossFieldInvariants(checkpoint)) return { ok: false, reason: "malformed" }
+  return { ok: true, checkpoint }
+}
+
+/** Relationships between independently valid nested records. These are
+ * checked at the same disk trust boundary as shape/hash validation: no
+ * reader may treat a dangling accepted attempt, forged message reference, or
+ * mismatched terminalization ledger as durable authority. */
+function hasCrossFieldInvariants(checkpoint: AgentRunCheckpointV1): boolean {
+  const messages = new Map(checkpoint.messages.map((message) => [message.messageId, message]))
+  if (messages.size !== checkpoint.messages.length) return false
+
+  const modelSteps = new Set<number>()
+  for (const step of checkpoint.modelSteps) {
+    if (modelSteps.has(step.step)) return false
+    modelSteps.add(step.step)
+    if (step.acceptedAttemptId !== undefined) {
+      const accepted = step.attempts.find((attempt) => attempt.attemptId === step.acceptedAttemptId)
+      if (!accepted || accepted.state !== "budget_settled") return false
+    }
+  }
+
+  const batchSteps = new Set<number>()
+  const toolUseIds = new Set<string>()
+  for (const batch of checkpoint.toolBatches) {
+    if (batchSteps.has(batch.modelStep)) return false
+    batchSteps.add(batch.modelStep)
+    if (messages.get(batch.assistantMessageId)?.message.role !== "assistant") return false
+    if (
+      batch.materializedAtRevision !== undefined &&
+      messages.get(batch.resultCarrierMessageId)?.message.role !== "user"
+    ) {
+      return false
+    }
+    for (const call of batch.calls) {
+      if (toolUseIds.has(call.toolUseId)) return false
+      toolUseIds.add(call.toolUseId)
+      const resolution = call.resolution
+      if (
+        resolution.status === "resolved" &&
+        resolution.attemptId !== undefined &&
+        !call.attempts.some((attempt) => attempt.attemptId === resolution.attemptId)
+      ) {
+        return false
+      }
+    }
+  }
+
+  if (checkpoint.conversationCommit && !checkpoint.identity.conversationId) return false
+  const finalization = checkpoint.finalization
+  if (finalization) {
+    if (
+      finalization.trace.runId !== checkpoint.identity.runId ||
+      finalization.trace.origin !== checkpoint.identity.origin
+    ) {
+      return false
+    }
+    if (
+      (finalization.phase === "complete" && checkpoint.status !== finalization.desiredStatus) ||
+      (finalization.phase !== "complete" && checkpoint.status !== "terminalizing")
+    ) {
+      return false
+    }
+  }
+  return true
 }
 
 function hasValidShape(v: Record<string, unknown>): boolean {

@@ -45,6 +45,10 @@ import { RootBudgetLedgerStore } from "./ai/budget/root-budget-ledger"
 import { asFallbackSource, CompositeToolHost } from "./ai/composite-tool-host"
 import { ConversationStore } from "./ai/conversation-store"
 import { aiCredentialFilePath, AiCredentialStore } from "./ai/credential-store"
+import {
+  estimatorQuarantineFilePath,
+  EstimatorQuarantineStore,
+} from "./ai/estimator-quarantine-store"
 import { ExecutionApprovalResolver } from "./ai/execution/execution-approval"
 import { executionLogFilePath, ExecutionLogStore } from "./ai/execution/execution-log-store"
 import { EXECUTION_FQ_PREFIX, ExecutionToolHostSource } from "./ai/execution/execution-tool-host"
@@ -1032,6 +1036,7 @@ async function createAgentService(): Promise<AgentService> {
   // (`mcp:<id>/<tool>`), built-in memory tools (`memory:…`), and optionally
   // sandboxed local execution (`execution:…`). Invocations route by ownership.
   const aiSettings = new AiSettingsStore(aiSettingsFilePath(userDataDir), DEFAULT_PROVIDER_ID)
+  const estimatorQuarantine = new EstimatorQuarantineStore(estimatorQuarantineFilePath(userDataDir))
   // Live circuit-breaker tuning (P3). Held in a mutable holder the host reads
   // afresh per new breaker; setToolResilience updates it and resets breakers so
   // the change takes effect immediately. Seeded from persisted settings below.
@@ -1225,6 +1230,7 @@ async function createAgentService(): Promise<AgentService> {
     workspaces: new WorkspaceStore(path.join(userDataDir, "ai")),
     providers: defaultProviderCatalog(),
     settings: aiSettings,
+    estimatorQuarantine,
     approvals: new ApprovalStore(aiApprovalsFilePath(userDataDir)),
     sendEvent: broadcastAiChatEvent,
     recordRun,
@@ -1299,7 +1305,16 @@ async function createAgentService(): Promise<AgentService> {
       await autoResumeRecoverableRuns({
         recovery: agentRunRecoveryService,
         runStore: agentRunStore,
-        continueRun: (checkpoint) => continueAnyRun(checkpoint.identity.runId),
+        continueRun: async (checkpoint) => {
+          if (checkpoint.identity.origin === "interactive") {
+            // The startup barrier must wait until the recovered driver has
+            // fenced its conversation lease, not merely until a detached
+            // promise was scheduled. The turn itself remains asynchronous.
+            await agentService.continueRunThroughOwnership(checkpoint.identity.runId)
+            return
+          }
+          continueAnyRun(checkpoint.identity.runId)
+        },
         onError: (runId, err) =>
           logger.child("runs").warn("failed to auto-resume run", { runId, err }),
       })

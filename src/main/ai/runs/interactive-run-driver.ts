@@ -47,6 +47,9 @@ export interface InteractiveRunDriverDeps {
   buildResourceReleasePlan: (
     checkpoint: AgentRunCheckpointV1
   ) => RunFinalizationLedger["resourceReleasePlan"]
+  /** Durable profile circuit breaker. Called before finalizing the failed
+   * run when a settled response proves its estimator was not an upper bound. */
+  quarantineEstimatorProfile?: (checkpoint: AgentRunCheckpointV1) => Promise<void>
 }
 
 export async function runInteractiveTurn(
@@ -98,6 +101,7 @@ export async function runInteractiveTurn(
         return finalizeTerminal(deps, runId, "budget_exceeded")
       }
       if (err instanceof EstimatorIncompatibleError) {
+        await deps.quarantineEstimatorProfile?.(err.checkpoint)
         return finalizeTerminal(deps, runId, "error", err.checkpoint, "failed")
       }
       throw err

@@ -173,7 +173,7 @@ describe("toAgentRunSnapshot", () => {
         },
       ],
     })
-    expect(toAgentRunSnapshot(checkpoint, 0).messages).toEqual([
+    expect(toAgentRunSnapshot(checkpoint, 0).messages).toMatchObject([
       { messageId: "u1", role: "user", ordinal: 0 },
       { messageId: "a1", role: "assistant", ordinal: 1 },
     ])
@@ -256,7 +256,7 @@ describe("toAgentRunSnapshot", () => {
     })
 
     const toolCalls = toAgentRunSnapshot(checkpoint, 0).toolCalls
-    expect(toolCalls).toEqual([
+    expect(toolCalls).toMatchObject([
       {
         ordinal: 0,
         modelStep: 2,

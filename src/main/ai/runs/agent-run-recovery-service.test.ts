@@ -20,6 +20,7 @@ import {
 } from "./agent-run-recovery-service"
 import { AgentRunStore } from "./agent-run-store"
 import { canonicalHash } from "./canonical-json"
+import { sealCheckpointIntegrity } from "./checkpoint-schema"
 import { finalizeRun } from "./run-finalizer"
 
 let dir: string
@@ -45,7 +46,7 @@ function baseCheckpoint(
   overrides: Partial<AgentRunCheckpointV1> = {}
 ): AgentRunCheckpointV1 {
   const baseSystemText = "You are helpful."
-  return {
+  return sealCheckpointIntegrity({
     schemaVersion: 1,
     revision: 0,
     identity: { runId, rootRunId: runId, origin: "interactive" },
@@ -100,7 +101,10 @@ function baseCheckpoint(
         aggregateHash: sha256(sha256(baseSystemText)),
       },
     },
-    messages: [],
+    // Several recovery cases seed a suspended batch that references a1;
+    // make that reference structurally valid rather than relying on the
+    // old shape-only checkpoint validator.
+    messages: [{ messageId: "a1", message: { role: "assistant", content: [] } }],
     usage: {
       inputTokens: 0,
       outputTokens: 0,
@@ -112,7 +116,7 @@ function baseCheckpoint(
     toolBatches: [],
     activatedSkills: [],
     ...overrides,
-  }
+  })
 }
 
 function trace(runId: string, overrides: Partial<RunTrace> = {}): RunTrace {

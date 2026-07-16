@@ -28,6 +28,7 @@ export type AgentRunToolCallStatus =
 export interface AgentRunToolCallSummary {
   ordinal: number
   modelStep: number
+  assistantMessageId?: string
   toolUseId: string
   safeName: string
   fqName: string
@@ -56,14 +57,16 @@ export interface AgentRunModelStepSummary {
   assistantMessageId?: string
 }
 
-/** Structural correlation only (id/role/ordinal) — never message content or
- *  tool arguments/results, which the renderer already has via
- *  getAiConversation's full transcript. This is what lets a reload place a
- *  tool card against the right assistant message without duplicating it. */
+/** Structural correlation plus bounded assistant text for the one period
+ * before a durable result has committed to the conversation transcript. */
 export interface AgentRunMessageSummary {
   messageId: string
+  producedByRunId?: string
   role: "user" | "assistant"
   ordinal: number
+  /** Bounded durable text for an in-flight turn that has not yet been
+   * committed to the conversation transcript. */
+  text?: string
 }
 
 /** Point-in-time view of one run, returned by getRunSnapshot and rebuilt by

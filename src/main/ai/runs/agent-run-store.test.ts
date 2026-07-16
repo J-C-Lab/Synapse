@@ -7,10 +7,12 @@ import {
   AgentRunStore,
   CheckpointCorruptionError,
   IllegalStatusTransitionError,
+  ImmutableCheckpointFieldError,
   InvalidRunIdError,
   RunNotFoundError,
   StaleRevisionError,
 } from "./agent-run-store"
+import { sealCheckpointIntegrity } from "./checkpoint-schema"
 
 let dir: string
 
@@ -23,7 +25,7 @@ afterEach(async () => {
 })
 
 function checkpoint(runId: string): AgentRunCheckpointV1 {
-  return {
+  return sealCheckpointIntegrity({
     schemaVersion: 1,
     revision: 0, // create() always normalizes to 1 — proves it doesn't trust the caller's value
     identity: { runId, rootRunId: runId, origin: "interactive" },
@@ -89,7 +91,7 @@ function checkpoint(runId: string): AgentRunCheckpointV1 {
     modelSteps: [],
     toolBatches: [],
     activatedSkills: [],
-  }
+  })
 }
 
 describe("agentRunStore — create/load", () => {
@@ -99,6 +101,18 @@ describe("agentRunStore — create/load", () => {
     expect(created.revision).toBe(1)
     const result = await store.load("run-1")
     expect(result).toEqual({ ok: true, checkpoint: created })
+  })
+
+  it("rejects a checkpoint whose stored identity does not match its run directory", async () => {
+    const store = new AgentRunStore(dir)
+    await store.create(checkpoint("run-1"))
+    const file = join(dir, "run-1", "checkpoint.json")
+    const raw = JSON.parse(await fs.readFile(file, "utf-8")) as AgentRunCheckpointV1
+    await fs.writeFile(
+      file,
+      JSON.stringify({ ...raw, identity: { ...raw.identity, runId: "other" } })
+    )
+    await expect(store.load("run-1")).resolves.toEqual({ ok: false, reason: "malformed" })
   })
 
   it("refuses to create a run id that already exists", async () => {
@@ -168,6 +182,24 @@ describe("agentRunStore — expectedRevision CAS", () => {
 })
 
 describe("agentRunStore — mutate() output validation", () => {
+  it("rejects a mutator that changes immutable run identity or frozen configuration", async () => {
+    const store = new AgentRunStore(dir)
+    const created = await store.create(checkpoint("run-immutable"))
+
+    await expect(
+      store.mutate(created.identity.runId, 1, (current) => ({
+        ...current,
+        identity: { ...current.identity, rootRunId: "another-root" },
+      }))
+    ).rejects.toThrow(ImmutableCheckpointFieldError)
+    await expect(
+      store.mutate(created.identity.runId, 1, (current) => ({
+        ...current,
+        config: { ...current.config, model: "different-model" },
+      }))
+    ).rejects.toThrow(ImmutableCheckpointFieldError)
+  })
+
   it("rejects an illegal status transition and leaves the checkpoint unchanged", async () => {
     const store = new AgentRunStore(dir)
     const created = await store.create(checkpoint("run-1"))

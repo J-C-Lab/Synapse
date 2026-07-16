@@ -140,6 +140,7 @@ describe("applyRunEvent", () => {
       type: "tool_requested",
       modelStep: 0,
       ordinal: 0,
+      assistantMessageId: "a1",
       toolUseId: "t1",
       safeName: "read",
       fqName: "com.x/read",
@@ -147,7 +148,7 @@ describe("applyRunEvent", () => {
     const first = applyRunEvent(state, requested)
     expect(first.kind).toBe("applied")
     state = first.state
-    expect(state.snapshot.toolCalls).toEqual([
+    expect(state.snapshot.toolCalls).toMatchObject([
       {
         ordinal: 0,
         modelStep: 0,
@@ -182,7 +183,14 @@ describe("applyRunEvent", () => {
 
     state = applyExpectApplied(
       state,
-      eventBase({ type: "approval_pending", approvalId: "appr-1", ordinal: 0, safeName: "act" })
+      eventBase({
+        type: "approval_pending",
+        approvalId: "appr-1",
+        modelStep: 0,
+        ordinal: 0,
+        toolUseId: "t1",
+        safeName: "act",
+      })
     )
     expect(state.snapshot.toolCalls[0]!.status).toBe("pending_approval")
     expect(state.snapshot.pendingApprovalIds).toEqual(["appr-1"])
