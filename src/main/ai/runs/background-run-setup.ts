@@ -1,9 +1,11 @@
 import type { TriggerUse } from "@synapse/plugin-manifest"
+import type { GrantIdentity } from "../../plugins/grant-store"
 import type { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import type { WorkspaceRootRecord } from "../execution/types"
 import type { ChatMessage } from "../providers/types"
 import type { AiToolRegistry } from "../tool-registry"
 import type { AgentRunStore } from "./agent-run-store"
+import type { FrozenPrincipalSnapshot } from "./authority-snapshot"
 import type { CanonicalJson } from "./canonical-json"
 import type { AgentRunCheckpointV1, ModelCapabilityProfile } from "./checkpoint-schema"
 import { triggerUseToCapability } from "@synapse/plugin-manifest"
@@ -38,6 +40,8 @@ export interface BackgroundRunSetupInput {
   triggerInstanceId: string
   pluginId: string
   triggerId: string
+  /** Exact grant identity that authorized this trigger dispatch. */
+  pluginIdentity: GrantIdentity
   allowedUses: TriggerUse[]
   instruction: string
   event: unknown
@@ -47,6 +51,27 @@ export interface BackgroundRunSetupInput {
   runBudgetTokens?: number
   maxSteps: number
   executionWorkspaces: readonly WorkspaceRootRecord[]
+}
+
+/**
+ * A durable background run must bind to the full grant identity, not merely
+ * the plugin id.  The hash intentionally includes publisher, signing key,
+ * and declaration hash, so an updated same-id plugin cannot inherit the
+ * authority of an interrupted run before recovery reclassification.
+ */
+export function backgroundPrincipal(
+  pluginId: string,
+  pluginIdentity: GrantIdentity
+): FrozenPrincipalSnapshot {
+  if (pluginIdentity.pluginId !== pluginId) {
+    throw new Error("Background run plugin identity does not match pluginId")
+  }
+  return {
+    kind: "internal-agent",
+    actor: "background",
+    pluginId,
+    subjectId: `grant:${canonicalHash(pluginIdentity as unknown as CanonicalJson)}`,
+  }
 }
 
 function rootSetHashFor(workspaces: readonly WorkspaceRootRecord[]): string {
@@ -79,7 +104,7 @@ export async function setupBackgroundRun(
   })
 
   const authority = freezeAuthoritySnapshot({
-    principal: { kind: "internal-agent", actor: "background", pluginId: input.pluginId },
+    principal: backgroundPrincipal(input.pluginId, input.pluginIdentity),
     capabilities: input.allowedUses.map(triggerUseToCapability),
     tools: deps.tools.listWithDescriptors().map(({ schema, descriptor }) => ({
       descriptor,

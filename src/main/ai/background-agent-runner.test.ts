@@ -90,6 +90,12 @@ const agentBudget = {
 const defaultRunInput = {
   instanceId: "instance-1",
   workspaceId: "work",
+  pluginIdentity: {
+    pluginId: "com.example.organizer",
+    publisherId: "unsigned",
+    signingKeyFingerprint: "local:user",
+    capabilityDeclarationHash: "declaration-v1",
+  },
 }
 
 let dir: string
@@ -302,6 +308,7 @@ describe("backgroundAgentRunner", () => {
     )
     await runner.run({
       pluginId: "com.synapse.github-inbox",
+      pluginIdentity: { ...defaultRunInput.pluginIdentity, pluginId: "com.synapse.github-inbox" },
       triggerId: "poll-inbox",
       instanceId: "instance-1",
       workspaceId: "work",
@@ -346,6 +353,7 @@ describe("backgroundAgentRunner", () => {
     )
     await runner.run({
       pluginId: "p",
+      pluginIdentity: { ...defaultRunInput.pluginIdentity, pluginId: "p" },
       triggerId: "t",
       instanceId: "i",
       workspaceId: "work",

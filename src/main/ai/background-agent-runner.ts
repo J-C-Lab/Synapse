@@ -1,4 +1,5 @@
 import type { AgentTriggerBudget, NormalizedCapability, TriggerUse } from "@synapse/plugin-manifest"
+import type { GrantIdentity } from "../plugins/grant-store"
 import type { RootBudgetLedgerStore } from "./budget/root-budget-ledger"
 import type { ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
 import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "./run-trace-store"
@@ -23,6 +24,7 @@ import { AiToolRegistry } from "./tool-registry"
 
 export interface BackgroundAgentRunInput {
   pluginId: string
+  pluginIdentity: GrantIdentity
   triggerId: string
   instanceId: string
   workspaceId: string
@@ -95,6 +97,7 @@ export class BackgroundAgentRunner {
           invocationId: input.invocationId,
           triggerInstanceId: input.instanceId,
           pluginId: input.pluginId,
+          pluginIdentity: input.pluginIdentity,
           triggerId: input.triggerId,
           allowedUses: input.allowedUses,
           instruction: input.instruction,

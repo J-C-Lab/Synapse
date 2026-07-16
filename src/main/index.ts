@@ -72,6 +72,7 @@ import {
 import { AgentRunRecoveryService } from "./ai/runs/agent-run-recovery-service"
 import { AgentRunStore } from "./ai/runs/agent-run-store"
 import { freezeAuthoritySnapshot } from "./ai/runs/authority-snapshot"
+import { backgroundPrincipal } from "./ai/runs/background-run-setup"
 import { buildTraceFromCheckpoint } from "./ai/runs/interactive-run-driver"
 import { rootSetHashFor } from "./ai/runs/interactive-run-setup"
 import { rebuildRecoveryAuthority } from "./ai/runs/recovery-authority"
@@ -1117,6 +1118,10 @@ async function createAgentService(): Promise<AgentService> {
       const parent = checkpoint.identity.parentRunId
         ? await agentRunStore.load(checkpoint.identity.parentRunId)
         : undefined
+      const currentPluginIdentity =
+        checkpoint.identity.origin === "background-agent" && checkpoint.identity.pluginId
+          ? plugins.currentActiveIdentityForPlugin(checkpoint.identity.pluginId)
+          : undefined
       const currentAuthority =
         checkpoint.identity.origin === "interactive"
           ? freezeAuthoritySnapshot({
@@ -1130,7 +1135,7 @@ async function createAgentService(): Promise<AgentService> {
             })
           : checkpoint.identity.origin === "background-agent" &&
               checkpoint.identity.pluginId !== undefined &&
-              !plugins.currentActiveIdentityForPlugin(checkpoint.identity.pluginId)
+              !currentPluginIdentity
             ? freezeAuthoritySnapshot({
                 // Deliberately different from the frozen principal: this
                 // feeds classifier's authority-revoked branch before any
@@ -1152,7 +1157,12 @@ async function createAgentService(): Promise<AgentService> {
                         checkpoint.identity.triggerId
                       )?.uses ?? []
                     ).map(triggerUseToCapability)
-                  : []
+                  : [],
+                checkpoint.identity.origin === "background-agent" &&
+                  checkpoint.identity.pluginId &&
+                  currentPluginIdentity
+                  ? backgroundPrincipal(checkpoint.identity.pluginId, currentPluginIdentity)
+                  : undefined
               )
       return {
         currentAuthority,

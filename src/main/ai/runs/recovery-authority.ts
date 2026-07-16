@@ -1,5 +1,6 @@
 import type { NormalizedCapability } from "@synapse/plugin-manifest"
 import type { AiToolRegistry } from "../tool-registry"
+import type { FrozenPrincipalSnapshot } from "./authority-snapshot"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
 import { freezeAuthoritySnapshot } from "./authority-snapshot"
 
@@ -13,7 +14,8 @@ export function rebuildRecoveryAuthority(
   checkpoint: AgentRunCheckpointV1,
   tools: AiToolRegistry,
   parent?: AgentRunCheckpointV1,
-  currentCapabilities: readonly NormalizedCapability[] = []
+  currentCapabilities: readonly NormalizedCapability[] = [],
+  currentPrincipal: FrozenPrincipalSnapshot = checkpoint.config.authority.principal
 ) {
   const frozenNames = new Set(checkpoint.config.authority.tools.map((tool) => tool.fqName))
   // A missing parent checkpoint is fail-closed for a child: no child tool is
@@ -23,7 +25,7 @@ export function rebuildRecoveryAuthority(
       ? new Set(parent?.config.authority.tools.map((tool) => tool.fqName) ?? [])
       : undefined
   return freezeAuthoritySnapshot({
-    principal: checkpoint.config.authority.principal,
+    principal: currentPrincipal,
     capabilities: currentCapabilities,
     tools: tools
       .listWithDescriptors()

@@ -586,6 +586,7 @@ export class PluginHost {
     })
     await runner.run({
       pluginId: request.pluginId,
+      pluginIdentity: buildGrantIdentity(request.pluginId, entry.manifest, entry.source.kind),
       triggerId: request.triggerId,
       instanceId: request.instanceId,
       workspaceId: request.workspaceId,

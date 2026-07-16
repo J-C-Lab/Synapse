@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import { AiToolRegistry } from "../tool-registry"
 import { AgentRunStore } from "./agent-run-store"
-import { setupBackgroundRun } from "./background-run-setup"
+import { backgroundPrincipal, setupBackgroundRun } from "./background-run-setup"
 
 let dir: string
 let runStore: AgentRunStore
@@ -68,6 +68,12 @@ function baseInput(overrides: Partial<BackgroundRunSetupInput> = {}): Background
     maxSteps: 6,
     executionWorkspaces: [],
     allowedUses: overrides.allowedUses ?? [],
+    pluginIdentity: overrides.pluginIdentity ?? {
+      pluginId: overrides.pluginId ?? "plugin.test",
+      publisherId: "unsigned",
+      signingKeyFingerprint: "local:user",
+      capabilityDeclarationHash: "declaration-v1",
+    },
     ...overrides,
     pluginId: overrides.pluginId ?? "plugin.test",
     triggerId: overrides.triggerId ?? "trigger.test",
@@ -148,11 +154,26 @@ describe("setupBackgroundRun — frozen authority", () => {
 
   it("freezes the internal-agent/background principal", async () => {
     const checkpoint = await setupBackgroundRun(baseDeps(), baseInput())
-    expect(checkpoint.config.authority.principal).toEqual({
-      kind: "internal-agent",
-      actor: "background",
-      pluginId: "plugin.test",
-    })
+    expect(checkpoint.config.authority.principal).toEqual(
+      expect.objectContaining({
+        kind: "internal-agent",
+        actor: "background",
+        pluginId: "plugin.test",
+        subjectId: expect.stringMatching(/^grant:[a-f0-9]{64}$/),
+      })
+    )
+  })
+
+  it("binds the principal to the full grant identity, not only the plugin id", () => {
+    const identity = baseInput().pluginIdentity
+    const updated = {
+      ...identity,
+      capabilityDeclarationHash: "declaration-v2",
+    }
+
+    expect(backgroundPrincipal("plugin.test", identity)).not.toEqual(
+      backgroundPrincipal("plugin.test", updated)
+    )
   })
 })
 
