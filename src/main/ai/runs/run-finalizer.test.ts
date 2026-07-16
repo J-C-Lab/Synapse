@@ -276,6 +276,37 @@ describe("finalizeRun — bound to a conversation", () => {
     })
     expect(checkpoint.finalization?.leaseReleaseRevision).toBeUndefined()
   })
+
+  it("persists a non-tombstone commit conflict as suspended_conversation_conflict", async () => {
+    const runId = "run-conv-conflict"
+    const conversationId = "conv-conflict"
+    const conversationCommit = await conversationWithLease(conversationId, runId)
+    await conversation.save({
+      id: conversationId,
+      workspaceId: "default",
+      messages: [{ role: "user", content: [{ type: "text", text: "concurrent write" }] }],
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    await seedRun(runId, {
+      identity: { runId, rootRunId: runId, origin: "interactive", conversationId },
+      conversationCommit,
+    })
+
+    const checkpoint = await finalizeRun(baseDeps({ conversation }), runId, {
+      desiredStatus: "completed",
+      stopReason: "end_turn",
+      trace: trace(runId),
+      resourceReleasePlan: releasePlan({ budgetOperationIds: [] }),
+    })
+
+    expect(checkpoint.status).toBe("suspended_conversation_conflict")
+    expect(checkpoint.recovery).toEqual({
+      kind: "requires_review",
+      reason: "conversation-conflict",
+    })
+    expect(checkpoint.finalization).toBeUndefined()
+  })
 })
 
 describe("finalizeRun — idempotent resume across every phase boundary", () => {

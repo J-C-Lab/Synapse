@@ -33,7 +33,12 @@ describe("runStatusTransitions", () => {
       "terminalizing",
     ])
     expect(RUN_STATUS_TRANSITIONS.suspended_conversation_conflict).toEqual(["terminalizing"])
-    expect(RUN_STATUS_TRANSITIONS.terminalizing).toEqual(["completed", "cancelled", "failed"])
+    expect(RUN_STATUS_TRANSITIONS.terminalizing).toEqual([
+      "suspended_conversation_conflict",
+      "completed",
+      "cancelled",
+      "failed",
+    ])
     expect(RUN_STATUS_TRANSITIONS.completed).toEqual([])
     expect(RUN_STATUS_TRANSITIONS.cancelled).toEqual([])
     expect(RUN_STATUS_TRANSITIONS.failed).toEqual([])

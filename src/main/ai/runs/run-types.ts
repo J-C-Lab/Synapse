@@ -33,7 +33,10 @@ export const RUN_STATUS_TRANSITIONS: Readonly<Record<AgentRunStatus, readonly Ag
   waiting_child: ["running", "terminalizing"],
   suspended_unknown_tool_outcome: ["running", "terminalizing"],
   suspended_conversation_conflict: ["terminalizing"],
-  terminalizing: ["completed", "cancelled", "failed"],
+  // A fenced conversation commit can discover a concurrent overwrite only
+  // after terminalization has begun. It must park for review rather than
+  // leaving a permanently unresumable terminalizing checkpoint.
+  terminalizing: ["suspended_conversation_conflict", "completed", "cancelled", "failed"],
   completed: [],
   cancelled: [],
   failed: [],

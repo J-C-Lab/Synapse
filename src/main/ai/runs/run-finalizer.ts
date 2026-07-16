@@ -117,7 +117,14 @@ export async function finalizeRun(
 
     if (phase === "prepared") {
       deps.fault?.("before_conversation_commit")
-      checkpoint = await commitConversationPhase(deps, runId, checkpoint)
+      try {
+        checkpoint = await commitConversationPhase(deps, runId, checkpoint)
+      } catch (err) {
+        if (err instanceof ConversationLeaseConflictError) {
+          return suspendConversationConflict(deps, runId)
+        }
+        throw err
+      }
       deps.fault?.("after_conversation_committed")
       await emitPhase(deps, checkpoint)
       continue
@@ -151,6 +158,23 @@ export async function finalizeRun(
     await emitStatusChanged(deps, checkpoint)
     await emitTerminalOutcome(deps, checkpoint)
   }
+}
+
+/** A non-tombstone lease/CAS conflict cannot safely be retried against a
+ * changed conversation. Drop the incomplete finalization ledger (it has not
+ * published a trace or released resources yet) and require abandon/review. */
+async function suspendConversationConflict(
+  deps: RunFinalizerDeps,
+  runId: string
+): Promise<AgentRunCheckpointV1> {
+  const current = await loadOk(deps, runId)
+  return deps.runStore.mutate(runId, current.revision, (cp) => ({
+    ...cp,
+    status: "suspended_conversation_conflict",
+    recovery: { kind: "requires_review", reason: "conversation-conflict" },
+    finalization: undefined,
+    updatedAt: deps.now(),
+  }))
 }
 
 async function emitStatusChanged(
