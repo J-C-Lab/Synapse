@@ -66,7 +66,7 @@ export async function runInteractiveTurn(
 
   for (;;) {
     if (deps.signal?.aborted) {
-      return finalizeTerminal(deps, runId, "aborted")
+      return finalizeTerminal(deps, runId, "aborted", undefined, "cancelled")
     }
 
     // durable-agent-driver.ts advances nextStep the moment a model step
@@ -91,6 +91,9 @@ export async function runInteractiveTurn(
     try {
       stepOutcome = await advanceDurableRun(modelDeps, runId)
     } catch (err) {
+      if (deps.signal?.aborted || isAbortError(err)) {
+        return finalizeTerminal(deps, runId, "aborted", undefined, "cancelled")
+      }
       if (err instanceof InsufficientBudgetError || err instanceof InsufficientEstimateError) {
         return finalizeTerminal(deps, runId, "budget_exceeded")
       }
@@ -144,7 +147,7 @@ async function finalizeTerminal(
   runId: string,
   stopReason: InteractiveTurnStopReason,
   checkpointHint?: AgentRunCheckpointV1,
-  desiredStatus: "completed" | "failed" = "completed"
+  desiredStatus: "completed" | "cancelled" | "failed" = "completed"
 ): Promise<InteractiveTurnOutcome> {
   const result = await deps.model.runStore.load(runId)
   if (!result.ok) throw new Error(`cannot finalize run ${runId}: checkpoint is ${result.reason}`)
@@ -158,6 +161,12 @@ async function finalizeTerminal(
     resourceReleasePlan: deps.buildResourceReleasePlan(checkpoint),
   })
   return { kind: "finalized", checkpoint: finalized, stopReason }
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    error instanceof Error && (error.name === "AbortError" || /abort|cancel/i.test(error.message))
+  )
 }
 
 /** Best-effort observability summary derived entirely from durable ledger

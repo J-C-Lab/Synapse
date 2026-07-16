@@ -308,6 +308,7 @@ describe("runInteractiveTurn — cancellation and budget", () => {
     expect(outcome.kind).toBe("finalized")
     if (outcome.kind !== "finalized") throw new Error("expected finalized")
     expect(outcome.stopReason).toBe("aborted")
+    expect(outcome.checkpoint.status).toBe("cancelled")
     expect(provider.calls).toHaveLength(0)
   })
 

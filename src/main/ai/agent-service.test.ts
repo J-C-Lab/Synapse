@@ -1035,8 +1035,8 @@ describe("agentService", () => {
       await (currentProvider as ChatProvider & { started: Promise<void> }).started
       svc.cancel("c1")
 
-      await expect(done).rejects.toThrow()
-      expect(events.some((event) => event.type === "error")).toBe(true)
+      await expect(done).resolves.toMatchObject({ stopReason: "aborted" })
+      expect(events.some((event) => event.type === "error")).toBe(false)
 
       // The service as a whole is still healthy: an unrelated conversation
       // can still complete a normal turn afterward.
@@ -1066,7 +1066,7 @@ describe("agentService", () => {
       await (currentProvider as ChatProvider & { started: Promise<void> }).started
       await svc.deleteConversation("c1")
 
-      await expect(done).rejects.toThrow()
+      await expect(done).resolves.toMatchObject({ stopReason: "aborted" })
       expect(await convo.store.get("c1")).toBeUndefined()
 
       // The service is still healthy afterward.
