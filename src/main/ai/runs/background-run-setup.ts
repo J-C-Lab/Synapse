@@ -1,3 +1,4 @@
+import type { TriggerUse } from "@synapse/plugin-manifest"
 import type { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import type { WorkspaceRootRecord } from "../execution/types"
 import type { ChatMessage } from "../providers/types"
@@ -5,6 +6,7 @@ import type { AiToolRegistry } from "../tool-registry"
 import type { AgentRunStore } from "./agent-run-store"
 import type { CanonicalJson } from "./canonical-json"
 import type { AgentRunCheckpointV1, ModelCapabilityProfile } from "./checkpoint-schema"
+import { triggerUseToCapability } from "@synapse/plugin-manifest"
 import { buildDefaultSystemText } from "../agent-runtime"
 import { createRootBudgetLedger } from "../budget/root-budget-ledger"
 import { resolveModelCapabilityProfile } from "../providers/model-capability-profile"
@@ -36,6 +38,7 @@ export interface BackgroundRunSetupInput {
   triggerInstanceId: string
   pluginId: string
   triggerId: string
+  allowedUses: TriggerUse[]
   instruction: string
   event: unknown
   providerId: string
@@ -77,7 +80,7 @@ export async function setupBackgroundRun(
 
   const authority = freezeAuthoritySnapshot({
     principal: { kind: "internal-agent", actor: "background", pluginId: input.pluginId },
-    capabilities: [],
+    capabilities: input.allowedUses.map(triggerUseToCapability),
     tools: deps.tools.listWithDescriptors().map(({ schema, descriptor }) => ({
       descriptor,
       safeName: schema.name,

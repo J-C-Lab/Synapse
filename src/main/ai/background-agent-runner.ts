@@ -96,6 +96,7 @@ export class BackgroundAgentRunner {
           triggerInstanceId: input.instanceId,
           pluginId: input.pluginId,
           triggerId: input.triggerId,
+          allowedUses: input.allowedUses,
           instruction: input.instruction,
           event: input.event,
           providerId: this.options.provider.id,

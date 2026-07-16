@@ -13,7 +13,11 @@ import { spawn } from "node:child_process"
 import * as path from "node:path"
 import process from "node:process"
 import { pathToFileURL } from "node:url"
-import { derivePluginProfile, profileToAgentText } from "@synapse/plugin-manifest"
+import {
+  derivePluginProfile,
+  profileToAgentText,
+  triggerUseToCapability,
+} from "@synapse/plugin-manifest"
 import {
   app,
   BrowserWindow,
@@ -1138,7 +1142,17 @@ async function createAgentService(): Promise<AgentService> {
             : rebuildRecoveryAuthority(
                 checkpoint,
                 agentTools,
-                parent?.ok ? parent.checkpoint : undefined
+                parent?.ok ? parent.checkpoint : undefined,
+                checkpoint.identity.origin === "background-agent" &&
+                  checkpoint.identity.pluginId &&
+                  checkpoint.identity.triggerId
+                  ? (
+                      plugins.getTriggerDeclaration(
+                        checkpoint.identity.pluginId,
+                        checkpoint.identity.triggerId
+                      )?.uses ?? []
+                    ).map(triggerUseToCapability)
+                  : []
               )
       return {
         currentAuthority,

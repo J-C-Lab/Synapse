@@ -67,6 +67,7 @@ function baseInput(overrides: Partial<BackgroundRunSetupInput> = {}): Background
     maxOutputTokens: 1024,
     maxSteps: 6,
     executionWorkspaces: [],
+    allowedUses: overrides.allowedUses ?? [],
     ...overrides,
     pluginId: overrides.pluginId ?? "plugin.test",
     triggerId: overrides.triggerId ?? "trigger.test",
@@ -85,6 +86,8 @@ describe("setupBackgroundRun — happy path", () => {
       workspaceId: "ws-1",
       invocationId: "inv-1",
       triggerInstanceId: "instance-1",
+      pluginId: "plugin.test",
+      triggerId: "trigger.test",
     })
     expect(checkpoint.conversationCommit).toBeUndefined()
   })
@@ -148,6 +151,7 @@ describe("setupBackgroundRun — frozen authority", () => {
     expect(checkpoint.config.authority.principal).toEqual({
       kind: "internal-agent",
       actor: "background",
+      pluginId: "plugin.test",
     })
   })
 })
