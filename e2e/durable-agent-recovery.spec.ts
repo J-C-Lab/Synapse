@@ -135,6 +135,92 @@ async function seedRun(userDir: string, runId: string): Promise<void> {
   )
 }
 
+/** A paused interactive run whose tool outcome is deliberately unknown. Its
+ * recovery disposition requires review, so startup must render it from the
+ * durable checkpoint instead of attempting a provider call. This is the
+ * deterministic real-Electron fixture for the chat reconnect path: no test
+ * model or private IPC is involved. */
+async function seedInteractiveToolRun(userDir: string, runId: string, conversationId: string) {
+  const checkpoint = seedCheckpointJson(runId)
+  checkpoint.identity = {
+    runId,
+    rootRunId: runId,
+    origin: "interactive",
+    conversationId,
+    workspaceId: "default",
+  }
+  checkpoint.status = "suspended_unknown_tool_outcome"
+  checkpoint.recovery = { kind: "requires_review", reason: "unknown-tool-outcome" }
+  checkpoint.config = {
+    ...(checkpoint.config as Record<string, unknown>),
+    authority: {
+      schemaVersion: 1,
+      principal: { kind: "interactive", actor: "user" },
+      capabilities: [],
+      tools: [],
+      integrityHash: "h",
+    },
+  }
+  checkpoint.messages = [
+    { messageId: "u1", message: { role: "user", content: [{ type: "text", text: "go" }] } },
+  ]
+  checkpoint.toolBatches = [
+    {
+      modelStep: 0,
+      assistantMessageId: "a1",
+      resultCarrierMessageId: "r1",
+      calls: [
+        {
+          ordinal: 0,
+          toolUseId: "tool-reconnect-1",
+          safeName: "read_file",
+          fqName: "read_file",
+          input: {},
+          annotations: {},
+          replayGuarantee: "none",
+          approval: { status: "resolved", allowed: true, remember: "once", resolvedAt: 1 },
+          attempts: [
+            {
+              attemptId: "attempt-1",
+              invocationId: "invoke-1",
+              invocationFingerprint: "fingerprint-1",
+              state: { status: "unknown", startedAt: 1, reason: "process-exit" },
+            },
+          ],
+          resolution: { status: "unresolved" },
+        },
+      ],
+    },
+  ]
+
+  const runDir = path.join(userDir, "ai", "runs", runId)
+  await fs.mkdir(runDir, { recursive: true })
+  await fs.writeFile(path.join(runDir, "checkpoint.json"), JSON.stringify(checkpoint), "utf-8")
+
+  const conversation = {
+    schemaVersion: 2,
+    id: conversationId,
+    state: "active",
+    recordRevision: 1,
+    contentRevision: 0,
+    deletionEpoch: 0,
+    lastFencingToken: 0,
+    title: "Recovery fixture",
+    workspaceId: "default",
+    messages: [],
+    artifactUris: [],
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  const conversationsDir = path.join(userDir, "ai", "conversations")
+  await fs.mkdir(conversationsDir, { recursive: true })
+  await fs.writeFile(
+    path.join(conversationsDir, `${conversationId}.json`),
+    JSON.stringify(conversation),
+    "utf-8"
+  )
+}
+
 test("renderer discovers a run interrupted before this launch and resumes/abandons it via real IPC", async () => {
   const userDir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-e2e-recovery-"))
   const resumeRunId = "e2e-recoverable-resume"
@@ -156,21 +242,19 @@ test("renderer discovers a run interrupted before this launch and resumes/abando
       await panel.waitFor()
       await expect(panel).toContainText(resumeRunId)
       await expect(panel).toContainText(abandonRunId)
-      // Raw AgentRunStatus values, not translated strings — safe to assert
-      // regardless of the renderer's active locale.
-      await expect(panel).toContainText("waiting_approval")
+      // Startup recovery is now origin-aware: automatic runs are durably
+      // reclassified, transitioned to running, and handed to the real
+      // continuator before the renderer reaches this panel.
+      await expect(panel).toContainText("running")
 
       const resumeRow = panel.locator("li", { hasText: resumeRunId })
       const abandonRow = panel.locator("li", { hasText: abandonRunId })
 
-      // Resume: a real runs:resume IPC round-trip through
-      // AgentRunRecoveryService.resume(), which only flips the durable
-      // status back to "running" — nothing in this test drives the agent
-      // loop forward from there, so the row stays listed (non-terminal runs
-      // always do) but its status must visibly flip.
+      // Resume is still a real IPC round-trip. It is idempotent for a run
+      // startup already transitioned to running; the row remains a
+      // non-terminal durable record while its continuation is in flight.
       await resumeRow.getByRole("button").first().click()
       await expect(resumeRow).toContainText("running")
-      await expect(resumeRow).not.toContainText("waiting_approval")
 
       // Abandon: a real runs:abandon IPC round-trip through
       // AgentRunRecoveryService.abandon(), reusing the full six-phase
@@ -197,6 +281,41 @@ test("renderer discovers a run interrupted before this launch and resumes/abando
       ) as { status: string; finalization?: { phase?: string } }
       expect(abandonedOnDisk.status).toBe("cancelled")
       expect(abandonedOnDisk.finalization?.phase).toBe("complete")
+    } finally {
+      await launched.dispose()
+    }
+  } finally {
+    removeVerifiedDirUnder(os.tmpdir(), userDir)
+  }
+})
+
+test("durable agent recovery reconnects one tool card after a real renderer restart", async () => {
+  const userDir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-e2e-reconnect-"))
+  const runId = "e2e-chat-reconnect"
+  const conversationId = "e2e-conversation-reconnect"
+
+  try {
+    await seedInteractiveToolRun(userDir, runId, conversationId)
+    const launched = await launchSynapseDevAtUserDir(userDir)
+    try {
+      const { shell } = await awaitShellReadiness(launched, { mode: "dev" })
+      // This is the normal user-facing preload API, used only to let the
+      // already-seeded paused run reach the chat UI rather than onboarding.
+      await shell.evaluate(() => window.electronAPI.setAiKey("anthropic", "e2e-placeholder-key"))
+      await shell.reload()
+      await shell.getByText("Cortex", { exact: true }).first().click()
+      await shell.getByRole("button", { name: "Recovery fixture" }).click()
+
+      await expect(shell.getByText("read_file", { exact: true })).toHaveCount(1)
+
+      // Reloading the actual renderer repeats snapshot + persisted event
+      // cursor setup. The card must be recovered again, not appended beside
+      // its old projection or a duplicate legacy-event projection.
+      await shell.reload()
+      await shell.getByText("Cortex", { exact: true }).first().click()
+      await shell.getByRole("button", { name: "Recovery fixture" }).click()
+      await expect(shell.getByText("read_file", { exact: true })).toHaveCount(1)
+      await assertNoShellDiagnostics(launched, shell)
     } finally {
       await launched.dispose()
     }
