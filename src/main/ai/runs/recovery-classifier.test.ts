@@ -215,6 +215,20 @@ describe("classifyRunRecovery — blocked", () => {
     expect(disposition).toEqual({ kind: "blocked", reason: "deadline-expired" })
   })
 
+  it("blocks an early v1 background run that lacks a durable execution policy", () => {
+    const authority = authoritySnapshot({})
+    const checkpoint = baseCheckpoint({
+      identity: {
+        runId: "background-legacy",
+        rootRunId: "background-legacy",
+        origin: "background-agent",
+      },
+      config: { ...baseCheckpoint().config, authority },
+    })
+    const disposition = classifyRunRecovery(checkpoint, { currentAuthority: authority, now: 100 })
+    expect(disposition).toEqual({ kind: "blocked", reason: "background-execution-policy-missing" })
+  })
+
   it("does not block when now is at or before the deadline", () => {
     const authority = authoritySnapshot({})
     const checkpoint = baseCheckpoint({

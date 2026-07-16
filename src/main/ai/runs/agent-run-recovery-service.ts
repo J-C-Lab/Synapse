@@ -117,13 +117,13 @@ export class AgentRunRecoveryService {
     return summaries
   }
 
-  /** Idempotent: resuming an already-`running` run, or one already
-   *  terminal, is a no-op. Everything else reclassifies first, so a
-   *  decision is always judged against current state, not a stale one from
-   *  a previous listRecoverable() scan. */
+  /** Idempotent for a still-automatic running run. Every non-terminal run
+   * is reclassified first, including an already-running legacy checkpoint:
+   * otherwise a newly introduced recovery block could be bypassed forever
+   * by a prior process having set its status to running. */
   async resume(runId: string, decision?: RecoveryDecision): Promise<void> {
     let checkpoint = await this.loadOk(runId)
-    if (isTerminalRunStatus(checkpoint.status) || checkpoint.status === "running") return
+    if (isTerminalRunStatus(checkpoint.status)) return
 
     const reclassified = await this.reclassify(checkpoint)
     checkpoint = reclassified.checkpoint
@@ -131,6 +131,14 @@ export class AgentRunRecoveryService {
 
     if (disposition.kind === "blocked") {
       throw new RecoveryBlockedError(disposition.reason)
+    }
+
+    if (checkpoint.status === "running") {
+      if (disposition.kind === "automatic") return
+      if (disposition.reason === "conversation-conflict") {
+        throw new ConversationConflictUnresumableError(runId)
+      }
+      throw new RecoveryDecisionRequiredError(disposition.reason)
     }
 
     if (disposition.kind === "requires_review") {

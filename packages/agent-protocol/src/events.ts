@@ -45,6 +45,10 @@ export type RecoveryBlockedReason =
   | "frozen-context-corrupt"
   | "required-artifact-missing-or-corrupt"
   | "deadline-expired"
+  /** A pre-policy v1 background checkpoint cannot be resumed without
+   * inventing tool/timeout limits, so it remains visible for explicit
+   * migration/abandonment rather than being auto-resumed. */
+  | "background-execution-policy-missing"
 
 export type RecoveryDisposition =
   | { kind: "automatic" }

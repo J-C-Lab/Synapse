@@ -1,5 +1,6 @@
 import type { TriggerUse } from "@synapse/plugin-manifest"
 import type { RegisteredToolDescriptor } from "../plugins/types"
+import type { EstimatorQuarantineStore } from "./estimator-quarantine-store"
 import type { ChatContentBlock, ChatProvider, ProviderRequest, TokenUsage } from "./providers/types"
 import type { RunTrace } from "./run-trace-store"
 import { promises as fs } from "node:fs"
@@ -9,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AgentBudgetLedger } from "../plugins/agent-budget"
 import { BackgroundAgentRunner } from "./background-agent-runner"
 import { RootBudgetLedgerStore } from "./budget/root-budget-ledger"
+import { EstimatorProfileQuarantinedError } from "./estimator-quarantine-store"
 import { emptyUsage } from "./providers/types"
 import { upsertRunTrace } from "./run-trace-store"
 import { AgentRunStore } from "./runs/agent-run-store"
@@ -230,6 +232,48 @@ describe("backgroundAgentRunner", () => {
     await runner.run(input)
     await expect(runner.run({ ...input, invocationId: "inv-2" })).resolves.toMatchObject({
       stopReason: "budget_exceeded",
+    })
+  })
+
+  it("does not consume maxRuns when quarantine rejects before run admission", async () => {
+    const ledger = new AgentBudgetLedger(() => 0)
+    let rejectOnce = true
+    const quarantine = {
+      assertAllowed: async () => {
+        if (!rejectOnce) return
+        rejectOnce = false
+        throw new EstimatorProfileQuarantinedError({
+          profileId: "fake-profile",
+          providerId: "fake",
+          modelPattern: "*",
+          estimatorId: "fake",
+          estimatorVersion: "1",
+          quarantinedAt: 0,
+        })
+      },
+    } as unknown as EstimatorQuarantineStore
+    const runner = new BackgroundAgentRunner(
+      runnerOptions({
+        provider: fakeProvider([{ text: "done" }]),
+        tools: { listTools: () => [], invokeTool: vi.fn() },
+        ledger,
+        estimatorQuarantine: quarantine,
+      })
+    )
+    const input = {
+      pluginId: "com.example.organizer",
+      triggerId: "downloads",
+      ...defaultRunInput,
+      invocationId: "inv-quarantined",
+      event: {},
+      allowedUses: [fsReadUse],
+      agent: agentBudget,
+      instruction: "Run.",
+    }
+
+    await expect(runner.run(input)).rejects.toThrow(EstimatorProfileQuarantinedError)
+    await expect(runner.run({ ...input, invocationId: "inv-allowed" })).resolves.toMatchObject({
+      stopReason: "end_turn",
     })
   })
 

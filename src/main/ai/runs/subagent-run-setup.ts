@@ -4,6 +4,7 @@ import type { AiToolRegistry } from "../tool-registry"
 import type { AgentRunStore } from "./agent-run-store"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
 import { createRootBudgetLedger, reserveChildAccount } from "../budget/root-budget-ledger"
+import { resolveModelCapabilityProfile } from "../providers/model-capability-profile"
 import { freezeAuthoritySnapshot } from "./authority-snapshot"
 import { buildContextSnapshot } from "./context-snapshot"
 import { toDurableMessages } from "./durable-messages"
@@ -43,6 +44,15 @@ export interface SubagentRunSetupInput {
   maxSteps: number
 }
 
+/** The child may use a provider/model selected after its parent began. This
+ * profile must therefore be derived from the child contract, not inherited
+ * from the parent's frozen provider/model. */
+export function resolveSubagentModelProfile(
+  input: Pick<SubagentRunSetupInput, "providerId" | "model">
+) {
+  return resolveModelCapabilityProfile(input.providerId, input.model)
+}
+
 function subUserMessage(instruction: string): ChatMessage {
   return { role: "user", content: [{ type: "text", text: instruction }] }
 }
@@ -58,6 +68,7 @@ export async function setupSubagentRun(
     )
   }
   const parent = parentResult.checkpoint
+  const resolvedProfile = resolveSubagentModelProfile(input)
 
   const rootRunId = await ensureBudgetAccount(deps, input, parent)
 
@@ -96,7 +107,7 @@ export async function setupSubagentRun(
       schemaVersion: 1,
       providerId: input.providerId,
       model: input.model,
-      resolvedProfile: parent.config.resolvedProfile,
+      resolvedProfile,
       maxOutputTokens: input.maxOutputTokens,
       runBudgetTokens: parent.config.runBudgetTokens,
       maxSteps: input.maxSteps,

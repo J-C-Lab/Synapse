@@ -8,6 +8,7 @@ import type { DurableAgentDriverDeps } from "./durable-agent-driver"
 import type { FinalizeRunInput } from "./run-finalizer"
 import type { ToolBatchDeps } from "./tool-batch-runner"
 import { InsufficientBudgetError } from "../budget/root-budget-ledger"
+import { EstimatorProfileQuarantinedError } from "../estimator-quarantine-store"
 import { advanceDurableRun, EstimatorIncompatibleError } from "./durable-agent-driver"
 import { InsufficientEstimateError } from "./model-step-runner"
 import { advanceToolBatch } from "./tool-batch-runner"
@@ -103,6 +104,13 @@ export async function runInteractiveTurn(
       if (err instanceof EstimatorIncompatibleError) {
         await deps.quarantineEstimatorProfile?.(err.checkpoint)
         return finalizeTerminal(deps, runId, "error", err.checkpoint, "failed")
+      }
+      // A different finite-budget run may quarantine this exact estimator
+      // between two model steps. That is a terminal admission failure for
+      // this run too — never leave the durable checkpoint "running" for
+      // startup recovery to rediscover and throw the same error forever.
+      if (err instanceof EstimatorProfileQuarantinedError) {
+        return finalizeTerminal(deps, runId, "budget_exceeded", undefined, "failed")
       }
       throw err
     }

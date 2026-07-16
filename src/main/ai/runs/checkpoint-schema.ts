@@ -356,6 +356,7 @@ const KNOWN_BLOCKED_REASONS: ReadonlySet<string> = new Set([
   "frozen-context-corrupt",
   "required-artifact-missing-or-corrupt",
   "deadline-expired",
+  "background-execution-policy-missing",
 ])
 const KNOWN_MESSAGE_ROLES: ReadonlySet<string> = new Set(["user", "assistant"])
 const KNOWN_APPROVAL_REMEMBER: ReadonlySet<string> = new Set(["once", "conversation", "always"])

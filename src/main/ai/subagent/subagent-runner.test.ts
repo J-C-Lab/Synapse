@@ -71,9 +71,9 @@ async function seedParentRun(parentRunId: string, runBudgetTokens?: number): Pro
   )
 }
 
-function fakeProvider(text: string) {
+function fakeProvider(text: string, id = "fake") {
   return {
-    id: "fake",
+    id,
     async *stream() {
       yield { type: "text" as const, text }
       yield {
@@ -129,6 +129,35 @@ describe("subagentRunner", () => {
     expect(runs.map((entry) => entry.runId)).toEqual(["parent-quarantined"])
     const ledger = await budgetStore.load("parent-quarantined")
     expect(Object.keys(ledger.accounts)).toEqual(["root"])
+  })
+
+  it("admits the profile for the child's actual provider/model before reservation", async () => {
+    await seedParentRun("parent-profile", 10_000)
+    const admittedProfiles: string[] = []
+    const quarantine = {
+      assertAllowed: async (profile: { profileId: string }) => {
+        admittedProfiles.push(profile.profileId)
+      },
+    } as unknown as EstimatorQuarantineStore
+    const runner = new SubagentRunner({
+      provider: fakeProvider("done", "openai"),
+      model: "gpt-4.1",
+      runStore,
+      budgetStore,
+      upsertTrace,
+      estimatorQuarantine: quarantine,
+    })
+
+    const result = await runner.run({
+      parentRunId: "parent-profile",
+      instruction: "use the child profile",
+      tools: new AiToolRegistry(fakeHost()),
+      maxSteps: 1,
+    })
+
+    expect(admittedProfiles).toContain("openai-default-v1")
+    const child = await runStore.load(result.childRunId)
+    expect(child.ok && child.checkpoint.config.resolvedProfile.profileId).toBe("openai-default-v1")
   })
 
   it("runs a nested agent and returns a summary + child run metadata", async () => {

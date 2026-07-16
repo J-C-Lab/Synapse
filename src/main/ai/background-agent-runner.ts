@@ -70,6 +70,16 @@ export class BackgroundAgentRunner {
   }
 
   async run(input: BackgroundAgentRunInput): Promise<BackgroundAgentRunResult> {
+    const providerId = this.options.provider.id
+    const model = this.options.model ?? DEFAULT_ANTHROPIC_MODEL
+    const runBudget = input.agent.maxTokensPerRun > 0 ? input.agent.maxTokensPerRun : undefined
+    // Admission is intentionally before tryStart: a quarantined profile did
+    // not start a run and must not consume this trigger's maxRuns window.
+    if (runBudget !== undefined) {
+      await this.options.estimatorQuarantine?.assertAllowed(
+        resolveModelCapabilityProfile(providerId, model)
+      )
+    }
     const start = this.ledger.tryStart(
       { pluginId: input.pluginId, triggerId: input.triggerId, workspaceId: input.workspaceId },
       input.agent
@@ -79,15 +89,6 @@ export class BackgroundAgentRunner {
     }
 
     const resolvedRoots = await this.options.workspaceRoots.listForWorkspace(input.workspaceId)
-    const runBudget = input.agent.maxTokensPerRun > 0 ? input.agent.maxTokensPerRun : undefined
-    if (runBudget !== undefined) {
-      await this.options.estimatorQuarantine?.assertAllowed(
-        resolveModelCapabilityProfile(
-          this.options.provider.id,
-          this.options.model ?? DEFAULT_ANTHROPIC_MODEL
-        )
-      )
-    }
     const tools = new AiToolRegistry(this.limitedTools(input.allowedUses))
 
     const controller = new AbortController()
@@ -114,8 +115,8 @@ export class BackgroundAgentRunner {
           allowedUses: input.allowedUses,
           instruction: input.instruction,
           event: input.event,
-          providerId: this.options.provider.id,
-          model: this.options.model ?? DEFAULT_ANTHROPIC_MODEL,
+          providerId,
+          model,
           // Background triggers commonly configure a small maxTokensPerRun
           // (see resources/builtin-plugins/*/synapse.json) — unlike the
           // interactive path's fixed 4096, this must fit within whatever

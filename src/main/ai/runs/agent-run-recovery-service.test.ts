@@ -341,6 +341,26 @@ describe("agentRunRecoveryService.resume — blocked disposition", () => {
     if (!loaded.ok) throw new Error("expected ok")
     expect(loaded.checkpoint.status).toBe("waiting_approval")
   })
+
+  it("reclassifies an already-running legacy background checkpoint before allowing continuation", async () => {
+    const legacy = baseCheckpoint("background-legacy")
+    await runStore.create(
+      sealCheckpointIntegrity({
+        ...legacy,
+        identity: { ...legacy.identity, origin: "background-agent" },
+      })
+    )
+
+    await expect(makeService().resume("background-legacy")).rejects.toMatchObject({
+      reason: "background-execution-policy-missing",
+    })
+    const loaded = await runStore.load("background-legacy")
+    expect(loaded.ok && loaded.checkpoint.status).toBe("running")
+    expect(loaded.ok && loaded.checkpoint.recovery).toEqual({
+      kind: "blocked",
+      reason: "background-execution-policy-missing",
+    })
+  })
 })
 
 describe("agentRunRecoveryService.resume — requires_review", () => {

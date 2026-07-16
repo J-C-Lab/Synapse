@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { createRootBudgetLedger, RootBudgetLedgerStore } from "../budget/root-budget-ledger"
+import { EstimatorProfileQuarantinedError } from "../estimator-quarantine-store"
 import { upsertRunTrace } from "../run-trace-store"
 import { AiToolRegistry } from "../tool-registry"
 import { AgentRunStore } from "./agent-run-store"
@@ -381,6 +382,48 @@ describe("runInteractiveTurn — estimator incompatibility", () => {
     expect(loaded.ok && loaded.checkpoint.status).toBe("failed")
     expect(provider.calls).toHaveLength(1)
     expect(quarantinedProfiles).toEqual(["p1"])
+  })
+
+  it("terminalizes failed when another run quarantines the profile before admission", async () => {
+    const runId = "run-estimator-already-quarantined"
+    await seedRun(runId)
+    const provider = fakeProvider([
+      {
+        type: "message",
+        message: { role: "assistant", content: [{ type: "text", text: "unreachable" }] },
+        usage: usage(),
+        stopReason: "end_turn",
+      },
+    ])
+
+    const outcome = await runInteractiveTurn(
+      makeDeps(provider, fakeRegistry({}), {
+        model: {
+          runStore,
+          budgetStore,
+          provider,
+          tools: () => [],
+          now: () => 1000,
+          maxSteps: 10,
+          assertEstimatorAllowed: async () => {
+            throw new EstimatorProfileQuarantinedError({
+              profileId: "p1",
+              providerId: "fake",
+              modelPattern: "*",
+              estimatorId: "byte-upper-bound",
+              estimatorVersion: "1",
+              quarantinedAt: 1,
+            })
+          },
+        },
+      }),
+      runId
+    )
+
+    expect(outcome).toMatchObject({ kind: "finalized", stopReason: "budget_exceeded" })
+    const loaded = await runStore.load(runId)
+    expect(loaded.ok && loaded.checkpoint.status).toBe("failed")
+    expect(provider.calls).toHaveLength(0)
   })
 })
 

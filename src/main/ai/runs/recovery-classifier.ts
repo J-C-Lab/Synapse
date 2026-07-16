@@ -55,6 +55,17 @@ export function classifyRunRecovery(
     return { kind: "blocked", reason: "conversation-deleted-or-missing" }
   }
 
+  // The earliest v1 background checkpoints predate persisted execution
+  // policy altogether. Unlike the later v1 form, there is no safe way to
+  // infer either a tool-call cap or a timeout from their durable bytes, so
+  // fail closed before resume() can move them to running.
+  if (
+    checkpoint.identity.origin === "background-agent" &&
+    checkpoint.config.backgroundExecution === undefined
+  ) {
+    return { kind: "blocked", reason: "background-execution-policy-missing" }
+  }
+
   if (!principalMatches(checkpoint.config.authority.principal, input.currentAuthority.principal)) {
     return { kind: "blocked", reason: "authority-revoked" }
   }

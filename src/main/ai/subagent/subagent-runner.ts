@@ -10,7 +10,7 @@ import { DEFAULT_ANTHROPIC_MODEL } from "../providers/anthropic-provider"
 import { toChatMessages } from "../runs/durable-messages"
 import { runInteractiveTurn } from "../runs/interactive-run-driver"
 import { finalizeRun } from "../runs/run-finalizer"
-import { setupSubagentRun } from "../runs/subagent-run-setup"
+import { resolveSubagentModelProfile, setupSubagentRun } from "../runs/subagent-run-setup"
 
 const SUMMARY_MAX = 2000
 
@@ -50,10 +50,11 @@ export class SubagentRunner {
     const childRunId = randomUUID()
     const parent = await this.options.runStore.load(input.parentRunId)
     if (!parent.ok) throw new Error(`cannot spawn subagent: parent checkpoint is ${parent.reason}`)
+    const providerId = this.options.provider.id
+    const model = this.options.model ?? DEFAULT_ANTHROPIC_MODEL
+    const resolvedProfile = resolveSubagentModelProfile({ providerId, model })
     if (parent.checkpoint.config.runBudgetTokens !== undefined) {
-      await this.options.estimatorQuarantine?.assertAllowed(
-        parent.checkpoint.config.resolvedProfile
-      )
+      await this.options.estimatorQuarantine?.assertAllowed(resolvedProfile)
     }
 
     const checkpoint = await setupSubagentRun(
@@ -67,8 +68,8 @@ export class SubagentRunner {
         runId: childRunId,
         parentRunId: input.parentRunId,
         instruction: input.instruction,
-        providerId: this.options.provider.id,
-        model: this.options.model ?? DEFAULT_ANTHROPIC_MODEL,
+        providerId,
+        model,
         maxOutputTokens: 4096,
         maxSteps: input.maxSteps,
       }

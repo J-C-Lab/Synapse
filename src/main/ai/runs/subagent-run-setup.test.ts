@@ -115,6 +115,21 @@ describe("setupSubagentRun — happy path", () => {
     expect(checkpoint.identity.workspaceId).toBe("ws-1")
   })
 
+  it("resolves the child's provider/model profile instead of inheriting the parent's profile", async () => {
+    await seedParent("parent-run-1", 1000)
+    const checkpoint = await setupSubagentRun(
+      baseDeps(),
+      baseInput({ providerId: "openai", model: "gpt-4.1" })
+    )
+
+    expect(checkpoint.config.providerId).toBe("openai")
+    expect(checkpoint.config.model).toBe("gpt-4.1")
+    expect(checkpoint.config.resolvedProfile).toMatchObject({
+      profileId: "openai-default-v1",
+      providerId: "openai",
+    })
+  })
+
   it("builds a single user message from the instruction", async () => {
     await seedParent("parent-run-1", 1000)
     const checkpoint = await setupSubagentRun(baseDeps(), baseInput({ instruction: "hello" }))
