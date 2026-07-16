@@ -193,10 +193,17 @@ describe("crash matrix — model-step hold/dispatch (real process crash + resume
   const faultPoints: DurableFaultPoint[] = [
     { subsystem: "model", point: "after_hold" },
     { subsystem: "model", point: "after_dispatch_checkpoint" },
+    // These are the two sides of accepting a response: the provider has
+    // already answered, but the durable checkpoint/ledger may not yet agree
+    // on whether that answer has been settled. A fresh process must settle
+    // the staged response rather than sending it again.
+    { subsystem: "model", point: "after_response_staged" },
+    { subsystem: "model", point: "after_settle_ledger" },
+    { subsystem: "model", point: "after_settle" },
   ]
 
   it.each(faultPoints)(
-    "recovers and calls the provider exactly once (only in the resume process) after crashing at $point",
+    "recovers and calls the provider exactly once across both processes after crashing at $point",
     (crashAt) => {
       crashThenResume(dir, "run-dispatch", "model_dispatch_crash", crashAt)
 
