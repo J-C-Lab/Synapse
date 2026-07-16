@@ -1116,6 +1116,7 @@ async function createAgentService(): Promise<AgentService> {
         input
       ),
     buildAbandonTrace: (checkpoint) => buildTraceFromCheckpoint(checkpoint, "aborted"),
+    buildFailureTrace: (checkpoint) => buildTraceFromCheckpoint(checkpoint, "error"),
     buildAbandonResourcePlan: () => ({
       budgetOperationIds: [],
       skillPackageLeaseIds: [],

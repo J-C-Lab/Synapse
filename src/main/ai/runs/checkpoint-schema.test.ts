@@ -224,6 +224,33 @@ describe("validateCheckpoint", () => {
     ).toBe(true)
   })
 
+  it("validates durable accepted recovery decisions", () => {
+    expect(
+      validateCheckpoint({
+        ...minimalCheckpoint(),
+        acceptedRecoveryDecision: {
+          decisionId: "decision-1",
+          kind: "retry",
+          reason: "workspace-binding-changed",
+          basisHash: "basis-1",
+          acceptedAt: 1,
+        },
+      }).ok
+    ).toBe(true)
+    expect(
+      validateCheckpoint({
+        ...minimalCheckpoint(),
+        acceptedRecoveryDecision: {
+          decisionId: "decision-1",
+          kind: "retry",
+          reason: "not-a-recovery-reason",
+          basisHash: "basis-1",
+          acceptedAt: 1,
+        },
+      }).ok
+    ).toBe(false)
+  })
+
   it("rejects a context-compression fraction outside 0..1", () => {
     const checkpoint = minimalCheckpoint()
     const bad = {

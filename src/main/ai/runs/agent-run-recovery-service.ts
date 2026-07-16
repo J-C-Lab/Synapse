@@ -7,14 +7,16 @@ import type {
 import type { RunTrace } from "../run-trace-store"
 import type { AgentRunStore } from "./agent-run-store"
 import type {
+  AcceptedRecoveryDecision,
   AgentRunCheckpointV1,
   PersistedToolResult,
   RunFinalizationLedger,
 } from "./checkpoint-schema"
 import type { RecoveryClassifierInput } from "./recovery-classifier"
 import type { FinalizeRunInput } from "./run-finalizer"
+import { randomUUID } from "node:crypto"
 import { isTerminalRunStatus } from "@synapse/agent-protocol"
-import { classifyRunRecovery } from "./recovery-classifier"
+import { classifyRunRecovery, recoveryReviewBasisHash } from "./recovery-classifier"
 import { isValidRunStatusTransition } from "./run-types"
 
 // Startup recovery classification, resume, and abandon (design §"Run
@@ -57,6 +59,7 @@ export interface AgentRunRecoveryServiceDeps {
   buildClassifierInput: (checkpoint: AgentRunCheckpointV1) => Promise<RecoveryClassifierInput>
   finalize: (runId: string, input: FinalizeRunInput) => Promise<AgentRunCheckpointV1>
   buildAbandonTrace: (checkpoint: AgentRunCheckpointV1) => RunTrace
+  buildFailureTrace: (checkpoint: AgentRunCheckpointV1) => RunTrace
   buildAbandonResourcePlan: (
     checkpoint: AgentRunCheckpointV1
   ) => RunFinalizationLedger["resourceReleasePlan"]
@@ -135,6 +138,7 @@ export class AgentRunRecoveryService {
     const reclassified = await this.reclassify(checkpoint)
     checkpoint = reclassified.checkpoint
     const disposition = reclassified.disposition
+    let acceptedRecoveryDecision: AcceptedRecoveryDecision | undefined
 
     if (disposition.kind === "blocked") {
       throw new RecoveryBlockedError(disposition.reason)
@@ -147,17 +151,31 @@ export class AgentRunRecoveryService {
       if (!decision) {
         throw new RecoveryDecisionRequiredError(disposition.reason)
       }
+      acceptedRecoveryDecision = this.acceptedDecision(
+        decision,
+        disposition.reason,
+        reclassified.reviewBasisHash
+      )
+      if (decision.kind === "mark_failed" && disposition.reason !== "unknown-tool-outcome") {
+        await this.deps.finalize(runId, {
+          desiredStatus: "failed",
+          stopReason: "recovery-marked-failed",
+          trace: this.deps.buildFailureTrace(checkpoint),
+          resourceReleasePlan: this.deps.buildAbandonResourcePlan(checkpoint),
+        })
+        return
+      }
       if (disposition.reason === "unknown-tool-outcome" && decision.kind === "mark_failed") {
         checkpoint = await this.markStuckCallsFailed(runId, checkpoint)
       }
       if (checkpoint.status === "running") {
         // A running checkpoint has no legal running -> running transition,
         // but the explicit user decision must still be durable. This same-
-        // state CAS records it by clearing the review disposition; a later
-        // interruption will be freshly classified against current state.
+        // state CAS persists both the decision and its comparison basis.
         await this.deps.runStore.mutate(runId, checkpoint.revision, (cp) => ({
           ...cp,
           recovery: { kind: "automatic" },
+          acceptedRecoveryDecision,
           updatedAt: this.deps.now(),
         }))
         return
@@ -171,7 +189,12 @@ export class AgentRunRecoveryService {
 
     if (checkpoint.status === "running") return
 
-    await this.transitionToRunning(runId, checkpoint, { hasRecoveryDecision: true })
+    await this.transitionToRunning(
+      runId,
+      checkpoint,
+      { hasRecoveryDecision: true },
+      acceptedRecoveryDecision
+    )
   }
 
   /** Runs the same six-phase finalization protocol as a normal completion,
@@ -234,13 +257,27 @@ export class AgentRunRecoveryService {
     )
   }
 
-  private async reclassify(
+  private async reclassify(checkpoint: AgentRunCheckpointV1): Promise<{
     checkpoint: AgentRunCheckpointV1
-  ): Promise<{ checkpoint: AgentRunCheckpointV1; disposition: RecoveryDisposition }> {
+    disposition: RecoveryDisposition
+    reviewBasisHash?: string
+  }> {
     const input = await this.deps.buildClassifierInput(checkpoint)
-    const disposition = classifyRunRecovery(checkpoint, input)
+    let disposition = classifyRunRecovery(checkpoint, input)
+    let reviewBasisHash: string | undefined
+    if (disposition.kind === "requires_review") {
+      reviewBasisHash = recoveryReviewBasisHash(checkpoint, input, disposition.reason)
+      const accepted = checkpoint.acceptedRecoveryDecision
+      if (
+        accepted?.kind === "retry" &&
+        accepted.reason === disposition.reason &&
+        accepted.basisHash === reviewBasisHash
+      ) {
+        disposition = { kind: "automatic" }
+      }
+    }
     if (sameDisposition(disposition, checkpoint.recovery)) {
-      return { checkpoint, disposition }
+      return { checkpoint, disposition, reviewBasisHash }
     }
     const next = await this.deps.runStore.mutate(
       checkpoint.identity.runId,
@@ -251,13 +288,14 @@ export class AgentRunRecoveryService {
         updatedAt: this.deps.now(),
       })
     )
-    return { checkpoint: next, disposition }
+    return { checkpoint: next, disposition, reviewBasisHash }
   }
 
   private async transitionToRunning(
     runId: string,
     checkpoint: AgentRunCheckpointV1,
-    ctx: { hasRecoveryDecision: boolean }
+    ctx: { hasRecoveryDecision: boolean },
+    acceptedRecoveryDecision?: AcceptedRecoveryDecision
   ): Promise<AgentRunCheckpointV1> {
     return this.deps.runStore.mutate(runId, checkpoint.revision, (cp) => {
       if (!isValidRunStatusTransition(cp.status, "running", ctx)) {
@@ -267,9 +305,25 @@ export class AgentRunRecoveryService {
         ...cp,
         status: "running",
         recovery: { kind: "automatic" },
+        ...(acceptedRecoveryDecision === undefined ? {} : { acceptedRecoveryDecision }),
         updatedAt: this.deps.now(),
       }
     })
+  }
+
+  private acceptedDecision(
+    decision: RecoveryDecision,
+    reason: RecoveryReviewReason,
+    basisHash: string | undefined
+  ): AcceptedRecoveryDecision {
+    if (!basisHash) throw new Error("recovery decision is missing its comparison basis")
+    return {
+      decisionId: randomUUID(),
+      kind: decision.kind,
+      reason,
+      basisHash,
+      acceptedAt: this.deps.now(),
+    }
   }
 
   private async markStuckCallsFailed(

@@ -195,6 +195,7 @@ function makeService(
         input
       ),
     buildAbandonTrace: (checkpoint) => trace(checkpoint.identity.runId),
+    buildFailureTrace: (checkpoint) => trace(checkpoint.identity.runId, { outcome: "error" }),
     buildAbandonResourcePlan: () => releasePlan(),
     now: () => 5000,
     ...overrides,
@@ -432,7 +433,59 @@ describe("agentRunRecoveryService.resume — requires_review", () => {
     const loaded = await runStore.load("r-running-review")
     expect(loaded.ok && loaded.checkpoint.status).toBe("running")
     expect(loaded.ok && loaded.checkpoint.recovery).toEqual({ kind: "automatic" })
+    expect(loaded.ok && loaded.checkpoint.acceptedRecoveryDecision).toMatchObject({
+      kind: "retry",
+      reason: "workspace-binding-changed",
+      basisHash: expect.any(String),
+    })
     expect(loaded.ok && loaded.checkpoint.revision).toBe(3)
+  })
+
+  it("keeps an accepted Retry effective after a crash until its reviewed basis changes", async () => {
+    await seedRun("r-persisted-retry", { status: "running" })
+    const service = makeService({
+      buildClassifierInput: neverDriftingClassifierInput({
+        currentWorkspaceRootSetHash: "changed-once",
+      }),
+    })
+
+    await service.resume("r-persisted-retry", { kind: "retry" })
+    const summaries = await service.listRecoverable()
+    expect(summaries).toContainEqual(
+      expect.objectContaining({ runId: "r-persisted-retry", recovery: { kind: "automatic" } })
+    )
+
+    const changedAgain = makeService({
+      buildClassifierInput: neverDriftingClassifierInput({
+        currentWorkspaceRootSetHash: "changed-again",
+      }),
+    })
+    await expect(changedAgain.resume("r-persisted-retry")).rejects.toMatchObject({
+      reason: "workspace-binding-changed",
+    })
+  })
+
+  it("terminalizes Mark failed for a non-unknown review instead of treating it as Retry", async () => {
+    await seedRun("r-mark-failed-workspace", { status: "running" })
+    const buildFailureTrace = vi.fn((checkpoint: AgentRunCheckpointV1) =>
+      trace(checkpoint.identity.runId, { outcome: "error" })
+    )
+    const service = makeService({
+      buildFailureTrace,
+      buildClassifierInput: neverDriftingClassifierInput({
+        currentWorkspaceRootSetHash: "changed",
+      }),
+    })
+
+    await service.resume("r-mark-failed-workspace", { kind: "mark_failed" })
+
+    const loaded = await runStore.load("r-mark-failed-workspace")
+    expect(buildFailureTrace).toHaveBeenCalledTimes(1)
+    expect(loaded.ok && loaded.checkpoint.status).toBe("failed")
+    expect(loaded.ok && loaded.checkpoint.finalization).toMatchObject({
+      desiredStatus: "failed",
+      stopReason: "recovery-marked-failed",
+    })
   })
 
   it("records Mark failed on a running unknown-outcome review and resolves the call", async () => {

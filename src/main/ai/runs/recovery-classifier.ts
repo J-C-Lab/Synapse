@@ -1,5 +1,6 @@
 import type { RecoveryDisposition } from "@synapse/agent-protocol"
 import type { FrozenAuthoritySnapshotV1 } from "./authority-snapshot"
+import type { CanonicalJson } from "./canonical-json"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
 import type { FrozenContextSnapshotV1 } from "./context-snapshot"
 import { createHash } from "node:crypto"
@@ -8,6 +9,7 @@ import {
   compareToolAuthority,
   principalMatches,
 } from "./authority-snapshot"
+import { canonicalHash } from "./canonical-json"
 
 // Pure recovery classification (design §"Run recovery service and startup
 // UX"): given one checkpoint and the live state it must be reconciled
@@ -96,7 +98,7 @@ export function classifyRunRecovery(
     return { kind: "blocked", reason: "frozen-context-corrupt" }
   }
 
-  if (checkpoint.config.deadlineAt !== undefined && input.now > checkpoint.config.deadlineAt) {
+  if (checkpoint.config.deadlineAt !== undefined && input.now >= checkpoint.config.deadlineAt) {
     return { kind: "blocked", reason: "deadline-expired" }
   }
 
@@ -119,6 +121,38 @@ export function classifyRunRecovery(
   }
 
   return { kind: "automatic" }
+}
+
+/** Stable comparison basis for an explicit recovery decision. Deliberately
+ * excludes `now` and checkpoint revision: neither changes the live drift a
+ * user reviewed. A changed authority/workspace or tool-attempt state does. */
+export function recoveryReviewBasisHash(
+  checkpoint: AgentRunCheckpointV1,
+  input: RecoveryClassifierInput,
+  reason: Exclude<RecoveryDisposition, { kind: "automatic" } | { kind: "blocked" }>["reason"]
+): string {
+  return canonicalHash({
+    reason,
+    currentAuthority: input.currentAuthority as unknown as CanonicalJson,
+    conversationExists: input.conversationExists ?? null,
+    currentWorkspaceRootSetHash: input.currentWorkspaceRootSetHash ?? null,
+    unresolvedAttempts: checkpoint.toolBatches.flatMap((batch) =>
+      batch.calls.flatMap((call) => {
+        if (call.resolution.status === "resolved") return []
+        const latest = call.attempts[call.attempts.length - 1]
+        if (!latest) return []
+        return [
+          {
+            modelStep: batch.modelStep,
+            ordinal: call.ordinal,
+            toolUseId: call.toolUseId,
+            attemptId: latest.attemptId,
+            state: latest.state.status,
+          },
+        ]
+      })
+    ),
+  })
 }
 
 /** A pending tool call whose latest attempt never reached a durable

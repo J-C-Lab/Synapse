@@ -229,13 +229,13 @@ describe("classifyRunRecovery — blocked", () => {
     expect(disposition).toEqual({ kind: "blocked", reason: "background-execution-policy-missing" })
   })
 
-  it("does not block when now is at or before the deadline", () => {
+  it("blocks when now is exactly at the deadline", () => {
     const authority = authoritySnapshot({})
     const checkpoint = baseCheckpoint({
       config: { ...baseCheckpoint().config, authority, deadlineAt: 500 },
     })
     const disposition = classifyRunRecovery(checkpoint, { currentAuthority: authority, now: 500 })
-    expect(disposition).toEqual({ kind: "automatic" })
+    expect(disposition).toEqual({ kind: "blocked", reason: "deadline-expired" })
   })
 })
 

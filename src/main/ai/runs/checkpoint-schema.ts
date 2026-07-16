@@ -3,6 +3,7 @@ import type {
   AgentRunIdentity,
   AgentRunStatus,
   RecoveryDisposition,
+  RecoveryReviewReason,
   RunFinalizationPhase,
 } from "@synapse/agent-protocol"
 import type { ToolAnnotations } from "@synapse/plugin-manifest"
@@ -240,6 +241,10 @@ export interface AgentRunCheckpointV1 {
   identity: AgentRunIdentity
   status: AgentRunStatus
   recovery: RecoveryDisposition
+  /** A user Retry decision is itself durable recovery state. The basis hash
+   * binds it to the exact live drift that was reviewed, so a crash after the
+   * decision does not ask again unless that live comparison state changes. */
+  acceptedRecoveryDecision?: AcceptedRecoveryDecision
   createdAt: number
   updatedAt: number
 
@@ -266,6 +271,14 @@ export interface AgentRunCheckpointV1 {
     committedContentRevision?: number
   }
   finalization?: RunFinalizationLedger
+}
+
+export interface AcceptedRecoveryDecision {
+  decisionId: string
+  kind: "retry" | "mark_failed"
+  reason: RecoveryReviewReason
+  basisHash: string
+  acceptedAt: number
 }
 
 // ---------------------------------------------------------------------------
@@ -620,6 +633,12 @@ function hasValidShape(v: Record<string, unknown>): boolean {
   if (!isValidIdentity(v.identity)) return false
   if (typeof v.status !== "string" || !KNOWN_STATUSES.has(v.status as AgentRunStatus)) return false
   if (!isValidRecovery(v.recovery)) return false
+  if (
+    v.acceptedRecoveryDecision !== undefined &&
+    !isValidAcceptedRecoveryDecision(v.acceptedRecoveryDecision)
+  ) {
+    return false
+  }
   if (!isNonNegativeInteger(v.createdAt) || !isNonNegativeInteger(v.updatedAt)) return false
   if (!isValidConfig(v.config)) return false
   if (!Array.isArray(v.messages) || !v.messages.every(isValidDurableMessage)) return false
@@ -666,6 +685,15 @@ function isValidRecovery(v: unknown): boolean {
   if (v.kind === "requires_review") return isString(v.reason) && KNOWN_REVIEW_REASONS.has(v.reason)
   if (v.kind === "blocked") return isString(v.reason) && KNOWN_BLOCKED_REASONS.has(v.reason)
   return false
+}
+
+function isValidAcceptedRecoveryDecision(v: unknown): boolean {
+  if (!isRecord(v)) return false
+  if (!isString(v.decisionId)) return false
+  if (v.kind !== "retry" && v.kind !== "mark_failed") return false
+  if (!isString(v.reason) || !KNOWN_REVIEW_REASONS.has(v.reason)) return false
+  if (!isString(v.basisHash)) return false
+  return isNonNegativeInteger(v.acceptedAt)
 }
 
 function isValidModelCapabilityProfile(v: unknown): boolean {
