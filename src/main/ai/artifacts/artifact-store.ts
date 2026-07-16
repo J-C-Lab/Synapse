@@ -304,14 +304,6 @@ export class ArtifactStore implements AgentArtifactStore {
 
     await fs.rename(tempPath, finalPath)
 
-    if (!deniedReason) {
-      await this.quotaStore.settle({
-        operationId: `${reserveOperationId}:settle`,
-        reserveOperationId,
-        actualBytes: capturedBytes,
-      })
-    }
-
     const ref: AgentArtifactRef = {
       uri: artifactUri(metadata.runId, artifactId),
       runId: metadata.runId,
@@ -332,6 +324,20 @@ export class ArtifactStore implements AgentArtifactStore {
       owner: metadata.owner,
       delegateToRunIds: [...(metadata.delegateToRunIds ?? [])],
     }
+
+    // The manifest is real bytes on disk too — settle its actual measured
+    // size (matching atomic-json-store.ts's `${JSON.stringify(v, null, 2)}\n`
+    // encoding exactly) alongside the payload in the same settle operation,
+    // rather than leaving metadata unaccounted against the run/global ledger.
+    if (!deniedReason) {
+      const manifestBytes = Buffer.byteLength(`${JSON.stringify(manifest, null, 2)}\n`, "utf-8")
+      await this.quotaStore.settle({
+        operationId: `${reserveOperationId}:settle`,
+        reserveOperationId,
+        actualBytes: capturedBytes + manifestBytes,
+      })
+    }
+
     await writeJsonFile(this.manifestPath(metadata.runId, artifactId), manifest)
     return ref
   }

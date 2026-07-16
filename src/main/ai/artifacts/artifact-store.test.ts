@@ -192,6 +192,7 @@ describe("artifactStore.capture — truncation and allocation limits", () => {
         globalBytes: 10_000,
         minFreeBytes: 0,
         minFreeFraction: 0,
+        manifestReserveBytes: 0,
       },
     })
     const producer = noopProducer()
@@ -214,6 +215,7 @@ describe("artifactStore.capture — truncation and allocation limits", () => {
       globalBytes: 10_000,
       minFreeBytes: 0,
       minFreeFraction: 0,
+      manifestReserveBytes: 0,
     }
     const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk, quotaLimits: limits })
     const ref = await store.capture(bytesOf("0123456789"), metadata(), noopProducer())
@@ -229,6 +231,7 @@ describe("artifactStore.capture — truncation and allocation limits", () => {
       globalBytes: 10_000,
       minFreeBytes: 0,
       minFreeFraction: 0,
+      manifestReserveBytes: 0,
     }
     const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk, quotaLimits: limits })
     await store.capture(bytesOf("0123456789"), metadata(), noopProducer()) // consumes the whole 10-byte run budget
@@ -248,19 +251,45 @@ describe("artifactStore.capture — truncation and allocation limits", () => {
   })
 
   it("truncates at the global ceiling across two different runs and records global-limit", async () => {
-    const limits = {
-      perArtifactBytes: 1000,
-      perRunBytes: 1000,
-      globalBytes: 8,
-      minFreeBytes: 0,
-      minFreeFraction: 0,
-    }
-    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk, quotaLimits: limits })
-    await store.capture(
+    // The manifest's own committed bytes count toward the same global
+    // ledger as the payload (Issue 2 fix), so this test measures the real
+    // manifest overhead first rather than guessing a constant — using the
+    // exact same runId ("run-a") and payload length the real test uses below
+    // so the probe manifest is byte-identical in size to the real one
+    // (every field's length matches: fixed-width sha256 hex, fixed-width
+    // UUID artifactId, identical owner shape, identical capturedBytes digit
+    // count, no truncationReason in either since neither truncates).
+    const probeStore = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    const probeRef = await probeStore.capture(
       bytesOf("12345"),
       metadata({ runId: "run-a", owner: owner({ runId: "run-a", rootRunId: "run-a" }) }),
       noopProducer()
     )
+    const manifestBytes = (await fs.stat(join(dir, "run-a", probeRef.artifactId, "manifest.json")))
+      .size
+    await fs.rm(dir, { recursive: true, force: true })
+    await fs.mkdir(dir, { recursive: true })
+
+    // globalBytes is sized so that after run-a's total commit (5-byte
+    // payload + its manifest) and reserving the same manifest headroom again
+    // for run-b, exactly 3 payload bytes of global room remain for run-b.
+    const limits = {
+      perArtifactBytes: 1_000_000,
+      perRunBytes: 1_000_000,
+      globalBytes: 8 + 2 * manifestBytes,
+      minFreeBytes: 0,
+      minFreeFraction: 0,
+      manifestReserveBytes: manifestBytes,
+    }
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk, quotaLimits: limits })
+    const first = await store.capture(
+      bytesOf("12345"),
+      metadata({ runId: "run-a", owner: owner({ runId: "run-a", rootRunId: "run-a" }) }),
+      noopProducer()
+    )
+    expect(first.complete).toBe(true)
+    expect(first.capturedBytes).toBe(5)
+
     const ref = await store.capture(
       bytesOf("0123456789"),
       metadata({ runId: "run-b", owner: owner({ runId: "run-b", rootRunId: "run-b" }) }),
@@ -269,6 +298,36 @@ describe("artifactStore.capture — truncation and allocation limits", () => {
     expect(ref.complete).toBe(false)
     expect(ref.truncationReason).toBe("global-limit")
     expect(ref.capturedBytes).toBe(3)
+  })
+
+  it("counts the manifest's own disk footprint against the run/global quota, not just the payload (Issue 2)", async () => {
+    const limits = {
+      perArtifactBytes: 1_000_000,
+      perRunBytes: 1_000_000,
+      globalBytes: 1_000_000,
+      minFreeBytes: 0,
+      minFreeFraction: 0,
+      manifestReserveBytes: 4096,
+    }
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk, quotaLimits: limits })
+    const ref = await store.capture(bytesOf("x"), metadata(), noopProducer())
+    expect(ref.complete).toBe(true)
+    expect(ref.capturedBytes).toBe(1)
+
+    // If only the 1-byte payload were counted (the pre-fix bug), a fresh
+    // reservation against the same run would see exactly
+    // (perRunBytes - 1) bytes remaining. A probe reservation with
+    // manifestReserveBytes: 0 (so the probe itself doesn't eat further into
+    // the budget) must see measurably less than that, proving the
+    // manifest's real bytes were committed too.
+    const probe = new ArtifactQuotaStore(dir, ampleDisk)
+    const receipt = await probe.reserve({
+      operationId: "probe-remaining-room",
+      runId: "run-1",
+      artifactId: "probe-artifact",
+      limits: { ...limits, manifestReserveBytes: 0 },
+    })
+    expect(receipt.grantedBytes).toBeLessThan(limits.perRunBytes - 1)
   })
 
   it("denies the reservation outright when free disk space is already below the watermark", async () => {
@@ -281,6 +340,7 @@ describe("artifactStore.capture — truncation and allocation limits", () => {
         globalBytes: 1_000_000,
         minFreeBytes: 50,
         minFreeFraction: 0,
+        manifestReserveBytes: 0,
       },
     })
     const producer = noopProducer()
@@ -302,6 +362,7 @@ describe("artifactStore.capture — truncation and allocation limits", () => {
         globalBytes: 1_000_000,
         minFreeBytes: 500,
         minFreeFraction: 0,
+        manifestReserveBytes: 0,
       },
       // Re-check after every byte so the test doesn't need an 8MiB payload.
       diskRecheckIntervalBytes: 1,
@@ -368,6 +429,7 @@ describe("artifactStore.capture — concurrency", () => {
       globalBytes: 1_000_000,
       minFreeBytes: 0,
       minFreeFraction: 0,
+      manifestReserveBytes: 0,
     }
     const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk, quotaLimits: limits })
     const bigChunk = new Uint8Array(100).fill(65)
@@ -550,6 +612,7 @@ describe("artifactStore.collectEligible", () => {
       globalBytes: 1_000_000,
       minFreeBytes: 0,
       minFreeFraction: 0,
+      manifestReserveBytes: 0,
     }
     // Simulate a crash mid-capture: a reservation was made and a temp file
     // written, but the process died before settle()/rename() ran.

@@ -30,6 +30,15 @@ export interface ArtifactQuotaLimits {
   /** Fraction of the volume's total size to keep free, compared against
    *  `minFreeBytes` — the larger of the two wins. */
   minFreeFraction: number
+  /** Conservative headroom reserved (in addition to the payload grant)
+   *  against the per-run/global/disk constraints for the artifact's own
+   *  `manifest.json` — metadata is real bytes on disk and must count toward
+   *  the same quotas the payload does, not go unaccounted. Never subtracted
+   *  from `perArtifactBytes`, which is a payload-only ceiling; the store
+   *  settles the manifest's *actual* measured size (bounded by this
+   *  headroom) once it's written, so unused headroom is released like any
+   *  other reservation. */
+  manifestReserveBytes: number
 }
 
 /** v1 defaults (design §"Allocation limits and producer control"): 64 MiB
@@ -42,6 +51,10 @@ export const DEFAULT_ARTIFACT_QUOTA_LIMITS: ArtifactQuotaLimits = {
   globalBytes: 2 * 1024 * 1024 * 1024,
   minFreeBytes: 1024 * 1024 * 1024,
   minFreeFraction: 0.05,
+  // A real manifest (uri, ids, sha256 hex, timestamps, owner context,
+  // delegation list) typically serializes to a few hundred bytes; 4 KiB is a
+  // generous, cheap-to-reserve ceiling.
+  manifestReserveBytes: 4096,
 }
 
 export function freeSpaceReserveBytes(totalBytes: number, limits: ArtifactQuotaLimits): number {
@@ -190,11 +203,23 @@ export function reserveArtifactCapacity(
   if (idempotency.replay) return { ledger, receipt: idempotency.receipt }
 
   const run = runUsage(ledger, input.runId)
-  const runRemaining = input.limits.perRunBytes - run.reservedBytes - run.committedBytes
+  const manifestReserve = input.limits.manifestReserveBytes
+  // Every remaining-capacity candidate is narrowed by the manifest headroom
+  // up front — the payload ceiling (perArtifactBytes) is not, since that one
+  // is a payload-only cap. This guarantees the *total* (payload + manifest)
+  // never breaches run/global/disk even though grantedBytes below still
+  // reports the payload-only figure callers truncate their stream against.
+  const runRemaining =
+    input.limits.perRunBytes - run.reservedBytes - run.committedBytes - manifestReserve
   const globalRemaining =
-    input.limits.globalBytes - ledger.globalReservedBytes - ledger.globalCommittedBytes
+    input.limits.globalBytes -
+    ledger.globalReservedBytes -
+    ledger.globalCommittedBytes -
+    manifestReserve
   const diskRemaining =
-    input.disk.freeBytes - freeSpaceReserveBytes(input.disk.totalBytes, input.limits)
+    input.disk.freeBytes -
+    freeSpaceReserveBytes(input.disk.totalBytes, input.limits) -
+    manifestReserve
 
   const candidates: Array<{ bytes: number; reason: QuotaLimitReason }> = [
     { bytes: input.limits.perArtifactBytes, reason: "artifact-limit" },
@@ -216,6 +241,12 @@ export function reserveArtifactCapacity(
     )
   }
 
+  // The ledger reserves the payload grant *plus* the manifest headroom as
+  // one total; settle() later commits the manifest's actual measured size
+  // (clamped to this total), so unused headroom is released exactly like
+  // unused payload capacity.
+  const totalReservedBytes = grantedBytes + manifestReserve
+
   const receipt: ArtifactQuotaOperationReceipt = {
     operationId: input.operationId,
     kind: "reserve",
@@ -229,17 +260,17 @@ export function reserveArtifactCapacity(
   const nextLedger: ArtifactQuotaLedgerV1 = {
     ...ledger,
     revision: ledger.revision + 1,
-    globalReservedBytes: ledger.globalReservedBytes + grantedBytes,
+    globalReservedBytes: ledger.globalReservedBytes + totalReservedBytes,
     runs: {
       ...ledger.runs,
-      [input.runId]: { ...run, reservedBytes: run.reservedBytes + grantedBytes },
+      [input.runId]: { ...run, reservedBytes: run.reservedBytes + totalReservedBytes },
     },
     pendingReservations: {
       ...ledger.pendingReservations,
       [input.operationId]: {
         runId: input.runId,
         artifactId: input.artifactId,
-        bytes: grantedBytes,
+        bytes: totalReservedBytes,
       },
     },
     operations: { ...ledger.operations, [input.operationId]: receipt },

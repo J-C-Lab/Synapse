@@ -25,8 +25,12 @@ const ampleDisk = async () => ({
   totalBytes: 1024 * 1024 * 1024 * 1024,
 })
 
+// manifestReserveBytes defaults to 0 here (unlike production's
+// DEFAULT_ARTIFACT_QUOTA_LIMITS) so every existing exact-byte-math test
+// below keeps working unchanged; tests that specifically exercise manifest
+// accounting override it explicitly.
 function limitsWith(overrides: Partial<typeof DEFAULT_ARTIFACT_QUOTA_LIMITS>) {
-  return { ...DEFAULT_ARTIFACT_QUOTA_LIMITS, ...overrides }
+  return { ...DEFAULT_ARTIFACT_QUOTA_LIMITS, manifestReserveBytes: 0, ...overrides }
 }
 
 describe("freeSpaceReserveBytes", () => {
@@ -161,6 +165,66 @@ describe("artifactQuotaStore.reserve", () => {
       .map((r) => r.value.grantedBytes)
     // 250 total room split across three 100-byte requests: 100 + 100 + 50.
     expect(granted.sort((a, b) => b - a)).toEqual([100, 100, 50])
+  })
+
+  it("serializes concurrent reservations across different runs against the same global boundary so exactly the expected amounts are granted", async () => {
+    const store = new ArtifactQuotaStore(dir, ampleDisk)
+    // Each run individually has ample per-run headroom — only the shared
+    // global boundary (250 bytes) can bind here.
+    const limits = limitsWith({ perArtifactBytes: 100, perRunBytes: 1_000_000, globalBytes: 250 })
+    const results = await Promise.allSettled([
+      store.reserve({ operationId: "op-1", runId: "run-a", artifactId: "art-1", limits }),
+      store.reserve({ operationId: "op-2", runId: "run-b", artifactId: "art-2", limits }),
+      store.reserve({ operationId: "op-3", runId: "run-c", artifactId: "art-3", limits }),
+    ])
+    const fulfilled = results.filter(
+      (r): r is PromiseFulfilledResult<Awaited<ReturnType<ArtifactQuotaStore["reserve"]>>> =>
+        r.status === "fulfilled"
+    )
+    const rejected = results.filter((r) => r.status === "rejected")
+    // 250 total room split across three 100-byte requests: 100 + 100 + 50,
+    // same as the per-run race above but binding on globalBytes instead —
+    // every one of the three still succeeds since each fits (possibly
+    // truncated) under its own run's ample budget.
+    expect(rejected).toHaveLength(0)
+    expect(fulfilled.map((r) => r.value.grantedBytes).sort((a, b) => b - a)).toEqual([100, 100, 50])
+    const smallestGrant = [...fulfilled].sort(
+      (a, b) => a.value.grantedBytes - b.value.grantedBytes
+    )[0]
+    expect(smallestGrant?.value.limitingReason).toBe("global-limit")
+  })
+
+  it("serializes concurrent reservations against a shrinking free-disk watermark so only the amount that still fits succeeds", async () => {
+    // Simulates something else on the machine consuming disk space between
+    // the two reservations: the first sees ample free space, the second
+    // (serialized behind the store's own lock) sees a watermark breach.
+    let call = 0
+    const shrinkingDisk = async () => {
+      call += 1
+      return call === 1
+        ? { freeBytes: 1000, totalBytes: 1_000_000 }
+        : { freeBytes: 10, totalBytes: 1_000_000 }
+    }
+    const store = new ArtifactQuotaStore(dir, shrinkingDisk)
+    const limits = limitsWith({
+      perArtifactBytes: 100,
+      perRunBytes: 1_000_000,
+      globalBytes: 1_000_000,
+      minFreeBytes: 50,
+      minFreeFraction: 0,
+    })
+    const results = await Promise.allSettled([
+      store.reserve({ operationId: "op-1", runId: "run-1", artifactId: "art-1", limits }),
+      store.reserve({ operationId: "op-2", runId: "run-1", artifactId: "art-2", limits }),
+    ])
+    const fulfilled = results.filter((r) => r.status === "fulfilled")
+    const rejected = results.filter((r) => r.status === "rejected")
+    expect(fulfilled).toHaveLength(1)
+    expect(rejected).toHaveLength(1)
+    expect(
+      (fulfilled[0] as PromiseFulfilledResult<{ grantedBytes: number }>).value.grantedBytes
+    ).toBe(100)
+    expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({ reason: "disk-reserve" })
   })
 })
 
