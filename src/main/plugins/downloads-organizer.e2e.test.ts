@@ -89,6 +89,11 @@ describe("downloadsOrganizer", () => {
       category: "documents",
       reason: "pdf document",
     })
+    // recordRun fires only after the durable run's finalization (checkpoint
+    // completion, trace upsert, resource release) has fully settled — unlike
+    // the tool/file assertions below, waiting on this ensures the run's async
+    // fs writes are done before afterEach removes the temp dir.
+    const runRecorded = vi.fn()
     const host = new PluginHost({
       userDataDir: dir,
       resourcesDir: path.resolve("resources"),
@@ -104,6 +109,7 @@ describe("downloadsOrganizer", () => {
         approve: async () => ({ allow: true }),
         prompt: async () => ({ allow: true }),
       },
+      recordRun: runRecorded,
     })
 
     await host.init()
@@ -150,6 +156,8 @@ describe("downloadsOrganizer", () => {
     await expect(
       fs.access(path.join(home, "Downloads", "Documents", "report.pdf"))
     ).rejects.toThrow()
+
+    await vi.waitFor(() => expect(runRecorded).toHaveBeenCalledTimes(1))
   })
 })
 

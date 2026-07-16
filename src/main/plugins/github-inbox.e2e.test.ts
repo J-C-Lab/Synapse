@@ -68,6 +68,11 @@ describe("github inbox plugin", () => {
     }
     const seenTools: ProviderToolSchema[][] = []
     const provider = fakeDigestProvider(seenTools)
+    // recordRun fires only after the durable run's finalization (checkpoint
+    // completion, trace upsert, resource release) has fully settled — unlike
+    // the tool assertions below, waiting on this ensures the run's async fs
+    // writes are done before afterEach removes the temp dir.
+    const runRecorded = vi.fn()
     const host = new PluginHost({
       userDataDir: dir,
       resourcesDir: path.resolve("resources"),
@@ -91,6 +96,7 @@ describe("github inbox plugin", () => {
         prompt: async () => ({ allow: true }),
       },
       backgroundAgentProvider: async () => ({ provider, model: "fake-model" }),
+      recordRun: runRecorded,
     })
     const sandboxDispatch = vi.spyOn(host.sandbox, "dispatchTrigger")
 
@@ -111,6 +117,8 @@ describe("github inbox plugin", () => {
     await vi.waitFor(() => expect(seenTools.length).toBeGreaterThan(0))
     expect(seenTools[0].map((tool) => tool.name)).toContain(GET_INBOX_SNAPSHOT_TOOL_NAME)
     expect(seenTools[0].map((tool) => tool.name)).not.toContain(EXECUTE_GITHUB_ACTION_TOOL_NAME)
+
+    await vi.waitFor(() => expect(runRecorded).toHaveBeenCalledTimes(1))
   })
 })
 
