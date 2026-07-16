@@ -813,6 +813,11 @@ export class AgentService {
       const stopReason: string =
         outcome.kind === "suspended_unknown_tool_outcome" ? "suspended" : outcome.stopReason
       const usage = outcome.checkpoint.usage
+      // A fast provider can finish before the coalescing timer fires. The
+      // terminal event is an ordering boundary, so synchronously drain any
+      // buffered text before publishing `done` instead of relying on the
+      // timer (or the finally block) to win that race.
+      textBatcher.flush()
       this.options.sendEvent({ type: "done", conversationId, stopReason, usage })
       return { stopReason, usage }
     } finally {

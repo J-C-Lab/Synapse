@@ -3,6 +3,7 @@ import type { ChildConfig, ChildScenario } from "./durable-run-child"
 import type { DurableFaultPoint } from "./fault-points"
 import { execFileSync } from "node:child_process"
 import { promises as fs, readFileSync, writeFileSync } from "node:fs"
+import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
 import process from "node:process"
@@ -31,58 +32,32 @@ afterEach(async () => {
   await fs.rm(dir, { recursive: true, force: true })
 })
 
-// pnpm's node_modules/.bin/tsx is a POSIX shebang script; on Windows only
-// the sibling tsx.CMD shim is directly executable by the OS process-creation
-// API. Node special-cases .cmd files on Windows even without `shell: true`,
-// so targeting the right file lets execFileSync pass array args (this repo's
-// own path contains spaces) through untouched rather than needing shell
-// quoting rules.
-const TSX_BIN_NAME = process.platform === "win32" ? "tsx.CMD" : "tsx"
-const TSX_BIN = path.join(
-  __dirname,
-  "..",
-  "..",
-  "..",
-  "..",
-  "..",
-  "node_modules",
-  ".bin",
-  TSX_BIN_NAME
-)
+// Resolve tsx as an explicit root devDependency, then execute its JavaScript
+// entry point with the current Node binary. This avoids depending on a
+// transitive package's pnpm .bin link (absent in a clean CI install) and
+// avoids platform-specific shell/.cmd quoting entirely.
+const TSX_CLI = createRequire(path.join(__dirname, "resolve-tsx.cjs")).resolve("tsx/cli")
 const TSCONFIG = path.join(__dirname, "..", "..", "..", "..", "..", "tsconfig.node.json")
 const CHILD_SCRIPT = path.join(__dirname, "durable-run-child.ts")
 
 interface RunOutcome {
   exitCode: number
-}
-
-/** Node requires `shell: true` to spawn a .cmd/.bat file at all (a
- *  CVE-2024-27980 hardening — EINVAL otherwise), but with `shell: true` on
- *  Windows the args array is joined into one cmd.exe command line WITHOUT
- *  automatic quoting, so a path containing spaces (this repo's own path
- *  does) must be quoted by hand or it splits into multiple arguments. */
-function quoteArg(arg: string): string {
-  return `"${arg.replace(/"/g, '\\"')}"`
+  stderr: string
 }
 
 function runChild(configPath: string): RunOutcome {
   try {
-    execFileSync(
-      quoteArg(TSX_BIN),
-      ["--tsconfig", TSCONFIG, CHILD_SCRIPT, configPath].map(quoteArg),
-      {
-        stdio: "pipe",
-        shell: true,
-      }
-    )
-    return { exitCode: 0 }
+    execFileSync(process.execPath, [TSX_CLI, "--tsconfig", TSCONFIG, CHILD_SCRIPT, configPath], {
+      stdio: "pipe",
+    })
+    return { exitCode: 0, stderr: "" }
   } catch (err) {
     const status = (err as { status?: number | null }).status
+    const stderr = (err as { stderr?: Buffer }).stderr?.toString() ?? ""
     if (status === null || status === undefined) {
-      const stderr = (err as { stderr?: Buffer }).stderr?.toString() ?? ""
       throw new Error(`child process failed to spawn or was killed by a signal: ${stderr}`)
     }
-    return { exitCode: status }
+    return { exitCode: status, stderr }
   }
 }
 
@@ -101,15 +76,19 @@ function crashThenResume(
   const startConfigPath = path.join(baseDir, "config-start.json")
   writeConfig(startConfigPath, { baseDir, runId, scenario, createCheckpoint: true, crashAt })
   const crashResult = runChild(startConfigPath)
-  expect(crashResult.exitCode, `expected a simulated crash at ${faultPointId(crashAt)}`).toBe(
-    SIMULATED_CRASH_EXIT_CODE
-  )
+  expect(
+    crashResult.exitCode,
+    `expected a simulated crash at ${faultPointId(crashAt)}${crashResult.stderr ? `\n${crashResult.stderr}` : ""}`
+  ).toBe(SIMULATED_CRASH_EXIT_CODE)
   expect(existsSync(path.join(baseDir, "result.json"))).toBe(false)
 
   const resumeConfigPath = path.join(baseDir, "config-resume.json")
   writeConfig(resumeConfigPath, { baseDir, runId, scenario, createCheckpoint: false })
   const resumeResult = runChild(resumeConfigPath)
-  expect(resumeResult.exitCode, `resume after crashing at ${faultPointId(crashAt)}`).toBe(0)
+  expect(
+    resumeResult.exitCode,
+    `resume after crashing at ${faultPointId(crashAt)}${resumeResult.stderr ? `\n${resumeResult.stderr}` : ""}`
+  ).toBe(0)
 }
 
 function existsSync(p: string): boolean {
