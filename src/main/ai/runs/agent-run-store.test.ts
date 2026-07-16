@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
   AgentRunStore,
   CheckpointCorruptionError,
+  IllegalStatusTransitionError,
   InvalidRunIdError,
   RunNotFoundError,
   StaleRevisionError,
@@ -163,6 +164,51 @@ describe("agentRunStore — expectedRevision CAS", () => {
     expect(fulfilled).toHaveLength(1)
     expect(rejected).toHaveLength(1)
     expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(StaleRevisionError)
+  })
+})
+
+describe("agentRunStore — mutate() output validation", () => {
+  it("rejects an illegal status transition and leaves the checkpoint unchanged", async () => {
+    const store = new AgentRunStore(dir)
+    const created = await store.create(checkpoint("run-1"))
+    // "created" may only go to "running" or "terminalizing" — jumping
+    // straight to "completed" skips the whole finalization state machine.
+    await expect(
+      store.mutate(created.identity.runId, 1, (cp) => ({ ...cp, status: "completed" }))
+    ).rejects.toThrow(IllegalStatusTransitionError)
+
+    const current = await store.load("run-1")
+    expect(current.ok && current.checkpoint.status).toBe("created")
+    expect(current.ok && current.checkpoint.revision).toBe(1)
+  })
+
+  it("never rejects a mutation that leaves status unchanged, regardless of the transition table", async () => {
+    const store = new AgentRunStore(dir)
+    const created = await store.create(checkpoint("run-1"))
+    // "created" -> "created" isn't a listed edge in RUN_STATUS_TRANSITIONS —
+    // proves the check only fires when status actually changes.
+    const mutated = await store.mutate(created.identity.runId, 1, (cp) => ({
+      ...cp,
+      nextStep: 1,
+    }))
+    expect(mutated.status).toBe("created")
+    expect(mutated.nextStep).toBe(1)
+  })
+
+  it("rejects a mutator whose output is a structurally invalid checkpoint, without writing it", async () => {
+    const store = new AgentRunStore(dir)
+    const created = await store.create(checkpoint("run-1"))
+    await expect(
+      store.mutate(
+        created.identity.runId,
+        1,
+        (cp) => ({ ...cp, usage: { ...cp.usage, inputTokens: -1 } }) as AgentRunCheckpointV1
+      )
+    ).rejects.toThrow(CheckpointCorruptionError)
+
+    const current = await store.load("run-1")
+    expect(current.ok && current.checkpoint.usage.inputTokens).toBe(0)
+    expect(current.ok && current.checkpoint.revision).toBe(1)
   })
 })
 

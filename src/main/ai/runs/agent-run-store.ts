@@ -5,6 +5,7 @@ import * as path from "node:path"
 import { isTerminalRunStatus } from "@synapse/agent-protocol"
 import { writeJsonFile } from "../../lan/atomic-json-store"
 import { validateCheckpoint } from "./checkpoint-schema"
+import { RUN_STATUS_TRANSITIONS } from "./run-types"
 
 // The authoritative recovery store: <baseDir>/<runId>/checkpoint.json
 // (design §"Durable checkpoint store"). Every mutation requires the caller's
@@ -48,6 +49,17 @@ export class CheckpointCorruptionError extends Error {
   constructor(message: string) {
     super(message)
     this.name = "CheckpointCorruptionError"
+  }
+}
+
+export class IllegalStatusTransitionError extends Error {
+  constructor(
+    runId: string,
+    public readonly from: AgentRunStatus,
+    public readonly to: AgentRunStatus
+  ) {
+    super(`run ${runId}: illegal status transition ${from} -> ${to}`)
+    this.name = "IllegalStatusTransitionError"
   }
 }
 
@@ -114,9 +126,31 @@ export class AgentRunStore {
         throw new StaleRevisionError(expectedRevision, validated.checkpoint.revision)
       }
       const mutated = mutator(validated.checkpoint)
+      // The base transition table only — never the extra ctx-gated
+      // preconditions (hasRecoveryDecision, childOwnershipResolved,
+      // finalizationPhase), which mutate() has no way to know and which
+      // callers that actually drive a transition (agent-run-recovery-
+      // service.ts, run-finalizer.ts) already check with full context
+      // before ever calling mutate(). This is a structural safety net
+      // underneath that: no mutator, however it got here, can silently
+      // persist a status jump the state machine itself never allows (e.g.
+      // "waiting_approval" straight to "completed", skipping
+      // "terminalizing").
+      if (
+        mutated.status !== validated.checkpoint.status &&
+        !RUN_STATUS_TRANSITIONS[validated.checkpoint.status].includes(mutated.status)
+      ) {
+        throw new IllegalStatusTransitionError(runId, validated.checkpoint.status, mutated.status)
+      }
       const next: AgentRunCheckpointV1 = { ...mutated, revision: expectedRevision + 1 }
+      const revalidated = validateCheckpoint(next)
+      if (!revalidated.ok) {
+        throw new CheckpointCorruptionError(
+          `mutator for run ${runId} produced an invalid checkpoint: ${revalidated.reason}`
+        )
+      }
       await writeJsonFile(this.checkpointPath(runId), next)
-      return next
+      return revalidated.checkpoint
     })
   }
 

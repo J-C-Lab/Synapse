@@ -118,4 +118,229 @@ describe("validateCheckpoint", () => {
     const bad = { ...minimalCheckpoint(), modelSteps: {} }
     expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
   })
+
+  it("rejects an unrecognized run origin", () => {
+    const checkpoint = minimalCheckpoint()
+    const bad = { ...checkpoint, identity: { ...checkpoint.identity, origin: "not-a-real-origin" } }
+    expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("rejects a recovery disposition with an unrecognized review reason", () => {
+    const bad = {
+      ...minimalCheckpoint(),
+      recovery: { kind: "requires_review", reason: "not-a-real-reason" },
+    }
+    expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("rejects a recovery disposition with an unrecognized blocked reason", () => {
+    const bad = { ...minimalCheckpoint(), recovery: { kind: "blocked", reason: "made-up" } }
+    expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("accepts every real recovery disposition shape", () => {
+    expect(validateCheckpoint({ ...minimalCheckpoint(), recovery: { kind: "automatic" } }).ok).toBe(
+      true
+    )
+    expect(
+      validateCheckpoint({
+        ...minimalCheckpoint(),
+        recovery: { kind: "requires_review", reason: "authority-narrowed" },
+      }).ok
+    ).toBe(true)
+    expect(
+      validateCheckpoint({
+        ...minimalCheckpoint(),
+        recovery: { kind: "blocked", reason: "deadline-expired" },
+      }).ok
+    ).toBe(true)
+  })
+
+  it("rejects a context-compression fraction outside 0..1", () => {
+    const checkpoint = minimalCheckpoint()
+    const bad = {
+      ...checkpoint,
+      config: {
+        ...checkpoint.config,
+        contextCompression: { ...checkpoint.config.contextCompression, keepRecentFraction: 1.5 },
+      },
+    }
+    expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("rejects a negative token count in the frozen resolved profile", () => {
+    const checkpoint = minimalCheckpoint()
+    const bad = {
+      ...checkpoint,
+      config: {
+        ...checkpoint.config,
+        resolvedProfile: { ...checkpoint.config.resolvedProfile, contextWindowTokens: -1 },
+      },
+    }
+    expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("rejects a forged tool authority entry with an unrecognized provenance", () => {
+    const checkpoint = minimalCheckpoint()
+    const bad = {
+      ...checkpoint,
+      config: {
+        ...checkpoint.config,
+        authority: {
+          ...checkpoint.config.authority,
+          tools: [
+            {
+              fqName: "x",
+              safeName: "x",
+              provenance: "forged",
+              ownerId: "o",
+              ownerVersion: "1",
+              modelSchemaHash: "h",
+              annotationsHash: "h",
+              invocationAdapterId: "a",
+              invocationAdapterVersion: "1",
+              replayGuarantee: "none",
+            },
+          ],
+        },
+      },
+    }
+    expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("rejects a context snapshot missing its aggregate hash", () => {
+    const checkpoint = minimalCheckpoint()
+    const { aggregateHash: _drop, ...contextWithoutHash } = checkpoint.config.context
+    const bad = {
+      ...checkpoint,
+      config: { ...checkpoint.config, context: contextWithoutHash },
+    }
+    expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("rejects a durable message with an unrecognized role", () => {
+    const bad = {
+      ...minimalCheckpoint(),
+      messages: [{ messageId: "m1", message: { role: "system", content: [] } }],
+    }
+    expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("rejects a tool batch whose ordinals are not exactly 0..n-1 in order", () => {
+    const bad = {
+      ...minimalCheckpoint(),
+      toolBatches: [
+        {
+          modelStep: 0,
+          assistantMessageId: "a1",
+          resultCarrierMessageId: "r1",
+          calls: [
+            {
+              ordinal: 1,
+              toolUseId: "t1",
+              safeName: "x",
+              fqName: "x",
+              input: {},
+              annotations: {},
+              replayGuarantee: "none",
+              approval: { status: "not_required" },
+              attempts: [],
+              resolution: { status: "unresolved" },
+            },
+          ],
+        },
+      ],
+    }
+    expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("rejects a model attempt with an unrecognized budget-admission state", () => {
+    const bad = {
+      ...minimalCheckpoint(),
+      modelSteps: [
+        {
+          step: 0,
+          attempts: [
+            {
+              attemptId: "a1",
+              requestHash: "h1",
+              state: "prepared",
+              admission: {
+                operationId: "op1",
+                accountId: "root",
+                estimatorId: "e",
+                estimatorVersion: "1",
+                inputUpperBoundTokens: 0,
+                maxOutputTokens: 0,
+                heldTokens: 0,
+                state: "not-a-real-state",
+              },
+            },
+          ],
+        },
+      ],
+    }
+    expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("rejects a finalization ledger with an unrecognized phase", () => {
+    const bad = {
+      ...minimalCheckpoint(),
+      finalization: {
+        finalizationId: "f1",
+        desiredStatus: "completed",
+        phase: "not-a-real-phase",
+        outcome: "end_turn",
+        stopReason: "end_turn",
+        endedAt: 1,
+        trace: {
+          runId: "run-1",
+          origin: "interactive",
+          startedAt: 1,
+          endedAt: 1,
+          outcome: "end_turn",
+          toolCalls: [],
+        },
+        traceHash: "h",
+        resourceReleasePlan: {
+          budgetOperationIds: [],
+          skillPackageLeaseIds: [],
+          releaseArtifactRunPin: false,
+          adoptionLeaseIds: [],
+        },
+      },
+    }
+    expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("accepts a well-formed finalization ledger", () => {
+    const good = {
+      ...minimalCheckpoint(),
+      finalization: {
+        finalizationId: "f1",
+        desiredStatus: "completed",
+        phase: "complete",
+        outcome: "end_turn",
+        stopReason: "end_turn",
+        endedAt: 1,
+        trace: {
+          runId: "run-1",
+          origin: "interactive",
+          startedAt: 1,
+          endedAt: 1,
+          outcome: "end_turn",
+          toolCalls: [],
+        },
+        traceHash: "h",
+        resourceReleasePlan: {
+          budgetOperationIds: [],
+          skillPackageLeaseIds: [],
+          releaseArtifactRunPin: false,
+          adoptionLeaseIds: [],
+        },
+        conversationReceipt: { status: "skipped", reason: "no-conversation" },
+      },
+    }
+    expect(validateCheckpoint(good).ok).toBe(true)
+  })
 })
