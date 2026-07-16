@@ -1124,11 +1124,22 @@ async function createAgentService(): Promise<AgentService> {
                 modelSchema: schema,
               })),
             })
-          : rebuildRecoveryAuthority(
-              checkpoint,
-              agentTools,
-              parent?.ok ? parent.checkpoint : undefined
-            )
+          : checkpoint.identity.origin === "background-agent" &&
+              checkpoint.identity.pluginId !== undefined &&
+              !plugins.currentActiveIdentityForPlugin(checkpoint.identity.pluginId)
+            ? freezeAuthoritySnapshot({
+                // Deliberately different from the frozen principal: this
+                // feeds classifier's authority-revoked branch before any
+                // automatic continuation can re-enter a disabled plugin.
+                principal: { kind: "revoked-plugin", actor: "background" },
+                capabilities: [],
+                tools: [],
+              })
+            : rebuildRecoveryAuthority(
+                checkpoint,
+                agentTools,
+                parent?.ok ? parent.checkpoint : undefined
+              )
       return {
         currentAuthority,
         conversationExists,
