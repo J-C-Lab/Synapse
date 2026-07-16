@@ -186,6 +186,13 @@ export class AgentService {
   private readonly pendingApprovals = new Map<string, PendingApproval>()
   private readonly conversationAllow = new Map<string, Set<string>>()
   private readonly permanentAllow = new Set<string>()
+  /** Process-local execution ownership. A recovered checkpoint may be
+   * requested by startup and an IPC click concurrently; only the first
+   * driver may enter provider/tool execution for a run id. */
+  private readonly continuingRuns = new Map<
+    string,
+    Promise<{ stopReason: string; usage: TokenUsage }>
+  >()
   private permanentAllowLoaded = false
   private startupReconciliation: Promise<void> | undefined
 
@@ -570,7 +577,22 @@ export class AgentService {
    *  the startup auto-resume orchestrator and by the `runs:resume` IPC
    *  handler, never awaited by their callers — a slow resumed turn must never
    *  block the caller. */
-  async continueRun(runId: string): Promise<{ stopReason: string; usage: TokenUsage }> {
+  continueRun(runId: string): Promise<{ stopReason: string; usage: TokenUsage }> {
+    const existing = this.continuingRuns.get(runId)
+    if (existing) return existing
+    const run = this.continueRunOwned(runId)
+    this.continuingRuns.set(runId, run)
+    void run
+      .finally(() => {
+        if (this.continuingRuns.get(runId) === run) this.continuingRuns.delete(runId)
+      })
+      .catch(() => {})
+    return run
+  }
+
+  private async continueRunOwned(
+    runId: string
+  ): Promise<{ stopReason: string; usage: TokenUsage }> {
     const result = await this.options.runStore.load(runId)
     if (!result.ok) {
       throw new Error(`cannot continue run ${runId}: checkpoint is ${result.reason}`)
