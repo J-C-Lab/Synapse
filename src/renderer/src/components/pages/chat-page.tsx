@@ -52,6 +52,7 @@ import {
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import { Textarea } from "@/components/ui/textarea"
 import { WorkspaceSwitcher } from "@/components/workspace-switcher"
+import { useRunSnapshot } from "@/hooks/use-run-snapshot"
 import {
   approveAiTool,
   createAiConversation,
@@ -60,12 +61,18 @@ import {
   getAiStatus,
   isElectron,
   listAiConversations,
+  listRecoverableRuns,
   onAiChatEvent,
   sendAiChat,
   setAiKey,
 } from "@/lib/electron"
 import { cn } from "@/lib/utils"
-import { applyEvent, flushTextIntoBlocks, hydrateMessages } from "./chat-message-model"
+import {
+  applyEvent,
+  flushTextIntoBlocks,
+  hydrateMessages,
+  mergeDurableRunSnapshot,
+} from "./chat-message-model"
 
 interface PendingApproval {
   approvalId: string
@@ -100,12 +107,14 @@ export function ChatPage({
   const [planSteps, setPlanSteps] = useState<PlanStep[]>([])
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
   const [liveText, setLiveText] = useState("")
+  const [activeRunId, setActiveRunId] = useState<string | undefined>(undefined)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
   const liveTextRef = useRef("")
   const liveTextRafRef = useRef<number | null>(null)
   const sidebarPanelRef = useRef<ImperativePanelHandle>(null)
   const conversationIdRef = useRef(conversationId)
+  const runSnapshot = useRunSnapshot(activeRunId)
 
   useEffect(() => {
     conversationIdRef.current = conversationId
@@ -203,6 +212,12 @@ export function ChatPage({
     return onAiChatEvent(handleEvent)
   }, [handleEvent])
 
+  useEffect(() => {
+    if (!runSnapshot) return
+    setMessages((previous) => mergeDurableRunSnapshot(previous, runSnapshot))
+    setPlanSteps(runSnapshot.plan ?? [])
+  }, [runSnapshot])
+
   async function selectConversation(id: string) {
     if (id === conversationId || busy) return
     setConversationId(id)
@@ -216,6 +231,16 @@ export function ChatPage({
     setMessages(stored ? hydrateMessages(stored.messages) : [])
     setActiveWorkspaceId(stored?.workspaceId ?? "default")
     setPlanSteps(stored?.plan ?? [])
+    // A conversation can have at most one live durable interactive run (its
+    // fenced lease). On a renderer restart it will not emit a legacy
+    // ai:chat event again, so locate it through the durable recovery scan and
+    // let useRunSnapshot rebuild the in-flight cards from checkpoint + event
+    // cursor. Terminal traces are intentionally not used for this purpose.
+    const recoverable = await listRecoverableRuns()
+    const active = recoverable
+      .filter((run) => run.conversationId === id)
+      .sort((a, b) => b.updatedAt - a.updatedAt)[0]
+    setActiveRunId(active?.runId)
     setConversationLocked(true)
   }
 
@@ -246,6 +271,7 @@ export function ChatPage({
     setApproval(null)
     setPlanSteps([])
     setStreamingMessageId(null)
+    setActiveRunId(undefined)
     liveTextRef.current = ""
     setLiveText("")
   }

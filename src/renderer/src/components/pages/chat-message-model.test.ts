@@ -1,7 +1,13 @@
+import type { AgentRunSnapshot } from "@synapse/agent-protocol"
 import type { DisplayMessage } from "./chat-message-model"
 import type { AiChatEvent, AiChatMessage } from "@/lib/electron"
 import { describe, expect, it } from "vitest"
-import { applyEvent, flushTextIntoBlocks, hydrateMessages } from "./chat-message-model"
+import {
+  applyEvent,
+  flushTextIntoBlocks,
+  hydrateMessages,
+  mergeDurableRunSnapshot,
+} from "./chat-message-model"
 
 describe("hydrateMessages", () => {
   it("rebuilds user and assistant bubbles with tool cards, in original order", () => {
@@ -192,5 +198,59 @@ describe("live-streaming event ordering", () => {
     expect(result[1]?.blocks).toEqual([
       { kind: "text", text: "working on it\n\n⚠️ connection lost" },
     ])
+  })
+})
+
+describe("durable snapshot rehydration", () => {
+  const snapshot: AgentRunSnapshot = {
+    identity: { runId: "run-1", rootRunId: "run-1", origin: "interactive", conversationId: "c1" },
+    status: "waiting_approval",
+    recovery: { kind: "automatic" },
+    lastSequence: 12,
+    createdAt: 1,
+    updatedAt: 2,
+    pendingApprovalIds: ["approval-1"],
+    childTasks: [],
+    artifacts: [],
+    messages: [],
+    toolCalls: [
+      {
+        ordinal: 0,
+        modelStep: 0,
+        toolUseId: "tool-1",
+        safeName: "read_file",
+        fqName: "read_file",
+        status: "pending_approval",
+      },
+    ],
+  }
+
+  it("rehydrates an in-flight tool card exactly once across a snapshot and duplicate live event", () => {
+    const restored = mergeDurableRunSnapshot(startingState(), snapshot)
+    const afterDuplicate = applyEvent(restored, {
+      type: "tool_call",
+      conversationId: CONVERSATION_ID,
+      id: "tool-1",
+      name: "read_file",
+      input: { path: "secret" },
+    })
+
+    const cards = afterDuplicate.flatMap((message) =>
+      message.blocks.filter((block) => block.kind === "tool" && block.id === "tool-1")
+    )
+    expect(cards).toEqual([
+      { kind: "tool", id: "tool-1", name: "read_file", input: {}, status: "running" },
+    ])
+  })
+
+  it("updates the rehydrated card when a later durable snapshot resolves it", () => {
+    const restored = mergeDurableRunSnapshot(startingState(), snapshot)
+    const completed = mergeDurableRunSnapshot(restored, {
+      ...snapshot,
+      toolCalls: [{ ...snapshot.toolCalls[0]!, status: "completed", isError: true }],
+    })
+    expect(completed.flatMap((message) => message.blocks)).toContainEqual(
+      expect.objectContaining({ kind: "tool", id: "tool-1", status: "error" })
+    )
   })
 })

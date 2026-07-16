@@ -1,3 +1,4 @@
+import type { AgentRunSnapshot } from "@synapse/agent-protocol"
 import type { AiChatEvent, AiChatMessage } from "@/lib/electron"
 
 // Display model for the chat view, plus a mapper from the stored provider-neutral
@@ -101,6 +102,16 @@ export function applyEvent(messages: DisplayMessage[], event: AiChatEvent): Disp
 
   switch (event.type) {
     case "tool_call":
+      // A renderer can receive a legacy live event after it has already
+      // rehydrated the same durable tool ordinal from a run snapshot. Never
+      // create a second card for that toolUseId.
+      if (
+        next.some((message) =>
+          message.blocks.some((block) => block.kind === "tool" && block.id === event.id)
+        )
+      ) {
+        break
+      }
       next[lastIndex] = {
         ...last,
         blocks: [
@@ -133,6 +144,63 @@ export function applyEvent(messages: DisplayMessage[], event: AiChatEvent): Disp
       break
   }
   return next
+}
+
+/**
+ * Adds the renderer-safe portion of an in-flight durable run to an existing
+ * conversation transcript. The snapshot intentionally does not expose tool
+ * inputs/results, so cards recovered before conversation finalization carry
+ * an empty input and only their durable status. Once the normal conversation
+ * projection is available, its richer card replaces this placeholder by the
+ * shared toolUseId instead of producing a duplicate card.
+ */
+export function mergeDurableRunSnapshot(
+  messages: DisplayMessage[],
+  snapshot: AgentRunSnapshot
+): DisplayMessage[] {
+  const snapshotCalls = new Map(snapshot.toolCalls.map((call) => [call.toolUseId, call]))
+  const existingToolIds = new Set<string>()
+  const withUpdatedStatuses = messages.map((message) => ({
+    ...message,
+    blocks: message.blocks.map((block) => {
+      if (block.kind !== "tool") return block
+      existingToolIds.add(block.id)
+      const durable = snapshotCalls.get(block.id)
+      return durable ? { ...block, status: toolCardStatus(durable) } : block
+    }),
+  }))
+
+  const missing = snapshot.toolCalls.filter((call) => !existingToolIds.has(call.toolUseId))
+  if (missing.length === 0) return withUpdatedStatuses
+
+  const byStep = new Map<number, AgentRunSnapshot["toolCalls"]>()
+  for (const call of missing) {
+    const calls = byStep.get(call.modelStep) ?? []
+    calls.push(call)
+    byStep.set(call.modelStep, calls)
+  }
+
+  const next = withUpdatedStatuses.slice()
+  for (const [step, calls] of [...byStep.entries()].sort(([a], [b]) => a - b)) {
+    next.push({
+      id: `durable-run:${snapshot.identity.runId}:step:${step}`,
+      role: "assistant",
+      blocks: calls.map((call) => ({
+        kind: "tool",
+        id: call.toolUseId,
+        name: call.safeName,
+        input: {},
+        status: toolCardStatus(call),
+      })),
+    })
+  }
+  return next
+}
+
+function toolCardStatus(call: AgentRunSnapshot["toolCalls"][number]): ToolCard["status"] {
+  if (call.status === "completed") return call.isError ? "error" : "success"
+  if (call.status === "denied" || call.status === "unknown") return "error"
+  return "running"
 }
 
 function textOf(message: AiChatMessage): string {
