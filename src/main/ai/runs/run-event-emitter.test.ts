@@ -107,4 +107,21 @@ describe("createRunEventEmitter", () => {
     expect(onEvent).toHaveBeenCalledTimes(1)
     expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ text: "second", sequence: 1 }))
   })
+
+  it("starts the driver when the prior observational journal cannot be read", async () => {
+    const append = vi
+      .fn<(runId: string, event: AgentRunEvent) => Promise<void>>()
+      .mockResolvedValue(undefined)
+    const emitter = await createRunEventEmitter(
+      { readAll: async () => Promise.reject(new Error("corrupt journal")), append },
+      { runId: "run-4", rootRunId: "run-4" },
+      () => 10,
+      () => "event-id"
+    )
+
+    await expect(
+      emitter.emit({ type: "run_started", origin: "interactive" })
+    ).resolves.toBeUndefined()
+    expect(append).toHaveBeenCalledWith("run-4", expect.objectContaining({ sequence: 1 }))
+  })
 })

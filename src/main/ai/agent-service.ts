@@ -466,10 +466,12 @@ export class AgentService {
     return { id, workspaceId }
   }
 
-  /** Delete a stored conversation. Cancels it first if a turn is in flight. */
+  /** Delete is a durable user decision: write the tombstone before signalling
+   * an in-process cancellation, so a crash between the two can never let the
+   * old run revive the conversation on startup. */
   async deleteConversation(id: string): Promise<void> {
-    this.cancel(id)
     await this.options.conversations.delete(id)
+    this.cancel(id)
   }
 
   /** Run one chat turn, streaming events. Resolves when the turn completes.

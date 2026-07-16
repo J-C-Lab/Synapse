@@ -58,7 +58,16 @@ export async function createRunEventEmitter(
    *  itself is written first and this hook second. */
   onEvent?: (event: AgentRunEvent) => void
 ): Promise<RunEventEmitter> {
-  const existing = await store.readAll(identity.runId)
+  // The journal is observational. A corrupt/unreadable prior projection
+  // must not prevent the checkpoint-authoritative driver from recovering;
+  // start a fresh in-memory sequence and let append's own boundary decide
+  // whether subsequent observations can be persisted.
+  let existing: AgentRunEvent[] = []
+  try {
+    existing = await store.readAll(identity.runId)
+  } catch {
+    existing = []
+  }
   let sequence = existing.length > 0 ? existing[existing.length - 1]!.sequence : 0
 
   return {

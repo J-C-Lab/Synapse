@@ -23,40 +23,62 @@ export function useRunSnapshot(runId: string | undefined): AgentRunSnapshot | un
 
     let alive = true
     let catchingUp = false
+    let requestedThrough = 0
+    const bufferedEvents: import("@synapse/agent-protocol").AgentRunEvent[] = []
 
-    async function catchUp(fromSequence: number): Promise<void> {
-      // A gap event arriving while an earlier catch-up is still in flight is
-      // expected (more events kept arriving) — the in-flight call will pick
-      // up everything once it re-reads the current lastSequence next time.
-      if (catchingUp) return
-      catchingUp = true
-      try {
-        const events = await getRunEventsSince(id, fromSequence)
-        for (const event of events) {
-          if (!stateRef.current) return
-          const outcome = applyRunEvent(stateRef.current, event)
-          if (outcome.kind === "applied") stateRef.current = outcome.state
-        }
-        if (alive && stateRef.current) setSnapshot(stateRef.current.snapshot)
-      } finally {
-        catchingUp = false
+    function publish(): void {
+      if (alive && stateRef.current) setSnapshot(stateRef.current.snapshot)
+    }
+
+    function apply(event: import("@synapse/agent-protocol").AgentRunEvent): void {
+      if (!stateRef.current) {
+        bufferedEvents.push(event)
+        return
+      }
+      const outcome = applyRunEvent(stateRef.current, event)
+      if (outcome.kind === "applied") {
+        stateRef.current = outcome.state
+        publish()
+      } else if (outcome.kind === "gap") {
+        requestedThrough = Math.max(requestedThrough, event.sequence)
+        void catchUp()
       }
     }
+
+    async function catchUp(): Promise<void> {
+      if (catchingUp || !stateRef.current) return
+      catchingUp = true
+      try {
+        do {
+          const state = stateRef.current
+          if (!state) return
+          requestedThrough = 0
+          const events = (await getRunEventsSince(id, state.snapshot.lastSequence)) ?? []
+          for (const event of events) apply(event)
+          publish()
+          // A live event can arrive after getRunEventsSince's read but before
+          // this loop reaches finally. Its gap raises requestedThrough again,
+          // so keep draining until no later sequence remains requested.
+        } while (stateRef.current && requestedThrough > stateRef.current.snapshot.lastSequence)
+      } finally {
+        catchingUp = false
+        if (stateRef.current && requestedThrough > stateRef.current.snapshot.lastSequence) {
+          void catchUp()
+        }
+      }
+    }
+
+    // Subscribe first. Events arriving while the snapshot request is in
+    // flight are buffered and merged after its durable sequence watermark,
+    // closing the otherwise permanent snapshot/subscribe race window.
+    const unsubscribe = onRunEvent(apply)
 
     void getRunSnapshot(id).then((initial) => {
       if (!alive || !initial) return
       stateRef.current = initRunSnapshotReducerState(initial)
       setSnapshot(initial)
-    })
-
-    const unsubscribe = onRunEvent((event) => {
-      if (!stateRef.current) return
-      const outcome = applyRunEvent(stateRef.current, event)
-      if (outcome.kind === "applied") {
-        stateRef.current = outcome.state
-        setSnapshot(outcome.state.snapshot)
-      } else if (outcome.kind === "gap") {
-        void catchUp(outcome.state.snapshot.lastSequence)
+      for (const event of bufferedEvents.splice(0).sort((a, b) => a.sequence - b.sequence)) {
+        apply(event)
       }
     })
 
