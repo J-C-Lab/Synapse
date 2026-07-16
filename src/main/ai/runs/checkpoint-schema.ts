@@ -164,6 +164,10 @@ export interface ModelBudgetAdmission {
   state: "planned" | "held" | "settled" | "forfeited"
   ledgerRevision?: number
   actualTokens?: number
+  /** Set atomically with budget_settled when actual usage exceeded the
+   * estimator hold. This is a durable circuit-breaker fact, never a stack
+   * local returned only to the first process that observed settlement. */
+  estimatorIncompatible?: boolean
 }
 
 export interface ModelRequestAttempt {
@@ -943,6 +947,7 @@ function isValidModelBudgetAdmission(v: unknown): boolean {
   if (!isString(v.state) || !KNOWN_ADMISSION_STATES.has(v.state)) return false
   if (v.ledgerRevision !== undefined && !isNonNegativeInteger(v.ledgerRevision)) return false
   if (v.actualTokens !== undefined && !isNonNegativeInteger(v.actualTokens)) return false
+  if (v.estimatorIncompatible !== undefined && !isBoolean(v.estimatorIncompatible)) return false
   return true
 }
 

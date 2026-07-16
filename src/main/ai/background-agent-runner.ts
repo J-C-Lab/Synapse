@@ -142,6 +142,9 @@ export class BackgroundAgentRunner {
             budgetStore: this.options.budgetStore,
             provider: this.options.provider,
             tools: () => tools.list(),
+            assertEstimatorAllowed: async (cp) => {
+              await this.options.estimatorQuarantine?.assertAllowed(cp.config.resolvedProfile)
+            },
             now: this.now,
             maxSteps: checkpoint.config.maxSteps,
             signal: controller.signal,

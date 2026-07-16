@@ -36,6 +36,10 @@ export function estimatorQuarantineFilePath(userDataDir: string): string {
  * admission, and `clear()` supports an explicit operator override. */
 export class EstimatorQuarantineStore {
   private data: EstimatorQuarantineFileV1 | undefined
+  /** File updates are read-modify-write operations. Keep every read that
+   * participates in an admission or mutation behind one in-process queue so
+   * simultaneous estimator failures cannot overwrite one another. */
+  private mutation: Promise<void> = Promise.resolve()
 
   constructor(
     private readonly filePath: string,
@@ -43,30 +47,54 @@ export class EstimatorQuarantineStore {
   ) {}
 
   async assertAllowed(profile: ModelCapabilityProfile): Promise<void> {
-    const record = await this.find(profile)
-    if (record) throw new EstimatorProfileQuarantinedError(record)
+    await this.serialized(async () => {
+      const record = await this.find(profile)
+      if (record) throw new EstimatorProfileQuarantinedError(record)
+    })
   }
 
   async quarantine(profile: ModelCapabilityProfile): Promise<void> {
-    const data = await this.load()
-    const record: EstimatorQuarantineRecord = {
-      profileId: profile.profileId,
-      providerId: profile.providerId,
-      modelPattern: profile.modelPattern,
-      estimatorId: profile.tokenBudgeting.upperBoundEstimatorId,
-      estimatorVersion: profile.tokenBudgeting.upperBoundEstimatorVersion,
-      quarantinedAt: this.now(),
-    }
-    const records = data.records.filter((existing) => !sameEstimator(existing, profile))
-    await this.persist({ schemaVersion: 1, records: [...records, record] })
+    await this.serialized(async () => {
+      const data = await this.load()
+      const record: EstimatorQuarantineRecord = {
+        profileId: profile.profileId,
+        providerId: profile.providerId,
+        modelPattern: profile.modelPattern,
+        estimatorId: profile.tokenBudgeting.upperBoundEstimatorId,
+        estimatorVersion: profile.tokenBudgeting.upperBoundEstimatorVersion,
+        quarantinedAt: this.now(),
+      }
+      const records = data.records.filter((existing) => !sameEstimator(existing, profile))
+      await this.persist({ schemaVersion: 1, records: [...records, record] })
+    })
   }
 
   async clear(profile: ModelCapabilityProfile): Promise<void> {
-    const data = await this.load()
-    await this.persist({
-      schemaVersion: 1,
-      records: data.records.filter((record) => !sameEstimator(record, profile)),
+    await this.serialized(async () => {
+      const data = await this.load()
+      await this.persist({
+        schemaVersion: 1,
+        records: data.records.filter((record) => !sameEstimator(record, profile)),
+      })
     })
+  }
+
+  private async serialized<T>(operation: () => Promise<T>): Promise<T> {
+    let release!: () => void
+    const done = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const previous = this.mutation
+    this.mutation = previous.then(
+      () => done,
+      () => done
+    )
+    await previous
+    try {
+      return await operation()
+    } finally {
+      release()
+    }
   }
 
   private async find(

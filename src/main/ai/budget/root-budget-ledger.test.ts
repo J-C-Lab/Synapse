@@ -9,6 +9,7 @@ import {
   freeBalance,
   InsufficientBudgetError,
   InvalidRootRunIdError,
+  reconcileAbandonedChildAccount,
   reserveChildAccount,
   ROOT_ACCOUNT_ID,
   RootBudgetLedgerNotFoundError,
@@ -138,6 +139,35 @@ describe("reserveChildAccount", () => {
   })
 })
 
+describe("reconcileAbandonedChildAccount", () => {
+  it("returns unused reservation and conservatively charges a corrupt child's held work", () => {
+    const reserved = reserveChildAccount(createRootBudgetLedger("root-run-1", 1000), {
+      operationId: "reserve-child",
+      accountId: "child-1",
+      taskId: "child-1",
+      totalTokens: 400,
+    }).ledger
+    const withProgress = {
+      ...reserved,
+      accounts: {
+        ...reserved.accounts,
+        "child-1": { ...reserved.accounts["child-1"]!, consumedTokens: 75, heldTokens: 25 },
+      },
+    }
+
+    const result = reconcileAbandonedChildAccount(withProgress, {
+      operationId: "abandon-child",
+      runId: "child-1",
+    })
+    expect(result.reconciled).toBe(true)
+    expect(result.ledger.accounts["child-1"]).toBeUndefined()
+    expect(result.ledger.accounts[ROOT_ACCOUNT_ID]).toMatchObject({
+      reservedTokens: 0,
+      consumedTokens: 100,
+    })
+  })
+})
+
 describe("rootBudgetLedgerStore — durable CAS", () => {
   it("creates and loads a ledger", async () => {
     const store = new RootBudgetLedgerStore(dir)
@@ -210,5 +240,27 @@ describe("rootBudgetLedgerStore — durable CAS", () => {
     expect(fulfilled).toHaveLength(1)
     expect(rejected).toHaveLength(1)
     expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(StaleLedgerRevisionError)
+  })
+
+  it("finds and reconciles a corrupt child reservation by run id", async () => {
+    const store = new RootBudgetLedgerStore(dir)
+    await store.create(createRootBudgetLedger("root-run-1", 1000))
+    await store.mutate(
+      "root-run-1",
+      0,
+      (ledger) =>
+        reserveChildAccount(ledger, {
+          operationId: "reserve-child",
+          accountId: "child-1",
+          taskId: "child-1",
+          totalTokens: 400,
+        }).ledger
+    )
+
+    await store.reconcileAbandonedRun("child-1")
+
+    const ledger = await store.load("root-run-1")
+    expect(ledger.accounts["child-1"]).toBeUndefined()
+    expect(ledger.accounts[ROOT_ACCOUNT_ID]?.reservedTokens).toBe(0)
   })
 })

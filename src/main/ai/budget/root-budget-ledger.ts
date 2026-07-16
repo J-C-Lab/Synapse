@@ -168,6 +168,59 @@ export function reserveChildAccount(
   return { ledger: nextLedger, receipt }
 }
 
+/**
+ * Reconciles a child account whose checkpoint can no longer be trusted. The
+ * parent root had reserved the child's entire cap; return its unused portion
+ * while conservatively charging both recorded consumption and any unresolved
+ * hold. This is deliberately run-id based so corrupt checkpoint bytes never
+ * need to be deserialized to release the reservation.
+ */
+export function reconcileAbandonedChildAccount(
+  ledger: RootBudgetLedgerV1,
+  input: { operationId: string; runId: string }
+): { ledger: RootBudgetLedgerV1; reconciled: boolean } {
+  const child = ledger.accounts[input.runId]
+  if (!child || child.kind !== "child-task" || child.taskId !== input.runId) {
+    return { ledger, reconciled: false }
+  }
+  const idempotency = checkOperationIdempotency(ledger, input.operationId, input)
+  if (idempotency.replay) return { ledger, reconciled: true }
+
+  const root = getAccountOrThrow(ledger, ROOT_ACCOUNT_ID)
+  const reserved = child.totalTokens ?? 0
+  if (reserved > root.reservedTokens) {
+    throw new BudgetOverReleaseError(
+      `cannot reconcile child ${input.runId}: ${reserved} reserved but root has ${root.reservedTokens}`
+    )
+  }
+  const conservativelyConsumed = child.consumedTokens + child.heldTokens
+  const { [input.runId]: _removed, ...remainingAccounts } = ledger.accounts
+  const receipt: BudgetOperationReceipt = {
+    operationId: input.operationId,
+    kind: "release",
+    accountId: input.runId,
+    payloadHash: idempotency.payloadHash,
+    consumedTokens: conservativelyConsumed,
+    releasedTokens: Math.max(0, reserved - conservativelyConsumed),
+    appliedAtRevision: ledger.revision + 1,
+  }
+  return {
+    reconciled: true,
+    ledger: {
+      ...ledger,
+      accounts: {
+        ...remainingAccounts,
+        [ROOT_ACCOUNT_ID]: {
+          ...root,
+          reservedTokens: root.reservedTokens - reserved,
+          consumedTokens: root.consumedTokens + conservativelyConsumed,
+        },
+      },
+      operations: { ...ledger.operations, [input.operationId]: receipt },
+    },
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Durable CAS store: <baseDir>/<rootRunId>/budget.json
 
@@ -242,6 +295,42 @@ export class RootBudgetLedgerStore {
       await writeJsonFile(this.ledgerPath(rootRunId), next)
       return next
     })
+  }
+
+  /** Finds any parent root ledger that reserved a child account for this run
+   * and releases it through the conservative reconciliation above. Safe to
+   * call repeatedly during corrupt-run abandonment. */
+  async reconcileAbandonedRun(runId: string): Promise<void> {
+    if (!isSafeRootRunId(runId)) throw new InvalidRootRunIdError(runId)
+    let rootIds: string[]
+    try {
+      rootIds = await fs.readdir(this.baseDir)
+    } catch (err) {
+      if (isNotFound(err)) return
+      throw err
+    }
+    for (const rootRunId of rootIds.filter(isSafeRootRunId)) {
+      for (;;) {
+        let ledger: RootBudgetLedgerV1
+        try {
+          ledger = await this.load(rootRunId)
+        } catch (err) {
+          if (err instanceof RootBudgetLedgerNotFoundError) break
+          throw err
+        }
+        const reconciled = reconcileAbandonedChildAccount(ledger, {
+          operationId: `abandon-corrupt-child:${runId}`,
+          runId,
+        })
+        if (!reconciled.reconciled) break
+        try {
+          await this.mutate(rootRunId, ledger.revision, () => reconciled.ledger)
+          break
+        } catch (err) {
+          if (!(err instanceof StaleLedgerRevisionError)) throw err
+        }
+      }
+    }
   }
 
   private async readRaw(rootRunId: string): Promise<unknown | null> {

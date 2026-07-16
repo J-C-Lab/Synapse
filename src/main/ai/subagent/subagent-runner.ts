@@ -48,6 +48,13 @@ export class SubagentRunner {
 
   async run(input: SubagentRunInput): Promise<SubagentRunResult> {
     const childRunId = randomUUID()
+    const parent = await this.options.runStore.load(input.parentRunId)
+    if (!parent.ok) throw new Error(`cannot spawn subagent: parent checkpoint is ${parent.reason}`)
+    if (parent.checkpoint.config.runBudgetTokens !== undefined) {
+      await this.options.estimatorQuarantine?.assertAllowed(
+        parent.checkpoint.config.resolvedProfile
+      )
+    }
 
     const checkpoint = await setupSubagentRun(
       {
@@ -66,9 +73,6 @@ export class SubagentRunner {
         maxSteps: input.maxSteps,
       }
     )
-    if (checkpoint.config.runBudgetTokens !== undefined) {
-      await this.options.estimatorQuarantine?.assertAllowed(checkpoint.config.resolvedProfile)
-    }
 
     const outcome = await runInteractiveTurn(
       {
@@ -77,6 +81,9 @@ export class SubagentRunner {
           budgetStore: this.options.budgetStore,
           provider: this.options.provider,
           tools: () => input.tools.list(),
+          assertEstimatorAllowed: async (cp) => {
+            await this.options.estimatorQuarantine?.assertAllowed(cp.config.resolvedProfile)
+          },
           now: this.now,
           maxSteps: checkpoint.config.maxSteps,
           signal: input.signal,

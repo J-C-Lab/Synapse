@@ -327,6 +327,27 @@ describe("advanceModelStep — cancellation", () => {
 })
 
 describe("advanceModelStep — admission failure closes before dispatch", () => {
+  it("checks estimator quarantine at every finite-budget attempt admission", async () => {
+    const runId = "run-quarantined"
+    await seedRun(runId, 10_000)
+    const provider = fakeProvider({ inputTokens: 5, outputTokens: 5 })
+
+    await expect(
+      advanceModelStep(
+        {
+          ...baseDeps(provider),
+          assertEstimatorAllowed: async () => {
+            throw new Error("estimator profile quarantined")
+          },
+        },
+        runId
+      )
+    ).rejects.toThrow("estimator profile quarantined")
+    expect(provider.calls).toHaveLength(0)
+    const checkpoint = await runStore.load(runId)
+    expect(checkpoint.ok && checkpoint.checkpoint.modelSteps).toHaveLength(0)
+  })
+
   it("throws and never calls the provider when the estimate exceeds the finite budget", async () => {
     const runId = "run-3"
     await seedRun(runId, 50) // far below the ~100+ token estimate
@@ -468,6 +489,30 @@ describe("advanceModelStep — crash recovery via deterministic fault injection"
     const result = await advanceModelStep(baseDeps(provider), runId)
     expect(result.kind).toBe("settled")
     // Resuming from response_staged only needs to settle — never re-dispatch.
+    expect(provider.calls).toHaveLength(1)
+  })
+
+  it("preserves an incompatible estimator verdict written before an after_settle crash", async () => {
+    const runId = "run-incompatible-after-settle"
+    await seedRun(runId, 10_000)
+    const provider = fakeProvider({ inputTokens: 400, outputTokens: 10 })
+
+    await expect(
+      advanceModelStep(
+        baseDeps(provider, (point) => {
+          if (point === "after_settle") throw new Error("simulated crash")
+        }),
+        runId
+      )
+    ).rejects.toThrow("simulated crash")
+
+    const settled = await runStore.load(runId)
+    expect(
+      settled.ok && settled.checkpoint.modelSteps[0]?.attempts[0]?.admission.estimatorIncompatible
+    ).toBe(true)
+
+    const resumed = await advanceModelStep(baseDeps(provider), runId)
+    expect(resumed.estimatorIncompatible).toBe(true)
     expect(provider.calls).toHaveLength(1)
   })
 

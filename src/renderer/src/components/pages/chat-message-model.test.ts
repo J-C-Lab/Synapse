@@ -254,6 +254,53 @@ describe("durable snapshot rehydration", () => {
     )
   })
 
+  it("merges a later tool from the same model step into the existing durable step message", () => {
+    const first = mergeDurableRunSnapshot([], {
+      ...snapshot,
+      messages: [
+        {
+          messageId: "assistant-1",
+          producedByRunId: "run-1",
+          role: "assistant",
+          ordinal: 1,
+          text: "I will inspect both files.",
+        },
+      ],
+      toolCalls: [{ ...snapshot.toolCalls[0]!, assistantMessageId: "assistant-1" }],
+    })
+    const merged = mergeDurableRunSnapshot(first, {
+      ...snapshot,
+      messages: [
+        {
+          messageId: "assistant-1",
+          producedByRunId: "run-1",
+          role: "assistant",
+          ordinal: 1,
+          text: "I will inspect both files.",
+        },
+      ],
+      toolCalls: [
+        { ...snapshot.toolCalls[0]!, assistantMessageId: "assistant-1" },
+        {
+          ...snapshot.toolCalls[0]!,
+          ordinal: 1,
+          toolUseId: "tool-2",
+          safeName: "list_files",
+          fqName: "list_files",
+          assistantMessageId: "assistant-1",
+        },
+      ],
+    })
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0]?.id).toBe("durable-run:run-1:step:0")
+    expect(merged[0]?.blocks).toEqual([
+      { kind: "text", text: "I will inspect both files." },
+      { kind: "tool", id: "tool-1", name: "read_file", input: {}, status: "running" },
+      { kind: "tool", id: "tool-2", name: "list_files", input: {}, status: "running" },
+    ])
+  })
+
   it("restores persisted in-flight assistant text even when the turn has no tool card", () => {
     const restored = mergeDurableRunSnapshot([], {
       ...snapshot,

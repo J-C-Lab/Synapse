@@ -232,6 +232,19 @@ describe("crash matrix — model-step hold/dispatch (real process crash + resume
   )
 })
 
+describe("crash matrix — estimator incompatibility (real process crash + resume)", () => {
+  it("replays durable incompatibility after after_settle, quarantines once, and finalizes failed", () => {
+    crashThenResume(dir, "run-estimator-incompatible", "estimator_incompatible", {
+      subsystem: "model",
+      point: "after_settle",
+    })
+
+    expect(readResult(dir)).toEqual({ kind: "finalized", stopReason: "error" })
+    expect(readJsonl(path.join(dir, "provider-calls.jsonl"))).toHaveLength(1)
+    expect(readJsonl(path.join(dir, "estimator-quarantines.jsonl"))).toHaveLength(1)
+  }, 30_000)
+})
+
 describe("crash matrix — finalization phases (real process crash + resume)", () => {
   const faultPoints: DurableFaultPoint[] = [
     { subsystem: "finalizer", point: "after_prepared" },

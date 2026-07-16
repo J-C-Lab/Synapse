@@ -195,9 +195,11 @@ export function mergeDurableRunSnapshot(
     const textOnlyId = assistantMessageId
       ? `durable-run:${snapshot.identity.runId}:message:${assistantMessageId}`
       : undefined
+    const existingStepIndex = next.findIndex((message) => message.id === stepId)
     const existingTextIndex = textOnlyId
       ? next.findIndex((message) => message.id === textOnlyId)
       : -1
+    const existingIndex = existingStepIndex >= 0 ? existingStepIndex : existingTextIndex
     const toolBlocks = calls.map((call) => ({
       kind: "tool" as const,
       id: call.toolUseId,
@@ -205,15 +207,19 @@ export function mergeDurableRunSnapshot(
       input: {},
       status: toolCardStatus(call),
     }))
-    if (existingTextIndex >= 0) {
+    if (existingIndex >= 0) {
       // A response_staged snapshot may first surface assistant text before
-      // tool_requested arrives. Promote that exact placeholder into the
-      // step message instead of rendering its text twice.
-      const existing = next[existingTextIndex]!
-      next[existingTextIndex] = {
+      // tool_requested arrives. Prefer the already-created step message when
+      // a later event adds another tool in the same model step; otherwise
+      // promote the exact text placeholder instead of rendering it twice.
+      const existing = next[existingIndex]!
+      const existingBlocks = existing.blocks.filter(
+        (block) => block.kind !== "tool" || !toolBlocks.some((tool) => tool.id === block.id)
+      )
+      next[existingIndex] = {
         ...existing,
         id: stepId,
-        blocks: [...existing.blocks, ...toolBlocks],
+        blocks: [...existingBlocks, ...toolBlocks],
       }
     } else {
       next.push({

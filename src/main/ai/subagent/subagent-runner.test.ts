@@ -1,3 +1,4 @@
+import type { EstimatorQuarantineStore } from "../estimator-quarantine-store"
 import type { ToolHostPort } from "../tool-registry"
 import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
@@ -32,7 +33,7 @@ afterEach(async () => {
 /** Seeds a real parent interactive-run checkpoint so setupSubagentRun (called
  *  internally by SubagentRunner.run()) has something real to inherit
  *  conversationId/workspaceId/budget config from. */
-async function seedParentRun(parentRunId: string): Promise<void> {
+async function seedParentRun(parentRunId: string, runBudgetTokens?: number): Promise<void> {
   const conversations = new ConversationStore(join(dir, "conversations"), () => 1000)
   await conversations.save({
     id: "c1",
@@ -57,6 +58,7 @@ async function seedParentRun(parentRunId: string): Promise<void> {
       providerId: "anthropic",
       model: "claude-x",
       maxOutputTokens: 4096,
+      runBudgetTokens,
       maxSteps: 10,
       contextCompression: {
         enabled: false,
@@ -99,6 +101,36 @@ function fakeHost(): ToolHostPort {
 }
 
 describe("subagentRunner", () => {
+  it("checks quarantine before reserving a child budget account or checkpoint", async () => {
+    await seedParentRun("parent-quarantined", 10_000)
+    const quarantine = {
+      assertAllowed: async () => {
+        throw new Error("estimator profile quarantined")
+      },
+    } as unknown as EstimatorQuarantineStore
+    const runner = new SubagentRunner({
+      provider: fakeProvider("must not run"),
+      runStore,
+      budgetStore,
+      upsertTrace,
+      estimatorQuarantine: quarantine,
+    })
+
+    await expect(
+      runner.run({
+        parentRunId: "parent-quarantined",
+        instruction: "do not reserve",
+        tools: new AiToolRegistry(fakeHost()),
+        maxSteps: 3,
+      })
+    ).rejects.toThrow("estimator profile quarantined")
+
+    const runs = await runStore.scan()
+    expect(runs.map((entry) => entry.runId)).toEqual(["parent-quarantined"])
+    const ledger = await budgetStore.load("parent-quarantined")
+    expect(Object.keys(ledger.accounts)).toEqual(["root"])
+  })
+
   it("runs a nested agent and returns a summary + child run metadata", async () => {
     await seedParentRun("parent-1")
     const recorded: import("../run-trace-store").RunTrace[] = []

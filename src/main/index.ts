@@ -1122,6 +1122,7 @@ async function createAgentService(): Promise<AgentService> {
       releaseArtifactRunPin: false,
       adoptionLeaseIds: [],
     }),
+    reconcileCorruptRun: (runId) => agentBudgetStore.reconcileAbandonedRun(runId),
     buildClassifierInput: async (checkpoint) => {
       const conversationExists = checkpoint.identity.conversationId
         ? (await conversations.get(checkpoint.identity.conversationId)) !== undefined

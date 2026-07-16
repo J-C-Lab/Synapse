@@ -749,6 +749,9 @@ export class AgentService {
             budgetStore: this.options.budgetStore,
             provider,
             tools: () => this.modelToolsFor(checkpoint),
+            assertEstimatorAllowed: async (cp) => {
+              await this.options.estimatorQuarantine?.assertAllowed(cp.config.resolvedProfile)
+            },
             now: this.now,
             maxSteps: checkpoint.config.maxSteps,
             onTextDelta: (delta) => textBatcher.push(delta),

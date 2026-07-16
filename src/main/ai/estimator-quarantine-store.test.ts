@@ -49,4 +49,20 @@ describe("estimatorQuarantineStore", () => {
     await restarted.clear(profile("1"))
     await expect(restarted.assertAllowed(profile("1"))).resolves.toBeUndefined()
   })
+
+  it("serializes concurrent quarantine mutations so different profiles are never lost", async () => {
+    const dir = await fs.mkdtemp(join(tmpdir(), "synapse-estimator-quarantine-"))
+    dirs.push(dir)
+    const file = join(dir, "quarantine.json")
+    const store = new EstimatorQuarantineStore(file)
+    const other = { ...profile("1"), profileId: "anthropic-haiku", modelPattern: "haiku*" }
+
+    await Promise.all([store.quarantine(profile("1")), store.quarantine(other)])
+
+    const restarted = new EstimatorQuarantineStore(file)
+    await expect(restarted.assertAllowed(profile("1"))).rejects.toThrow(
+      EstimatorProfileQuarantinedError
+    )
+    await expect(restarted.assertAllowed(other)).rejects.toThrow(EstimatorProfileQuarantinedError)
+  })
 })

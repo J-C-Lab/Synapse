@@ -60,6 +60,10 @@ export interface AgentRunRecoveryServiceDeps {
   buildAbandonResourcePlan: (
     checkpoint: AgentRunCheckpointV1
   ) => RunFinalizationLedger["resourceReleasePlan"]
+  /** Corrupt checkpoints cannot safely supply their normal release plan.
+   * Callers use this idempotent run-id reconciliation hook for resources
+   * stored outside checkpoint.json before its evidence is isolated. */
+  reconcileCorruptRun?: (runId: string) => Promise<void>
   now: () => number
 }
 
@@ -158,6 +162,7 @@ export class AgentRunRecoveryService {
   async abandon(runId: string): Promise<void> {
     const raw = await this.deps.runStore.load(runId)
     if (!raw.ok) {
+      await this.deps.reconcileCorruptRun?.(runId)
       await this.deps.runStore.discard(runId)
       return
     }

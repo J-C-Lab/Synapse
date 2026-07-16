@@ -414,6 +414,24 @@ describe("agentRunRecoveryService.resume — requires_review", () => {
 })
 
 describe("agentRunRecoveryService.abandon", () => {
+  it("reconciles external run-scoped resources before isolating corrupt checkpoint evidence", async () => {
+    const runId = "corrupt-r1"
+    await fs.mkdir(join(dir, "runs", runId), { recursive: true })
+    await fs.writeFile(join(dir, "runs", runId, "checkpoint.json"), "{broken", "utf-8")
+    const reconciled: string[] = []
+
+    await makeService({
+      reconcileCorruptRun: async (id) => {
+        reconciled.push(id)
+      },
+    }).abandon(runId)
+
+    expect(reconciled).toEqual([runId])
+    await expect(fs.access(join(dir, "runs", runId))).rejects.toThrow()
+    const evidence = await fs.readdir(join(dir, "runs", ".abandoned"))
+    expect(evidence).toHaveLength(1)
+  })
+
   it("is a no-op for an already-terminal run", async () => {
     await seedRun("r1", { status: "cancelled" })
     const buildAbandonTrace = vi.fn(() => trace("r1"))

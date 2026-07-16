@@ -18,6 +18,7 @@ import { RUN_STATUS_TRANSITIONS } from "./run-types"
 
 const SAFE_RUN_ID = /^[\w-]{1,128}$/
 const CHECKPOINT_FILE = "checkpoint.json"
+const ABANDONED_DIR = ".abandoned"
 
 function isSafeRunId(id: string): boolean {
   return SAFE_RUN_ID.test(id)
@@ -129,13 +130,86 @@ export class AgentRunStore {
     return validated
   }
 
-  /** Removes only the validated run-id directory. Used for an explicitly
-   * abandoned corrupt/unsupported checkpoint, which cannot participate in
-   * normal finalization because it is not safe to deserialize. */
+  /**
+   * Performs the narrowly-scoped v1 background execution migration. Early
+   * v1 checkpoints predate the runtime debit ledger and absolute deadline;
+   * changing either through normal mutate() is intentionally forbidden as
+   * frozen config. This audited migration is the one exception: it derives a
+   * conservative debit from already-recorded requested calls and preserves
+   * the original timeout as createdAt + timeoutMs.
+   */
+  async migrateLegacyBackgroundExecution(
+    runId: string,
+    expectedRevision: number
+  ): Promise<AgentRunCheckpointV1> {
+    return this.withLock(runId, async () => {
+      const raw = await readCheckpointRaw(this.checkpointPath(runId))
+      if (raw.kind === "missing") throw new RunNotFoundError(runId)
+      if (raw.kind === "corrupt") {
+        throw new CheckpointCorruptionError(`checkpoint for run ${runId} is corrupt JSON`)
+      }
+      const validated = validateCheckpoint(raw.value)
+      if (!validated.ok) {
+        throw new CheckpointCorruptionError(`checkpoint for run ${runId} is ${validated.reason}`)
+      }
+      const current = validated.checkpoint
+      if (current.revision !== expectedRevision) {
+        throw new StaleRevisionError(expectedRevision, current.revision)
+      }
+      if (current.identity.origin !== "background-agent" || !current.config.backgroundExecution) {
+        return current
+      }
+      const execution = current.config.backgroundExecution
+      const needsLedger = current.backgroundExecutionLedger === undefined
+      const needsDeadline = current.config.deadlineAt === undefined
+      if (!needsLedger && !needsDeadline) return current
+
+      const toolCallsConsumed = Math.min(
+        execution.maxToolCallsPerRun,
+        current.toolBatches.reduce((total, batch) => total + batch.calls.length, 0)
+      )
+      const deadlineAt = safeDeadline(current.createdAt, execution.timeoutMs)
+      const migrated: AgentRunCheckpointV1 = {
+        ...current,
+        config: needsDeadline ? { ...current.config, deadlineAt } : current.config,
+        backgroundExecutionLedger: current.backgroundExecutionLedger ?? { toolCallsConsumed },
+        updatedAt: Math.max(current.updatedAt, current.createdAt),
+        revision: expectedRevision + 1,
+      }
+      const revalidated = validateCheckpoint(migrated)
+      if (!revalidated.ok) {
+        throw new CheckpointCorruptionError(
+          `legacy background migration for run ${runId} produced ${revalidated.reason}`
+        )
+      }
+      await writeJsonFile(this.checkpointPath(runId), migrated)
+      return revalidated.checkpoint
+    })
+  }
+
+  /** Isolates, rather than deletes, an explicitly abandoned malformed or
+   * unsupported checkpoint. The evidence is retained with a tombstone for
+   * diagnosis, while callers reconcile external run-scoped resources before
+   * invoking this operation. */
   async discard(runId: string): Promise<void> {
     if (!isSafeRunId(runId)) throw new InvalidRunIdError(runId)
     await this.withLock(runId, async () => {
-      await fs.rm(this.runDir(runId), { recursive: true, force: true })
+      const source = this.runDir(runId)
+      try {
+        await fs.access(source)
+      } catch (err) {
+        if (isNotFound(err)) return
+        throw err
+      }
+      const evidenceDir = path.join(this.baseDir, ABANDONED_DIR, `${runId}-${Date.now()}`)
+      await fs.mkdir(path.dirname(evidenceDir), { recursive: true })
+      await fs.rename(source, evidenceDir)
+      await writeJsonFile(path.join(evidenceDir, "abandonment.json"), {
+        schemaVersion: 1,
+        runId,
+        abandonedAt: Date.now(),
+        reason: "checkpoint-unreadable",
+      })
     })
   }
 
@@ -280,4 +354,9 @@ async function readCheckpointRaw(filePath: string): Promise<RawRead> {
 
 function isNotFound(err: unknown): boolean {
   return Boolean(err && typeof err === "object" && (err as { code?: string }).code === "ENOENT")
+}
+
+function safeDeadline(createdAt: number, timeoutMs: number): number {
+  const deadline = createdAt + timeoutMs
+  return Number.isSafeInteger(deadline) ? deadline : Number.MAX_SAFE_INTEGER
 }

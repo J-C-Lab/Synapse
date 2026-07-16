@@ -83,6 +83,9 @@ export interface ModelStepDeps {
    *  projection), never awaited for correctness. Omitted by callers that
    *  don't need durable event history (most existing tests). */
   eventEmitter?: RunEventEmitter
+  /** Shared version-scoped admission breaker. It is consulted immediately
+   * before every new finite-budget prepared attempt, including recovery. */
+  assertEstimatorAllowed?: (checkpoint: AgentRunCheckpointV1) => Promise<void>
 }
 
 export class InsufficientEstimateError extends Error {}
@@ -141,7 +144,7 @@ export async function advanceModelStep(
     attempt = latestAttempt(checkpoint, step)!
   }
 
-  let estimatorIncompatible = false
+  let estimatorIncompatible = attempt.admission.estimatorIncompatible === true
   if (attempt.state === "response_staged") {
     const settled = await settleAttempt(deps, checkpoint, step, attempt)
     checkpoint = settled.checkpoint
@@ -201,6 +204,12 @@ async function prepareAttempt(
   const ledgerNow = await deps.budgetStore.load(checkpoint.identity.rootRunId)
   const account = ledgerNow.accounts[accountId]
   const isUnlimited = account !== undefined && freeBalance(account) === undefined
+
+  // Do this at the durable model-attempt boundary, rather than only at run
+  // creation: a profile quarantined by another run cannot admit a later
+  // recovery/retry. response_staged/budget_settled attempts never pass here,
+  // so they remain able to finish their already-authorized settlement.
+  if (!isUnlimited) await deps.assertEstimatorAllowed?.(checkpoint)
 
   const estimate = deps.provider.estimateRequestUpperBound?.({
     model: checkpoint.config.model,
@@ -383,7 +392,12 @@ async function settleAttempt(
   const settledAttempt: ModelRequestAttempt = {
     ...attempt,
     state: "budget_settled",
-    admission: { ...attempt.admission, state: "settled", actualTokens },
+    admission: {
+      ...attempt.admission,
+      state: "settled",
+      actualTokens,
+      estimatorIncompatible,
+    },
   }
   const next = await deps.runStore.mutate(checkpoint.identity.runId, checkpoint.revision, (cp) => ({
     ...cp,

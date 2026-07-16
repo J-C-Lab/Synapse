@@ -181,6 +181,58 @@ describe("agentRunStore — expectedRevision CAS", () => {
   })
 })
 
+describe("agentRunStore — legacy background execution migration", () => {
+  it("adds a conservative debit ledger and absolute deadline before legacy recovery", async () => {
+    const store = new AgentRunStore(dir)
+    const legacy = checkpoint("background-legacy")
+    const created = await store.create(
+      sealCheckpointIntegrity({
+        ...legacy,
+        identity: { ...legacy.identity, origin: "background-agent" },
+        createdAt: 100,
+        updatedAt: 100,
+        config: {
+          ...legacy.config,
+          backgroundExecution: { maxToolCallsPerRun: 3, timeoutMs: 250 },
+        },
+      })
+    )
+
+    const migrated = await store.migrateLegacyBackgroundExecution(
+      created.identity.runId,
+      created.revision
+    )
+    expect(migrated.config.deadlineAt).toBe(350)
+    expect(migrated.backgroundExecutionLedger).toEqual({ toolCallsConsumed: 0 })
+    expect(migrated.revision).toBe(created.revision + 1)
+    await expect(
+      store.migrateLegacyBackgroundExecution(created.identity.runId, migrated.revision)
+    ).resolves.toEqual(migrated)
+  })
+})
+
+describe("agentRunStore — corrupt evidence abandonment", () => {
+  it("isolates unreadable checkpoint evidence with a tombstone instead of deleting it", async () => {
+    const store = new AgentRunStore(dir)
+    await fs.mkdir(join(dir, "broken-run"), { recursive: true })
+    await fs.writeFile(join(dir, "broken-run", "checkpoint.json"), "not json", "utf-8")
+
+    await store.discard("broken-run")
+
+    await expect(fs.access(join(dir, "broken-run"))).rejects.toThrow()
+    const abandonedRoot = join(dir, ".abandoned")
+    const entries = await fs.readdir(abandonedRoot)
+    expect(entries).toHaveLength(1)
+    await expect(
+      fs.readFile(join(abandonedRoot, entries[0]!, "checkpoint.json"), "utf-8")
+    ).resolves.toBe("not json")
+    const tombstone = JSON.parse(
+      await fs.readFile(join(abandonedRoot, entries[0]!, "abandonment.json"), "utf-8")
+    ) as { runId: string }
+    expect(tombstone.runId).toBe("broken-run")
+  })
+})
+
 describe("agentRunStore — mutate() output validation", () => {
   it("rejects a mutator that changes immutable run identity or frozen configuration", async () => {
     const store = new AgentRunStore(dir)

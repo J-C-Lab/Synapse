@@ -116,13 +116,25 @@ export interface GenericRunContinuationDeps {
  *  credential, corrupt checkpoint), which the caller logs. */
 export async function continueBackgroundOrSubagentRun(
   deps: GenericRunContinuationDeps,
-  checkpoint: AgentRunCheckpointV1
+  initialCheckpoint: AgentRunCheckpointV1
 ): Promise<void> {
   const now = deps.now ?? Date.now
+  let checkpoint = initialCheckpoint
   const runId = checkpoint.identity.runId
   const origin = checkpoint.identity.origin
   if (origin !== "background-agent" && origin !== "subagent") {
     throw new Error(`continueBackgroundOrSubagentRun is not for origin "${origin}" (run ${runId})`)
+  }
+
+  // v1 initially shipped without a durable execution debit/deadline. Migrate
+  // before constructing a provider or opening any tool/model work, so an old
+  // checkpoint cannot regain a full tool cap or timeout during recovery.
+  if (
+    origin === "background-agent" &&
+    (checkpoint.backgroundExecutionLedger === undefined ||
+      checkpoint.config.deadlineAt === undefined)
+  ) {
+    checkpoint = await deps.runStore.migrateLegacyBackgroundExecution(runId, checkpoint.revision)
   }
 
   const allowedFqNames = new Set(checkpoint.config.authority.tools.map((tool) => tool.fqName))
@@ -151,9 +163,6 @@ export async function continueBackgroundOrSubagentRun(
   const backgroundExecution = checkpoint.config.backgroundExecution
   if (origin === "background-agent" && !backgroundExecution) {
     throw new Error(`background run ${runId} lacks its durable execution policy`)
-  }
-  if (origin === "background-agent" && checkpoint.backgroundExecutionLedger === undefined) {
-    throw new Error(`background run ${runId} lacks its durable tool debit ledger`)
   }
   const remainingTimeoutMs =
     checkpoint.config.deadlineAt === undefined
@@ -184,6 +193,9 @@ export async function continueBackgroundOrSubagentRun(
           budgetStore: deps.budgetStore,
           provider,
           tools: modelTools,
+          assertEstimatorAllowed: async (cp) => {
+            await deps.estimatorQuarantine?.assertAllowed(cp.config.resolvedProfile)
+          },
           now,
           maxSteps: checkpoint.config.maxSteps,
           eventEmitter,

@@ -35,6 +35,7 @@ export type ChildScenario =
   | "three_call_batch"
   | "approval_denied"
   | "model_dispatch_crash"
+  | "estimator_incompatible"
   | "finalization_phases"
 
 export interface ChildConfig {
@@ -188,7 +189,7 @@ function responseFor(config: ChildConfig, messages: ChatMessage[]): ChatMessage 
       content: [{ type: "tool_use", id: "approval-tool", name: "confirm_probe", input: {} }],
     }
   }
-  // model_dispatch_crash and finalization_phases are both single, trivial,
+  // model_dispatch_crash, estimator_incompatible and finalization_phases are all single, trivial,
   // no-tool-call turns — the crash points under test are in the model-step
   // dispatch and finalization machinery, not in tool-batch behavior.
   return { role: "assistant", content: [{ type: "text", text: "done" }] }
@@ -215,8 +216,10 @@ function buildProvider(config: ChildConfig): ChatProvider {
         type: "message",
         message,
         usage: {
-          inputTokens: 10,
-          outputTokens: 5,
+          // Deliberately exceeds the 50 + 256 upper-bound admission in the
+          // incompatible-estimator crash scenario.
+          inputTokens: config.scenario === "estimator_incompatible" ? 300 : 10,
+          outputTokens: config.scenario === "estimator_incompatible" ? 10 : 5,
           cacheCreationInputTokens: 0,
           cacheReadInputTokens: 0,
         },
@@ -288,6 +291,11 @@ async function main(): Promise<void> {
         releaseArtifactRunPin: false,
         adoptionLeaseIds: [],
       }),
+      quarantineEstimatorProfile: async () => {
+        recordLine(path.join(config.baseDir, "estimator-quarantines.jsonl"), {
+          runId: config.runId,
+        })
+      },
     },
     config.runId
   )
