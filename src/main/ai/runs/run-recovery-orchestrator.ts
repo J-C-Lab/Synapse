@@ -43,7 +43,7 @@ import { finalizeRun } from "./run-finalizer"
 // still fully enforced regardless, via the root budget ledger).
 
 export interface RunRecoveryOrchestratorDeps {
-  recovery: Pick<AgentRunRecoveryService, "listRecoverable" | "resume">
+  recovery: Pick<AgentRunRecoveryService, "listRecoverable" | "resume" | "abandon">
   /** Dispatches to the right origin-specific continuation and drives it to
    *  completion. Errors are this callback's own responsibility to log —
    *  never awaited by the orchestrator beyond kicking it off, so one slow or
@@ -64,6 +64,17 @@ export async function autoResumeRecoverableRuns(deps: RunRecoveryOrchestratorDep
   const summaries = await deps.recovery.listRecoverable()
   for (const summary of summaries) {
     if (summary.recovery.kind !== "automatic") continue
+    // `terminalizing` cannot legally transition back to running. Its
+    // existing finalization ledger is the authoritative desired outcome;
+    // abandon() detects that ledger and simply resumes its idempotent phases.
+    if (summary.status === "terminalizing") {
+      try {
+        await deps.recovery.abandon(summary.runId)
+      } catch (err) {
+        deps.onError?.(summary.runId, err)
+      }
+      continue
+    }
     try {
       await deps.recovery.resume(summary.runId)
     } catch (err) {

@@ -251,6 +251,197 @@ export type AgentRunEvent =
   | RunCompletedEvent
   | RunFailedEvent
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string"
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value)
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && typeof value === "number" && value >= 0
+}
+
+function isRecoveryDisposition(value: unknown): value is RecoveryDisposition {
+  if (!isRecord(value) || !isString(value.kind)) return false
+  if (value.kind === "automatic") return true
+  return (value.kind === "requires_review" || value.kind === "blocked") && isString(value.reason)
+}
+
+function isArtifactSummary(value: unknown): value is AgentArtifactRefSummary {
+  return (
+    isRecord(value) &&
+    isString(value.uri) &&
+    isString(value.kind) &&
+    isString(value.mediaType) &&
+    isNonNegativeInteger(value.capturedBytes) &&
+    typeof value.complete === "boolean" &&
+    (value.truncationReason === undefined || isString(value.truncationReason))
+  )
+}
+
+/** Runtime validation for the JSONL boundary. The event journal is an
+ * untrusted diagnostic projection after a crash, so parsing it must never
+ * turn arbitrary JSON into the protocol's discriminated union by assertion. */
+export function isAgentRunEvent(value: unknown): value is AgentRunEvent {
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== 1 ||
+    !isString(value.eventId) ||
+    !isString(value.runId) ||
+    !isString(value.rootRunId) ||
+    !isNonNegativeInteger(value.sequence) ||
+    value.sequence < 1 ||
+    !isFiniteNumber(value.timestamp) ||
+    typeof value.persisted !== "boolean" ||
+    (value.parentRunId !== undefined && !isString(value.parentRunId)) ||
+    (value.conversationId !== undefined && !isString(value.conversationId)) ||
+    !isString(value.type)
+  ) {
+    return false
+  }
+
+  switch (value.type) {
+    case "run_started":
+      return (
+        (value.origin === "interactive" ||
+          value.origin === "background-agent" ||
+          value.origin === "subagent") &&
+        (value.workspaceId === undefined || isString(value.workspaceId))
+      )
+    case "run_status_changed":
+      return (
+        [
+          "created",
+          "running",
+          "waiting_approval",
+          "waiting_child",
+          "suspended_unknown_tool_outcome",
+          "suspended_conversation_conflict",
+          "terminalizing",
+          "completed",
+          "cancelled",
+          "failed",
+        ].includes(value.status as string) && isRecoveryDisposition(value.recovery)
+      )
+    case "text_delta":
+      return isString(value.text)
+    case "budget_admission_updated":
+      return (
+        isString(value.operationId) &&
+        ["planned", "held", "settled", "forfeited"].includes(value.state as string) &&
+        (value.heldTokens === undefined || isNonNegativeInteger(value.heldTokens)) &&
+        (value.consumedTokens === undefined || isNonNegativeInteger(value.consumedTokens))
+      )
+    case "model_completed":
+      return (
+        isNonNegativeInteger(value.step) &&
+        isString(value.assistantMessageId) &&
+        isNonNegativeInteger(value.inputTokens) &&
+        isNonNegativeInteger(value.outputTokens)
+      )
+    case "tool_requested":
+      return (
+        isNonNegativeInteger(value.modelStep) &&
+        isNonNegativeInteger(value.ordinal) &&
+        isString(value.toolUseId) &&
+        isString(value.safeName) &&
+        isString(value.fqName)
+      )
+    case "approval_pending":
+      return (
+        isString(value.approvalId) &&
+        isNonNegativeInteger(value.ordinal) &&
+        isString(value.safeName)
+      )
+    case "approval_resolved":
+      return (
+        isString(value.approvalId) &&
+        typeof value.allowed === "boolean" &&
+        ["once", "conversation", "always"].includes(value.remember as string)
+      )
+    case "tool_started":
+      return (
+        isNonNegativeInteger(value.ordinal) &&
+        isString(value.toolUseId) &&
+        isString(value.attemptId)
+      )
+    case "tool_completed":
+      return (
+        isNonNegativeInteger(value.ordinal) &&
+        isString(value.toolUseId) &&
+        isString(value.attemptId) &&
+        typeof value.isError === "boolean" &&
+        typeof value.complete === "boolean" &&
+        (value.artifact === undefined || isArtifactSummary(value.artifact))
+      )
+    case "artifact_created":
+      return isArtifactSummary(value.artifact)
+    case "plan_updated":
+      return (
+        Array.isArray(value.plan) &&
+        value.plan.every(
+          (step) =>
+            isRecord(step) &&
+            isString(step.title) &&
+            ["pending", "in_progress", "completed"].includes(step.status as string)
+        )
+      )
+    case "child_task_updated":
+      return (
+        isRecord(value.child) &&
+        isString(value.child.childRunId) &&
+        [
+          "created",
+          "running",
+          "waiting_approval",
+          "waiting_child",
+          "suspended_unknown_tool_outcome",
+          "suspended_conversation_conflict",
+          "terminalizing",
+          "completed",
+          "cancelled",
+          "failed",
+        ].includes(value.child.status as string) &&
+        (value.child.label === undefined || isString(value.child.label))
+      )
+    case "child_ownership_lease_updated":
+      return (
+        isString(value.childRunId) &&
+        isFiniteNumber(value.leaseExpiresAt) &&
+        isNonNegativeInteger(value.fencingToken)
+      )
+    case "finalization_phase_updated":
+      return (
+        isString(value.finalizationId) &&
+        [
+          "prepared",
+          "conversation_committed",
+          "trace_upserted",
+          "resources_released",
+          "conversation_lease_released",
+          "complete",
+        ].includes(value.phase as string)
+      )
+    case "checkpoint_committed":
+      return isNonNegativeInteger(value.revision)
+    case "run_completed":
+      return value.outcome === "completed"
+    case "run_failed":
+      return (
+        (value.outcome === "failed" || value.outcome === "cancelled") &&
+        (value.reason === undefined || isString(value.reason))
+      )
+    default:
+      return false
+  }
+}
+
 /** Exhaustiveness guard: a compile error here means a new AgentRunEvent
  *  variant was added without a matching case in describeRunEvent. */
 function assertUnreachable(x: never): never {

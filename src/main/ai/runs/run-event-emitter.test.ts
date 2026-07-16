@@ -1,7 +1,8 @@
+import type { AgentRunEvent } from "@synapse/agent-protocol"
 import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createRunEventEmitter } from "./run-event-emitter"
 import { RunEventStore } from "./run-event-store"
 
@@ -74,8 +75,6 @@ describe("createRunEventEmitter", () => {
     await first.emit({ type: "run_started", origin: "interactive" })
     await first.emit({ type: "run_completed", outcome: "completed" })
 
-    // Simulates a fresh process resuming the run — a new emitter instance,
-    // seeded from the same durable journal.
     const resumed = await createRunEventEmitter(
       store,
       { runId: "run-2", rootRunId: "run-2" },
@@ -85,5 +84,27 @@ describe("createRunEventEmitter", () => {
 
     const events = await store.readAll("run-2")
     expect(events.map((e) => e.sequence)).toEqual([1, 2, 3])
+  })
+
+  it("does not let a projection append failure stop the driver, and reuses the sequence", async () => {
+    const append = vi
+      .fn<(runId: string, event: AgentRunEvent) => Promise<void>>()
+      .mockRejectedValueOnce(new Error("disk unavailable"))
+      .mockResolvedValueOnce(undefined)
+    const onEvent = vi.fn()
+    const emitter = await createRunEventEmitter(
+      { readAll: async () => [], append },
+      { runId: "run-3", rootRunId: "run-3" },
+      () => 10,
+      () => "event-id",
+      onEvent
+    )
+
+    await expect(emitter.emit({ type: "text_delta", text: "first" })).resolves.toBeUndefined()
+    await expect(emitter.emit({ type: "text_delta", text: "second" })).resolves.toBeUndefined()
+
+    expect(append.mock.calls.map(([, event]) => event.sequence)).toEqual([1, 1])
+    expect(onEvent).toHaveBeenCalledTimes(1)
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ text: "second", sequence: 1 }))
   })
 })

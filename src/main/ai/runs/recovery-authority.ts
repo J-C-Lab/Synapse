@@ -1,6 +1,6 @@
 import type { NormalizedCapability } from "@synapse/plugin-manifest"
 import type { AiToolRegistry } from "../tool-registry"
-import type { FrozenPrincipalSnapshot } from "./authority-snapshot"
+import type { FrozenAuthoritySnapshotV1, FrozenPrincipalSnapshot } from "./authority-snapshot"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
 import { freezeAuthoritySnapshot } from "./authority-snapshot"
 
@@ -15,14 +15,22 @@ export function rebuildRecoveryAuthority(
   tools: AiToolRegistry,
   parent?: AgentRunCheckpointV1,
   currentCapabilities: readonly NormalizedCapability[] = [],
-  currentPrincipal: FrozenPrincipalSnapshot = checkpoint.config.authority.principal
+  currentPrincipal: FrozenPrincipalSnapshot = checkpoint.config.authority.principal,
+  /** A child is constrained by its parent's live authority, not merely the
+   * parent's creation-time snapshot. This is supplied by the startup
+   * classifier after recursively deriving the parent from its real source. */
+  parentCurrentAuthority?: FrozenAuthoritySnapshotV1
 ) {
   const frozenNames = new Set(checkpoint.config.authority.tools.map((tool) => tool.fqName))
   // A missing parent checkpoint is fail-closed for a child: no child tool is
   // recoverable without the parent authority that originally constrained it.
   const parentNames =
     checkpoint.identity.origin === "subagent"
-      ? new Set(parent?.config.authority.tools.map((tool) => tool.fqName) ?? [])
+      ? new Set(
+          parentCurrentAuthority?.tools.map((tool) => tool.fqName) ??
+            parent?.config.authority.tools.map((tool) => tool.fqName) ??
+            []
+        )
       : undefined
   return freezeAuthoritySnapshot({
     principal: currentPrincipal,

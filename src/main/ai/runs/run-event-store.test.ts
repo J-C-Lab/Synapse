@@ -48,7 +48,7 @@ describe("runEventStore — append and read", () => {
     const store = new RunEventStore(dir)
     await store.append("run-1", event(1))
     await expect(store.append("run-1", event(1))).rejects.toThrow(/strictly increase/)
-    await expect(store.append("run-1", event(0))).rejects.toThrow(/strictly increase/)
+    await expect(store.append("run-1", event(0))).rejects.toThrow(/invalid persisted/)
   })
 
   it("keeps separate runs independent", async () => {
@@ -57,6 +57,17 @@ describe("runEventStore — append and read", () => {
     await store.append("run-2", event(1, { runId: "run-2", rootRunId: "run-2" }))
     expect(await store.readAll("run-1")).toHaveLength(1)
     expect(await store.readAll("run-2")).toHaveLength(1)
+  })
+
+  it("rejects a cross-run or non-persisted event before writing it", async () => {
+    const store = new RunEventStore(dir)
+    await expect(store.append("run-1", event(1, { runId: "run-2" }))).rejects.toThrow(
+      /invalid persisted/
+    )
+    await expect(store.append("run-1", event(1, { persisted: false }))).rejects.toThrow(
+      /invalid persisted/
+    )
+    expect(await store.readAll("run-1")).toEqual([])
   })
 
   it("readAfter returns only events past the given sequence", async () => {
@@ -90,9 +101,35 @@ describe("runEventStore — truncation tolerance", () => {
     const store = new RunEventStore(dir)
     await store.append("run-1", event(1))
     const filePath = join(dir, "run-1", "events.jsonl")
-    await fs.appendFile(filePath, "not json at all\n", "utf-8")
-    await store.append("run-1", event(2))
+    await fs.appendFile(filePath, `not json at all\n${JSON.stringify(event(2))}\n`, "utf-8")
 
+    await expect(store.readAll("run-1")).rejects.toThrow(/corrupt/)
+  })
+
+  it("throws for a newline-terminated malformed final record", async () => {
+    const store = new RunEventStore(dir)
+    await store.append("run-1", event(1))
+    await fs.appendFile(join(dir, "run-1", "events.jsonl"), "not json at all\n", "utf-8")
+
+    await expect(store.readAll("run-1")).rejects.toThrow(/corrupt/)
+  })
+
+  it("throws for a parsed record with an invalid shape, run id, or sequence", async () => {
+    const filePath = join(dir, "run-1", "events.jsonl")
+    await fs.mkdir(join(dir, "run-1"), { recursive: true })
+    await fs.writeFile(
+      filePath,
+      `${JSON.stringify(event(1))}\n${JSON.stringify({ ...event(2), runId: "run-2" })}\n`,
+      "utf-8"
+    )
+    const store = new RunEventStore(dir)
+    await expect(store.readAll("run-1")).rejects.toThrow(/corrupt/)
+
+    await fs.writeFile(
+      filePath,
+      `${JSON.stringify(event(2))}\n${JSON.stringify(event(1))}\n`,
+      "utf-8"
+    )
     await expect(store.readAll("run-1")).rejects.toThrow(/corrupt/)
   })
 })

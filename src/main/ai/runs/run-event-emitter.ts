@@ -47,7 +47,7 @@ export interface RunEventEmitter {
 }
 
 export async function createRunEventEmitter(
-  store: RunEventStore,
+  store: Pick<RunEventStore, "readAll" | "append">,
   identity: RunEventIdentity,
   now: () => number,
   newId: () => string = randomUUID,
@@ -63,7 +63,7 @@ export async function createRunEventEmitter(
 
   return {
     async emit(input: RunEventInput): Promise<void> {
-      sequence += 1
+      const nextSequence = sequence + 1
       const event = {
         ...input,
         schemaVersion: 1,
@@ -72,11 +72,20 @@ export async function createRunEventEmitter(
         rootRunId: identity.rootRunId,
         parentRunId: identity.parentRunId,
         conversationId: identity.conversationId,
-        sequence,
+        sequence: nextSequence,
         timestamp: now(),
         persisted: true,
       } as AgentRunEvent
-      await store.append(identity.runId, event)
+      try {
+        await store.append(identity.runId, event)
+      } catch {
+        // The checkpoint is authoritative. A diagnostic/projection write
+        // failure must never stop a model/tool/finalization driver, and the
+        // sequence is deliberately not consumed so its next successful
+        // append remains contiguous.
+        return
+      }
+      sequence = nextSequence
       try {
         onEvent?.(event)
       } catch {

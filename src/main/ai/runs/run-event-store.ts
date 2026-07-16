@@ -1,6 +1,7 @@
 import type { AgentRunEvent } from "@synapse/agent-protocol"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
+import { isAgentRunEvent } from "@synapse/agent-protocol"
 
 // Append-only, sequence-numbered replay/diagnostic projection —
 // <baseDir>/<runId>/events.jsonl (design §"Durable checkpoint store"). NOT
@@ -31,6 +32,9 @@ export class RunEventStore {
    *  not strictly exceed the run's last durable sequence. */
   async append(runId: string, event: AgentRunEvent): Promise<void> {
     await this.withLock(runId, async () => {
+      if (!isAgentRunEvent(event) || event.runId !== runId || !event.persisted) {
+        throw new Error(`invalid persisted event for run ${runId}`)
+      }
       const events = await this.readAllUnlocked(runId)
       const last = events.length > 0 ? events[events.length - 1]!.sequence : 0
       if (event.sequence <= last) {
@@ -44,9 +48,9 @@ export class RunEventStore {
     })
   }
 
-  /** Every durably readable event for a run, in file order. Tolerates a
-   *  missing/truncated final line by dropping it silently; any other
-   *  corrupt line throws. */
+  /** Every durably readable event for a run, in file order. Tolerates only
+   *  an unterminated, corrupt final line (the crash-mid-append case); a
+   *  newline-terminated malformed record is durable corruption and throws. */
   async readAll(runId: string): Promise<AgentRunEvent[]> {
     return this.readAllUnlocked(runId)
   }
@@ -63,13 +67,23 @@ export class RunEventStore {
       if (isNotFound(err)) return []
       throw err
     }
-    const lines = raw.split("\n").filter((line) => line.length > 0)
+    const terminated = raw.endsWith("\n")
+    const lines = raw.split("\n")
+    if (terminated) lines.pop()
     const events: AgentRunEvent[] = []
     for (const [index, line] of lines.entries()) {
       try {
-        events.push(JSON.parse(line) as AgentRunEvent)
+        const parsed: unknown = JSON.parse(line)
+        if (!isAgentRunEvent(parsed) || parsed.runId !== runId || !parsed.persisted) {
+          throw new Error("invalid event shape")
+        }
+        const last = events[events.length - 1]
+        if (last && parsed.sequence <= last.sequence) {
+          throw new Error("non-monotonic event sequence")
+        }
+        events.push(parsed)
       } catch {
-        if (index === lines.length - 1) break // truncated final line — drop, don't fail
+        if (!terminated && index === lines.length - 1) break // crash-mid-append
         throw new Error(`corrupt event journal line ${index} for run ${runId}`)
       }
     }

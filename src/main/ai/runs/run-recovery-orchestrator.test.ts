@@ -238,6 +238,7 @@ describe("autoResumeRecoverableRuns", () => {
         resume: async (runId) => {
           resumed.push(runId)
         },
+        abandon: async () => {},
       },
       runStore: {
         load: async (runId: string) => ({
@@ -264,6 +265,7 @@ describe("autoResumeRecoverableRuns", () => {
         resume: async (runId) => {
           if (runId === "fails-1") throw new Error("race with a concurrent reclassification")
         },
+        abandon: async () => {},
       },
       runStore: {
         load: async (runId: string) => ({
@@ -278,5 +280,35 @@ describe("autoResumeRecoverableRuns", () => {
     expect(continued).toEqual(["auto-2"])
     expect(errors).toHaveLength(1)
     expect(errors[0]!.runId).toBe("fails-1")
+  })
+
+  it("reconciles an automatic terminalizing run through its existing finalization ledger", async () => {
+    const abandoned: string[] = []
+    const resumed: string[] = []
+    const continued: string[] = []
+    await autoResumeRecoverableRuns({
+      recovery: {
+        listRecoverable: async () => [
+          { ...summary("finalizing-1", "automatic"), status: "terminalizing" },
+        ],
+        resume: async (runId) => {
+          resumed.push(runId)
+        },
+        abandon: async (runId) => {
+          abandoned.push(runId)
+        },
+      },
+      runStore: {
+        load: async (runId: string) => ({
+          ok: true as const,
+          checkpoint: { identity: { runId } } as never,
+        }),
+      },
+      continueRun: (checkpoint) => continued.push(checkpoint.identity.runId),
+    })
+
+    expect(abandoned).toEqual(["finalizing-1"])
+    expect(resumed).toEqual([])
+    expect(continued).toEqual([])
   })
 })

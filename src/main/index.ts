@@ -71,7 +71,10 @@ import {
 } from "./ai/run-trace-store"
 import { AgentRunRecoveryService } from "./ai/runs/agent-run-recovery-service"
 import { AgentRunStore } from "./ai/runs/agent-run-store"
-import { freezeAuthoritySnapshot } from "./ai/runs/authority-snapshot"
+import {
+  freezeAuthoritySnapshot,
+  withFrozenAuthorityCapabilities,
+} from "./ai/runs/authority-snapshot"
 import { backgroundPrincipal } from "./ai/runs/background-run-setup"
 import { buildTraceFromCheckpoint } from "./ai/runs/interactive-run-driver"
 import { rootSetHashFor } from "./ai/runs/interactive-run-setup"
@@ -1113,57 +1116,76 @@ async function createAgentService(): Promise<AgentService> {
       const currentWorkspaceRootSetHash = checkpoint.identity.workspaceId
         ? rootSetHashFor(await workspaceRootStore.listForWorkspace(checkpoint.identity.workspaceId))
         : undefined
-      // Interactive runs share the one global tool registry + a fixed
-      // principal, so their current authority is exactly reconstructible.
-      const parent = checkpoint.identity.parentRunId
-        ? await agentRunStore.load(checkpoint.identity.parentRunId)
-        : undefined
-      const currentPluginIdentity =
-        checkpoint.identity.origin === "background-agent" && checkpoint.identity.pluginId
-          ? plugins.currentActiveIdentityForPlugin(checkpoint.identity.pluginId)
-          : undefined
-      const currentAuthority =
-        checkpoint.identity.origin === "interactive"
-          ? freezeAuthoritySnapshot({
-              principal: { kind: "interactive", actor: "user" },
-              capabilities: [],
-              tools: agentTools.listWithDescriptors().map(({ schema, descriptor }) => ({
-                descriptor,
-                safeName: schema.name,
-                modelSchema: schema,
-              })),
-            })
-          : checkpoint.identity.origin === "background-agent" &&
-              checkpoint.identity.pluginId !== undefined &&
-              !currentPluginIdentity
-            ? freezeAuthoritySnapshot({
-                // Deliberately different from the frozen principal: this
-                // feeds classifier's authority-revoked branch before any
-                // automatic continuation can re-enter a disabled plugin.
-                principal: { kind: "revoked-plugin", actor: "background" },
-                capabilities: [],
-                tools: [],
-              })
-            : rebuildRecoveryAuthority(
-                checkpoint,
-                agentTools,
-                parent?.ok ? parent.checkpoint : undefined,
-                checkpoint.identity.origin === "background-agent" &&
-                  checkpoint.identity.pluginId &&
-                  checkpoint.identity.triggerId
-                  ? (
-                      plugins.getTriggerDeclaration(
-                        checkpoint.identity.pluginId,
-                        checkpoint.identity.triggerId
-                      )?.uses ?? []
-                    ).map(triggerUseToCapability)
-                  : [],
-                checkpoint.identity.origin === "background-agent" &&
-                  checkpoint.identity.pluginId &&
-                  currentPluginIdentity
-                  ? backgroundPrincipal(checkpoint.identity.pluginId, currentPluginIdentity)
-                  : undefined
-              )
+      const revokedAuthority = () =>
+        freezeAuthoritySnapshot({
+          // Deliberately different from every frozen source principal: this
+          // makes a vanished source block before any continuation can run.
+          principal: { kind: "revoked-source", actor: "background" },
+          capabilities: [],
+          tools: [],
+        })
+      const currentAuthorityFor = async (
+        candidate: typeof checkpoint,
+        seen = new Set<string>()
+      ): Promise<typeof checkpoint.config.authority> => {
+        if (seen.has(candidate.identity.runId)) return revokedAuthority()
+        const ancestry = new Set(seen).add(candidate.identity.runId)
+
+        if (candidate.identity.origin === "interactive") {
+          return freezeAuthoritySnapshot({
+            principal: { kind: "interactive", actor: "user" },
+            capabilities: [],
+            tools: agentTools.listWithDescriptors().map(({ schema, descriptor }) => ({
+              descriptor,
+              safeName: schema.name,
+              modelSchema: schema,
+            })),
+          })
+        }
+
+        if (candidate.identity.origin === "background-agent") {
+          const pluginId = candidate.identity.pluginId
+          const currentPluginIdentity = pluginId
+            ? plugins.currentActiveIdentityForPlugin(pluginId)
+            : undefined
+          if (!pluginId || !currentPluginIdentity) return revokedAuthority()
+          const capabilities = candidate.identity.triggerId
+            ? (
+                plugins.getTriggerDeclaration(pluginId, candidate.identity.triggerId)?.uses ?? []
+              ).map(triggerUseToCapability)
+            : []
+          return rebuildRecoveryAuthority(
+            candidate,
+            agentTools,
+            undefined,
+            capabilities,
+            backgroundPrincipal(pluginId, currentPluginIdentity)
+          )
+        }
+
+        const parentRunId = candidate.identity.parentRunId
+        if (!parentRunId) return revokedAuthority()
+        const parentResult = await agentRunStore.load(parentRunId)
+        if (!parentResult.ok) return revokedAuthority()
+        const parentCurrentAuthority = await currentAuthorityFor(parentResult.checkpoint, ancestry)
+        if (parentCurrentAuthority.principal.kind === "revoked-source") return revokedAuthority()
+        // The subagent's own principal is stable (it is an execution role,
+        // not a grant source). Its tools and capabilities instead derive
+        // recursively from the parent's current authority, then intersect
+        // with the child's immutable creation-time ceiling.
+        return withFrozenAuthorityCapabilities(
+          rebuildRecoveryAuthority(
+            candidate,
+            agentTools,
+            parentResult.checkpoint,
+            [],
+            candidate.config.authority.principal,
+            parentCurrentAuthority
+          ),
+          parentCurrentAuthority.capabilities
+        )
+      }
+      const currentAuthority = await currentAuthorityFor(checkpoint)
       return {
         currentAuthority,
         conversationExists,

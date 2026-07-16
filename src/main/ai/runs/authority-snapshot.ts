@@ -265,6 +265,27 @@ export function freezeAuthoritySnapshot(input: {
   return { schemaVersion: 1, principal: input.principal, capabilities, tools, integrityHash }
 }
 
+/** Rebinds the capability side of an already-live tool snapshot while
+ * preserving its integrity hash. Recovery uses this for a subagent: its
+ * executable tools are its own frozen ceiling intersected with its parent's
+ * live ceiling, while the parent remains the source of capability grants. */
+export function withFrozenAuthorityCapabilities(
+  authority: FrozenAuthoritySnapshotV1,
+  capabilities: readonly FrozenCapabilityGrant[]
+): FrozenAuthoritySnapshotV1 {
+  const nextCapabilities = [...capabilities].sort((a, b) => a.id.localeCompare(b.id))
+  return {
+    ...authority,
+    capabilities: nextCapabilities,
+    integrityHash: canonicalHash({
+      schemaVersion: 1,
+      principal: authority.principal as unknown as CanonicalJson,
+      capabilities: nextCapabilities as unknown as CanonicalJson,
+      tools: authority.tools as unknown as CanonicalJson,
+    }),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Recovery comparison
 
