@@ -59,6 +59,9 @@ export interface AgentRunIdentity {
   workspaceId?: string
   invocationId?: string
   triggerInstanceId?: string
+  /** Durable source identity for a background trigger; absent for interactive/subagent runs. */
+  pluginId?: string
+  triggerId?: string
 }
 
 /** The six finalization phases a run passes through on its way to a terminal status. */

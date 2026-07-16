@@ -437,6 +437,8 @@ function isValidIdentity(v: unknown): boolean {
   if (!isOptionalString(v.workspaceId)) return false
   if (!isOptionalString(v.invocationId)) return false
   if (!isOptionalString(v.triggerInstanceId)) return false
+  if (!isOptionalString(v.pluginId)) return false
+  if (!isOptionalString(v.triggerId)) return false
   return true
 }
 

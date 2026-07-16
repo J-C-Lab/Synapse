@@ -34,6 +34,8 @@ export interface BackgroundRunSetupInput {
   workspaceId: string
   invocationId: string
   triggerInstanceId: string
+  pluginId: string
+  triggerId: string
   instruction: string
   event: unknown
   providerId: string
@@ -74,7 +76,7 @@ export async function setupBackgroundRun(
   })
 
   const authority = freezeAuthoritySnapshot({
-    principal: { kind: "internal-agent", actor: "background" },
+    principal: { kind: "internal-agent", actor: "background", pluginId: input.pluginId },
     capabilities: [],
     tools: deps.tools.listWithDescriptors().map(({ schema, descriptor }) => ({
       descriptor,
@@ -99,6 +101,8 @@ export async function setupBackgroundRun(
       workspaceId: input.workspaceId,
       invocationId: input.invocationId,
       triggerInstanceId: input.triggerInstanceId,
+      pluginId: input.pluginId,
+      triggerId: input.triggerId,
     },
     status: "running",
     recovery: { kind: "automatic" },

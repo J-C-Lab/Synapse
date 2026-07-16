@@ -68,6 +68,8 @@ function baseInput(overrides: Partial<BackgroundRunSetupInput> = {}): Background
     maxSteps: 6,
     executionWorkspaces: [],
     ...overrides,
+    pluginId: overrides.pluginId ?? "plugin.test",
+    triggerId: overrides.triggerId ?? "trigger.test",
   }
 }
 
