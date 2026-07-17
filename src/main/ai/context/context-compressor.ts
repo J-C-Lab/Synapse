@@ -21,7 +21,38 @@ export interface ContextCompressorOptions {
 
 export interface CompressResult {
   messages: ChatMessage[]
+  /** The exact leading prefix of the `messages` array passed to `compress()`
+   *  that did not survive into the result, in original order — empty when
+   *  nothing needed evicting. Computed structurally (see the reference-scan
+   *  note on `computeEvicted` below), not by re-deriving eviction logic, so
+   *  it stays correct across every internal branch (summarized, hard-trimmed,
+   *  or a mix of both). Callers that need durable recoverability (Task 20's
+   *  history-artifact capture) read this rather than diffing themselves. */
+  evicted: ChatMessage[]
   summarizerTokens: number
+  /** The raw summarizer output for this call, before the `SUMMARY_PREFIX`
+   *  envelope was applied — present only when `summarize()` was actually
+   *  invoked and succeeded this call. A durable caller that wants to embed
+   *  extra guidance (e.g. an artifact URI) into the final summary text reads
+   *  this rather than re-parsing `messages[0]`. */
+  summaryText?: string
+}
+
+/** Thrown by a `summarize` callback to signal an infrastructure failure
+ *  (budget admission, provider dispatch) that must propagate to the caller
+ *  of `compress()` rather than being silently absorbed into the
+ *  hard-trim-without-summary fallback. Any other thrown error is still
+ *  treated as "summarization declined for this content" and falls back to
+ *  hard-trimming — preserving this module's original graceful-degradation
+ *  behavior for callers that don't distinguish failure causes. `compress()`
+ *  unwraps and rethrows `cause` when set, so an upstream `instanceof` check
+ *  against the original error type (e.g. `InsufficientBudgetError`) keeps
+ *  working transparently through this wrapper. */
+export class SummarizeInfrastructureError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = "SummarizeInfrastructureError"
+  }
 }
 
 export class ContextCompressor {
@@ -31,25 +62,23 @@ export class ContextCompressor {
     const threshold = this.options.thresholdTokens
     const systemTokens = estimateTextTokens(system)
     const estimate = systemTokens + estimateMessagesTokens(messages)
-    if (estimate <= threshold) return { messages, summarizerTokens: 0 }
+    if (estimate <= threshold) return finalize(messages, messages, 0)
 
     const keepBudget = threshold * (this.options.keepFraction ?? 0.5)
     const splitAt = this.recentStartIndex(messages, keepBudget)
     const older = messages.slice(0, splitAt)
     const recent = messages.slice(splitAt)
     if (older.length === 0) {
-      return { messages: this.hardTrim(system, recent), summarizerTokens: 0 }
+      return finalize(messages, this.hardTrim(system, recent), 0)
     }
 
     try {
       const summary = await this.options.summarize(older)
       const out = [summaryMessage(summary.text), ...recent]
-      return {
-        messages: this.hardTrim(system, out),
-        summarizerTokens: summary.tokens,
-      }
-    } catch {
-      return { messages: this.hardTrim(system, recent), summarizerTokens: 0 }
+      return finalize(messages, this.hardTrim(system, out), summary.tokens, summary.text)
+    } catch (err) {
+      if (err instanceof SummarizeInfrastructureError) throw err.cause ?? err
+      return finalize(messages, this.hardTrim(system, recent), 0)
     }
   }
 
@@ -94,6 +123,31 @@ export class ContextCompressor {
     while (start > 0 && hasToolResult(messages[start])) start--
     return start
   }
+}
+
+function finalize(
+  original: ChatMessage[],
+  out: ChatMessage[],
+  summarizerTokens: number,
+  summaryText?: string
+): CompressResult {
+  return { messages: out, evicted: computeEvicted(original, out), summarizerTokens, summaryText }
+}
+
+/** Every internal path (recentStartIndex + hardTrim's cascading front-trims)
+ *  preserves every kept message by reference — never a copy or a rebuilt
+ *  object — and only ever removes from the front or prepends one freshly
+ *  constructed synthetic summary message. That means the kept portion of
+ *  `out` is always an exact, reference-identical suffix of `original`; a
+ *  backward scan comparing the two by reference finds precisely where that
+ *  suffix begins without needing to know which branch produced `out`. */
+function computeEvicted(original: ChatMessage[], out: ChatMessage[]): ChatMessage[] {
+  let kept = 0
+  for (let i = out.length - 1, j = original.length - 1; i >= 0 && j >= 0; i--, j--) {
+    if (out[i] !== original[j]) break
+    kept++
+  }
+  return original.slice(0, original.length - kept)
 }
 
 function hasToolResult(message: ChatMessage): boolean {

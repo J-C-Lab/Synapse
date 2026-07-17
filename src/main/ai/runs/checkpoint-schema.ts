@@ -8,6 +8,7 @@ import type {
 } from "@synapse/agent-protocol"
 import type { ToolAnnotations } from "@synapse/plugin-manifest"
 import type { AgentArtifactRef } from "../artifacts/artifact-types"
+import type { ContextCompactionRecord } from "../context/history-artifact"
 import type { PlanStep } from "../plan/plan-types"
 import type { TokenUsage } from "../providers/types"
 import type { RunTrace } from "../run-trace-store"
@@ -272,6 +273,15 @@ export interface AgentRunCheckpointV1 {
   modelSteps: ModelStepLedger[]
   toolBatches: ToolBatchLedger[]
   activatedSkills: SkillActivationSnapshot[]
+
+  /** The currently-active context-compression record (Task 20), or absent
+   * if compression has never triggered for this run. Deliberately outside
+   * `config`: policy (`config.contextCompression`) is immutable frozen
+   * config, but this is durable, mutable state a later step supersedes in
+   * full. Changes the model request *projection*
+   * (`projectCompactedMessages`) only — `messages` above remains the full,
+   * canonical, ever-growing V2 conversation. */
+  contextCompaction?: ContextCompactionRecord
 
   /** Monotonic, checkpointed debit ledger for the background trigger's
    * per-run tool allowance.  This is deliberately outside frozen config:
@@ -608,6 +618,12 @@ function hasCrossFieldInvariants(checkpoint: AgentRunCheckpointV1): boolean {
   }
 
   if (checkpoint.conversationCommit && !checkpoint.identity.conversationId) return false
+  if (
+    checkpoint.contextCompaction &&
+    !messages.has(checkpoint.contextCompaction.evictedThroughMessageId)
+  ) {
+    return false
+  }
   const finalization = checkpoint.finalization
   if (finalization) {
     if (
@@ -678,6 +694,9 @@ function hasValidShape(v: Record<string, unknown>): boolean {
     return false
   }
   if (v.finalization !== undefined && !isValidFinalizationLedger(v.finalization)) return false
+  if (v.contextCompaction !== undefined && !isValidContextCompaction(v.contextCompaction)) {
+    return false
+  }
   return true
 }
 
@@ -1095,6 +1114,24 @@ function isValidResourceReceipts(v: unknown): boolean {
     isBoolean(v.artifactRunPinReleased) &&
     isStringArray(v.adoptionLeaseIds)
   )
+}
+
+function isValidContextCompaction(v: unknown): boolean {
+  if (!isRecord(v)) return false
+  if (!isString(v.compactionId) || !isString(v.evictedThroughMessageId)) return false
+  if (!isString(v.summaryText)) return false
+  if (!isNonNegativeInteger(v.summarizerTokens)) return false
+  // artifact is a forward-declared AgentArtifactRefSummary (Checkpoint B) —
+  // presence-only checked here, matching every other artifact-summary field
+  // in this file (PersistedToolResult.artifact,
+  // SkillActivationSnapshot.instructionsArtifact); the artifact store's own
+  // stat()/read() re-validate it fully against the on-disk manifest.
+  if (!isRecord(v.artifact)) return false
+  // fullArtifact is a forward-declared full AgentArtifactRef — same
+  // presence-only precedent as ToolCallResolution.fullArtifact above.
+  if (v.fullArtifact !== undefined && !isRecord(v.fullArtifact)) return false
+  if (!isFiniteNumber(v.createdAt)) return false
+  return true
 }
 
 function isValidFinalizationLedger(v: unknown): boolean {

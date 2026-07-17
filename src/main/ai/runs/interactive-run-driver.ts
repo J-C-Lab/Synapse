@@ -121,6 +121,14 @@ export async function runInteractiveTurn(
     if (stepOutcome.kind === "max_steps") {
       return finalizeTerminal(deps, runId, "max_steps", stepOutcome.checkpoint)
     }
+    if (stepOutcome.kind === "compressed") {
+      // Context compression (Task 20) committed a compaction checkpoint —
+      // not a model step, so there is no new tool batch to drive and
+      // nextStep did not advance. Loop back so the next iteration
+      // re-evaluates the (now-compacted) checkpoint from scratch, same as
+      // every other durable side effect in this loop.
+      continue
+    }
 
     // tool_batch_required — the model step that just settled produced tool
     // calls; the checkpoint's nextStep already advanced past it, so the
