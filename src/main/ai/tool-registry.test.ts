@@ -5,6 +5,7 @@ import {
   AiToolRegistry,
   applyNonStreamingEmergencyCap,
   invocationAdapterFor,
+  isNonStreamingEmergencyCapMarker,
   modelToolName,
   NON_STREAMING_EMERGENCY_CAP_CHARS,
   renderToolResultText,
@@ -255,5 +256,35 @@ describe("applyNonStreamingEmergencyCap", () => {
     const result = await registry.invoke(modelToolName(bad), {}, { caller: { kind: "agent" } })
     expect(result.isError).toBe(true)
     expect((result.content[0] as { text: string }).text).toContain("non-streaming buffering cap")
+  })
+
+  it("tags a capped result's structured field with the emergency-cap marker", () => {
+    const result = { content: [{ type: "text" as const, text: "v".repeat(2000) }] }
+    const capped = applyNonStreamingEmergencyCap(result, 500)
+    expect(isNonStreamingEmergencyCapMarker(capped.structured)).toBe(true)
+    expect(capped.structured).toEqual({ synapseNonStreamingCapped: true, omittedChars: 1500 })
+  })
+
+  it("leaves structured untouched (undefined) when under the cap", () => {
+    const result = { content: [{ type: "text" as const, text: "short" }] }
+    expect(applyNonStreamingEmergencyCap(result, 1000).structured).toBeUndefined()
+  })
+})
+
+describe("isNonStreamingEmergencyCapMarker", () => {
+  it("recognizes only the well-formed marker shape", () => {
+    expect(
+      isNonStreamingEmergencyCapMarker({ synapseNonStreamingCapped: true, omittedChars: 5 })
+    ).toBe(true)
+    expect(isNonStreamingEmergencyCapMarker(undefined)).toBe(false)
+    expect(isNonStreamingEmergencyCapMarker(null)).toBe(false)
+    expect(isNonStreamingEmergencyCapMarker({})).toBe(false)
+    expect(isNonStreamingEmergencyCapMarker({ synapseNonStreamingCapped: true })).toBe(false)
+    expect(
+      isNonStreamingEmergencyCapMarker({ synapseNonStreamingCapped: false, omittedChars: 5 })
+    ).toBe(false)
+    // A legitimate tool's own structured output must never be
+    // misidentified as this internal sentinel.
+    expect(isNonStreamingEmergencyCapMarker({ someRealField: 1 })).toBe(false)
   })
 })

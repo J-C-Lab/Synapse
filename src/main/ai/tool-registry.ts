@@ -152,19 +152,61 @@ export function renderToolResultText(result: ToolResult): string {
 }
 
 /**
+ * Sentinel attached to a capped ToolResult's `structured` field (never to
+ * its `content`, which stays human-readable text) so a downstream consumer
+ * can detect "this text was already lossily truncated before anything else
+ * ever saw it" WITHOUT string-sniffing the human-readable notice embedded
+ * in `content`. tool-batch-runner.ts's executionPhase checks this before
+ * trusting whatever `complete` a later artifact capture of the (already
+ * -truncated) text reports — see isNonStreamingEmergencyCapMarker's doc
+ * comment for why that distinction matters.
+ *
+ * Safe to overwrite unconditionally: the branch that sets this always also
+ * replaces `content` wholesale (never spreads the original result), so
+ * there is never a legitimate tool-declared `structured` payload to
+ * clobber — this cap only ever fires for a result the host has already
+ * decided it cannot trust as-is.
+ */
+export interface NonStreamingEmergencyCapMarker {
+  synapseNonStreamingCapped: true
+  omittedChars: number
+}
+
+/**
+ * True when `value` is the marker `applyNonStreamingEmergencyCap` attaches
+ * to a capped ToolResult's `structured` field.
+ *
+ * Why this matters: tool-result-capture.ts's `captured.complete` only ever
+ * asks "did the artifact store capture every byte of the text it was
+ * handed" — it has no way to know that the text it was handed was itself
+ * already a lossy truncation of the tool's REAL output (the emergency cap
+ * fires before capture ever sees the original). Without this check, a
+ * capped-then-successfully-offloaded result would end up persisted as
+ * `complete: true`, silently implying the full tool output survived when
+ * real data was permanently discarded before capture ever ran.
+ */
+export function isNonStreamingEmergencyCapMarker(
+  value: unknown
+): value is NonStreamingEmergencyCapMarker {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>).synapseNonStreamingCapped === true &&
+    typeof (value as Record<string, unknown>).omittedChars === "number"
+  )
+}
+
+/**
  * Applies the {@link NON_STREAMING_EMERGENCY_CAP_CHARS} ceiling to a raw
  * ToolResult's rendered text. Below the cap, `result` is returned completely
  * unchanged (same object) — this only ever rewrites content in the rare
  * pathological case. When it does trigger, the result is collapsed to a
- * single truncated text block and marked `isError: true`: a hard,
- * host-level size limit is a policy violation the model must be told about
- * explicitly (matching execution-tool-host.ts's own `output_limit_exceeded`
- * precedent for run_command), not a detail it could miss inside an
- * otherwise-normal-looking JSON field. This function never claims the
- * truncated text is a complete result — `complete`/`truncationReason`
- * accounting downstream (tool-result-capture.ts) only ever sees the already
- * -capped text, so it can never mistake this cap's own cut for a full
- * capture either.
+ * single truncated text block, marked `isError: true` (a hard, host-level
+ * size limit is a policy violation the model must be told about explicitly
+ * — matching execution-tool-host.ts's own `output_limit_exceeded` precedent
+ * for run_command), and tagged with {@link NonStreamingEmergencyCapMarker}
+ * via `structured` so no downstream consumer can mistake a later,
+ * successful capture of this already-truncated text for a complete result.
  */
 export function applyNonStreamingEmergencyCap(
   result: ToolResult,
@@ -173,6 +215,10 @@ export function applyNonStreamingEmergencyCap(
   const text = renderToolResultText(result)
   if (text.length <= maxChars) return result
   const omittedChars = text.length - maxChars
+  const marker: NonStreamingEmergencyCapMarker = {
+    synapseNonStreamingCapped: true,
+    omittedChars,
+  }
   return {
     content: [
       {
@@ -184,6 +230,7 @@ export function applyNonStreamingEmergencyCap(
       },
     ],
     isError: true,
+    structured: marker,
   }
 }
 

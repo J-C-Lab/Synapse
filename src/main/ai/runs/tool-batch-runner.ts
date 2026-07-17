@@ -26,7 +26,11 @@ import { randomUUID } from "node:crypto"
 import { envelopeTierForToolResult } from "../agent-runtime"
 import { captureToolResultText } from "../artifacts/tool-result-capture"
 import { labelUntrustedContent } from "../guardrails/untrusted-content"
-import { invocationAdapterFor, renderToolResultText } from "../tool-registry"
+import {
+  invocationAdapterFor,
+  isNonStreamingEmergencyCapMarker,
+  renderToolResultText,
+} from "../tool-registry"
 import { freezeToolAuthority, toolIdentityMatches } from "./authority-snapshot"
 import { canonicalHash } from "./canonical-json"
 import { decideDurableApproval } from "./durable-approval"
@@ -623,10 +627,22 @@ async function executionPhase(
       captured.previewText,
       envelopeTierForToolResult(call.fqName)
     )
+    // A non-streaming adapter's own emergency cap (tool-registry.ts's
+    // applyNonStreamingEmergencyCap) already discarded real data BEFORE
+    // this text ever reached captureToolResultText — `captured.complete`
+    // only ever asks "did the artifact store capture every byte of the
+    // (already-truncated) text it was handed", which can easily be true
+    // even though the true tool output was never fully represented. Once
+    // that marker is present, `complete` must be forced false regardless
+    // of what the offload itself reports — the underlying artifact (if
+    // any) is still kept, since a bounded record of the truncated text is
+    // better than nothing, but it can never be reported as the whole
+    // story.
+    const emergencyCapped = isNonStreamingEmergencyCapMarker(toolResult!.structured)
     persistedResult = {
       isError: toolResult!.isError ?? false,
       preview: labeled,
-      complete: captured.complete,
+      complete: emergencyCapped ? false : captured.complete,
       artifact: captured.artifact,
     }
     fullArtifact = captured.fullArtifact

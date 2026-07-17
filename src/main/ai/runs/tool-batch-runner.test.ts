@@ -9,7 +9,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ArtifactStore } from "../artifacts/artifact-store"
-import { AiToolRegistry } from "../tool-registry"
+import { AiToolRegistry, NON_STREAMING_EMERGENCY_CAP_CHARS } from "../tool-registry"
 import { AgentRunStore } from "./agent-run-store"
 import { freezeToolAuthority } from "./authority-snapshot"
 import { sealCheckpointIntegrity } from "./checkpoint-schema"
@@ -1009,5 +1009,45 @@ describe("advanceToolBatch — artifact offload (Task 19)", () => {
     )
 
     expect(order).toEqual(["capture", "checkpoint-executed-write"])
+  })
+
+  it("never reports complete: true for a result the non-streaming emergency cap already truncated, even though the (already-capped) text offloads successfully in full", async () => {
+    const runId = "run-emergency-cap-chain"
+    // Larger than tool-registry.ts's NON_STREAMING_EMERGENCY_CAP_CHARS
+    // (2_000_000) — AiToolRegistry.invoke() truncates this BEFORE
+    // tool-batch-runner.ts ever sees it, exactly like a runaway
+    // plugin/MCP adapter would produce.
+    const oversized = "e".repeat(NON_STREAMING_EMERGENCY_CAP_CHARS + 1000)
+    const { registry } = makeRegistry(["huge"], { huge: () => oversized })
+    await seed(runId, registry, [{ id: "t1", name: "huge", input: {} }])
+    const store = makeArtifactStore()
+
+    const outcome = await advanceToolBatch(
+      baseDeps(registry, {
+        caller: { kind: "agent", runId },
+        // A low threshold so the (already emergency-capped) text still
+        // gets offloaded to a real artifact, well within the store's ~64
+        // MiB per-artifact ceiling — the whole point of this test is that
+        // a fully successful offload of the truncated text must NOT be
+        // allowed to launder it back into `complete: true`.
+        artifactCapture: { store, captureThresholdChars: 100 },
+      }),
+      runId,
+      0
+    )
+
+    expect(outcome.kind).toBe("materialized")
+    const call = outcome.checkpoint.toolBatches[0]!.calls[0]!
+    if (call.resolution.status !== "resolved") throw new Error("expected resolved")
+    expect(call.resolution.result.isError).toBe(true)
+    expect(call.resolution.result.complete).toBe(false)
+    expect(call.resolution.result.preview).toMatch(/non-streaming buffering cap/)
+
+    const batch = outcome.checkpoint.toolBatches[0]!
+    const resultMessage = outcome.checkpoint.messages.find(
+      (m) => m.messageId === batch.resultCarrierMessageId
+    )!
+    const block = resultMessage.message.content[0] as { isError?: boolean }
+    expect(block.isError).toBe(true)
   })
 })
