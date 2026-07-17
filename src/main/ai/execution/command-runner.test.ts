@@ -202,4 +202,103 @@ describe("runCommand — artifact-backed capture path", () => {
     expect(result.stderr?.artifact.complete).toBe(false)
     expect(result.stderr?.artifact.truncationReason).toBe("producer-aborted")
   }, 20_000)
+
+  it("marks both stdout and stderr artifacts producer-aborted when the command times out mid-stream", async () => {
+    const root = await makeWorkspace()
+    const policy = new WorkspacePolicy([{ id: "repo", root }])
+    const artifactsDir = await makeArtifactsDir()
+    const store = new ArtifactStore(artifactsDir, { statDiskSpace: ampleDisk })
+    const scriptDir = await makeArtifactsDir()
+    // Writes continuously to both streams for far longer than the
+    // timeoutMs below, so the capture is genuinely cut off mid-flight —
+    // not just racing a process that was about to finish anyway.
+    const script = await writeScript(
+      scriptDir,
+      "trickle.js",
+      [
+        "let i = 0",
+        "function loop() {",
+        "  if (i++ < 100000) {",
+        "    process.stdout.write('o'.repeat(200))",
+        "    process.stderr.write('e'.repeat(200))",
+        "    setImmediate(loop)",
+        "  }",
+        "}",
+        "loop()",
+      ].join("\n")
+    )
+    const command = `node "${script}"`
+
+    // Generous enough for node.exe's own startup (which can itself take
+    // well over 100ms) to complete and several setImmediate iterations to
+    // flow before the timeout fires. The tight, uncapped setImmediate
+    // loop above (as opposed to a slow interval) keeps a steady backlog
+    // of unconsumed chunks queued on both streams at essentially any
+    // instant, so whenever the kill/abort actually lands, capture()'s
+    // per-chunk producer.signal check gets a real chance to observe it —
+    // a timeout racing a source that's already gone idle (nothing left
+    // to check the signal against before EOF) can't reliably distinguish
+    // "correctly marked producer-aborted" from capture()'s own signal
+    // check simply never getting invoked again.
+    const result = await runCommand(policy, {
+      rootId: "repo",
+      command,
+      timeoutMs: 600,
+      artifacts: { store, owner: owner() },
+    })
+
+    expect(result.timedOut).toBe(true)
+    expect(result.stdout?.artifact.complete).toBe(false)
+    expect(result.stdout?.artifact.truncationReason).toBe("producer-aborted")
+    expect(result.stderr?.artifact.complete).toBe(false)
+    expect(result.stderr?.artifact.truncationReason).toBe("producer-aborted")
+  }, 15_000)
+
+  it("marks both stdout and stderr artifacts producer-aborted when cancelled via AbortSignal mid-stream", async () => {
+    const root = await makeWorkspace()
+    const policy = new WorkspacePolicy([{ id: "repo", root }])
+    const artifactsDir = await makeArtifactsDir()
+    const store = new ArtifactStore(artifactsDir, { statDiskSpace: ampleDisk })
+    const scriptDir = await makeArtifactsDir()
+    const script = await writeScript(
+      scriptDir,
+      "trickle.js",
+      [
+        "let i = 0",
+        "function loop() {",
+        "  if (i++ < 100000) {",
+        "    process.stdout.write('o'.repeat(200))",
+        "    process.stderr.write('e'.repeat(200))",
+        "    setImmediate(loop)",
+        "  }",
+        "}",
+        "loop()",
+      ].join("\n")
+    )
+    const command = `node "${script}"`
+    const controller = new AbortController()
+
+    const pending = runCommand(
+      policy,
+      { rootId: "repo", command, timeoutMs: 60_000, artifacts: { store, owner: owner() } },
+      controller.signal
+    )
+    // Give the child real time to spawn and flow several chunks before
+    // cancelling — aborting immediately (before any chunk has arrived)
+    // would race the same known zero-chunk gap noted above, rather than
+    // exercising the mid-stream cancellation path this test targets.
+    // Empirically, node.exe's own cold-start through the powershell -Command
+    // wrapper on this platform can itself take several hundred ms, so a
+    // short delay here reliably observed zero captured bytes rather than a
+    // genuine mid-stream cut — 600ms matches the timeout test's margin.
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    controller.abort()
+    const result = await pending
+
+    expect(result.cancelled).toBe(true)
+    expect(result.stdout?.artifact.complete).toBe(false)
+    expect(result.stdout?.artifact.truncationReason).toBe("producer-aborted")
+    expect(result.stderr?.artifact.complete).toBe(false)
+    expect(result.stderr?.artifact.truncationReason).toBe("producer-aborted")
+  }, 15_000)
 })

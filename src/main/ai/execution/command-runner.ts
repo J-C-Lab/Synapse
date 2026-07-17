@@ -97,15 +97,28 @@ export async function runCommand(
 
   let timedOut = false
   let cancelled = false
+  // Shared with captureArtifactOutput's producer coordination below: a
+  // sibling stream's own quota abort is not the only way a capture can be
+  // cut short mid-stream — a timeout or an external cancellation kills the
+  // process just as abruptly, and must be just as visible in the artifact
+  // ref's own complete/truncationReason, not only in the top-level
+  // timedOut/cancelled flags. Every "process killed before finishing" path
+  // fires this one controller, so capture()'s in-flight loop always has a
+  // chance to see it and finalize as producer-aborted rather than falsely
+  // reporting complete: true because it simply saw a normal EOF.
+  const artifactAbort = new AbortController()
+
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const timer = setTimeout(() => {
     timedOut = true
     killProcessTree(child)
+    if (!artifactAbort.signal.aborted) artifactAbort.abort()
   }, timeoutMs)
 
   const onAbort = (): void => {
     cancelled = true
     killProcessTree(child)
+    if (!artifactAbort.signal.aborted) artifactAbort.abort()
   }
   if (signal?.aborted) onAbort()
   else signal?.addEventListener("abort", onAbort, { once: true })
@@ -120,7 +133,8 @@ export async function runCommand(
       const { stdout, stderr, exitCode } = await captureArtifactOutput(
         child,
         input.artifacts,
-        closed
+        closed,
+        artifactAbort
       )
       return {
         exitCode,
@@ -148,34 +162,43 @@ export async function runCommand(
 }
 
 /** Captures stdout and stderr concurrently as two independent artifacts,
- *  coordinated by one AbortController shared between both producers.
+ *  coordinated by one AbortController shared between both producers — and,
+ *  via `controller`, with runCommand's own timeout/cancellation handling.
  *
  *  Node's `Readable[Symbol.asyncIterator]` (consumed inside
  *  AgentArtifactStore.capture() via `for await`) already provides real
  *  backpressure: pausing consumption pauses the underlying OS pipe, which
  *  pauses the child's writes. capture() itself owns the awaited write side.
  *
- *  The coordination this function is responsible for: if EITHER stream's
- *  capture hits its own hard limit (quota/disk-reserve/write-error),
- *  capture() calls that stream's `producer.abort(reason)` — which must (a)
- *  kill the *entire* process tree (not just stop reading its own stream),
- *  since leaving the child alive with an undrained sibling pipe can
- *  deadlock it, and (b) fire the shared AbortSignal so the sibling
- *  capture's own in-flight loop — checking `producer.signal?.aborted` on
- *  its next chunk — correctly finalizes itself as `complete: false` /
- *  `truncationReason: "producer-aborted"` too, rather than reporting a
- *  false `complete: true` for output that was actually cut short by its
- *  sibling. */
+ *  Three distinct events can cut a capture short, and all three must be
+ *  visible in the resulting artifact ref's own `complete`/`truncationReason`
+ *  — not only in the top-level `timedOut`/`cancelled` flags a careless
+ *  caller could otherwise ignore:
+ *  1. Either stream's own capture hits a hard limit (quota/disk-reserve/
+ *     write-error) — capture() calls that stream's `producer.abort(reason)`
+ *     itself.
+ *  2. runCommand's timeout fires.
+ *  3. runCommand's external `signal` is aborted.
+ *  In every case the process tree must actually die (not just stop being
+ *  read), since leaving the child alive with an undrained pipe can deadlock
+ *  it — and the shared AbortSignal must fire so any capture still
+ *  in-flight — checking `producer.signal?.aborted` on its next chunk —
+ *  correctly finalizes itself as `complete: false` /
+ *  `truncationReason: "producer-aborted"`, rather than reporting a false
+ *  `complete: true` for output that was actually cut short. There's no
+ *  dedicated "timeout"/"cancelled" truncation reason — "producer-aborted"
+ *  is the closest fit; the precise cause is still available via
+ *  CommandRunResult's `timedOut`/`cancelled` fields. */
 async function captureArtifactOutput(
   child: ChildProcess,
   artifacts: CommandArtifactCapture,
-  closed: Promise<number | null>
+  closed: Promise<number | null>,
+  controller: AbortController
 ): Promise<{
   stdout: CommandStreamOutcome
   stderr: CommandStreamOutcome
   exitCode: number | null
 }> {
-  const controller = new AbortController()
   const headBytes = artifacts.headPreviewBytes ?? DEFAULT_HEAD_PREVIEW_BYTES
   const tailBytes = artifacts.tailPreviewBytes ?? DEFAULT_TAIL_PREVIEW_BYTES
 
