@@ -28,7 +28,6 @@ import {
   ArtifactPinStore,
   ArtifactTombstoneStore,
   buildArtifactTombstone,
-  selectEligibleForDeletion,
 } from "./artifact-retention"
 import {
   ArtifactReadError,
@@ -595,17 +594,19 @@ export class ArtifactStore implements AgentArtifactStore {
       }
       if (candidates.length === 0) continue
 
-      const referenced = new Map<string, boolean>()
+      // Design §"Retention": "GC ... rechecks canonical active conversation
+      // /tombstone records immediately before deleting bytes." The reference
+      // check for a given candidate MUST happen right before that same
+      // candidate's fs.rm — never precomputed for the whole run up front —
+      // or a reference that appears mid-sweep (e.g. a concurrent commitRun
+      // adding a fresh conversation turn while this loop is still working
+      // through earlier candidates) could be missed, deleting bytes a
+      // canonical record now depends on. selectEligibleForDeletion's pure
+      // batch form intentionally isn't used here for exactly that reason —
+      // it would require precomputing every candidate's reference state in
+      // one pass before any deletion, reopening this race.
       for (const candidate of candidates) {
-        referenced.set(candidate.uri, await isArtifactReferenced(candidate.uri))
-      }
-      const eligible = selectEligibleForDeletion(
-        candidates,
-        () => false, // already filtered to a pin-released run above
-        (uri) => referenced.get(uri) ?? true // fail closed: unknown => referenced
-      )
-
-      for (const candidate of eligible) {
+        if (await isArtifactReferenced(candidate.uri)) continue
         const manifest = manifestByArtifactId.get(candidate.artifactId)!
         const artifactDir = path.join(runDir, candidate.artifactId)
         await fs.rm(artifactDir, { recursive: true, force: true })

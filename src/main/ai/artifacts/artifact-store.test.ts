@@ -1,4 +1,9 @@
-import type { ArtifactCaller, ArtifactMetadata, ArtifactOwnerContext } from "./artifact-types"
+import type {
+  AgentArtifactRef,
+  ArtifactCaller,
+  ArtifactMetadata,
+  ArtifactOwnerContext,
+} from "./artifact-types"
 import { Buffer } from "node:buffer"
 import { createHash } from "node:crypto"
 import { promises as fs } from "node:fs"
@@ -913,6 +918,69 @@ describe("artifactStore.releaseRunPin / collectEligible — retention (Task 21)"
     const result = await store.collectEligible()
     expect(result.deletedArtifacts).toBe(0)
     expect(result.deletedBytes).toBe(0)
+  })
+
+  it("rechecks isArtifactReferenced immediately before each deletion, so a reference appearing mid-sweep is honored (race regression)", async () => {
+    // Two candidates in the SAME run. The predicate treats whichever
+    // candidate is checked FIRST as unreferenced (so it proceeds to real
+    // deletion) and whichever is checked SECOND as referenced — but only
+    // once the first candidate's bytes are ACTUALLY gone from disk. That is
+    // real, observable evidence that real async work (the first
+    // candidate's fs.rm) has already completed by the time the second is
+    // checked — exactly modeling "a conversation commit adds a fresh
+    // reference to this uri while the sweep is still working through
+    // earlier candidates."
+    //
+    // A precompute-then-delete implementation (the pre-fix bug) checks
+    // every candidate in one pass BEFORE deleting any of them, so neither
+    // candidate's directory would ever be gone yet at check time — both
+    // would be (incorrectly) treated as unreferenced and both would be
+    // deleted. The fixed, recheck-immediately-before-delete implementation
+    // deletes the first candidate before ever checking the second, so the
+    // second candidate's check correctly observes the first one is gone
+    // and survives.
+    let refA!: AgentArtifactRef
+    let refB!: AgentArtifactRef
+    const store = new ArtifactStore(dir, {
+      statDiskSpace: ampleDisk,
+      isArtifactReferenced: async (uri) => {
+        const otherDir =
+          uri === refA.uri
+            ? join(dir, "run-1", refB.artifactId)
+            : join(dir, "run-1", refA.artifactId)
+        const otherStillExists = await fs
+          .access(otherDir)
+          .then(() => true)
+          .catch(() => false)
+        return !otherStillExists
+      },
+    })
+    refA = await store.capture(bytesOf("candidate A"), metadata(), noopProducer())
+    refB = await store.capture(bytesOf("candidate B"), metadata(), noopProducer())
+    await store.releaseRunPin("run-1", "fin-1")
+
+    const result = await store.collectEligible()
+
+    // Exactly one of the two was deleted — the one processed first. Under
+    // the pre-fix precompute-then-delete bug, this would be 2 (both
+    // deleted, since neither's directory was gone yet when either was
+    // checked).
+    expect(result.deletedArtifacts).toBe(1)
+
+    const aGone = await fs
+      .access(join(dir, "run-1", refA.artifactId))
+      .then(() => false)
+      .catch(() => true)
+    const bGone = await fs
+      .access(join(dir, "run-1", refB.artifactId))
+      .then(() => false)
+      .catch(() => true)
+    // Exactly one survived, and it is still fully readable.
+    expect([aGone, bGone].filter(Boolean)).toHaveLength(1)
+    const survivingRef = aGone ? refB : refA
+    const survivingText = aGone ? "candidate B" : "candidate A"
+    const read = await store.read(survivingRef, { start: 0 }, caller())
+    expect(Buffer.from(read).toString("utf-8")).toBe(survivingText)
   })
 
   it("an unrelated invalid/never-captured artifact id still reports artifact_missing, not artifact_expired", async () => {

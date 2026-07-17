@@ -1,7 +1,9 @@
+import { Buffer } from "node:buffer"
 import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { ConversationStore } from "../conversation-store"
 import {
   ArtifactPinStore,
   ArtifactTombstoneStore,
@@ -10,6 +12,7 @@ import {
   releaseArtifactRunResources,
   selectEligibleForDeletion,
 } from "./artifact-retention"
+import { ArtifactStore } from "./artifact-store"
 
 let dir: string
 
@@ -201,5 +204,132 @@ describe("releaseArtifactRunResources", () => {
         { runId: "run-1", finalizationId: "fin-1" }
       )
     ).rejects.toThrow(/simulated crash/)
+  })
+})
+
+describe("artifact retention — real ConversationStore + ArtifactStore integration (wired exactly as index.ts)", () => {
+  // Mirrors src/main/index.ts's actual wiring byte-for-byte: a real
+  // ConversationStore's collectReferencedArtifactUris backs a real
+  // ArtifactStore's isArtifactReferenced. Isolated unit tests on each store
+  // separately (with a mocked predicate on one side) can't catch a glue bug
+  // here — wrong argument order, an inverted grace-window comparison, or
+  // reading `now()` from the wrong side. This is the actual end-to-end path
+  // a real GC sweep runs in production.
+  const GRACE_MS = 60_000
+
+  function noopProducer() {
+    return { abort: () => {} }
+  }
+
+  function bytesOf(text: string): Uint8Array {
+    return new TextEncoder().encode(text)
+  }
+
+  async function wired(now: () => number): Promise<{
+    conversations: ConversationStore
+    artifactStore: ArtifactStore
+  }> {
+    const conversations = new ConversationStore(join(dir, "conversations"), now)
+    const artifactStore = new ArtifactStore(join(dir, "artifacts"), {
+      now,
+      statDiskSpace: async () => ({ freeBytes: 1e12, totalBytes: 1e12 }),
+      isArtifactReferenced: async (uri) => {
+        const referenced = await conversations.collectReferencedArtifactUris(now(), GRACE_MS)
+        return referenced.has(uri)
+      },
+    })
+    return { conversations, artifactStore }
+  }
+
+  it("an artifact referenced by an active conversation survives a real GC sweep", async () => {
+    const clock = 1_000
+    const { conversations, artifactStore } = await wired(() => clock)
+
+    const ref = await artifactStore.capture(
+      bytesOf("kept alive by an active conversation"),
+      {
+        runId: "run-1",
+        owner: { runId: "run-1", rootRunId: "run-1", principal: { kind: "internal-agent" } },
+        kind: "tool-result",
+        mediaType: "text/plain",
+      },
+      noopProducer()
+    )
+    await artifactStore.releaseRunPin("run-1", "fin-1")
+
+    await conversations.save({
+      id: "conv-1",
+      workspaceId: "default",
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "tool_result", toolUseId: "t1", content: "preview", artifact: ref }],
+        },
+      ],
+      createdAt: clock,
+      updatedAt: clock,
+    })
+
+    const result = await artifactStore.collectEligible()
+    expect(result.deletedArtifacts).toBe(0)
+
+    const caller = {
+      runId: "run-1",
+      rootRunId: "run-1",
+      principal: { kind: "internal-agent" as const },
+    }
+    const read = await artifactStore.read(ref, { start: 0 }, caller)
+    expect(Buffer.from(read).toString("utf-8")).toBe("kept alive by an active conversation")
+  })
+
+  it("a tombstoned conversation's artifacts survive within the grace window and become eligible once it expires", async () => {
+    let clock = 1_000
+    const { conversations, artifactStore } = await wired(() => clock)
+
+    const ref = await artifactStore.capture(
+      bytesOf("kept only during the grace window"),
+      {
+        runId: "run-1",
+        owner: { runId: "run-1", rootRunId: "run-1", principal: { kind: "internal-agent" } },
+        kind: "tool-result",
+        mediaType: "text/plain",
+      },
+      noopProducer()
+    )
+    await artifactStore.releaseRunPin("run-1", "fin-1")
+
+    await conversations.save({
+      id: "conv-1",
+      workspaceId: "default",
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "tool_result", toolUseId: "t1", content: "preview", artifact: ref }],
+        },
+      ],
+      createdAt: clock,
+      updatedAt: clock,
+    })
+    await conversations.delete("conv-1")
+
+    // Still inside the grace window — the tombstone continues to pin it.
+    const withinGrace = await artifactStore.collectEligible()
+    expect(withinGrace.deletedArtifacts).toBe(0)
+    expect(await conversations.get("conv-1")).toBeUndefined() // genuinely deleted, not resurrected
+
+    // Past the grace window — now eligible.
+    clock += GRACE_MS + 1
+    const afterGrace = await artifactStore.collectEligible()
+    expect(afterGrace.deletedArtifacts).toBe(1)
+    expect(afterGrace.deletedBytes).toBe(ref.capturedBytes)
+
+    const caller = {
+      runId: "run-1",
+      rootRunId: "run-1",
+      principal: { kind: "internal-agent" as const },
+    }
+    await expect(artifactStore.read(ref, { start: 0 }, caller)).rejects.toMatchObject({
+      code: "artifact_expired",
+    })
   })
 })
