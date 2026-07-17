@@ -4,6 +4,7 @@ import type { ChatContentBlock, ChatMessage } from "../providers/types"
 import type { AgentRunCheckpointV1, ModelBudgetAdmission } from "./checkpoint-schema"
 import type { ModelStepDeps } from "./model-step-runner"
 import { randomUUID } from "node:crypto"
+import { logger } from "../../logging"
 import {
   admitModelAttempt,
   forfeitModelAttempt,
@@ -11,6 +12,7 @@ import {
 } from "../budget/model-admission"
 import { freeBalance, ROOT_ACCOUNT_ID } from "../budget/root-budget-ledger"
 import { ContextCompressor, SummarizeInfrastructureError } from "../context/context-compressor"
+import { estimateMessagesTokens, estimateTextTokens } from "../context/estimate-tokens"
 import {
   buildCompactionRecord,
   captureHistorySlice,
@@ -25,6 +27,8 @@ import {
 } from "../context/summarize-via-provider"
 import { assembleFromContextSnapshot } from "./context-snapshot"
 import { advanceModelStep, InsufficientEstimateError } from "./model-step-runner"
+
+const compressionLog = logger.child("context-compression")
 
 // Resumable outer driver (design §"Build a resumable driver that always
 // reloads the latest checkpoint and chooses one legal next action"). Owns
@@ -46,13 +50,16 @@ export interface DurableAgentDriverDeps extends ModelStepDeps {
    *  20, design §"Context compression writes the evicted message slice to a
    *  `history` artifact"). Safe to omit while every run's
    *  `config.contextCompression.enabled` is false — compression never runs,
-   *  so this is never consulted. Omitting it while compression is enabled
-   *  AND an eviction actually becomes necessary is treated exactly like a
-   *  failed capture (see maybeCompressHistory): there is no safe smaller
+   *  so this is never consulted. Once compression is enabled, this is
+   *  required unconditionally — `maybeCompressHistory` checks for it before
+   *  spending any summarizer budget, not only once an eviction actually
+   *  turns out to be needed (review fix: a misconfigured run must never
+   *  waste a real, non-refundable charge only to discover afterward there's
+   *  nowhere to durably capture the result). There is no safe smaller
    *  inline fallback for "the conversation no longer fits", unlike a single
-   *  oversized tool result, so the run fails this attempt visibly rather
-   *  than silently skipping compression and dispatching an oversized
-   *  request anyway. */
+   *  oversized tool result, so a missing store fails visibly rather than
+   *  silently skipping compression and dispatching an oversized request
+   *  anyway. */
   artifactStore?: AgentArtifactStore
 }
 
@@ -154,6 +161,22 @@ async function maybeCompressHistory(
   const policy = checkpointIn.config.contextCompression
   if (!policy.enabled) return undefined
 
+  // Fail fast, before any budget is spent, not only once an eviction turns
+  // out to be needed (review fix): compression can only ever durably
+  // capture an eviction through an artifact store, so a misconfigured run
+  // (compression enabled, no store wired) must never waste a real,
+  // non-refundable summarizer charge only to discover afterward there's
+  // nowhere to put the result. `artifactStore` below is the narrowed,
+  // guaranteed-defined local every later use reads instead of
+  // `deps.artifactStore`.
+  if (!deps.artifactStore) {
+    throw new HistoryCompressionError(
+      `context compression is enabled for run ${checkpointIn.identity.runId} but no artifact ` +
+        `store is configured to durably capture an eviction`
+    )
+  }
+  const artifactStore = deps.artifactStore
+
   // Reconcile a compression budget hold left "held" by a crashed prior
   // attempt before doing anything else this call — see
   // reconcileStuckCompressionAttempt's docstring.
@@ -175,6 +198,7 @@ async function maybeCompressHistory(
   // provider.estimateRequestUpperBound is what actually gates admission).
   const { system } = assembleFromContextSnapshot(checkpoint.config.context)
   const projected = projectCompactedMessages(checkpoint.messages, checkpoint.contextCompaction)
+  const threshold = Math.max(0, policy.thresholdTokens - policy.hardReserveTokens)
 
   // Threaded across the nested `summarize` callback below so its own
   // durable checkpoint writes (the compressionAttempt planned/held/settled/
@@ -184,7 +208,7 @@ async function maybeCompressHistory(
   let latest = checkpoint
 
   const compressor = new ContextCompressor({
-    thresholdTokens: Math.max(0, policy.thresholdTokens - policy.hardReserveTokens),
+    thresholdTokens: threshold,
     keepFraction: policy.keepRecentFraction,
     summarize: async (older) => {
       try {
@@ -226,7 +250,36 @@ async function maybeCompressHistory(
 
   const result = await compressor.compress(system, projected)
   checkpoint = latest
-  if (result.evicted.length === 0) return undefined
+  if (result.evicted.length === 0) {
+    // Usually a genuine no-op (the projection already fits). But
+    // ContextCompressor.compress() can also legitimately compute a
+    // non-empty, real reduction internally (hardTrim dropping interior
+    // "recent" content while pinning an already-summarized message at the
+    // front — see context-compressor.ts's computeEvicted) and still report
+    // `evicted: []`, because that shape can't be represented as the
+    // leading-prefix eviction this driver's artifact-mapping requires (see
+    // computeEvicted's own docstring). When that happens, compression
+    // silently declines to shrink the request for as long as the pattern
+    // holds — never lossy (nothing left the canonical `checkpoint.messages`
+    // in the first place), but otherwise invisible. Surface it here so an
+    // operator can tell the difference between "nothing to do" and "wanted
+    // to do something but couldn't represent it."
+    const estimate = estimateTextTokens(system) + estimateMessagesTokens(projected)
+    if (estimate > threshold) {
+      compressionLog.warn(
+        "context compression detected an over-threshold projection but could not represent " +
+          "a leading-prefix eviction this round (a preserved head with an evicted interior " +
+          "gap) — declining to compress; the request will dispatch at its current size",
+        // Field names deliberately avoid the substring "token" — the
+        // logger's redactFields() treats any key matching /token/i as a
+        // secret and replaces its value with "[redacted]" (see
+        // src/main/logging/redact.ts), which would make these plain token
+        // counts useless in the log output.
+        { runId, estimatedContextSize: estimate, compressionThreshold: threshold }
+      )
+    }
+    return undefined
+  }
 
   // The active compaction's synthetic summary message (if any) is always
   // the first element of `projected` and therefore always the first element
@@ -243,25 +296,17 @@ async function maybeCompressHistory(
   const tailDurable = durableTailAfterCompaction(checkpoint.messages, checkpoint.contextCompaction)
   const evictedDurable = tailDurable.slice(0, realEvictedCount)
 
-  if (!deps.artifactStore) {
-    throw new HistoryCompressionError(
-      `context compression for run ${runId} needs to evict ${evictedDurable.length} message(s) ` +
-        `but no artifact store is configured to durably capture them first`
-    )
-  }
-
   // Capture BEFORE committing the checkpoint (same ordering as
   // tool-batch-runner.ts's tool-result offload): a crash between the two
   // merely orphans the artifact — harmless pre-Task-21 — rather than ever
   // letting a persisted checkpoint reference an evicted slice that was
-  // never actually captured. A throw here propagates uncaught, per
-  // HistoryCompressionError's docstring: never evict without a durable
-  // capture succeeding first.
+  // never actually captured. `artifactStore` is guaranteed defined here —
+  // see the fail-fast check at the top of this function.
   const owner = deriveHistoryArtifactOwner(
     checkpoint.identity,
     checkpoint.config.authority.principal.actor
   )
-  const artifactRef = await captureHistorySlice(deps.artifactStore, owner, runId, evictedDurable)
+  const artifactRef = await captureHistorySlice(artifactStore, owner, runId, evictedDurable)
   await deps.fault?.("after_history_capture")
 
   const record = buildCompactionRecord({

@@ -1,6 +1,5 @@
 import type { ChatMessage, ChatProvider, RequestEstimateInput } from "../providers/types"
 import type { SummarizeResult } from "./context-compressor"
-import { emptyUsage } from "../providers/types"
 
 // One provider call summarizing the older slice into a compact recap. Pure
 // request-building + dispatch — no budget-ledger concerns at all. Durable
@@ -83,6 +82,3 @@ function renderMessages(messages: ChatMessage[]): string {
     })
     .join("\n\n")
 }
-
-// Exported for tests that need empty usage shape.
-export { emptyUsage }

@@ -11,7 +11,8 @@ import { Buffer } from "node:buffer"
 import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { Logger } from "../../logging"
 import { ArtifactQuotaExceededError } from "../artifacts/artifact-quota"
 import { ArtifactStore } from "../artifacts/artifact-store"
 import {
@@ -659,6 +660,44 @@ describe("advanceDurableRun — context compression (Task 20)", () => {
     expect(reloaded.checkpoint.messages).toHaveLength(3)
   })
 
+  it("fails BEFORE spending any summarizer budget when no artifact store is configured (Issue 2 fix) — checked right after the enabled gate, not after a real charge", async () => {
+    const runId = "compress-13"
+    const messages = [
+      userMsg("m1", longText("old", 200)),
+      assistantMsg("m2", longText("old2", 200)),
+      userMsg("m3", "recent question"),
+    ]
+    await runStore.create(
+      checkpointForCompression(runId, messages, { enabled: true, thresholdTokens: 100 })
+    )
+    await budgetStore.create(createRootBudgetLedger(runId, 10_000))
+    const provider = fakeProviderWithSummarizer(modelReply, "SUMMARY")
+
+    await expect(
+      advanceDurableRun(
+        { runStore, budgetStore, provider, tools: () => [], now: () => 1000, maxSteps: 10 },
+        runId
+      )
+    ).rejects.toBeInstanceOf(HistoryCompressionError)
+
+    // The summarizer was never dispatched — the missing-store check fired
+    // before compressor.compress() was ever called, not after a wasted
+    // real provider call.
+    expect(provider.calls).toHaveLength(0)
+
+    // No budget operation of any kind was recorded — nothing held,
+    // nothing consumed, no compressionAttempt ever started.
+    const ledger = await budgetStore.load(runId)
+    expect(Object.keys(ledger.operations)).toHaveLength(0)
+    expect(ledger.accounts[ROOT_ACCOUNT_ID]!.heldTokens).toBe(0)
+    expect(ledger.accounts[ROOT_ACCOUNT_ID]!.consumedTokens).toBe(0)
+
+    const reloaded = await runStore.load(runId)
+    if (!reloaded.ok) throw new Error("expected ok checkpoint")
+    expect(reloaded.checkpoint.compressionAttempt).toBeUndefined()
+    expect(reloaded.checkpoint.contextCompaction).toBeUndefined()
+  })
+
   it("propagates a hard quota-exhaustion failure from the artifact store instead of silently discarding the slice", async () => {
     const runId = "compress-7"
     const messages = [
@@ -799,32 +838,59 @@ describe("advanceDurableRun — context compression (Task 20)", () => {
     )
     await budgetStore.create(createRootBudgetLedger(runId, 10_000))
     const provider = fakeProviderWithSummarizer(modelReply, "SHOULD-NOT-BE-USED")
+    // durable-agent-driver.ts logs through `logger.child("context-compression")`
+    // — a distinct Logger *instance*, not the `logger` facade object itself
+    // — so spying on the facade's own `warn` (the pattern
+    // mcp-client-manager.test.ts uses for a direct `logger.warn(...)` call)
+    // would never see it. Spying on the shared `Logger.prototype.warn`
+    // intercepts every instance, including child-scoped ones.
+    const warnSpy = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => {})
 
-    const outcome = await advanceDurableRun(
-      {
-        runStore,
-        budgetStore,
-        provider,
-        tools: () => [],
-        now: () => 1000,
-        maxSteps: 10,
-        artifactStore,
-      },
-      runId
-    )
+    try {
+      const outcome = await advanceDurableRun(
+        {
+          runStore,
+          budgetStore,
+          provider,
+          tools: () => [],
+          now: () => 1000,
+          maxSteps: 10,
+          artifactStore,
+        },
+        runId
+      )
 
-    // Nothing was evicted this round, so compression is a no-op and the
-    // driver proceeds straight to a real model step instead.
-    expect(outcome.kind).not.toBe("compressed")
-    // The committed compaction record is byte-for-byte the same one seeded
-    // above — never replaced with a new compactionId or the generic
-    // "(automatic summarization was unavailable...)" placeholder text.
-    expect(outcome.checkpoint.contextCompaction).toEqual(seededCompaction)
-    expect(outcome.checkpoint.contextCompaction!.summaryText).toBe(realPriorSummaryText)
-    // The summarizer was never invoked — only the real model step's own
-    // request was dispatched.
-    expect(provider.calls).toHaveLength(1)
-    expect(provider.calls[0]!.system.startsWith(SUMMARIZE_SYSTEM_PREFIX)).toBe(false)
+      // Nothing was evicted this round, so compression is a no-op and the
+      // driver proceeds straight to a real model step instead.
+      expect(outcome.kind).not.toBe("compressed")
+      // The committed compaction record is byte-for-byte the same one seeded
+      // above — never replaced with a new compactionId or the generic
+      // "(automatic summarization was unavailable...)" placeholder text.
+      expect(outcome.checkpoint.contextCompaction).toEqual(seededCompaction)
+      expect(outcome.checkpoint.contextCompaction!.summaryText).toBe(realPriorSummaryText)
+      // The summarizer was never invoked — only the real model step's own
+      // request was dispatched.
+      expect(provider.calls).toHaveLength(1)
+      expect(provider.calls[0]!.system.startsWith(SUMMARIZE_SYSTEM_PREFIX)).toBe(false)
+
+      // Observability fix (review round 3): this "detected over-threshold
+      // but couldn't represent the eviction, declined silently" path must
+      // not actually be silent — it logs a warning naming the run so an
+      // operator can tell "nothing to do" apart from "wanted to compress
+      // but couldn't." Filtered (rather than asserting total call count)
+      // so this doesn't become fragile against unrelated incidental warns
+      // from other Logger instances sharing the same spied prototype
+      // method.
+      const relevantCalls = warnSpy.mock.calls.filter(
+        ([msg]) => typeof msg === "string" && msg.includes("could not represent")
+      )
+      expect(relevantCalls).toHaveLength(1)
+      const [message, fields] = relevantCalls[0]!
+      expect(message).toMatch(/could not represent.*leading-prefix eviction/)
+      expect(fields).toMatchObject({ runId })
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 
   it("a compression budget hold left stuck 'held' by a crash before settle is conservatively forfeited on the next call, and the budget becomes available again (Issue 2 fix)", async () => {
