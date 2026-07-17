@@ -16,6 +16,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import { writeJsonFile } from "../../lan/atomic-json-store"
+import { logger } from "../../logging"
 import { checkArtifactAccess } from "./artifact-access"
 import {
   ArtifactQuotaExceededError,
@@ -606,7 +607,26 @@ export class ArtifactStore implements AgentArtifactStore {
       // it would require precomputing every candidate's reference state in
       // one pass before any deletion, reopening this race.
       for (const candidate of candidates) {
-        if (await isArtifactReferenced(candidate.uri)) continue
+        // Fault-isolate one candidate's reference check from the rest of the
+        // sweep: a JSON-parse failure inside collectReferencedArtifactUris is
+        // already handled there (swallowed → treated as absent), but ANY
+        // OTHER failure (permissions, EIO, ...) must never abort the whole
+        // GC pass — it would discard the quota-reconciliation/orphaned-temp
+        // -file work already done earlier in this call and skip every other
+        // run/candidate that had nothing wrong with it. Fail closed for just
+        // this one candidate (treat a throwing check as "referenced" — never
+        // delete on an inconclusive answer) and keep going.
+        let referenced: boolean
+        try {
+          referenced = await isArtifactReferenced(candidate.uri)
+        } catch (err) {
+          logger.child("artifact-retention").error("reference check failed during GC sweep", {
+            uri: candidate.uri,
+            err,
+          })
+          continue
+        }
+        if (referenced) continue
         const manifest = manifestByArtifactId.get(candidate.artifactId)!
         const artifactDir = path.join(runDir, candidate.artifactId)
         await fs.rm(artifactDir, { recursive: true, force: true })

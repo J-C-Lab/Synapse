@@ -983,6 +983,42 @@ describe("artifactStore.releaseRunPin / collectEligible — retention (Task 21)"
     expect(Buffer.from(read).toString("utf-8")).toBe(survivingText)
   })
 
+  it("isolates a single candidate's reference-check failure from the rest of the sweep", async () => {
+    // Three eligible candidates in the same run: one whose reference check
+    // throws (a permissions error, EIO, ... — anything other than the
+    // already-handled "conversation record JSON is malformed" case), and
+    // two ordinary unreferenced ones. The throwing candidate must survive
+    // (fail closed — never delete on an inconclusive answer) without
+    // aborting the sweep for its siblings, and collectEligible() must
+    // resolve with a result rather than reject.
+    let refThrows!: AgentArtifactRef
+    const store = new ArtifactStore(dir, {
+      statDiskSpace: ampleDisk,
+      isArtifactReferenced: async (uri) => {
+        if (uri === refThrows.uri) throw new Error("simulated I/O failure reading a conversation")
+        return false
+      },
+    })
+    refThrows = await store.capture(bytesOf("poisoned check"), metadata(), noopProducer())
+    const refB = await store.capture(bytesOf("ordinary eligible B"), metadata(), noopProducer())
+    const refC = await store.capture(bytesOf("ordinary eligible C"), metadata(), noopProducer())
+    await store.releaseRunPin("run-1", "fin-1")
+
+    const result = await store.collectEligible()
+
+    // Only the two candidates whose check didn't throw were deleted.
+    expect(result.deletedArtifacts).toBe(2)
+    expect(result.deletedBytes).toBe(refB.capturedBytes + refC.capturedBytes)
+
+    // The candidate whose check threw survives and is still fully readable.
+    const survivor = await store.read(refThrows, { start: 0 }, caller())
+    expect(Buffer.from(survivor).toString("utf-8")).toBe("poisoned check")
+
+    // Its siblings were genuinely deleted (expired, not merely absent).
+    await expect(store.stat(refB, caller())).rejects.toMatchObject({ code: "artifact_expired" })
+    await expect(store.stat(refC, caller())).rejects.toMatchObject({ code: "artifact_expired" })
+  })
+
   it("an unrelated invalid/never-captured artifact id still reports artifact_missing, not artifact_expired", async () => {
     const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
     await expect(

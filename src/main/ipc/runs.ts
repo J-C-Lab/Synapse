@@ -526,6 +526,13 @@ export function registerRunsIpc(
     // to expose real retention deletion without inventing new scheduling
     // infrastructure. A future scheduled-task system can call
     // artifactStore.collectEligible() directly instead of through IPC.
+    //
+    // This channel is fully wired end-to-end (main + preload + renderer
+    // wrapper) but deliberately has no call site anywhere in the renderer UI
+    // yet — no button, menu item, or scheduler invokes it — mirroring how
+    // Task 20 shipped context compression fully wired but dormant
+    // (`enabled: false`) pending a later task turning it on. Wiring an
+    // automatic/UI trigger is intentionally deferred, not an oversight.
     ipcMain.handle("runs:collectArtifactGarbage", async (event) => {
       guard(event)
       return artifactStore.collectEligible()
