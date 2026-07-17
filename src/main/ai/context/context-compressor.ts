@@ -134,18 +134,39 @@ function finalize(
   return { messages: out, evicted: computeEvicted(original, out), summarizerTokens, summaryText }
 }
 
-/** Every internal path (recentStartIndex + hardTrim's cascading front-trims)
- *  preserves every kept message by reference — never a copy or a rebuilt
- *  object — and only ever removes from the front or prepends one freshly
- *  constructed synthetic summary message. That means the kept portion of
- *  `out` is always an exact, reference-identical suffix of `original`; a
- *  backward scan comparing the two by reference finds precisely where that
- *  suffix begins without needing to know which branch produced `out`. */
+/** Almost every internal path (recentStartIndex + hardTrim's cascading
+ *  front-trims) preserves every kept message by reference — never a copy or
+ *  a rebuilt object — and only ever removes from the front or prepends one
+ *  freshly constructed synthetic summary message. That makes the kept
+ *  portion of `out` an exact, reference-identical suffix of `original`, and
+ *  a backward scan comparing the two by reference finds precisely where
+ *  that suffix begins without needing to know which branch produced `out`.
+ *
+ *  One case breaks that suffix property: `hardTrim`'s `summaryAtFront`
+ *  branch pins `original[0]` (an already-summarized message from an earlier
+ *  compaction round, reference-identical, never rebuilt) while removing
+ *  interior elements right after it — a preserved head plus a preserved
+ *  tail with an evicted gap in between, not a leading prefix at all. There
+ *  is no way to represent "the middle was evicted" as the leading-prefix
+ *  slice this function promises (and that durable-agent-driver.ts's
+ *  positional un-prefixing of `evicted` depends on): reporting `original[0]`
+ *  as evicted would be an outright contradiction (it demonstrably survived,
+ *  unchanged, in `out[0]`), and reporting the interior gap as a fabricated
+ *  "leading prefix" would misattribute it to the wrong messages downstream.
+ *  So when the backward scan cannot fully consume `out` but `out[0]` is
+ *  still reference-identical to `original[0]`, nothing new is reported as
+ *  evicted this round — the caller sees an unchanged compaction and simply
+ *  tries again once there is genuinely new content to summarize. */
 function computeEvicted(original: ChatMessage[], out: ChatMessage[]): ChatMessage[] {
   let kept = 0
-  for (let i = out.length - 1, j = original.length - 1; i >= 0 && j >= 0; i--, j--) {
+  let i = out.length - 1
+  const j0 = original.length - 1
+  for (let j = j0; i >= 0 && j >= 0; i--, j--) {
     if (out[i] !== original[j]) break
     kept++
+  }
+  if (i === 0 && out.length > 0 && original.length > 0 && out[0] === original[0]) {
+    return []
   }
   return original.slice(0, original.length - kept)
 }

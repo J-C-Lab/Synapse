@@ -209,6 +209,31 @@ export interface ModelStepLedger {
   acceptedAttemptId?: string
 }
 
+/** Durable admission state for context compression's own summarizer
+ * request (Task 20 follow-up) — charges through the exact same
+ * `ModelBudgetAdmission` state machine (`planned`/`held`/`settled`/
+ * `forfeited`) a real model step uses, reusing the type as-is rather than
+ * inventing a parallel one. Unlike `ModelRequestAttempt`, this is not
+ * indexed by `step`/keyed into an array of attempts: compression isn't a
+ * `nextStep`-numbered model step, so there is only ever one active
+ * compression attempt at a time, tracked as a single mutable slot that each
+ * new attempt overwrites once the previous one reaches a terminal state
+ * (`settled`/`forfeited`). Written durably via `runStore.mutate` BEFORE the
+ * ledger hold is admitted (mirroring `model-step-runner.ts`'s
+ * prepareAttempt-before-holdAttempt ordering), so a crash between the
+ * ledger admit and this record's own "held" confirmation always leaves a
+ * durable trail `durable-agent-driver.ts`'s next call reconciles —
+ * forfeiting a stuck "held" attempt (the ambiguous "a provider dispatch
+ * may or may not have been attempted" case, mirroring
+ * `ensureForfeitedAndPrepareNext`'s conservative treatment of
+ * "dispatched"/"unknown_response") or safely resuming a "planned" attempt
+ * in place (idempotent admit retry, no ambiguity — the ledger was either
+ * never touched or admitted under the exact same operationId either way). */
+export interface CompressionBudgetAttempt {
+  attemptId: string
+  admission: ModelBudgetAdmission
+}
+
 /** Forward-declared here for the same reason as ModelCapabilityProfile — the
  *  progressive-skills checkpoint (a later checkpoint) owns activation
  *  logic, but the field must exist on every checkpoint from v1 onward. */
@@ -282,6 +307,13 @@ export interface AgentRunCheckpointV1 {
    * (`projectCompactedMessages`) only — `messages` above remains the full,
    * canonical, ever-growing V2 conversation. */
   contextCompaction?: ContextCompactionRecord
+
+  /** The in-flight (or most recently completed) budget admission for
+   * context compression's own summarizer request — see
+   * CompressionBudgetAttempt's docstring. Absent whenever no compression
+   * attempt has ever run, or the most recent one already reached a
+   * terminal `settled`/`forfeited` state. */
+  compressionAttempt?: CompressionBudgetAttempt
 
   /** Monotonic, checkpointed debit ledger for the background trigger's
    * per-run tool allowance.  This is deliberately outside frozen config:
@@ -697,7 +729,19 @@ function hasValidShape(v: Record<string, unknown>): boolean {
   if (v.contextCompaction !== undefined && !isValidContextCompaction(v.contextCompaction)) {
     return false
   }
+  if (
+    v.compressionAttempt !== undefined &&
+    !isValidCompressionBudgetAttempt(v.compressionAttempt)
+  ) {
+    return false
+  }
   return true
+}
+
+function isValidCompressionBudgetAttempt(v: unknown): boolean {
+  if (!isRecord(v)) return false
+  if (!isString(v.attemptId)) return false
+  return isValidModelBudgetAdmission(v.admission)
 }
 
 function isValidIdentity(v: unknown): boolean {

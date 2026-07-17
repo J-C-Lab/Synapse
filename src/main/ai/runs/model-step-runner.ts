@@ -52,6 +52,19 @@ export type ModelStepFaultPoint =
   // DurableAgentDriverDeps.
   | "after_history_capture"
   | "after_compaction_checkpoint"
+  // Compression's own durable budget-attempt fault points (Issue 2 follow-up
+  // review fix, durable-agent-driver.ts's runCompressionAttempt/
+  // forfeitCompressionAttempt) — mirror the model-step points above one
+  // level down, scoped to the summarizer's own admit/settle/forfeit
+  // sequence rather than the real model step's.
+  | "after_compression_prepared"
+  | "after_compression_hold_ledger"
+  | "after_compression_hold"
+  | "after_compression_provider_call"
+  | "after_compression_settle_ledger"
+  | "after_compression_settle"
+  | "after_compression_forfeit_ledger"
+  | "after_compression_forfeit_checkpoint"
 
 export interface ModelStepDeps {
   runStore: AgentRunStore

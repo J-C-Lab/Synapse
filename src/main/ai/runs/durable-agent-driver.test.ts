@@ -14,7 +14,11 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { ArtifactQuotaExceededError } from "../artifacts/artifact-quota"
 import { ArtifactStore } from "../artifacts/artifact-store"
-import { createRootBudgetLedger, RootBudgetLedgerStore } from "../budget/root-budget-ledger"
+import {
+  createRootBudgetLedger,
+  ROOT_ACCOUNT_ID,
+  RootBudgetLedgerStore,
+} from "../budget/root-budget-ledger"
 import { AgentRunStore } from "./agent-run-store"
 import { sealCheckpointIntegrity } from "./checkpoint-schema"
 import { advanceDurableRun, HistoryCompressionError } from "./durable-agent-driver"
@@ -120,11 +124,23 @@ interface ContextCompressionOverride {
   hardReserveTokens?: number
 }
 
+interface CheckpointForCompressionOverrides {
+  /** Overrides the frozen base system prompt text — used to force the
+   *  `older.length === 0` hardTrim branch (a large-relative-to-threshold
+   *  system prompt, not the messages themselves, is what pushes the total
+   *  estimate over threshold in that scenario). */
+  systemPrompt?: string
+  /** Seeds an already-active compaction, simulating "a prior compression
+   *  round already happened" without actually running one. */
+  contextCompaction?: AgentRunCheckpointV1["contextCompaction"]
+}
+
 function checkpointForCompression(
   runId: string,
   messages: DurableChatMessage[],
   contextCompression: ContextCompressionOverride,
-  maxSteps = 10
+  maxSteps = 10,
+  overrides: CheckpointForCompressionOverrides = {}
 ): AgentRunCheckpointV1 {
   const base = minimalCheckpoint(runId, maxSteps)
   return sealCheckpointIntegrity({
@@ -137,8 +153,18 @@ function checkpointForCompression(
         keepRecentFraction: contextCompression.keepRecentFraction ?? 0.5,
         hardReserveTokens: contextCompression.hardReserveTokens ?? 0,
       },
+      context: overrides.systemPrompt
+        ? {
+            ...base.config.context,
+            baseSystemPrompt: {
+              ...base.config.context.baseSystemPrompt,
+              normalizedText: overrides.systemPrompt,
+            },
+          }
+        : base.config.context,
     },
     messages,
+    contextCompaction: overrides.contextCompaction,
   })
 }
 
@@ -728,6 +754,222 @@ describe("advanceDurableRun — context compression (Task 20)", () => {
     expect(outcome.kind).toBe("compressed")
     const record = outcome.checkpoint.contextCompaction!
     await expect(readArtifactText(record.artifact.uri, runId)).resolves.toContain("old")
+  })
+
+  it("never replaces a real prior-round summary with the placeholder when a large system prompt forces the older.length===0/summary-preserved branch", async () => {
+    const runId = "compress-9"
+    // m1/m2 stand in for whatever was archived by "round 1" — irrelevant to
+    // this round now that the cutoff has already moved past them.
+    const messages = [
+      userMsg("m1", "long since archived"),
+      assistantMsg("m2", "long since archived too"),
+      assistantMsg("m3", longText("mid", 20)),
+      userMsg("m4", "recent-tail"),
+    ]
+    const realPriorSummaryText = "[Earlier conversation summary]\nreal recap from round 1"
+    const seededCompaction: NonNullable<AgentRunCheckpointV1["contextCompaction"]> = {
+      compactionId: "round-1-compaction",
+      evictedThroughMessageId: "m2",
+      summaryText: realPriorSummaryText,
+      summarizerTokens: 5,
+      artifact: {
+        uri: "artifact://run/compress-9/round-1-artifact",
+        kind: "history",
+        mediaType: "application/json; charset=utf-8",
+        capturedBytes: 42,
+        complete: true,
+      },
+      createdAt: 1,
+    }
+
+    await runStore.create(
+      checkpointForCompression(
+        runId,
+        messages,
+        { enabled: true, thresholdTokens: 100 },
+        10,
+        // A large system prompt — not the messages — is what pushes the
+        // total estimate over threshold here, forcing recentStartIndex to
+        // walk all the way back to 0 (everything fits the keep-budget) and
+        // routing into the older.length===0 branch, which hardTrims the
+        // *entire* projection including the already-summarized message at
+        // the front (see context-compressor.test.ts's identical repro).
+        { systemPrompt: "S".repeat(400), contextCompaction: seededCompaction }
+      )
+    )
+    await budgetStore.create(createRootBudgetLedger(runId, 10_000))
+    const provider = fakeProviderWithSummarizer(modelReply, "SHOULD-NOT-BE-USED")
+
+    const outcome = await advanceDurableRun(
+      {
+        runStore,
+        budgetStore,
+        provider,
+        tools: () => [],
+        now: () => 1000,
+        maxSteps: 10,
+        artifactStore,
+      },
+      runId
+    )
+
+    // Nothing was evicted this round, so compression is a no-op and the
+    // driver proceeds straight to a real model step instead.
+    expect(outcome.kind).not.toBe("compressed")
+    // The committed compaction record is byte-for-byte the same one seeded
+    // above — never replaced with a new compactionId or the generic
+    // "(automatic summarization was unavailable...)" placeholder text.
+    expect(outcome.checkpoint.contextCompaction).toEqual(seededCompaction)
+    expect(outcome.checkpoint.contextCompaction!.summaryText).toBe(realPriorSummaryText)
+    // The summarizer was never invoked — only the real model step's own
+    // request was dispatched.
+    expect(provider.calls).toHaveLength(1)
+    expect(provider.calls[0]!.system.startsWith(SUMMARIZE_SYSTEM_PREFIX)).toBe(false)
+  })
+
+  it("a compression budget hold left stuck 'held' by a crash before settle is conservatively forfeited on the next call, and the budget becomes available again (Issue 2 fix)", async () => {
+    const runId = "compress-11"
+    const messages = [
+      userMsg("m1", longText("old", 200)),
+      assistantMsg("m2", longText("old2", 200)),
+      userMsg("m3", "recent question"),
+    ]
+    await runStore.create(
+      checkpointForCompression(runId, messages, { enabled: true, thresholdTokens: 100 })
+    )
+    await budgetStore.create(createRootBudgetLedger(runId, 10_000))
+    const provider = fakeProviderWithSummarizer(modelReply, "SUMMARY")
+
+    // Crash right after the ledger hold is durably confirmed ("held") but
+    // before the provider is ever dispatched or the hold is settled.
+    await expect(
+      advanceDurableRun(
+        {
+          runStore,
+          budgetStore,
+          provider,
+          tools: () => [],
+          now: () => 1000,
+          maxSteps: 10,
+          artifactStore,
+          fault: (point) => {
+            if (point === "after_compression_hold") throw new Error("simulated crash")
+          },
+        },
+        runId
+      )
+    ).rejects.toThrow("simulated crash")
+
+    // The hold is durably stuck: the checkpoint records it "held", and the
+    // ledger genuinely has the tokens held (not a phantom).
+    const stuckCheckpoint = await runStore.load(runId)
+    if (!stuckCheckpoint.ok) throw new Error("expected ok checkpoint")
+    expect(stuckCheckpoint.checkpoint.compressionAttempt?.admission.state).toBe("held")
+    const stuckHeldTokens = stuckCheckpoint.checkpoint.compressionAttempt!.admission.heldTokens
+    expect(stuckHeldTokens).toBeGreaterThan(0)
+
+    const midLedger = await budgetStore.load(runId)
+    expect(midLedger.accounts[ROOT_ACCOUNT_ID]!.heldTokens).toBe(stuckHeldTokens)
+    expect(midLedger.accounts[ROOT_ACCOUNT_ID]!.consumedTokens).toBe(0)
+
+    // The very next call must detect and forfeit the stuck hold before
+    // attempting anything else — never leak it, never blindly retry it.
+    const retryProvider = fakeProviderWithSummarizer(modelReply, "SUMMARY")
+    const outcome = await advanceDurableRun(
+      {
+        runStore,
+        budgetStore,
+        provider: retryProvider,
+        tools: () => [],
+        now: () => 2000,
+        maxSteps: 10,
+        artifactStore,
+      },
+      runId
+    )
+    expect(outcome.kind).toBe("compressed")
+
+    // The stuck hold is gone from the ledger (released, conservatively
+    // charged as consumed — never left as a permanent hold), and the fresh
+    // attempt's own settlement is also fully accounted for.
+    const finalLedger = await budgetStore.load(runId)
+    const finalAccount = finalLedger.accounts[ROOT_ACCOUNT_ID]!
+    expect(finalAccount.heldTokens).toBe(0)
+    expect(finalAccount.consumedTokens).toBeGreaterThanOrEqual(stuckHeldTokens)
+
+    // The committed compaction reflects a real, fresh compression round —
+    // not the crashed one.
+    expect(outcome.checkpoint.compressionAttempt?.admission.state).toBe("settled")
+    expect(outcome.checkpoint.contextCompaction).toBeDefined()
+  })
+
+  it("a compression budget hold left stuck 'planned' by a crash before the ledger admit resumes safely in place, never double-charging", async () => {
+    const runId = "compress-12"
+    const messages = [
+      userMsg("m1", longText("old", 200)),
+      assistantMsg("m2", longText("old2", 200)),
+      userMsg("m3", "recent question"),
+    ]
+    await runStore.create(
+      checkpointForCompression(runId, messages, { enabled: true, thresholdTokens: 100 })
+    )
+    await budgetStore.create(createRootBudgetLedger(runId, 10_000))
+    const provider = fakeProviderWithSummarizer(modelReply, "SUMMARY")
+
+    // Crash right after the "planned" record is durably written but before
+    // the ledger is ever touched.
+    await expect(
+      advanceDurableRun(
+        {
+          runStore,
+          budgetStore,
+          provider,
+          tools: () => [],
+          now: () => 1000,
+          maxSteps: 10,
+          artifactStore,
+          fault: (point) => {
+            if (point === "after_compression_prepared") throw new Error("simulated crash")
+          },
+        },
+        runId
+      )
+    ).rejects.toThrow("simulated crash")
+
+    const stuckCheckpoint = await runStore.load(runId)
+    if (!stuckCheckpoint.ok) throw new Error("expected ok checkpoint")
+    expect(stuckCheckpoint.checkpoint.compressionAttempt?.admission.state).toBe("planned")
+    const plannedOperationId = stuckCheckpoint.checkpoint.compressionAttempt!.admission.operationId
+    const plannedAttemptId = stuckCheckpoint.checkpoint.compressionAttempt!.attemptId
+
+    const midLedger = await budgetStore.load(runId)
+    expect(midLedger.accounts[ROOT_ACCOUNT_ID]!.heldTokens).toBe(0)
+    expect(midLedger.operations[plannedOperationId]).toBeUndefined()
+
+    const retryProvider = fakeProviderWithSummarizer(modelReply, "SUMMARY")
+    const outcome = await advanceDurableRun(
+      {
+        runStore,
+        budgetStore,
+        provider: retryProvider,
+        tools: () => [],
+        now: () => 2000,
+        maxSteps: 10,
+        artifactStore,
+      },
+      runId
+    )
+    expect(outcome.kind).toBe("compressed")
+
+    // The SAME attempt/operation id was resumed in place — never a fresh
+    // one minted for a merely-"planned" (never ledger-touched) record.
+    expect(outcome.checkpoint.compressionAttempt?.attemptId).toBe(plannedAttemptId)
+    expect(outcome.checkpoint.compressionAttempt?.admission.operationId).toBe(plannedOperationId)
+    expect(outcome.checkpoint.compressionAttempt?.admission.state).toBe("settled")
+
+    const finalLedger = await budgetStore.load(runId)
+    expect(finalLedger.accounts[ROOT_ACCOUNT_ID]!.heldTokens).toBe(0)
+    expect(finalLedger.operations[plannedOperationId]).toBeDefined()
   })
 })
 

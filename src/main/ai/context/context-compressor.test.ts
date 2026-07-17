@@ -202,4 +202,40 @@ describe("contextCompressor", () => {
     expect(second.evicted).toContainEqual(round2New)
     expect(second.messages).toContainEqual(round2Recent)
   })
+
+  it("reports nothing evicted (never the preserved summary itself) when a large system prompt forces hardTrim to drop interior recent content while pinning an already-summarized message at the front", async () => {
+    // A pre-existing summary from an earlier compaction round, fed back in
+    // as position 0 — exactly how durable-agent-driver.ts's
+    // projectCompactedMessages rebuilds it every call.
+    const priorSummary: ChatMessage = {
+      role: "user",
+      content: [{ type: "text", text: `[Earlier conversation summary]\nreal recap from round 1` }],
+    }
+    const interior = big("mid ", 20)
+    const recentTail = user("recent-tail")
+    const summarize = vi.fn(async () => ({ text: "SHOULD NOT BE CALLED", tokens: 5 }))
+    const c = new ContextCompressor({ thresholdTokens: 100, keepFraction: 0.5, summarize })
+
+    // A large system prompt is what pushes the total estimate over
+    // threshold even though [priorSummary, interior, recentTail] together
+    // easily fit inside the keep-budget — the exact condition that routes
+    // compress() into the `older.length === 0` branch on a second round
+    // (recentStartIndex walks back to 0, since even the whole message list
+    // fits the keep-budget), which then calls hardTrim on the *entire*
+    // input, including the already-summarized message at the front.
+    const bigSystem = "S".repeat(400)
+    const out = await c.compress(bigSystem, [priorSummary, interior, recentTail])
+
+    // hardTrim never calls summarize() in this branch — older was empty.
+    expect(summarize).not.toHaveBeenCalled()
+    // The prior summary survives completely unchanged at position 0 …
+    expect(out.messages[0]).toBe(priorSummary)
+    // … while `evicted` must NOT claim it was evicted (the contradiction
+    // this test guards against), and in fact must report nothing evicted
+    // at all this round, since the only real change was an interior drop
+    // that can't be represented as a leading-prefix eviction.
+    expect(out.evicted).toEqual([])
+    expect(out.evicted).not.toContainEqual(priorSummary)
+    expect(out.summaryText).toBeUndefined()
+  })
 })
