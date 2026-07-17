@@ -301,7 +301,12 @@ export class ExecutionToolHostSource implements ToolHostSource {
       policy
     )
     const { payload, outputLimitExceeded, artifactIds } = buildRunCommandPayload(result)
-    const toolResult = json(payload)
+    // A hard-limit truncation must be a tool-level error, not just a JSON
+    // field the model might not notice: resilient-tool-host.ts's circuit
+    // breaker, agent-runtime.ts/run-projection.ts's tool_result event, and
+    // interactive-run-driver.ts's run-trace `ok` computation all key off
+    // `ToolResult.isError`, not payload contents.
+    const toolResult = json(payload, outputLimitExceeded)
     const errorPreview = outputLimitExceeded
       ? "output_limit_exceeded"
       : result.exitCode === 0
@@ -415,8 +420,12 @@ function auditDecision(options: ToolInvocationOptions): "allow" | "approved" {
  *    ChatContentBlock.tool_result.artifact field (that generalization is
  *    Task 19's job for tool-results broadly). When either stream was cut
  *    short for a hard-limit reason, `error: "output_limit_exceeded"` is
- *    added so the payload can never silently read as a clean, complete
- *    result.
+ *    added to the payload AND the caller must set `ToolResult.isError`
+ *    from the returned `outputLimitExceeded` flag — resilient-tool-host.ts's
+ *    circuit breaker, agent-runtime.ts/run-projection.ts's tool_result
+ *    event, and interactive-run-driver.ts's run-trace `ok` field all key
+ *    off `isError`, not payload contents, so a JSON field alone would be
+ *    invisible to every one of those downstream consumers.
  *  - legacy (result.legacyStdout/result.legacyStderr present): unchanged
  *    shape from before this task. */
 function buildRunCommandPayload(result: CommandRunResult): {
@@ -482,8 +491,10 @@ function renderResult(result: ToolResult): string {
     .join("\n")
 }
 
-function json(value: unknown): ToolResult {
-  return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] }
+function json(value: unknown, isError = false): ToolResult {
+  const result: ToolResult = { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] }
+  if (isError) result.isError = true
+  return result
 }
 
 function errorResult(message: string): ToolResult {

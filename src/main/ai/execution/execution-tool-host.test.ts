@@ -490,6 +490,13 @@ describe("executionToolHostSource — run_command artifact-backed capture (Task 
     const payload = payloadOf(result)
     expect(payload.error).toBe("output_limit_exceeded")
     expect(asStream(payload.stdout).complete).toBe(false)
+    // Load-bearing, not just a JSON field: resilient-tool-host.ts's circuit
+    // breaker only calls recordToolError when isError is true,
+    // agent-runtime.ts/run-projection.ts propagate isError into the
+    // model/UI's tool_result event, and interactive-run-driver.ts computes
+    // the run trace's `ok` as `!result.isError` — all three would silently
+    // treat a truncated-output command as a clean success without this.
+    expect(result.isError).toBe(true)
 
     const events = await new ExecutionLogStore(logFile).list()
     expect(events[0]).toMatchObject({ errorPreview: "output_limit_exceeded" })
