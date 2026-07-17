@@ -7,6 +7,7 @@ import type {
   RunFinalizationPhase,
 } from "@synapse/agent-protocol"
 import type { ToolAnnotations } from "@synapse/plugin-manifest"
+import type { AgentArtifactRef } from "../artifacts/artifact-types"
 import type { PlanStep } from "../plan/plan-types"
 import type { TokenUsage } from "../providers/types"
 import type { RunTrace } from "../run-trace-store"
@@ -129,6 +130,18 @@ export type ToolCallResolution =
         | "user-marked-failed"
       result: PersistedToolResult
       attemptId?: string
+      /** The full artifact ref (including sha256) backing `result.artifact`,
+       *  present only when this call's output was offloaded to an artifact
+       *  (Task 19). Deliberately NOT part of `PersistedToolResult` — that
+       *  type is frozen to the renderer-safe `AgentArtifactRefSummary`
+       *  stub. This sibling field is the durable, restart-safe source
+       *  materializeBatch reads to populate
+       *  `ChatContentBlock.tool_result.artifact`, and that read_artifact's
+       *  checkpoint-scan resolver (artifact-tool-source.ts) finds the true
+       *  ref through — see that file's top-of-file note for why a ref
+       *  reconstructed from a bare uri alone can never pass
+       *  AgentArtifactStore's own sha256 cross-check. */
+      fullArtifact?: AgentArtifactRef
     }
 
 export interface ToolCallLedgerEntry {
@@ -829,7 +842,12 @@ function isValidChatContentBlock(v: unknown): boolean {
     return (
       isString(v.toolUseId) &&
       isString(v.content) &&
-      (v.isError === undefined || isBoolean(v.isError))
+      (v.isError === undefined || isBoolean(v.isError)) &&
+      // artifact is a forward-declared full AgentArtifactRef (Task 19) —
+      // presence-only checked here, same precedent as elsewhere in this
+      // file; read_artifact re-validates it fully against the on-disk
+      // manifest before anything trusts it.
+      (v.artifact === undefined || isRecord(v.artifact))
     )
   }
   return false
@@ -930,7 +948,13 @@ function isValidToolCallResolution(v: unknown): boolean {
       isString(v.reason) &&
       KNOWN_RESOLUTION_REASONS.has(v.reason) &&
       isValidPersistedToolResult(v.result) &&
-      isOptionalString(v.attemptId)
+      isOptionalString(v.attemptId) &&
+      // fullArtifact is a forward-declared full AgentArtifactRef (Task 19)
+      // — presence-only checked here, matching the same precedent as
+      // PersistedToolResult.artifact/SkillActivationSnapshot.instructionsArtifact
+      // above; the artifact store's own stat()/read() re-validate it fully
+      // against the on-disk manifest before anything trusts it.
+      (v.fullArtifact === undefined || isRecord(v.fullArtifact))
     )
   }
   return false

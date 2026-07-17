@@ -15,6 +15,29 @@ import { noneRecoveryAdapter } from "./tools/invocation-recovery"
 // reverse map routes all model calls back to the real fqName without putting an
 // alias table in plugin manifests.
 
+/**
+ * Hard emergency ceiling on a raw ToolResult's rendered text, applied right
+ * after a host/plugin/MCP adapter returns (Task 19's non-streaming-adapter
+ * rule). Unlike execution-tool-host.ts's command capture (Task 18), which
+ * streams stdout/stderr through a bounded tee as bytes arrive, every other
+ * tool adapter today hands back its ENTIRE result already resident in one JS
+ * string/object — there is no cooperative point to bound it before it
+ * exists in memory. This is the one choke point every such adapter passes
+ * through (AiToolRegistry.invoke, right after `this.host.invokeTool()`
+ * returns), so it is where an absurdly oversized result (a buggy/malicious
+ * plugin, a runaway MCP server) gets capped before it can reach
+ * JSON.stringify/canonicalHash/checkpoint writes downstream.
+ *
+ * Deliberately far above both the ~24_000-char model preview budget
+ * (context/tool-result-budget.ts) and tool-result-capture.ts's own default
+ * ~24_000-char offload-trigger threshold, so this cap virtually never binds
+ * for a legitimate tool result — those get handled correctly (and, when
+ * oversized, offloaded to an artifact) by tool-result-capture.ts downstream.
+ * It exists purely as the last-resort backstop for the pathological case
+ * that capture path was never designed to buffer safely in the first place.
+ */
+export const NON_STREAMING_EMERGENCY_CAP_CHARS = 2_000_000
+
 /** The slice of PluginHost the AI tool registry depends on. */
 export interface ToolHostPort {
   listTools: () => RegisteredToolDescriptor[]
@@ -77,7 +100,8 @@ export class AiToolRegistry {
     })
     if (!projected.ok) throw new Error(`Tool ${safeName} is not model-visible: ${projected.reason}`)
 
-    return this.host.invokeTool(descriptor.fqName, input, options)
+    const result = await this.host.invokeTool(descriptor.fqName, input, options)
+    return applyNonStreamingEmergencyCap(result)
   }
 
   private refresh(): { schema: ProviderToolSchema; descriptor: RegisteredToolDescriptor }[] {
@@ -125,6 +149,42 @@ export function renderToolResultText(result: ToolResult): string {
     else if (block.type === "image") parts.push(`[image: ${block.path}]`)
   }
   return parts.join("\n")
+}
+
+/**
+ * Applies the {@link NON_STREAMING_EMERGENCY_CAP_CHARS} ceiling to a raw
+ * ToolResult's rendered text. Below the cap, `result` is returned completely
+ * unchanged (same object) — this only ever rewrites content in the rare
+ * pathological case. When it does trigger, the result is collapsed to a
+ * single truncated text block and marked `isError: true`: a hard,
+ * host-level size limit is a policy violation the model must be told about
+ * explicitly (matching execution-tool-host.ts's own `output_limit_exceeded`
+ * precedent for run_command), not a detail it could miss inside an
+ * otherwise-normal-looking JSON field. This function never claims the
+ * truncated text is a complete result — `complete`/`truncationReason`
+ * accounting downstream (tool-result-capture.ts) only ever sees the already
+ * -capped text, so it can never mistake this cap's own cut for a full
+ * capture either.
+ */
+export function applyNonStreamingEmergencyCap(
+  result: ToolResult,
+  maxChars: number = NON_STREAMING_EMERGENCY_CAP_CHARS
+): ToolResult {
+  const text = renderToolResultText(result)
+  if (text.length <= maxChars) return result
+  const omittedChars = text.length - maxChars
+  return {
+    content: [
+      {
+        type: "text",
+        text:
+          `${text.slice(0, maxChars)}\n\n[Synapse: tool output exceeded the ${maxChars}-character ` +
+          `non-streaming buffering cap (${omittedChars} more chars omitted) and could not be safely ` +
+          "captured in full before this cap applied. This result is incomplete.]",
+      },
+    ],
+    isError: true,
+  }
 }
 
 export function sanitizeToolName(fqName: string): string {

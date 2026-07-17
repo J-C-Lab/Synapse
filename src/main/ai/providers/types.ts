@@ -1,4 +1,5 @@
 import type { JsonSchema } from "@synapse/plugin-manifest"
+import type { AgentArtifactRef } from "../artifacts/artifact-types"
 
 // Provider-neutral intermediate representation. The AgentRuntime works in these
 // types; each provider adapter (Anthropic now, OpenAI later) translates to and
@@ -12,9 +13,20 @@ export type ChatContentBlock =
   | {
       type: "tool_result"
       toolUseId: string
-      /** Plain-text rendering of the tool output handed back to the model. */
+      /** Plain-text rendering of the tool output handed back to the model —
+       *  always bounded (a head+tail preview once the result was offloaded),
+       *  never the raw unbounded content. */
       content: string
       isError?: boolean
+      /** The full host-only artifact ref, present when this result's output
+       *  was captured to a durable artifact (Task 19). This is the *full*
+       *  `AgentArtifactRef` (includes sha256), not the renderer-safe
+       *  `AgentArtifactRefSummary` — this type is host-only IR, never sent
+       *  to the renderer directly, unlike @synapse/agent-protocol's bounded
+       *  projections. Persisted so a durable conversation preserves the
+       *  pointer even across a restart (read_artifact resolves back to this
+       *  exact ref — see artifact-tool-source.ts). */
+      artifact?: AgentArtifactRef
     }
 
 export interface ChatMessage {

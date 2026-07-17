@@ -1,5 +1,6 @@
 import type { AgentRunEvent } from "@synapse/agent-protocol"
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../../plugins/types"
+import type { AgentArtifactRef, AgentArtifactStore } from "../artifacts/artifact-types"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
 import type { RunEventEmitter } from "./run-event-emitter"
 import type { ToolBatchDeps, ToolBatchFaultPoint } from "./tool-batch-runner"
@@ -7,6 +8,7 @@ import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { ArtifactStore } from "../artifacts/artifact-store"
 import { AiToolRegistry } from "../tool-registry"
 import { AgentRunStore } from "./agent-run-store"
 import { freezeToolAuthority } from "./authority-snapshot"
@@ -34,6 +36,15 @@ beforeEach(async () => {
 afterEach(async () => {
   await fs.rm(dir, { recursive: true, force: true })
 })
+
+const ampleDisk = async () => ({
+  freeBytes: 100 * 1024 * 1024 * 1024,
+  totalBytes: 1024 * 1024 * 1024 * 1024,
+})
+
+function makeArtifactStore(): ArtifactStore {
+  return new ArtifactStore(join(dir, "artifacts"), { statDiskSpace: ampleDisk })
+}
 
 function toolDescriptor(
   name: string,
@@ -817,5 +828,186 @@ describe("advanceToolBatch — frozen tool authority identity (P1-5)", () => {
     const call = outcome.checkpoint.toolBatches[0]!.calls[0]!
     expect(call.resolution).toMatchObject({ status: "resolved", reason: "executed" })
     expect(invoke).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("advanceToolBatch — artifact offload (Task 19)", () => {
+  it("captures an oversized result as an artifact, persists the summary + full ref, and materializes the pointer", async () => {
+    const runId = "run-artifact-1"
+    const bigOutput = "line-content ".repeat(2000)
+    const { registry } = makeRegistry(["big"], { big: () => bigOutput })
+    await seed(runId, registry, [{ id: "t1", name: "big", input: {} }])
+    const store = makeArtifactStore()
+
+    const outcome = await advanceToolBatch(
+      baseDeps(registry, {
+        caller: { kind: "agent", runId },
+        artifactCapture: { store, captureThresholdChars: 100 },
+      }),
+      runId,
+      0
+    )
+
+    expect(outcome.kind).toBe("materialized")
+    const call = outcome.checkpoint.toolBatches[0]!.calls[0]!
+    expect(call.resolution.status).toBe("resolved")
+    if (call.resolution.status !== "resolved") throw new Error("expected resolved")
+    expect(call.resolution.result.complete).toBe(true)
+    expect(call.resolution.result.artifact).toBeDefined()
+    expect(call.resolution.result.artifact?.kind).toBe("tool-result")
+    expect(call.resolution.result.artifact?.complete).toBe(true)
+    expect(call.resolution.fullArtifact).toBeDefined()
+    expect(call.resolution.fullArtifact?.sha256).toMatch(/^[0-9a-f]{64}$/)
+    expect(call.resolution.fullArtifact?.uri).toBe(call.resolution.result.artifact?.uri)
+    // The preview handed to the model is bounded, not the full 26,000-char
+    // output — proves the artifact path actually replaced the naive slice.
+    expect(call.resolution.result.preview.length).toBeLessThan(bigOutput.length)
+
+    const batch = outcome.checkpoint.toolBatches[0]!
+    const resultMessage = outcome.checkpoint.messages.find(
+      (m) => m.messageId === batch.resultCarrierMessageId
+    )!
+    const block = resultMessage.message.content[0] as { artifact?: AgentArtifactRef }
+    expect(block.artifact?.uri).toBe(call.resolution.fullArtifact?.uri)
+    expect(block.artifact?.sha256).toBe(call.resolution.fullArtifact?.sha256)
+
+    // Independently readable back through the store — proves this is a
+    // real capture, not a stubbed-out ref.
+    const readBack = await store.read(
+      call.resolution.fullArtifact!,
+      { start: 0 },
+      {
+        runId,
+        rootRunId: runId,
+        principal: { kind: "internal-agent" },
+      }
+    )
+    expect(new TextDecoder().decode(readBack)).toBe(bigOutput)
+  })
+
+  it("keeps a small result inline with no artifact even when artifactCapture is wired", async () => {
+    const runId = "run-artifact-2"
+    const { registry } = makeRegistry(["small"], { small: () => "tiny output" })
+    await seed(runId, registry, [{ id: "t1", name: "small", input: {} }])
+    const store = makeArtifactStore()
+
+    const outcome = await advanceToolBatch(
+      baseDeps(registry, {
+        caller: { kind: "agent", runId },
+        artifactCapture: { store },
+      }),
+      runId,
+      0
+    )
+
+    const call = outcome.checkpoint.toolBatches[0]!.calls[0]!
+    if (call.resolution.status !== "resolved") throw new Error("expected resolved")
+    expect(call.resolution.result.artifact).toBeUndefined()
+    expect(call.resolution.fullArtifact).toBeUndefined()
+    expect(call.resolution.result.complete).toBe(true)
+    expect(call.resolution.result.preview).toContain("tiny output")
+  })
+
+  it("falls back to a bounded inline preview (no artifact) when the caller carries no runId", async () => {
+    const runId = "run-artifact-3"
+    const bigOutput = "no-run-context ".repeat(3000)
+    const { registry } = makeRegistry(["big"], { big: () => bigOutput })
+    await seed(runId, registry, [{ id: "t1", name: "big", input: {} }])
+    const store = makeArtifactStore()
+
+    const outcome = await advanceToolBatch(
+      baseDeps(registry, {
+        // No runId on the caller — mirrors execution-tool-host.ts's own
+        // "no run to scope a durable artifact under" rule.
+        caller: { kind: "agent" },
+        artifactCapture: { store, captureThresholdChars: 100 },
+      }),
+      runId,
+      0
+    )
+
+    const call = outcome.checkpoint.toolBatches[0]!.calls[0]!
+    if (call.resolution.status !== "resolved") throw new Error("expected resolved")
+    expect(call.resolution.result.artifact).toBeUndefined()
+    expect(call.resolution.fullArtifact).toBeUndefined()
+    expect(call.resolution.result.complete).toBe(false)
+    expect(call.resolution.result.preview.length).toBeLessThan(bigOutput.length)
+  })
+
+  it("falls back to captureThresholdChars derived from maxToolResultChars when artifactCapture doesn't set one", async () => {
+    const runId = "run-artifact-4"
+    const output = "x".repeat(500)
+    const { registry } = makeRegistry(["mid"], { mid: () => output })
+    await seed(runId, registry, [{ id: "t1", name: "mid", input: {} }])
+    const store = makeArtifactStore()
+
+    const outcome = await advanceToolBatch(
+      baseDeps(registry, {
+        caller: { kind: "agent", runId },
+        artifactCapture: { store },
+        maxToolResultChars: 100,
+      }),
+      runId,
+      0
+    )
+
+    const call = outcome.checkpoint.toolBatches[0]!.calls[0]!
+    if (call.resolution.status !== "resolved") throw new Error("expected resolved")
+    expect(call.resolution.result.artifact).toBeDefined()
+  })
+
+  it("captures the artifact before persisting the checkpoint mutation that references it", async () => {
+    const runId = "run-artifact-order"
+    const bigOutput = "ordered-content ".repeat(2000)
+    const { registry } = makeRegistry(["big"], { big: () => bigOutput })
+    await seed(runId, registry, [{ id: "t1", name: "big", input: {} }])
+
+    const order: string[] = []
+    const realStore = makeArtifactStore()
+    const spyingStore: AgentArtifactStore = {
+      capture: async (...args) => {
+        const ref = await realStore.capture(...args)
+        order.push("capture")
+        return ref
+      },
+      stat: (...args) => realStore.stat(...args),
+      read: (...args) => realStore.read(...args),
+      releaseRunPin: (...args) => realStore.releaseRunPin(...args),
+      collectEligible: (...args) => realStore.collectEligible(...args),
+    }
+    // AgentRunStore.mutate is a real method on a real instance — spy on it
+    // to observe exactly when the resolved-executed checkpoint write lands
+    // relative to the artifact capture recorded above.
+    const originalMutate = runStore.mutate.bind(runStore)
+    let recordedExecutedWrite = false
+    vi.spyOn(runStore, "mutate").mockImplementation(async (rId, revision, mutator) => {
+      const result = await originalMutate(rId, revision, mutator)
+      const resolution = result.toolBatches[0]?.calls[0]?.resolution
+      // Only the FIRST mutation that lands with this call already resolved
+      // as "executed" is the write we're timing — a later mutation (e.g.
+      // materializeBatch's own, which doesn't touch `calls` at all) would
+      // still see the same already-resolved state and must not be double
+      // -counted here.
+      if (
+        !recordedExecutedWrite &&
+        resolution?.status === "resolved" &&
+        resolution.reason === "executed"
+      ) {
+        recordedExecutedWrite = true
+        order.push("checkpoint-executed-write")
+      }
+      return result
+    })
+
+    await advanceToolBatch(
+      baseDeps(registry, {
+        caller: { kind: "agent", runId },
+        artifactCapture: { store: spyingStore, captureThresholdChars: 100 },
+      }),
+      runId,
+      0
+    )
+
+    expect(order).toEqual(["capture", "checkpoint-executed-write"])
   })
 })

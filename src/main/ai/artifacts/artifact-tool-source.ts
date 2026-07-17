@@ -1,0 +1,356 @@
+import type { JsonSchema } from "@synapse/plugin-manifest"
+import type { ToolCaller, ToolResult } from "@synapse/plugin-sdk"
+import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../../plugins/types"
+import type { ToolHostSource } from "../composite-tool-host"
+import type { AgentRunCheckpointV1 } from "../runs/checkpoint-schema"
+import type {
+  AgentArtifactRef,
+  AgentArtifactStore,
+  ArtifactCaller,
+  ArtifactRange,
+} from "./artifact-types"
+import { Buffer } from "node:buffer"
+import { ArtifactReadError } from "./artifact-types"
+
+// Host-owned, read-only `artifact:core/read_artifact` (design §"Recoverable
+// artifact backend" / Task 19). Lets a model that received a bounded
+// head/tail preview + `artifact://...` uri in a prior tool result pull a
+// further byte or line range of that artifact's full captured content,
+// through the same registry/provenance/access/resilience/audit path as
+// every other tool.
+//
+// The one subtlety this module exists to solve: the model only ever sees a
+// bare `artifact://run/<runId>/<artifactId>` string. AgentArtifactStore's
+// `stat`/`read` take a full `AgentArtifactRef` and cross-check EVERY field
+// against the on-disk manifest — including `sha256` — before trusting
+// anything (see artifact-store.ts's loadAndAuthorize: `manifest.ref.sha256
+// !== ref.sha256` is a hard rejection, not a re-derived/ignored field). A
+// ref reconstructed from the bare uri alone can supply a correct
+// runId/artifactId/uri but has no way to know the real sha256, so it can
+// never pass that check. The fix used here: the full ref (uri, kind,
+// mediaType, capturedBytes, complete, truncationReason, sha256, ...) is
+// already durably persisted by tool-batch-runner.ts's materializeBatch onto
+// `ChatContentBlock.tool_result.artifact` the moment an offloaded result is
+// captured — so this source resolves a uri back to its true ref by scanning
+// the owning run's own checkpoint for it, via an injected `checkpoints`
+// lookup, rather than ever fabricating a ref. This is restart-safe (the
+// checkpoint is durable) and adds no new trust: `store.stat()`/`store.read()`
+// still perform their own full manifest cross-check and access-control pass
+// on whatever ref is found, so a checkpoint scan can only ever find the
+// *real* ref for a *real* artifact — it grants no authority by itself.
+
+export const ARTIFACT_FQ_PREFIX = "artifact:"
+const ARTIFACT_PLUGIN_ID = "artifact:core"
+export const READ_ARTIFACT_FQ = `${ARTIFACT_PLUGIN_ID}/read_artifact`
+
+/** Strict per-call cap on how many bytes one read_artifact invocation may
+ *  return — well under the artifact store's own 64 MiB per-artifact ceiling,
+ *  generous enough to be useful for inspecting a captured chunk. Also the
+ *  byte window line-mode scans from the start of the artifact to locate
+ *  requested lines (see readLines below). */
+export const MAX_ARTIFACT_READ_BYTES = 200_000
+
+/** Default number of lines returned by a line-mode call when `end` is
+ *  omitted. */
+const DEFAULT_LINE_WINDOW = 200
+
+/** Resolves the run whose checkpoint may contain the full, durably-persisted
+ *  ref for a given uri. Returns `undefined` for any failure (unknown run,
+ *  corrupt checkpoint, missing run store) — read_artifact reports that
+ *  uniformly as "unknown artifact", never distinguishing "run gone" from
+ *  "artifact never existed" to the model. */
+export interface ArtifactCheckpointLookup {
+  loadCheckpoint: (runId: string) => Promise<AgentRunCheckpointV1 | undefined>
+}
+
+export interface ArtifactToolSourceOptions {
+  store: AgentArtifactStore
+  checkpoints: ArtifactCheckpointLookup
+}
+
+/** Parses the one URI shape every artifact ref uses. Charset-restricted to
+ *  the same `[\w-]{1,128}` id grammar artifact-store.ts enforces, so a
+ *  malformed/injected uri is rejected here before it ever reaches the
+ *  checkpoint lookup or the store. */
+export function parseArtifactUri(uri: string): { runId: string; artifactId: string } | undefined {
+  const match = /^artifact:\/\/run\/([\w-]{1,128})\/([\w-]{1,128})$/.exec(uri)
+  if (!match) return undefined
+  return { runId: match[1]!, artifactId: match[2]! }
+}
+
+/** Scans a checkpoint's message history for the tool_result block that
+ *  carries this exact uri, returning its full (host-only) ref. Every
+ *  offloaded tool result's ref is written here by materializeBatch at the
+ *  same time the bounded summary is written to PersistedToolResult, so this
+ *  is the durable, restart-safe source of truth read_artifact resolves
+ *  against. */
+export function findArtifactRefInCheckpoint(
+  checkpoint: AgentRunCheckpointV1,
+  uri: string
+): AgentArtifactRef | undefined {
+  for (const durable of checkpoint.messages) {
+    for (const block of durable.message.content) {
+      if (block.type === "tool_result" && block.artifact?.uri === uri) return block.artifact
+    }
+  }
+  return undefined
+}
+
+const INPUT_SCHEMA: JsonSchema = {
+  type: "object",
+  properties: {
+    uri: {
+      type: "string",
+      description: "The artifact:// uri previously returned in a tool result.",
+    },
+    rangeKind: {
+      type: "string",
+      enum: ["bytes", "lines"],
+      description: 'Defaults to "bytes".',
+    },
+    start: {
+      type: "number",
+      description: "Inclusive start offset (byte or line, 0-based). Defaults to 0.",
+    },
+    end: {
+      type: "number",
+      description:
+        "Exclusive end offset (byte or line, 0-based). Omit for a default-sized window from start, " +
+        `bounded by a strict per-call cap of ${MAX_ARTIFACT_READ_BYTES} bytes.`,
+    },
+  },
+  required: ["uri"],
+}
+
+const DESCRIPTOR: RegisteredToolDescriptor = {
+  fqName: READ_ARTIFACT_FQ,
+  pluginId: ARTIFACT_PLUGIN_ID,
+  provenance: "host",
+  manifestTool: {
+    name: "read_artifact",
+    title: "Read artifact",
+    description:
+      "Read a bounded byte or line range of a previously captured artifact by its artifact:// uri " +
+      "(as seen in an earlier tool result's preview). Each call is capped in size — read in windows " +
+      "for a large artifact.",
+    inputSchema: INPUT_SCHEMA,
+    annotations: { readOnlyHint: true },
+  },
+}
+
+interface ParsedReadInput {
+  uri: string
+  rangeKind: "bytes" | "lines"
+  start?: number
+  end?: number
+}
+
+export class ArtifactToolSource implements ToolHostSource {
+  constructor(private readonly options: ArtifactToolSourceOptions) {}
+
+  ownsTool(fqName: string): boolean {
+    return fqName.startsWith(ARTIFACT_FQ_PREFIX)
+  }
+
+  listTools(): RegisteredToolDescriptor[] {
+    return [DESCRIPTOR]
+  }
+
+  async invokeTool(
+    fqName: string,
+    input: unknown,
+    options: ToolInvocationOptions
+  ): Promise<ToolResult> {
+    if (fqName !== READ_ARTIFACT_FQ) return errorResult(`Unknown tool: ${fqName}`)
+
+    const artifactCaller = artifactCallerFrom(options.caller)
+    if (!artifactCaller) return errorResult("read_artifact requires an active run.")
+
+    const parsed = parseInput(input)
+    if (!parsed.ok) return errorResult(parsed.reason)
+
+    if (!parseArtifactUri(parsed.value.uri)) {
+      return errorResult(`range_invalid: malformed artifact uri: ${parsed.value.uri}`)
+    }
+
+    const resolved = await this.resolveRef(parsed.value.uri)
+    if (!resolved) {
+      return errorResult(`artifact_missing: no known artifact for uri ${parsed.value.uri}`)
+    }
+
+    try {
+      const stat = await this.options.store.stat(resolved, artifactCaller)
+      if (parsed.value.rangeKind === "lines") {
+        return await this.readLines(stat, artifactCaller, parsed.value)
+      }
+      return await this.readBytes(stat, artifactCaller, parsed.value)
+    } catch (err) {
+      if (err instanceof ArtifactReadError) return errorResult(`${err.code}: ${err.message}`)
+      return errorResult(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  private async readBytes(
+    stat: AgentArtifactRef,
+    caller: ArtifactCaller,
+    parsed: ParsedReadInput
+  ): Promise<ToolResult> {
+    const start = parsed.start ?? 0
+    if (start > stat.capturedBytes) {
+      return errorResult(
+        `range_invalid: start (${start}) is beyond this artifact's captured length (${stat.capturedBytes}).`
+      )
+    }
+    const requestedEnd = parsed.end ?? Math.min(stat.capturedBytes, start + MAX_ARTIFACT_READ_BYTES)
+    const cappedEnd = Math.min(requestedEnd, stat.capturedBytes, start + MAX_ARTIFACT_READ_BYTES)
+    const range: ArtifactRange = { start, end: cappedEnd }
+    const clamped = cappedEnd < requestedEnd
+
+    const bytes = await this.options.store.read(stat, range, caller)
+    const decoded = decodeForModel(bytes, stat.mediaType)
+    return textResult({
+      uri: stat.uri,
+      kind: stat.kind,
+      mediaType: stat.mediaType,
+      capturedBytes: stat.capturedBytes,
+      complete: stat.complete,
+      truncationReason: stat.truncationReason,
+      rangeKind: "bytes",
+      range,
+      rangeClamped: clamped,
+      encoding: decoded.encoding,
+      content: decoded.content,
+    })
+  }
+
+  private async readLines(
+    stat: AgentArtifactRef,
+    caller: ArtifactCaller,
+    parsed: ParsedReadInput
+  ): Promise<ToolResult> {
+    // Line boundaries aren't indexed anywhere durable, so line-mode scans a
+    // bounded window from the artifact's start (never more than the same
+    // per-call cap bytes-mode enforces) and slices lines out of it. This is
+    // a deliberately limited but strictly bounded and correct-within-its-
+    // documented-limits approach: lines beyond the scanned window are
+    // reported as unavailable rather than silently missing.
+    const scanEnd = Math.min(stat.capturedBytes, MAX_ARTIFACT_READ_BYTES)
+    const bytes = await this.options.store.read(stat, { start: 0, end: scanEnd }, caller)
+    const text = new TextDecoder("utf-8").decode(bytes)
+    const lines = text.split("\n")
+    const scannedEverything = scanEnd >= stat.capturedBytes
+
+    const start = parsed.start ?? 0
+    if (start >= lines.length) {
+      const suffix = scannedEverything
+        ? " (the entire artifact was scanned)."
+        : '; re-read with rangeKind: "bytes" and a larger start offset instead.'
+      return errorResult(
+        `range_invalid: line start ${start} is beyond the ${lines.length} line(s) available within ` +
+          `the first ${scanEnd} scanned bytes of this artifact${suffix}`
+      )
+    }
+    const requestedEnd = parsed.end ?? start + DEFAULT_LINE_WINDOW
+    const end = Math.min(requestedEnd, lines.length)
+    const clamped = requestedEnd > lines.length && !scannedEverything
+
+    return textResult({
+      uri: stat.uri,
+      kind: stat.kind,
+      mediaType: stat.mediaType,
+      capturedBytes: stat.capturedBytes,
+      complete: stat.complete,
+      truncationReason: stat.truncationReason,
+      rangeKind: "lines",
+      lineStart: start,
+      lineEnd: end,
+      linesScannedFromBytes: scanEnd,
+      allBytesScanned: scannedEverything,
+      rangeClamped: clamped,
+      encoding: "utf-8",
+      content: lines.slice(start, end).join("\n"),
+    })
+  }
+
+  private async resolveRef(uri: string): Promise<AgentArtifactRef | undefined> {
+    const parsed = parseArtifactUri(uri)
+    if (!parsed) return undefined
+    const checkpoint = await this.options.checkpoints.loadCheckpoint(parsed.runId)
+    if (!checkpoint) return undefined
+    return findArtifactRefInCheckpoint(checkpoint, uri)
+  }
+}
+
+function artifactCallerFrom(caller: ToolCaller): ArtifactCaller | undefined {
+  if (!caller.runId) return undefined
+  return {
+    runId: caller.runId,
+    rootRunId: caller.parentRunId ?? caller.runId,
+    parentRunId: caller.parentRunId,
+    conversationId: caller.conversationId,
+    workspaceId: caller.workspaceId,
+    principal: caller.principal ?? { kind: "local-user" },
+  }
+}
+
+function parseInput(
+  input: unknown
+): { ok: true; value: ParsedReadInput } | { ok: false; reason: string } {
+  const obj = input && typeof input === "object" ? (input as Record<string, unknown>) : {}
+  if (typeof obj.uri !== "string" || obj.uri.length === 0) {
+    return { ok: false, reason: "uri is required." }
+  }
+  const rangeKind = obj.rangeKind === "lines" ? "lines" : "bytes"
+  if (
+    obj.start !== undefined &&
+    (typeof obj.start !== "number" || !Number.isInteger(obj.start) || obj.start < 0)
+  ) {
+    return { ok: false, reason: "range_invalid: start must be a non-negative integer." }
+  }
+  if (
+    obj.end !== undefined &&
+    (typeof obj.end !== "number" || !Number.isInteger(obj.end) || obj.end < 0)
+  ) {
+    return { ok: false, reason: "range_invalid: end must be a non-negative integer." }
+  }
+  if (
+    obj.start !== undefined &&
+    obj.end !== undefined &&
+    (obj.end as number) <= (obj.start as number)
+  ) {
+    return { ok: false, reason: "range_invalid: end must be greater than start." }
+  }
+  return {
+    ok: true,
+    value: {
+      uri: obj.uri,
+      rangeKind,
+      start: obj.start as number | undefined,
+      end: obj.end as number | undefined,
+    },
+  }
+}
+
+function isTextMediaType(mediaType: string): boolean {
+  return (
+    mediaType.startsWith("text/") || mediaType === "application/json" || mediaType.endsWith("+json")
+  )
+}
+
+function decodeForModel(
+  bytes: Uint8Array,
+  mediaType: string
+): { encoding: "utf-8" | "base64"; content: string } {
+  if (isTextMediaType(mediaType)) {
+    return { encoding: "utf-8", content: new TextDecoder("utf-8").decode(bytes) }
+  }
+  return { encoding: "base64", content: Buffer.from(bytes).toString("base64") }
+}
+
+function textResult(payload: unknown): ToolResult {
+  return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] }
+}
+
+function errorResult(message: string): ToolResult {
+  return { content: [{ type: "text", text: message }], isError: true }
+}

@@ -3,8 +3,10 @@ import type { ToolHostPort } from "./tool-registry"
 import { describe, expect, it, vi } from "vitest"
 import {
   AiToolRegistry,
+  applyNonStreamingEmergencyCap,
   invocationAdapterFor,
   modelToolName,
+  NON_STREAMING_EMERGENCY_CAP_CHARS,
   renderToolResultText,
 } from "./tool-registry"
 
@@ -197,5 +199,61 @@ describe("renderToolResultText", () => {
         ],
       })
     ).toBe('hello\n{"a":1}\n[image: /x.png]')
+  })
+})
+
+describe("applyNonStreamingEmergencyCap", () => {
+  it("returns the same result unchanged when under the cap", () => {
+    const result = { content: [{ type: "text" as const, text: "short" }] }
+    expect(applyNonStreamingEmergencyCap(result, 1000)).toBe(result)
+  })
+
+  it("truncates and marks isError when the rendered text exceeds the cap", () => {
+    const result = {
+      content: [{ type: "text" as const, text: "x".repeat(2000) }],
+    }
+    const capped = applyNonStreamingEmergencyCap(result, 500)
+    expect(capped.isError).toBe(true)
+    expect(capped.content).toHaveLength(1)
+    const text = (capped.content[0] as { text: string }).text
+    expect(text.length).toBeGreaterThan(500)
+    expect(text).toContain("x".repeat(500))
+    expect(text).toContain("1500 more chars omitted")
+    expect(text).toContain("incomplete")
+  })
+
+  it("cannot claim a truncated result complete — the marker text is always present when capped", () => {
+    const result = { content: [{ type: "text" as const, text: "y".repeat(100) }] }
+    const capped = applyNonStreamingEmergencyCap(result, 10)
+    const text = (capped.content[0] as { text: string }).text
+    expect(text).toMatch(/incomplete/)
+    expect(capped.isError).toBe(true)
+  })
+
+  it("defaults to NON_STREAMING_EMERGENCY_CAP_CHARS when no cap is passed", () => {
+    const underCap = { content: [{ type: "text" as const, text: "z".repeat(1000) }] }
+    expect(applyNonStreamingEmergencyCap(underCap)).toBe(underCap)
+
+    const overCap = {
+      content: [{ type: "text" as const, text: "z".repeat(NON_STREAMING_EMERGENCY_CAP_CHARS + 1) }],
+    }
+    const capped = applyNonStreamingEmergencyCap(overCap)
+    expect(capped.isError).toBe(true)
+  })
+
+  it("is wired into AiToolRegistry.invoke() right after the host resolves", async () => {
+    const bad = descriptor("com.example.demo/huge")
+    const h: ToolHostPort = {
+      listTools: () => [bad],
+      invokeTool: vi.fn(async () => ({
+        content: [
+          { type: "text" as const, text: "w".repeat(NON_STREAMING_EMERGENCY_CAP_CHARS + 10) },
+        ],
+      })),
+    }
+    const registry = new AiToolRegistry(h)
+    const result = await registry.invoke(modelToolName(bad), {}, { caller: { kind: "agent" } })
+    expect(result.isError).toBe(true)
+    expect((result.content[0] as { text: string }).text).toContain("non-streaming buffering cap")
   })
 })

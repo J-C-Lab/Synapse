@@ -42,6 +42,7 @@ import {
 } from "./ai/ai-settings-store"
 import { aiApprovalsFilePath, ApprovalStore } from "./ai/approval-store"
 import { artifactsRoot, ArtifactStore } from "./ai/artifacts/artifact-store"
+import { ARTIFACT_FQ_PREFIX, ArtifactToolSource } from "./ai/artifacts/artifact-tool-source"
 import { RootBudgetLedgerStore } from "./ai/budget/root-budget-ledger"
 import { asFallbackSource, CompositeToolHost } from "./ai/composite-tool-host"
 import { ConversationStore } from "./ai/conversation-store"
@@ -1016,6 +1017,28 @@ async function createAgentService(): Promise<AgentService> {
   sharedExecutionTools = executionSource
   const executionApprovalResolver = new ExecutionApprovalResolver({ log: executionLog })
 
+  // Host-owned, read-only read_artifact (Task 19). Resolves a model-supplied
+  // artifact:// uri back to its full ref by scanning the OWNING run's own
+  // checkpoint (never the caller's) for the tool_result block that carries
+  // it — durable and restart-safe, since that ref (with its real sha256) was
+  // written there by tool-batch-runner.ts's materializeBatch the moment the
+  // result was captured. A missing/corrupt/not-yet-existing run's checkpoint
+  // just resolves to "no known artifact", the same outcome read_artifact
+  // reports for any other unresolvable uri.
+  const artifactSource = new ArtifactToolSource({
+    store: artifactStore,
+    checkpoints: {
+      loadCheckpoint: async (runId) => {
+        try {
+          const result = await agentRunStore.load(runId)
+          return result.ok ? result.checkpoint : undefined
+        } catch {
+          return undefined
+        }
+      },
+    },
+  })
+
   const runsDir = runTraceDir(userDataDir)
   const recordRun = (trace: RunTrace): void => persistRunTrace(runsDir, trace)
   runTraceRecorder = recordRun
@@ -1065,6 +1088,7 @@ async function createAgentService(): Promise<AgentService> {
     new CompositeToolHost([
       introspectionSource,
       executionSource,
+      artifactSource,
       planSource,
       subagentSource,
       asFallbackSource(
@@ -1074,6 +1098,7 @@ async function createAgentService(): Promise<AgentService> {
           fqName.startsWith(MEMORY_FQ_PREFIX) ||
           fqName.startsWith(PLUGIN_INTROSPECT_PREFIX) ||
           fqName.startsWith(EXECUTION_FQ_PREFIX) ||
+          fqName.startsWith(ARTIFACT_FQ_PREFIX) ||
           fqName.startsWith(PLAN_FQ_PREFIX) ||
           fqName.startsWith(SUBAGENT_FQ_PREFIX)
       ),
