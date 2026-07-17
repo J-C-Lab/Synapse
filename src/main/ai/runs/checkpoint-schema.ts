@@ -136,11 +136,14 @@ export type ToolCallResolution =
        *  type is frozen to the renderer-safe `AgentArtifactRefSummary`
        *  stub. This sibling field is the durable, restart-safe source
        *  materializeBatch reads to populate
-       *  `ChatContentBlock.tool_result.artifact`, and that read_artifact's
-       *  checkpoint-scan resolver (artifact-tool-source.ts) finds the true
-       *  ref through — see that file's top-of-file note for why a ref
-       *  reconstructed from a bare uri alone can never pass
-       *  AgentArtifactStore's own sha256 cross-check. */
+       *  `ChatContentBlock.tool_result.artifact`, preserving the full
+       *  pointer in the durable conversation history (useful plumbing for
+       *  e.g. Task 20's future history-artifact work). Note this is NOT
+       *  what `read_artifact` resolves against — artifact-tool-source.ts
+       *  calls `AgentArtifactStore.resolve(runId, artifactId, caller)`
+       *  instead, a by-id lookup that needs neither this field nor any
+       *  checkpoint/message content at all (see that file's top-of-file
+       *  note). */
       fullArtifact?: AgentArtifactRef
     }
 

@@ -800,11 +800,12 @@ async function materializeBatch(
         content: call.resolution.result.preview,
         isError: call.resolution.result.isError,
         // The full ref (Task 19) — never the bounded PersistedToolResult
-        // summary — so the durable conversation preserves the exact ref
-        // read_artifact's checkpoint-scan resolver needs (see
-        // artifact-tool-source.ts's top-of-file note on why a ref
-        // reconstructed from a bare uri alone can't pass the artifact
-        // store's own sha256 cross-check).
+        // summary — so the durable conversation preserves the exact
+        // pointer (useful plumbing for e.g. Task 20's future history
+        // -artifact work). read_artifact does NOT depend on this: it
+        // resolves a uri via AgentArtifactStore.resolve(runId, artifactId,
+        // caller), a by-id lookup that needs no checkpoint/message content
+        // at all — see artifact-tool-source.ts's top-of-file note.
         artifact: call.resolution.fullArtifact,
       }
     })
