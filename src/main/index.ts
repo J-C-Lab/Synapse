@@ -41,6 +41,7 @@ import {
   DEFAULT_TOOL_RESILIENCE,
 } from "./ai/ai-settings-store"
 import { aiApprovalsFilePath, ApprovalStore } from "./ai/approval-store"
+import { artifactsRoot, ArtifactStore } from "./ai/artifacts/artifact-store"
 import { RootBudgetLedgerStore } from "./ai/budget/root-budget-ledger"
 import { asFallbackSource, CompositeToolHost } from "./ai/composite-tool-host"
 import { ConversationStore } from "./ai/conversation-store"
@@ -1004,10 +1005,12 @@ async function createAgentService(): Promise<AgentService> {
   )
 
   const executionLog = new ExecutionLogStore(executionLogFilePath(userDataDir))
+  const artifactStore = new ArtifactStore(artifactsRoot(userDataDir))
   const executionSource = new ExecutionToolHostSource({
     workspaceRoots: workspaceRootStore,
     log: executionLog,
     isAllowed: () => launcher.getSettings().allowAgentShell,
+    artifactStore,
   })
   await executionSource.refresh()
   sharedExecutionTools = executionSource

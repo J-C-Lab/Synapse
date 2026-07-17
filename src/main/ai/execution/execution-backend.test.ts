@@ -52,7 +52,7 @@ describe("createLocalPolicyExecutionBackend", () => {
 
     const result = await backend.invoke({ invocationId: "inv-1", rootId: "repo", command }, policy)
     expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain("ok")
+    expect(result.legacyStdout).toContain("ok")
   })
 
   it("always reports unknown for recoverInvocation — an invocation id alone proves nothing", async () => {

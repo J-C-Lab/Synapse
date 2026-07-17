@@ -1,8 +1,10 @@
 import type { JsonSchema } from "@synapse/plugin-manifest"
-import type { ToolResult } from "@synapse/plugin-sdk"
+import type { ToolCaller, ToolResult } from "@synapse/plugin-sdk"
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../../plugins/types"
+import type { AgentArtifactStore, ArtifactOwnerContext } from "../artifacts/artifact-types"
 import type { ToolHostSource } from "../composite-tool-host"
-import type { ExecutionBackend } from "./execution-backend"
+import type { CommandArtifactCapture, CommandRunResult } from "./command-runner"
+import type { ExecutionBackend, ExecutionBackendDescriptor } from "./execution-backend"
 import type { ExecutionLogStore } from "./execution-log-store"
 import type { WorkspaceRootRecord } from "./types"
 import { classifyCommand } from "./command-policy"
@@ -31,6 +33,12 @@ export interface ExecutionToolHostSourceOptions {
    *  policy backend. Command policy, workspace containment, approval, and
    *  audit all stay in front of this call. */
   backend?: ExecutionBackend
+  /** When present, run_command captures stdout/stderr as durable artifacts
+   *  instead of the legacy in-memory preview — but only for calls whose
+   *  caller carries a runId (see buildArtifactCapture below). Optional so
+   *  existing tests/callers that don't wire a store keep the legacy
+   *  behavior unchanged. */
+  artifactStore?: AgentArtifactStore
 }
 
 const objectSchema = (
@@ -279,6 +287,7 @@ export class ExecutionToolHostSource implements ToolHostSource {
     }
 
     const startedAt = this.now()
+    const artifacts = this.buildArtifactCapture(options.caller)
     const result = await this.backend.invoke(
       {
         invocationId: crypto.randomUUID(),
@@ -287,21 +296,17 @@ export class ExecutionToolHostSource implements ToolHostSource {
         cwd: typeof input.cwd === "string" ? input.cwd : undefined,
         timeoutMs: typeof input.timeoutMs === "number" ? input.timeoutMs : undefined,
         signal: options.signal,
+        artifacts,
       },
       policy
     )
-    const stdout = truncatePreview(result.stdout)
-    const stderr = truncatePreview(result.stderr)
-    const payload = {
-      exitCode: result.exitCode,
-      stdout: stdout.text,
-      stderr: stderr.text,
-      timedOut: result.timedOut,
-      cancelled: result.cancelled,
-      stdoutTruncated: result.stdoutTruncated || stdout.truncated,
-      stderrTruncated: result.stderrTruncated || stderr.truncated,
-    }
+    const { payload, outputLimitExceeded, artifactIds } = buildRunCommandPayload(result)
     const toolResult = json(payload)
+    const errorPreview = outputLimitExceeded
+      ? "output_limit_exceeded"
+      : result.exitCode === 0
+        ? ""
+        : `exit code ${result.exitCode ?? "unknown"}`
     await this.audit({
       fqName: `${EXECUTION_PLUGIN_ID}/run_command`,
       input,
@@ -311,9 +316,41 @@ export class ExecutionToolHostSource implements ToolHostSource {
       decision: auditDecision(options),
       startedAt,
       result: toolResult,
-      errorPreview: result.exitCode === 0 ? "" : `exit code ${result.exitCode ?? "unknown"}`,
+      errorPreview,
+      backendDescriptor: this.backend.descriptor,
+      artifactIds,
     })
     return toolResult
+  }
+
+  /** Derives the ArtifactOwnerContext a command's stdout/stderr captures
+   *  under, or `undefined` to fall back to the legacy in-memory capture.
+   *
+   *  Two conditions must both hold for artifact capture to apply:
+   *  - the host was actually wired with an artifactStore (options.artifactStore)
+   *  - the caller carries a runId — a command invoked with no run context
+   *    (direct user invocation, external MCP) has no run to scope a durable
+   *    artifact under; the artifact store is fundamentally
+   *    `<baseDir>/<runId>/...`-scoped, so there is no synthetic id to
+   *    invent here that wouldn't misrepresent the call's real identity.
+   *
+   *  rootRunId: subagent runs never nest (see spawn_subagent's own
+   *  same-invariant guard in subagent-tool-source.ts), so the run tree is
+   *  at most two levels deep — a root run, and optionally its direct
+   *  subagent children. `caller.parentRunId`, when set, therefore already
+   *  IS the root run id; otherwise `caller.runId` is already root-level. */
+  private buildArtifactCapture(caller: ToolCaller): CommandArtifactCapture | undefined {
+    if (!this.options.artifactStore || !caller.runId) return undefined
+    const owner: ArtifactOwnerContext = {
+      runId: caller.runId,
+      rootRunId: caller.parentRunId ?? caller.runId,
+      parentRunId: caller.parentRunId,
+      conversationId: caller.conversationId,
+      workspaceId: caller.workspaceId,
+      // ToolCaller's own doc comment: "Absent ⇒ treated as { kind: 'local-user' }".
+      principal: caller.principal ?? { kind: "local-user" },
+    }
+    return { store: this.options.artifactStore, owner }
   }
 
   private now(): number {
@@ -330,6 +367,8 @@ export class ExecutionToolHostSource implements ToolHostSource {
     startedAt: number
     result?: ToolResult
     errorPreview?: string
+    backendDescriptor?: ExecutionBackendDescriptor
+    artifactIds?: { stdout?: string; stderr?: string }
   }): Promise<void> {
     const args = asRecord(params.input)
     const command = typeof args.command === "string" ? args.command : ""
@@ -347,14 +386,94 @@ export class ExecutionToolHostSource implements ToolHostSource {
       startedAt: params.startedAt,
       endedAt,
       inputPreview: (command || JSON.stringify(args)).slice(0, 2000),
+      // Always a bounded preview string, never the full/raw captured
+      // output — the full bytes (when artifact-captured) live only in the
+      // artifact store, addressed by stdoutArtifactId/stderrArtifactId
+      // below, never inlined into the audit log.
       outputPreview: preview.slice(0, 2000),
       errorPreview: params.errorPreview ?? "",
+      backendId: params.backendDescriptor?.backendId,
+      backendIsolation: params.backendDescriptor?.isolation,
+      backendReplayGuarantee: params.backendDescriptor?.replayGuarantee,
+      stdoutArtifactId: params.artifactIds?.stdout,
+      stderrArtifactId: params.artifactIds?.stderr,
     })
   }
 }
 
 function auditDecision(options: ToolInvocationOptions): "allow" | "approved" {
   return options.executionAuditDecision === "approved" ? "approved" : "allow"
+}
+
+/** Builds run_command's tool-facing JSON payload from a CommandRunResult,
+ *  branching on which capture path actually ran:
+ *
+ *  - artifact-backed (result.stdout/result.stderr present): both streams'
+ *    artifact URIs, bounded head+tail previews, and complete/
+ *    truncationReason are surfaced directly — run_command carries its own
+ *    bespoke artifact-ref shape rather than a generic single
+ *    ChatContentBlock.tool_result.artifact field (that generalization is
+ *    Task 19's job for tool-results broadly). When either stream was cut
+ *    short for a hard-limit reason, `error: "output_limit_exceeded"` is
+ *    added so the payload can never silently read as a clean, complete
+ *    result.
+ *  - legacy (result.legacyStdout/result.legacyStderr present): unchanged
+ *    shape from before this task. */
+function buildRunCommandPayload(result: CommandRunResult): {
+  payload: Record<string, unknown>
+  outputLimitExceeded: boolean
+  artifactIds?: { stdout?: string; stderr?: string }
+} {
+  if (result.stdout && result.stderr) {
+    const outputLimitExceeded = !result.stdout.artifact.complete || !result.stderr.artifact.complete
+    const payload: Record<string, unknown> = {
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      cancelled: result.cancelled,
+      stdout: {
+        headPreview: result.stdout.headPreview,
+        tailPreview: result.stdout.tailPreview,
+        artifactUri: result.stdout.artifact.uri,
+        artifactId: result.stdout.artifact.artifactId,
+        capturedBytes: result.stdout.artifact.capturedBytes,
+        complete: result.stdout.artifact.complete,
+        truncationReason: result.stdout.artifact.truncationReason,
+      },
+      stderr: {
+        headPreview: result.stderr.headPreview,
+        tailPreview: result.stderr.tailPreview,
+        artifactUri: result.stderr.artifact.uri,
+        artifactId: result.stderr.artifact.artifactId,
+        capturedBytes: result.stderr.artifact.capturedBytes,
+        complete: result.stderr.artifact.complete,
+        truncationReason: result.stderr.artifact.truncationReason,
+      },
+    }
+    if (outputLimitExceeded) payload.error = "output_limit_exceeded"
+    return {
+      payload,
+      outputLimitExceeded,
+      artifactIds: {
+        stdout: result.stdout.artifact.artifactId,
+        stderr: result.stderr.artifact.artifactId,
+      },
+    }
+  }
+
+  const stdout = truncatePreview(result.legacyStdout ?? "")
+  const stderr = truncatePreview(result.legacyStderr ?? "")
+  return {
+    payload: {
+      exitCode: result.exitCode,
+      stdout: stdout.text,
+      stderr: stderr.text,
+      timedOut: result.timedOut,
+      cancelled: result.cancelled,
+      stdoutTruncated: result.stdoutTruncated || stdout.truncated,
+      stderrTruncated: result.stderrTruncated || stderr.truncated,
+    },
+    outputLimitExceeded: false,
+  }
 }
 
 function renderResult(result: ToolResult): string {

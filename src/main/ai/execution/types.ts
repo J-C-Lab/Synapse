@@ -41,4 +41,18 @@ export interface ExecutionAuditEvent {
   inputPreview: string
   outputPreview: string
   errorPreview: string
+  /** Which ExecutionBackend actually served this call (Task 18) — only
+   *  populated for tools that dispatch through one (run_command today).
+   *  Never inferred/guessed; always read from the backend's own descriptor
+   *  so it can never silently drift from what really executed the
+   *  command. */
+  backendId?: string
+  backendIsolation?: "none" | "process" | "container" | "vm"
+  backendReplayGuarantee?: "none" | "dedupe-and-result-replay"
+  /** Artifact ids for stdout/stderr when run_command captured output as
+   *  durable artifacts (the caller had a run context to scope them under).
+   *  Never the raw output itself — outputPreview above stays a bounded
+   *  preview string, exactly as before. */
+  stdoutArtifactId?: string
+  stderrArtifactId?: string
 }
