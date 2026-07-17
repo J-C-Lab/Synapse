@@ -24,6 +24,10 @@ function store(now = () => 1000): ConversationStore {
   return new ConversationStore(dir, now)
 }
 
+async function seededDefault(s: ConversationStore, id: string): Promise<void> {
+  await s.save({ id, workspaceId: "default", messages: [], createdAt: 1, updatedAt: 1 })
+}
+
 describe("conversationStore — legacy-compatible projection", () => {
   it("saves and reads back a conversation", async () => {
     const s = store()
@@ -458,5 +462,127 @@ describe("conversationStore — durable lease/commit/tombstone", () => {
   it("throws ConversationNotFoundError for lease operations on a missing conversation", async () => {
     const s = store()
     await expect(s.acquireRunLease("nope", 0, "run-1")).rejects.toThrow(ConversationNotFoundError)
+  })
+})
+
+describe("conversationStore — artifactUris derivation (Task 21)", () => {
+  it("derives artifactUris from tool_result.artifact fields in the same commit", async () => {
+    const s = store()
+    await seededDefault(s, "c1")
+    const { fencingToken } = await s.acquireRunLease("c1", 0, "run-1")
+    const durable = [
+      {
+        messageId: "m1",
+        message: {
+          role: "user" as const,
+          content: [
+            {
+              type: "tool_result" as const,
+              toolUseId: "t1",
+              content: "preview",
+              artifact: { uri: "artifact://run/run-1/a1" } as never,
+            },
+          ],
+        },
+      },
+    ]
+    await s.commitRun({
+      conversationId: "c1",
+      runId: "run-1",
+      fencingToken,
+      baseContentRevision: 0,
+      deletionEpoch: 0,
+      finalizationId: "fin-1",
+      messages: durable,
+    })
+    const raw = JSON.parse(await fs.readFile(join(dir, "c1.json"), "utf-8"))
+    expect(raw.artifactUris).toEqual(["artifact://run/run-1/a1"])
+  })
+
+  it("merges additionalArtifactUris (superseded compaction artifacts) into artifactUris", async () => {
+    const s = store()
+    await seededDefault(s, "c1")
+    const { fencingToken } = await s.acquireRunLease("c1", 0, "run-1")
+    await s.commitRun({
+      conversationId: "c1",
+      runId: "run-1",
+      fencingToken,
+      baseContentRevision: 0,
+      deletionEpoch: 0,
+      finalizationId: "fin-1",
+      messages: [
+        {
+          messageId: "m1",
+          message: { role: "user" as const, content: [{ type: "text" as const, text: "hi" }] },
+        },
+      ],
+      additionalArtifactUris: ["artifact://run/run-1/history-2", "artifact://run/run-1/history-1"],
+    })
+    const raw = JSON.parse(await fs.readFile(join(dir, "c1.json"), "utf-8"))
+    expect(raw.artifactUris).toEqual([
+      "artifact://run/run-1/history-1",
+      "artifact://run/run-1/history-2",
+    ])
+  })
+})
+
+describe("conversationStore.collectReferencedArtifactUris (Task 21)", () => {
+  async function commitWithArtifact(
+    s: ConversationStore,
+    conversationId: string,
+    runId: string,
+    uri: string
+  ): Promise<void> {
+    await seededDefault(s, conversationId)
+    const { fencingToken } = await s.acquireRunLease(conversationId, 0, runId)
+    await s.commitRun({
+      conversationId,
+      runId,
+      fencingToken,
+      baseContentRevision: 0,
+      deletionEpoch: 0,
+      finalizationId: "fin-1",
+      messages: [
+        {
+          messageId: "m1",
+          message: { role: "user" as const, content: [{ type: "text" as const, text: "hi" }] },
+        },
+      ],
+      additionalArtifactUris: [uri],
+    })
+  }
+
+  it("includes an active conversation's artifactUris", async () => {
+    const s = store()
+    await commitWithArtifact(s, "active-conv", "run-1", "artifact://run/run-1/a1")
+    const referenced = await s.collectReferencedArtifactUris(1000, 60_000)
+    expect(referenced.has("artifact://run/run-1/a1")).toBe(true)
+  })
+
+  it("includes a tombstoned conversation's artifactUris while inside the grace window", async () => {
+    let clock = 1000
+    const s = new ConversationStore(dir, () => clock)
+    await commitWithArtifact(s, "grace-conv", "run-1", "artifact://run/run-1/a1")
+    clock = 2000
+    await s.tombstone("grace-conv", 1)
+
+    const referenced = await s.collectReferencedArtifactUris(2500, 60_000)
+    expect(referenced.has("artifact://run/run-1/a1")).toBe(true)
+  })
+
+  it("excludes a tombstoned conversation's artifactUris once past the grace window", async () => {
+    let clock = 1000
+    const s = new ConversationStore(dir, () => clock)
+    await commitWithArtifact(s, "expired-conv", "run-1", "artifact://run/run-1/a1")
+    clock = 2000
+    await s.tombstone("expired-conv", 1)
+
+    const referenced = await s.collectReferencedArtifactUris(2000 + 60_000, 60_000)
+    expect(referenced.has("artifact://run/run-1/a1")).toBe(false)
+  })
+
+  it("returns an empty set when the conversations directory does not exist", async () => {
+    const fresh = new ConversationStore(join(dir, "does-not-exist"))
+    expect(await fresh.collectReferencedArtifactUris(1000, 60_000)).toEqual(new Set())
   })
 })

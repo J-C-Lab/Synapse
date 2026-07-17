@@ -25,6 +25,12 @@ import {
   freeSpaceReserveBytes,
 } from "./artifact-quota"
 import {
+  ArtifactPinStore,
+  ArtifactTombstoneStore,
+  buildArtifactTombstone,
+  selectEligibleForDeletion,
+} from "./artifact-retention"
+import {
   ArtifactReadError,
   artifactUri,
   InvalidArtifactIdError,
@@ -70,6 +76,23 @@ export interface ArtifactStoreOptions {
    *  watermark while streaming a single artifact. Defaults to 8 MiB;
    *  overridable so tests don't need an 8 MiB payload to exercise it. */
   diskRecheckIntervalBytes?: number
+  /** Cross-store reference check `collectEligible()` uses to decide whether
+   *  a terminal (pin-released) run's artifact is still pinned by a canonical
+   *  conversation reference (design §"Retention": "GC uses a reverse
+   *  -reference index as a cache but rechecks canonical active conversation
+   *  /tombstone records immediately before deleting bytes"). The artifact
+   *  store itself never imports ConversationStore — this stays a plain
+   *  injected predicate so the store remains self-contained (per this
+   *  file's own top-of-file access-check rationale); the real predicate is
+   *  wired at construction (src/main/index.ts) from
+   *  ConversationStore.collectReferencedArtifactUris.
+   *
+   *  Deliberately conservative when omitted: `collectEligible()` never
+   *  deletes any artifact's bytes unless this is provided — matching every
+   *  existing test's expectation of `deletedArtifacts: 0` and never risking
+   *  data loss from a store constructed without knowledge of what's still
+   *  referenced. */
+  isArtifactReferenced?: (uri: AgentArtifactRef["uri"]) => Promise<boolean>
 }
 
 interface ArtifactManifestV1 {
@@ -238,10 +261,13 @@ function isNotFound(err: unknown): boolean {
 
 export class ArtifactStore implements AgentArtifactStore {
   private readonly quotaStore: ArtifactQuotaStore
+  private readonly pinStore: ArtifactPinStore
+  private readonly tombstoneStore: ArtifactTombstoneStore
   private readonly limits: ArtifactQuotaLimits
   private readonly statDiskSpace: StatDiskSpace
   private readonly now: () => number
   private readonly diskRecheckIntervalBytes: number
+  private readonly isArtifactReferenced?: (uri: AgentArtifactRef["uri"]) => Promise<boolean>
 
   constructor(
     private readonly baseDir: string,
@@ -250,8 +276,11 @@ export class ArtifactStore implements AgentArtifactStore {
     this.limits = options.quotaLimits ?? DEFAULT_ARTIFACT_QUOTA_LIMITS
     this.statDiskSpace = options.statDiskSpace ?? defaultStatDiskSpace
     this.quotaStore = new ArtifactQuotaStore(baseDir, this.statDiskSpace)
+    this.pinStore = new ArtifactPinStore(baseDir)
+    this.tombstoneStore = new ArtifactTombstoneStore(baseDir)
     this.now = options.now ?? (() => Date.now())
     this.diskRecheckIntervalBytes = options.diskRecheckIntervalBytes ?? DISK_RECHECK_INTERVAL_BYTES
+    this.isArtifactReferenced = options.isArtifactReferenced
   }
 
   async capture(
@@ -492,26 +521,130 @@ export class ArtifactStore implements AgentArtifactStore {
     }
   }
 
-  /** No-op in this task: pin/tombstone bookkeeping is Task 21's job. Accepts
-   *  the call (validating the runId) so Task 19/21 wiring can start calling
-   *  it now without a signature change later. */
-  async releaseRunPin(runId: string, _finalizationId: string): Promise<void> {
+  /** Marks `runId`'s pin released — design §"Retention": "Terminal
+   *  finalization may release the run pin only after conversation commit."
+   *  Idempotent (ArtifactPinStore.release), so a finalization retry after a
+   *  crash around this call never double-releases or errors. Once released,
+   *  `runId`'s artifacts become GC-eligible in a later `collectEligible()`
+   *  sweep, subject to still passing the reference check. */
+  async releaseRunPin(runId: string, finalizationId: string): Promise<void> {
     if (!isSafeId(runId)) throw new InvalidArtifactRunIdError(runId)
+    await this.pinStore.release(runId, finalizationId, this.now())
   }
 
-  /** This task's scope: reconcile whatever a crash mid-capture left behind —
-   *  never-settled quota reservations and orphaned `data.bin.tmp` files.
-   *  Retention-based deletion of otherwise-eligible artifacts is Task 21's
-   *  job; `deletedArtifacts`/`deletedBytes` are always 0 here. */
+  /** Reconciles crash-abandoned reservations/temp files (pre-existing), then
+   *  runs the real Task 21 retention sweep: every artifact whose run has
+   *  released its pin AND is not currently referenced (per
+   *  `isArtifactReferenced`, re-checked fresh for each candidate rather than
+   *  from any cached index) has its bytes deleted and a tombstone recorded.
+   *  Never deletes anything when `isArtifactReferenced` was not supplied at
+   *  construction — a store with no way to know what's still referenced
+   *  must never guess. */
   async collectEligible(): Promise<ArtifactGcResult> {
     const reconciled = await this.quotaStore.reconcileAbandoned()
     const orphanedTempFilesRemoved = await this.removeOrphanedTempFiles()
+    const deletion = await this.deleteEligibleArtifacts()
+    await this.tombstoneStore.pruneExpired(this.now())
     return {
       reconciledReservations: reconciled.reconciledCount,
       reclaimedReservedBytes: reconciled.reclaimedBytes,
       orphanedTempFilesRemoved,
-      deletedArtifacts: 0,
-      deletedBytes: 0,
+      deletedArtifacts: deletion.deletedArtifacts,
+      deletedBytes: deletion.deletedBytes,
+    }
+  }
+
+  private async deleteEligibleArtifacts(): Promise<{
+    deletedArtifacts: number
+    deletedBytes: number
+  }> {
+    if (!this.isArtifactReferenced) return { deletedArtifacts: 0, deletedBytes: 0 }
+    const isArtifactReferenced = this.isArtifactReferenced
+
+    let runIds: string[]
+    try {
+      runIds = await fs.readdir(this.baseDir)
+    } catch (err) {
+      if (isNotFound(err)) return { deletedArtifacts: 0, deletedBytes: 0 }
+      throw err
+    }
+
+    let deletedArtifacts = 0
+    let deletedBytes = 0
+    for (const runId of runIds.filter(isSafeId)) {
+      // Non-terminal (pin never released) runs are always skipped in full —
+      // never even enumerated further — matching "Non-terminal run
+      // artifacts are pinned against deletion."
+      if (await this.pinStore.isPinned(runId)) continue
+
+      const runDir = path.join(this.baseDir, runId)
+      let artifactIds: string[]
+      try {
+        artifactIds = await fs.readdir(runDir)
+      } catch {
+        continue
+      }
+
+      const candidates: { runId: string; artifactId: string; uri: AgentArtifactRef["uri"] }[] = []
+      const manifestByArtifactId = new Map<string, ArtifactManifestV1>()
+      for (const artifactId of artifactIds.filter(isSafeId)) {
+        const manifest = await this.readManifestForGc(runId, artifactId)
+        if (!manifest) continue
+        manifestByArtifactId.set(artifactId, manifest)
+        candidates.push({ runId, artifactId, uri: manifest.ref.uri })
+      }
+      if (candidates.length === 0) continue
+
+      const referenced = new Map<string, boolean>()
+      for (const candidate of candidates) {
+        referenced.set(candidate.uri, await isArtifactReferenced(candidate.uri))
+      }
+      const eligible = selectEligibleForDeletion(
+        candidates,
+        () => false, // already filtered to a pin-released run above
+        (uri) => referenced.get(uri) ?? true // fail closed: unknown => referenced
+      )
+
+      for (const candidate of eligible) {
+        const manifest = manifestByArtifactId.get(candidate.artifactId)!
+        const artifactDir = path.join(runDir, candidate.artifactId)
+        await fs.rm(artifactDir, { recursive: true, force: true })
+        await this.tombstoneStore.record(
+          buildArtifactTombstone(manifest.ref, this.now(), "retention-terminal-unreferenced")
+        )
+        deletedArtifacts += 1
+        deletedBytes += manifest.ref.capturedBytes
+      }
+
+      // Best-effort: remove the run directory once every artifact under it
+      // is gone. Never fatal — a concurrent capture racing this sweep (or a
+      // leftover unexpected file) just leaves the directory in place.
+      try {
+        const remaining = await fs.readdir(runDir)
+        if (remaining.length === 0) await fs.rmdir(runDir)
+      } catch {
+        // best-effort only
+      }
+    }
+    return { deletedArtifacts, deletedBytes }
+  }
+
+  /** Host-internal manifest read for the GC sweep only: no forgery/access
+   *  checks (nothing here is caller-supplied), and any failure (missing,
+   *  corrupt, symlink-escape) just means "skip this artifact this sweep" —
+   *  never a thrown ArtifactReadError, unlike loadManifestById below. Still
+   *  goes through resolveContainedPath so a GC sweep can never be tricked
+   *  into reading outside a run's own directory. */
+  private async readManifestForGc(
+    runId: string,
+    artifactId: string
+  ): Promise<ArtifactManifestV1 | undefined> {
+    try {
+      const manifestPath = await this.resolveContainedPath(runId, artifactId, MANIFEST_FILE)
+      const raw = JSON.parse(await fs.readFile(manifestPath, "utf-8"))
+      return isValidManifest(raw) ? raw : undefined
+    } catch {
+      return undefined
     }
   }
 
@@ -559,11 +692,21 @@ export class ArtifactStore implements AgentArtifactStore {
         `unknown artifact: run/${runId}/${artifactId}`
       )
     }
-    const manifestPath = await this.resolveContainedPath(runId, artifactId, MANIFEST_FILE)
+    let manifestPath: string
+    try {
+      manifestPath = await this.resolveContainedPath(runId, artifactId, MANIFEST_FILE)
+    } catch (err) {
+      throw await this.expiredOrRethrow(runId, artifactId, err)
+    }
     let raw: unknown
     try {
       raw = JSON.parse(await fs.readFile(manifestPath, "utf-8"))
     } catch (err) {
+      // resolveContainedPath already realpath'd this exact path, so ENOENT
+      // here would only happen if something deleted it in between (a GC
+      // sweep racing this read) — treat identically to the not-found case
+      // above rather than misreporting a race as corruption.
+      if (isNotFound(err)) throw await this.expiredOrRethrow(runId, artifactId, err)
       throw new ArtifactReadError(
         "artifact_corrupt",
         `artifact manifest for run/${runId}/${artifactId} is corrupt: ${(err as Error).message}`
@@ -576,6 +719,28 @@ export class ArtifactStore implements AgentArtifactStore {
       )
     }
     return raw
+  }
+
+  /** A "not found" outcome is ambiguous on its own: it could mean the id was
+   *  never valid (the pre-existing `artifact_missing` meaning), or it could
+   *  mean retention deleted real bytes that once existed. Distinguishes the
+   *  two by checking the tombstone ledger before deciding which
+   *  ArtifactReadError to throw — `artifact_expired` (with the tombstone
+   *  attached) only when this store itself recorded deleting it. */
+  private async expiredOrRethrow(runId: string, artifactId: string, err: unknown): Promise<Error> {
+    if (err instanceof ArtifactReadError && err.code === "artifact_missing") {
+      const tombstone = await this.tombstoneStore.get(artifactUri(runId, artifactId))
+      if (tombstone) {
+        return new ArtifactReadError(
+          "artifact_expired",
+          `artifact expired: its bytes were deleted by retention (run/${runId}/${artifactId})`,
+          tombstone
+        )
+      }
+      return err
+    }
+    if (err instanceof Error) return err
+    return new Error(String(err))
   }
 
   async resolve(

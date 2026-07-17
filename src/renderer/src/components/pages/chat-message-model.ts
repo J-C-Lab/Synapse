@@ -17,12 +17,50 @@ export interface TextBlock {
   text: string
 }
 
+/** Bounded artifact summary captured at tool-result time (Task 19) — never
+ *  the full host-only `AgentArtifactRef` (no sha256/runId/artifactId, which
+ *  never cross the IPC boundary to the renderer). */
+export interface ArtifactSummary {
+  uri: string
+  kind: string
+  mediaType: string
+  capturedBytes: number
+  complete: boolean
+  truncationReason?: string
+}
+
+/** Live availability of a tool card's `artifact`, matching read_artifact's
+ *  closed `ArtifactReadErrorCode` union plus "available" and the transient
+ *  "checking" state a caller sets while a status IPC call is in flight.
+ *  Never derived here — chat-message-model.ts does no IO; a caller (chat
+ *  -page.tsx) fetches it and folds the result in via
+ *  applyArtifactAvailability. */
+export type ArtifactAvailability =
+  | "checking"
+  | "available"
+  | "artifact_expired"
+  | "artifact_missing"
+  | "artifact_corrupt"
+  | "artifact_forbidden"
+  | "range_invalid"
+
 export interface ToolCard {
   kind: "tool"
   id: string
   name: string
   input: unknown
   status: "running" | "success" | "error"
+  /** Present only when this call's output was offloaded to a durable
+   *  artifact (Task 19). The preview text callers already render for a
+   *  completed tool card is untouched by this — this is additional,
+   *  purely-informational metadata about the backing artifact. */
+  artifact?: ArtifactSummary
+  /** Undefined until a caller (chat-page.tsx) checks live status for
+   *  `artifact.uri`. Once set to any TERMINAL value (everything except
+   *  "checking"), a caller must treat it as final for this uri and never
+   *  re-issue the same status check as if it were a fresh, different
+   *  request — see applyArtifactAvailability's docstring. */
+  artifactAvailability?: ArtifactAvailability
 }
 
 export type MessageBlock = TextBlock | ToolCard
@@ -72,7 +110,10 @@ export function hydrateMessages(stored: AiChatMessage[]): DisplayMessage[] {
     for (const block of message.content) {
       if (block.type === "tool_result") {
         const card = toolsById.get(block.toolUseId)
-        if (card) card.status = block.isError ? "error" : "success"
+        if (card) {
+          card.status = block.isError ? "error" : "success"
+          if (block.artifact) card.artifact = { ...block.artifact }
+        }
       }
     }
     const text = textOf(message)
@@ -144,6 +185,33 @@ export function applyEvent(messages: DisplayMessage[], event: AiChatEvent): Disp
       break
   }
   return next
+}
+
+/**
+ * Folds a live artifact-status check's result onto every tool card whose
+ * `artifact.uri` matches — pure, no IO (the caller already did the IPC
+ * round-trip). Keyed by uri, not by a single toolId, since Task 21's design
+ * requires caching "per artifact URI": the same uri could in principle
+ * appear on more than one card (e.g. a re-run), and a caller must never
+ * re-issue the same status check for a uri it has already resolved to a
+ * terminal outcome — "never retry a forbidden/missing read as another
+ * caller." The caller (chat-page.tsx) is responsible for actually
+ * maintaining that per-uri cache and only calling this once per uri; this
+ * function itself is just the state fold.
+ */
+export function applyArtifactAvailability(
+  messages: DisplayMessage[],
+  uri: string,
+  availability: ArtifactAvailability
+): DisplayMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    blocks: message.blocks.map((block) =>
+      block.kind === "tool" && block.artifact?.uri === uri
+        ? { ...block, artifactAvailability: availability }
+        : block
+    ),
+  }))
 }
 
 /**

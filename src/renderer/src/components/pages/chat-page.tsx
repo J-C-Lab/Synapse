@@ -1,5 +1,5 @@
 import type { ImperativePanelHandle } from "react-resizable-panels"
-import type { DisplayMessage, ToolCard } from "./chat-message-model"
+import type { ArtifactAvailability, DisplayMessage, ToolCard } from "./chat-message-model"
 import type { PlanStep } from "@/components/PlanPanel"
 import type { AiChatEvent, AiConversationSummary, AiStatus, AiTokenUsage } from "@/lib/electron"
 import {
@@ -59,6 +59,7 @@ import {
   deleteAiConversation,
   getAiConversation,
   getAiStatus,
+  getArtifactStatus,
   isElectron,
   listAiConversations,
   listRecoverableRuns,
@@ -864,7 +865,46 @@ const MessageBubble = memo(
   }
 )
 
+// Persists across MessageBubble/ToolCardView remounts (e.g. scrolling a
+// virtualized list, switching conversations and back), keyed by artifact
+// uri — the exact "cache the terminal error state per artifact URI" the
+// design calls for. Deliberately module-level rather than component state:
+// a status check result belongs to the artifact, not to any one card's
+// lifetime. Never re-fetched once a uri has an entry, so a forbidden/missing
+// read is never retried as if it were a fresh request.
+const artifactAvailabilityCache = new Map<string, ArtifactAvailability>()
+
+/** Lazily resolves and caches one artifact's live status. Returns undefined
+ *  until a result (cached or freshly fetched) is known — callers render a
+ *  neutral/no-badge state for that case, never an error. */
+function useArtifactAvailability(uri: string | undefined): ArtifactAvailability | undefined {
+  const [, forceRerender] = useState(0)
+  useEffect(() => {
+    if (!uri || artifactAvailabilityCache.has(uri)) return
+    let cancelled = false
+    void getArtifactStatus(uri).then((result) => {
+      if (cancelled) return
+      artifactAvailabilityCache.set(uri, result.status === "available" ? "available" : result.code)
+      forceRerender((n) => n + 1)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [uri])
+  return uri ? artifactAvailabilityCache.get(uri) : undefined
+}
+
+const ARTIFACT_UNAVAILABLE_LABELS: Record<Exclude<ArtifactAvailability, "available">, string> = {
+  checking: "checking…",
+  artifact_expired: "expired — no longer recoverable",
+  artifact_missing: "unavailable",
+  artifact_corrupt: "unavailable (corrupt)",
+  artifact_forbidden: "unavailable (access denied)",
+  range_invalid: "unavailable",
+}
+
 function ToolCardView({ tool }: { tool: ToolCard }) {
+  const availability = useArtifactAvailability(tool.artifact?.uri)
   return (
     <div className="rounded-md border bg-background/60 px-2 py-1.5 text-xs text-foreground">
       <div className="flex items-center gap-1.5">
@@ -881,6 +921,21 @@ function ToolCardView({ tool }: { tool: ToolCard }) {
           {tool.status}
         </span>
       </div>
+      {tool.artifact && (
+        <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+          {!tool.artifact.complete && (
+            <span className="rounded bg-amber-500/15 px-1 py-0.5 text-amber-600 dark:text-amber-400">
+              incomplete
+              {tool.artifact.truncationReason ? ` (${tool.artifact.truncationReason})` : ""}
+            </span>
+          )}
+          {availability && availability !== "available" && (
+            <span className="rounded bg-red-500/15 px-1 py-0.5 text-red-600 dark:text-red-400">
+              {ARTIFACT_UNAVAILABLE_LABELS[availability]}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   )
 }

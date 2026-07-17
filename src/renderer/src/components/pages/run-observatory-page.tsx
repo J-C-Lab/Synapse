@@ -1,4 +1,4 @@
-import type { AgentRunSummary } from "@synapse/agent-protocol"
+import type { AgentArtifactRefSummary, AgentRunSummary } from "@synapse/agent-protocol"
 import type { ResumeRunResult, RunDetail, RunSummary } from "@/lib/electron"
 import { useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
@@ -6,6 +6,7 @@ import {
   abandonRun,
   getAiConversation,
   getRun,
+  getRunSnapshot,
   isElectron,
   listAiWorkspaces,
   listRecoverableRuns,
@@ -34,6 +35,7 @@ export function RunObservatoryPage() {
   const [conversationExists, setConversationExists] = useState<boolean | undefined>()
   const [parentUnavailable, setParentUnavailable] = useState(false)
   const [childRuns, setChildRuns] = useState<RunSummary[]>([])
+  const [artifacts, setArtifacts] = useState<AgentArtifactRefSummary[]>([])
   const [recoverable, setRecoverable] = useState<AgentRunSummary[]>([])
   const [resumeResults, setResumeResults] = useState<Record<string, ResumeRunResult>>({})
 
@@ -79,6 +81,7 @@ export function RunObservatoryPage() {
     // guard every setState below on this effect instance still being live.
     let cancelled = false
     setParentUnavailable(false)
+    setArtifacts([])
     void getRun(selectedRunId).then((result) => {
       if (cancelled) return
       setDetail(result)
@@ -92,6 +95,12 @@ export function RunObservatoryPage() {
       void listRuns({ parentRunId: selectedRunId }).then((rows) => {
         if (!cancelled) setChildRuns(rows)
       })
+    })
+    // Artifacts live on the durable checkpoint snapshot (AgentRunSnapshot),
+    // not on the bounded RunTrace `detail` above — a separate side-fetch,
+    // same pattern as the childRuns fetch just above (Task 21).
+    void getRunSnapshot(selectedRunId).then((snapshot) => {
+      if (!cancelled) setArtifacts(snapshot?.artifacts ?? [])
     })
     return () => {
       cancelled = true
@@ -396,6 +405,28 @@ export function RunObservatoryPage() {
                   </ul>
                 </div>
               )}
+              <div>
+                <strong>{t("runObservatory.detailArtifacts")}:</strong>
+                {artifacts.length === 0 ? (
+                  <span className="text-muted-foreground"> {t("runObservatory.noArtifacts")}</span>
+                ) : (
+                  <ul className="ml-4 list-disc">
+                    {artifacts.map((artifact) => (
+                      <li key={artifact.uri} className="break-all">
+                        <span className="font-mono text-xs">{artifact.uri}</span>{" "}
+                        <span className="text-xs text-muted-foreground">
+                          {artifact.kind} · {artifact.mediaType} · {artifact.capturedBytes}{" "}
+                          {t("runObservatory.artifactBytes")}
+                          {!artifact.complete &&
+                            ` · ${t("runObservatory.artifactIncomplete", {
+                              reason: artifact.truncationReason ?? "unknown",
+                            })}`}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
           )}
         </div>

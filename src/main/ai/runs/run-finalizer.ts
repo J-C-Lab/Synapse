@@ -43,6 +43,7 @@ export interface ConversationFinalizationPort {
     deletionEpoch: number
     finalizationId: string
     messages: DurableChatMessage[]
+    additionalArtifactUris?: readonly string[]
   }) => Promise<{ contentRevision: number }>
   releaseRunLease: (input: {
     conversationId: string
@@ -67,10 +68,15 @@ export interface RunFinalizerDeps {
   upsertTrace: (input: TraceUpsertInput) => TraceUpsertReceipt
   /** Idempotently releases everything named in the resource-release plan
    *  (remaining budget holds, skill-package leases, the artifact run pin,
-   *  adoption leases). One injected seam rather than four, since Checkpoint
-   *  A doesn't yet own the skill/artifact stores — concrete wiring lands
-   *  with the callers that migrate onto this driver (Tasks 13-14). */
-  releaseResources: (plan: RunFinalizationLedger["resourceReleasePlan"]) => Promise<void>
+   *  adoption leases) and reports which of them actually happened — the
+   *  receipt checkpointed in `resourceReceipts` reflects this return value,
+   *  not merely what the plan asked for (Task 21). Every current caller
+   *  delegates to artifact-retention.ts's `releaseArtifactRunResources` for
+   *  the artifact-pin portion. */
+  releaseResources: (
+    plan: RunFinalizationLedger["resourceReleasePlan"],
+    context: { runId: string; finalizationId: string }
+  ) => Promise<{ artifactRunPinReleased: boolean }>
   now: () => number
   newId?: () => string
   /** Named crash-recovery test seams — never set in production. */
@@ -322,6 +328,7 @@ async function resolveConversationCommit(
       deletionEpoch: checkpoint.conversationCommit.deletionEpoch,
       finalizationId,
       messages: checkpoint.messages,
+      additionalArtifactUris: historyArtifactUris(checkpoint),
     })
     return { status: "committed", contentRevision }
   } catch (err) {
@@ -340,6 +347,20 @@ async function resolveConversationCommit(
     }
     throw err
   }
+}
+
+/** Every history-artifact uri this run's checkpoint still needs pinned
+ *  beyond what `deriveArtifactUris(messages)` finds by scanning message
+ *  content (Task 21) — the current `contextCompaction.artifact.uri` (a
+ *  separate checkpoint field entirely, never part of `messages`) plus every
+ *  uri `supersededCompactionArtifactUris` has accumulated from a prior
+ *  compaction round that a later round replaced. See checkpoint-schema.ts's
+ *  `supersededCompactionArtifactUris` docstring for the full gap this closes. */
+function historyArtifactUris(checkpoint: AgentRunCheckpointV1): string[] {
+  const uris = new Set<string>()
+  if (checkpoint.contextCompaction) uris.add(checkpoint.contextCompaction.artifact.uri)
+  for (const uri of checkpoint.supersededCompactionArtifactUris ?? []) uris.add(uri)
+  return [...uris]
 }
 
 // ---------------------------------------------------------------------------
@@ -377,8 +398,12 @@ async function releaseResourcesPhase(
   runId: string,
   checkpoint: AgentRunCheckpointV1
 ): Promise<AgentRunCheckpointV1> {
-  const plan = checkpoint.finalization!.resourceReleasePlan
-  await deps.releaseResources(plan)
+  const ledger = checkpoint.finalization!
+  const plan = ledger.resourceReleasePlan
+  const outcome = await deps.releaseResources(plan, {
+    runId,
+    finalizationId: ledger.finalizationId,
+  })
 
   return mutateCheckpoint(deps, runId, (cp) => ({
     ...cp,
@@ -388,7 +413,10 @@ async function releaseResourcesPhase(
       resourceReceipts: {
         budgetOperationIds: plan.budgetOperationIds,
         skillPackageLeaseIds: plan.skillPackageLeaseIds,
-        artifactRunPinReleased: plan.releaseArtifactRunPin,
+        // Reflects what deps.releaseResources actually reports happened,
+        // not merely what the plan asked for (Task 21 fix) — a receipt
+        // represents reality.
+        artifactRunPinReleased: outcome.artifactRunPinReleased,
         adoptionLeaseIds: plan.adoptionLeaseIds,
       },
     },

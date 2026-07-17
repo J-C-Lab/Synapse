@@ -319,11 +319,25 @@ async function maybeCompressHistory(
     now: deps.now(),
   })
 
-  const committed = await deps.runStore.mutate(runId, checkpoint.revision, (cp) => ({
-    ...cp,
-    contextCompaction: record,
-    updatedAt: deps.now(),
-  }))
+  const committed = await deps.runStore.mutate(runId, checkpoint.revision, (cp) => {
+    // contextCompaction always supersedes in full (history-artifact.ts's
+    // top-of-file note) — the outgoing round's artifact uri would otherwise
+    // become unreferenced by anything in the live checkpoint the moment this
+    // mutation lands. Accumulate it here (deduped) so conversation-store's
+    // artifactUris (via run-finalizer.ts's historyArtifactUris) keeps it
+    // pinned for as long as this conversation exists, not just until the
+    // next compaction round.
+    const priorUri = cp.contextCompaction?.artifact.uri
+    const supersededCompactionArtifactUris = priorUri
+      ? [...new Set([...(cp.supersededCompactionArtifactUris ?? []), priorUri])]
+      : cp.supersededCompactionArtifactUris
+    return {
+      ...cp,
+      contextCompaction: record,
+      supersededCompactionArtifactUris,
+      updatedAt: deps.now(),
+    }
+  })
   await deps.fault?.("after_compaction_checkpoint")
   return committed
 }

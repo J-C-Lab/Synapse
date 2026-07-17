@@ -303,7 +303,11 @@ function isTextMediaType(mediaType: string): boolean {
   )
 }
 
-function decodeForModel(
+/** Exported so other bounded artifact-read surfaces (e.g. the renderer-facing
+ *  IPC preview read, src/main/ipc/runs.ts, Task 21) apply the exact same
+ *  text-vs-base64 decision this tool does, rather than a second hand-rolled
+ *  copy. */
+export function decodeForModel(
   bytes: Uint8Array,
   mediaType: string
 ): { encoding: "utf-8" | "base64"; content: string } {

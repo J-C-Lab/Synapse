@@ -152,10 +152,133 @@ describe("toAgentRunSnapshot", () => {
     expect(toAgentRunSnapshot(checkpoint, 0).pendingApprovalIds).toEqual(["approval-1"])
   })
 
-  it("returns empty childTasks/artifacts (not owned until Checkpoints E/B)", () => {
+  it("returns empty childTasks (not owned until a later checkpoint) and empty artifacts when none exist", () => {
     const snapshot = toAgentRunSnapshot(minimalCheckpoint(), 0)
     expect(snapshot.childTasks).toEqual([])
     expect(snapshot.artifacts).toEqual([])
+  })
+
+  describe("artifacts (Task 21)", () => {
+    function artifactSummary(
+      uri: string
+    ): AgentRunCheckpointV1["activatedSkills"][number]["instructionsArtifact"] {
+      return {
+        uri: uri as `artifact://run/${string}/${string}`,
+        kind: "history",
+        mediaType: "application/json",
+        capturedBytes: 10,
+        complete: true,
+      }
+    }
+
+    it("collects a completed tool call's offloaded artifact", () => {
+      const checkpoint = minimalCheckpoint({
+        toolBatches: [
+          {
+            modelStep: 0,
+            assistantMessageId: "a1",
+            resultCarrierMessageId: "r1",
+            calls: [
+              {
+                ordinal: 0,
+                toolUseId: "t1",
+                safeName: "run_command",
+                fqName: "run_command",
+                input: {},
+                annotations: {},
+                replayGuarantee: "none",
+                approval: { status: "not_required" },
+                attempts: [],
+                resolution: {
+                  status: "resolved",
+                  reason: "executed",
+                  result: {
+                    isError: false,
+                    preview: "...",
+                    complete: false,
+                    artifact: artifactSummary("artifact://run/run-1/tool-1"),
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      })
+      expect(toAgentRunSnapshot(checkpoint, 0).artifacts).toEqual([
+        artifactSummary("artifact://run/run-1/tool-1"),
+      ])
+    })
+
+    it("collects an activated skill's instructions artifact", () => {
+      const checkpoint = minimalCheckpoint({
+        activatedSkills: [
+          {
+            activationId: "act-1",
+            skillId: "skill-1",
+            packageHash: "h",
+            instructionsHash: "h",
+            trust: "host",
+            effectiveToolNames: [],
+            packageLeaseId: "lease-1",
+            instructionsArtifact: artifactSummary("artifact://run/run-1/skill-1"),
+            activatedAt: 1,
+          },
+        ],
+      })
+      expect(toAgentRunSnapshot(checkpoint, 0).artifacts).toEqual([
+        artifactSummary("artifact://run/run-1/skill-1"),
+      ])
+    })
+
+    it("collects the currently-active context-compaction artifact", () => {
+      const checkpoint = minimalCheckpoint({
+        messages: [
+          { messageId: "u1", message: { role: "user", content: [{ type: "text", text: "hi" }] } },
+        ],
+        contextCompaction: {
+          compactionId: "c1",
+          evictedThroughMessageId: "u1",
+          summaryText: "[Earlier conversation summary]\nsummary",
+          summarizerTokens: 10,
+          artifact: artifactSummary("artifact://run/run-1/history-1"),
+          createdAt: 1,
+        },
+      })
+      expect(toAgentRunSnapshot(checkpoint, 0).artifacts).toEqual([
+        artifactSummary("artifact://run/run-1/history-1"),
+      ])
+    })
+
+    it("dedupes when the same uri appears more than once", () => {
+      const shared = artifactSummary("artifact://run/run-1/shared")
+      const checkpoint = minimalCheckpoint({
+        activatedSkills: [
+          {
+            activationId: "act-1",
+            skillId: "skill-1",
+            packageHash: "h",
+            instructionsHash: "h",
+            trust: "host",
+            effectiveToolNames: [],
+            packageLeaseId: "lease-1",
+            instructionsArtifact: shared,
+            activatedAt: 1,
+          },
+        ],
+        messages: [
+          { messageId: "u1", message: { role: "user", content: [{ type: "text", text: "hi" }] } },
+        ],
+        contextCompaction: {
+          compactionId: "c1",
+          evictedThroughMessageId: "u1",
+          summaryText: "[Earlier conversation summary]\nsummary",
+          summarizerTokens: 10,
+          artifact: shared,
+          createdAt: 1,
+        },
+      })
+      expect(toAgentRunSnapshot(checkpoint, 0).artifacts).toEqual([shared])
+    })
   })
 
   it("passes through plan when the checkpoint has one", () => {

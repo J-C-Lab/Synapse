@@ -927,6 +927,58 @@ describe("agentService", () => {
     expect((await svc.getConversation("c1"))?.plan).toBeUndefined()
   })
 
+  it("getConversation strips a tool_result's full host-only artifact ref down to the bounded renderer summary (Task 21)", async () => {
+    const { service: svc, store } = service({
+      host: fakeHost(),
+      provider: fakeProvider([{ text: "x" }]),
+    })
+    await store.save({
+      id: "c1",
+      workspaceId: "default",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              toolUseId: "t1",
+              content: "preview...",
+              artifact: {
+                uri: "artifact://run/run-1/a1",
+                runId: "run-1",
+                artifactId: "a1",
+                kind: "tool-result",
+                mediaType: "text/plain",
+                capturedBytes: 5000,
+                complete: false,
+                truncationReason: "artifact-limit",
+                sha256: "0".repeat(64),
+                createdAt: 1000,
+              },
+            },
+          ],
+        },
+      ],
+      createdAt: 1,
+      updatedAt: 1,
+    })
+
+    const conversation = await svc.getConversation("c1")
+    const block = conversation?.messages[0]?.content[0] as { artifact?: Record<string, unknown> }
+    expect(block.artifact).toEqual({
+      uri: "artifact://run/run-1/a1",
+      kind: "tool-result",
+      mediaType: "text/plain",
+      capturedBytes: 5000,
+      complete: false,
+      truncationReason: "artifact-limit",
+    })
+    expect(block.artifact).not.toHaveProperty("sha256")
+    expect(block.artifact).not.toHaveProperty("runId")
+    expect(block.artifact).not.toHaveProperty("artifactId")
+    expect(block.artifact).not.toHaveProperty("createdAt")
+  })
+
   describe("startup readiness barrier", () => {
     it("chat() works unchanged when reconcileRunsAtStartup was never called", async () => {
       const { service: svc } = service({

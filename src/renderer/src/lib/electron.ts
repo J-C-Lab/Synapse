@@ -716,6 +716,39 @@ export async function abandonRun(runId: string): Promise<void> {
   await api().abandonRun(runId)
 }
 
+export type ArtifactStatusResult = SynapseArtifactStatusResult
+export type ArtifactPreviewResult = SynapseArtifactPreviewResult
+
+/** Bounded status check for an `artifact://...` uri — never throws for an
+ *  unavailable artifact (expired/missing/corrupt/forbidden); callers branch
+ *  on `status`, matching read_artifact's closed error contract. */
+export async function getArtifactStatus(uri: string): Promise<ArtifactStatusResult> {
+  return api().getArtifactStatus(uri)
+}
+
+/** Bounded preview read for an `artifact://...` uri — mirrors
+ *  read_artifact's own per-call byte cap. Never throws for an unavailable
+ *  artifact; callers branch on `status`. */
+export async function readArtifactPreview(
+  uri: string,
+  range?: { start?: number; end?: number }
+): Promise<ArtifactPreviewResult> {
+  return api().readArtifactPreview(uri, range)
+}
+
+/** Manual retention-sweep trigger (Task 21) — no automatic scheduling is
+ *  wired anywhere yet; exposed so a maintenance action or a future
+ *  scheduled-task system can call it. */
+export async function collectArtifactGarbage(): Promise<{
+  reconciledReservations: number
+  reclaimedReservedBytes: number
+  orphanedTempFilesRemoved: number
+  deletedArtifacts: number
+  deletedBytes: number
+}> {
+  return api().collectArtifactGarbage()
+}
+
 /** Real-time push side of the snapshot-then-subscribe pattern (P1-2) —
  *  fires for every run's events, not just one; callers filter by runId. */
 export function onRunEvent(handler: (event: AgentRunEvent) => void): () => void {

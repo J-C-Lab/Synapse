@@ -308,6 +308,22 @@ export interface AgentRunCheckpointV1 {
    * canonical, ever-growing V2 conversation. */
   contextCompaction?: ContextCompactionRecord
 
+  /** Accumulates the `artifact.uri` of every PRIOR `contextCompaction` round
+   *  once a later round supersedes it (Task 21). `contextCompaction` always
+   *  supersedes in full — see history-artifact.ts's top-of-file note — so
+   *  once a second compaction round commits, the first round's artifact is
+   *  no longer referenced anywhere in `contextCompaction` itself, even
+   *  though its bytes must stay recoverable for as long as this
+   *  conversation exists. durable-agent-driver.ts appends the outgoing
+   *  round's uri here in the same checkpoint mutation that replaces
+   *  `contextCompaction`; run-finalizer.ts reads this (plus the current
+   *  `contextCompaction.artifact.uri`) into `commitRun`'s
+   *  `additionalArtifactUris` so conversation-store.ts's `artifactUris`
+   *  never drops a still-relevant history artifact just because a later
+   *  compaction round's checkpoint-side pointer moved on. Absent/empty
+   *  whenever compaction has never superseded a prior round. */
+  supersededCompactionArtifactUris?: string[]
+
   /** The in-flight (or most recently completed) budget admission for
    * context compression's own summarizer request — see
    * CompressionBudgetAttempt's docstring. Absent whenever no compression
@@ -727,6 +743,12 @@ function hasValidShape(v: Record<string, unknown>): boolean {
   }
   if (v.finalization !== undefined && !isValidFinalizationLedger(v.finalization)) return false
   if (v.contextCompaction !== undefined && !isValidContextCompaction(v.contextCompaction)) {
+    return false
+  }
+  if (
+    v.supersededCompactionArtifactUris !== undefined &&
+    !isStringArray(v.supersededCompactionArtifactUris)
+  ) {
     return false
   }
   if (

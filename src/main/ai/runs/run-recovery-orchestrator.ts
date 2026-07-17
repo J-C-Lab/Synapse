@@ -1,4 +1,5 @@
 import type { AgentRunEvent } from "@synapse/agent-protocol"
+import type { AgentArtifactStore } from "../artifacts/artifact-types"
 import type { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import type { EstimatorQuarantineStore } from "../estimator-quarantine-store"
 import type { ChatProvider } from "../providers/types"
@@ -8,6 +9,7 @@ import type { AgentRunRecoveryService } from "./agent-run-recovery-service"
 import type { AgentRunStore } from "./agent-run-store"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
 import type { RunEventStore } from "./run-event-store"
+import { releaseArtifactRunResources } from "../artifacts/artifact-retention"
 import { AiToolRegistry } from "../tool-registry"
 import { StaleRevisionError } from "./agent-run-store"
 import { freezeToolAuthority, toolIdentityMatches } from "./authority-snapshot"
@@ -108,6 +110,9 @@ export interface GenericRunContinuationDeps {
    *  run-event-emitter.ts. */
   onEvent?: (event: AgentRunEvent) => void
   estimatorQuarantine?: EstimatorQuarantineStore
+  /** Recoverable artifact backend (Checkpoint B). Omitted in tests that
+   *  don't exercise artifact retention. */
+  artifactStore?: AgentArtifactStore
 }
 
 /** Re-drives an interrupted background-agent or subagent checkpoint to
@@ -267,7 +272,8 @@ export async function continueBackgroundOrSubagentRun(
             {
               runStore: deps.runStore,
               upsertTrace: deps.upsertTrace,
-              releaseResources: async () => {},
+              releaseResources: (plan, context) =>
+                releaseArtifactRunResources(deps.artifactStore, plan, context),
               now,
             },
             rid,
@@ -276,7 +282,10 @@ export async function continueBackgroundOrSubagentRun(
         buildResourceReleasePlan: () => ({
           budgetOperationIds: [],
           skillPackageLeaseIds: [],
-          releaseArtifactRunPin: false,
+          // Every call here comes from finalizeTerminal
+          // (interactive-run-driver.ts) — always a genuine terminal outcome
+          // for this resumed background/subagent run.
+          releaseArtifactRunPin: true,
           adoptionLeaseIds: [],
         }),
         quarantineEstimatorProfile: async (failedCheckpoint) => {

@@ -41,6 +41,10 @@ import {
   DEFAULT_TOOL_RESILIENCE,
 } from "./ai/ai-settings-store"
 import { aiApprovalsFilePath, ApprovalStore } from "./ai/approval-store"
+import {
+  MIN_TOMBSTONE_RETENTION_MS,
+  releaseArtifactRunResources,
+} from "./ai/artifacts/artifact-retention"
 import { artifactsRoot, ArtifactStore } from "./ai/artifacts/artifact-store"
 import { ARTIFACT_FQ_PREFIX, ArtifactToolSource } from "./ai/artifacts/artifact-tool-source"
 import { RootBudgetLedgerStore } from "./ai/budget/root-budget-ledger"
@@ -323,6 +327,36 @@ const agentBudgetStore = new RootBudgetLedgerStore(
   path.join(app.getPath("userData"), "ai", "budget")
 )
 const agentEventStore = new RunEventStore(path.join(app.getPath("userData"), "ai", "events"))
+// Shared across the same set of callers as agentRunStore above — one
+// conversation store and one artifact store per app run. `conversations` is
+// declared before `artifactStore` so the latter's `isArtifactReferenced`
+// closure (Task 21 retention) can reference it directly; the closure is
+// only ever invoked lazily (from ArtifactStore.collectEligible()), long
+// after both are constructed, so declaration order here is cosmetic, not
+// load-bearing.
+const conversations = new ConversationStore(
+  path.join(app.getPath("userData"), "ai", "conversations")
+)
+/** How long a tombstoned conversation's artifact references stay pinned
+ *  before retention may reclaim their bytes (design §"Retention": "Explicit
+ *  conversation deletion schedules associated run artifacts for deletion
+ *  after the conversation's undo/grace window"). The design doc does not
+ *  pin an exact duration for this window (distinct from the *separate*
+ *  "retain an expired-artifact tombstone for at least 30 days" requirement
+ *  once bytes are actually deleted) — reusing the same 30-day floor here is
+ *  a deliberate, conservative choice pending product input; a reviewer
+ *  should double check whether a shorter conversation-undo window is
+ *  actually wanted. */
+const CONVERSATION_ARTIFACT_GRACE_MS = MIN_TOMBSTONE_RETENTION_MS
+const artifactStore = new ArtifactStore(artifactsRoot(app.getPath("userData")), {
+  isArtifactReferenced: async (uri) => {
+    const referenced = await conversations.collectReferencedArtifactUris(
+      Date.now(),
+      CONVERSATION_ARTIFACT_GRACE_MS
+    )
+    return referenced.has(uri)
+  },
+})
 let accountService: MarketplaceAccountService
 let marketplaceTokens: MarketplaceTokenStore | undefined
 // External MCP servers feeding tools to the built-in agent (P5). Held at module
@@ -510,6 +544,7 @@ function registerIpc(): void {
       eventStore: agentEventStore,
       recovery: agentRunRecoveryService,
       continueRun: (runId) => continueAnyRun(runId),
+      artifactStore,
     },
     { isTrustedSender: isTrustedIpcSender }
   )
@@ -915,6 +950,7 @@ function initPluginHost(): PluginHost {
     runStore: agentRunStore,
     budgetStore: agentBudgetStore,
     upsertTrace: (input) => upsertRunTrace(runTraceDir(userDataDir), input),
+    artifactStore,
     workspaceRoots: workspaceRootStore,
     workspaces,
     reservedAccelerators: () => [launcher.getSettings().hotkey],
@@ -1006,7 +1042,9 @@ async function createAgentService(): Promise<AgentService> {
   )
 
   const executionLog = new ExecutionLogStore(executionLogFilePath(userDataDir))
-  const artifactStore = new ArtifactStore(artifactsRoot(userDataDir))
+  // artifactStore is the module-level singleton declared near agentRunStore
+  // (shared with initPluginHost()'s background-agent path) — not
+  // re-constructed here.
   const executionSource = new ExecutionToolHostSource({
     workspaceRoots: workspaceRootStore,
     log: executionLog,
@@ -1050,6 +1088,7 @@ async function createAgentService(): Promise<AgentService> {
         upsertTrace: (input) => upsertRunTrace(runsDir, input),
         recordRun,
         estimatorQuarantine,
+        artifactStore,
       }).run(inp)
     },
   })
@@ -1114,7 +1153,8 @@ async function createAgentService(): Promise<AgentService> {
     }
   })
 
-  const conversations = new ConversationStore(path.join(userDataDir, "ai", "conversations"))
+  // conversations/artifactStore are the module-level singletons declared
+  // near agentRunStore — not re-constructed here.
 
   agentRunRecoveryService = new AgentRunRecoveryService({
     runStore: agentRunStore,
@@ -1125,7 +1165,8 @@ async function createAgentService(): Promise<AgentService> {
           runStore: agentRunStore,
           conversation: conversations,
           upsertTrace: (upsertInput) => upsertRunTrace(runsDir, upsertInput),
-          releaseResources: async () => {},
+          releaseResources: (plan, context) =>
+            releaseArtifactRunResources(artifactStore, plan, context),
           now: Date.now,
         },
         runId,
@@ -1136,7 +1177,10 @@ async function createAgentService(): Promise<AgentService> {
     buildAbandonResourcePlan: () => ({
       budgetOperationIds: [],
       skillPackageLeaseIds: [],
-      releaseArtifactRunPin: false,
+      // abandon() drives the exact same finalization protocol as a normal
+      // completion, with desired status "cancelled" — always a genuine
+      // terminal outcome for this run.
+      releaseArtifactRunPin: true,
       adoptionLeaseIds: [],
     }),
     reconcileCorruptRun: (runId) => agentBudgetStore.reconcileAbandonedRun(runId),
@@ -1253,6 +1297,7 @@ async function createAgentService(): Promise<AgentService> {
         input: ctx.input,
       }),
     conversations,
+    artifactStore,
     workspaces: new WorkspaceStore(path.join(userDataDir, "ai")),
     providers: defaultProviderCatalog(),
     settings: aiSettings,
@@ -1321,6 +1366,7 @@ async function createAgentService(): Promise<AgentService> {
               tools: resilientToolHost,
               onEvent: broadcastRunEvent,
               estimatorQuarantine,
+              artifactStore,
               buildProvider: async (providerId) => {
                 const apiKey = await credentials.get(providerId)
                 if (!apiKey) throw new AgentMissingKeyError()

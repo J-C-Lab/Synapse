@@ -844,6 +844,119 @@ describe("artifactStore.collectEligible", () => {
   })
 })
 
+describe("artifactStore.releaseRunPin / collectEligible — retention (Task 21)", () => {
+  it("does not delete a non-terminal run's artifact even when unreferenced", async () => {
+    const store = new ArtifactStore(dir, {
+      statDiskSpace: ampleDisk,
+      isArtifactReferenced: async () => false,
+    })
+    await store.capture(bytesOf("keep me"), metadata(), noopProducer())
+    // releaseRunPin never called for run-1 — it stays non-terminal/pinned.
+    const result = await store.collectEligible()
+    expect(result.deletedArtifacts).toBe(0)
+    expect(result.deletedBytes).toBe(0)
+  })
+
+  it("does not delete a terminal run's artifact that is still referenced", async () => {
+    const store = new ArtifactStore(dir, {
+      statDiskSpace: ampleDisk,
+      isArtifactReferenced: async () => true,
+    })
+    const ref = await store.capture(bytesOf("still referenced"), metadata(), noopProducer())
+    await store.releaseRunPin("run-1", "fin-1")
+    const result = await store.collectEligible()
+    expect(result.deletedArtifacts).toBe(0)
+    expect(result.deletedBytes).toBe(0)
+    // Bytes are genuinely still there — reads keep working.
+    const read = await store.read(ref, { start: 0 }, caller())
+    expect(Buffer.from(read).toString("utf-8")).toBe("still referenced")
+  })
+
+  it("deletes a terminal, unreferenced run's artifact and records a tombstone", async () => {
+    const store = new ArtifactStore(dir, {
+      statDiskSpace: ampleDisk,
+      isArtifactReferenced: async () => false,
+    })
+    const ref = await store.capture(bytesOf("goodbye"), metadata(), noopProducer())
+    await store.releaseRunPin("run-1", "fin-1")
+
+    const result = await store.collectEligible()
+    expect(result.deletedArtifacts).toBe(1)
+    expect(result.deletedBytes).toBe(ref.capturedBytes)
+
+    // A subsequent stat/read/resolve against the deleted artifact reports
+    // artifact_expired (with the tombstone attached), never artifact_missing.
+    await expect(store.stat(ref, caller())).rejects.toMatchObject({ code: "artifact_expired" })
+    let caught: unknown
+    try {
+      await store.stat(ref, caller())
+    } catch (err) {
+      caught = err
+    }
+    expect((caught as { tombstone?: unknown }).tombstone).toMatchObject({
+      uri: ref.uri,
+      sha256: ref.sha256,
+      capturedBytes: ref.capturedBytes,
+    })
+    await expect(store.read(ref, { start: 0 }, caller())).rejects.toMatchObject({
+      code: "artifact_expired",
+    })
+    await expect(store.resolve("run-1", ref.artifactId, caller())).rejects.toMatchObject({
+      code: "artifact_expired",
+    })
+  })
+
+  it("never deletes anything when isArtifactReferenced is not wired at all", async () => {
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    await store.capture(bytesOf("no reference predicate wired"), metadata(), noopProducer())
+    await store.releaseRunPin("run-1", "fin-1")
+    const result = await store.collectEligible()
+    expect(result.deletedArtifacts).toBe(0)
+    expect(result.deletedBytes).toBe(0)
+  })
+
+  it("an unrelated invalid/never-captured artifact id still reports artifact_missing, not artifact_expired", async () => {
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    await expect(
+      store.resolve("run-never-existed", "artifact-never-existed", caller())
+    ).rejects.toMatchObject({ code: "artifact_missing" })
+  })
+
+  it("quota pressure from a referenced artifact denies new capture rather than GC breaking history", async () => {
+    const manifestReserve = estimateManifestReserveBytes(metadata())
+    const limits = {
+      perArtifactBytes: 10,
+      // Room for exactly one 10-byte payload plus its manifest — a second
+      // capture's manifest headroom alone cannot fit once the first commits.
+      perRunBytes: manifestReserve + 10,
+      globalBytes: 1_000_000,
+      minFreeBytes: 0,
+      minFreeFraction: 0,
+      manifestReserveBytes: 0,
+    }
+    const store = new ArtifactStore(dir, {
+      statDiskSpace: ampleDisk,
+      quotaLimits: limits,
+      isArtifactReferenced: async () => true, // this run's artifact is still referenced
+    })
+    const ref = await store.capture(bytesOf("0123456789"), metadata(), noopProducer())
+    await store.releaseRunPin("run-1", "fin-1")
+
+    // GC cannot reclaim the referenced artifact's quota...
+    const gc = await store.collectEligible()
+    expect(gc.deletedArtifacts).toBe(0)
+
+    // ...so a fresh capture that needs room is denied outright (never
+    // silently deleting the referenced artifact to make space).
+    await expect(store.capture(bytesOf("more bytes"), metadata(), noopProducer())).rejects.toThrow(
+      /run-limit exhausted/
+    )
+    // The referenced artifact's bytes are still fully intact.
+    const stillThere = await store.read(ref, { start: 0 }, caller())
+    expect(Buffer.from(stillThere).toString("utf-8")).toBe("0123456789")
+  })
+})
+
 describe("artifactReadError", () => {
   it("carries a stable, closed error code", () => {
     const err = new ArtifactReadError("artifact_missing", "nope")

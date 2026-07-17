@@ -212,7 +212,7 @@ function makeDeps(
         {
           runStore,
           upsertTrace: (i) => upsertRunTrace(tracesDir, i),
-          releaseResources: async () => {},
+          releaseResources: async () => ({ artifactRunPinReleased: false }),
           now: () => 2000,
         },
         runId,

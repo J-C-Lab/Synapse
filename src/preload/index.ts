@@ -211,6 +211,10 @@ const electronAPI = {
   resumeRun: (runId: string, decision?: { kind: "retry" | "mark_failed" }) =>
     ipcRenderer.invoke("runs:resume", { runId, decision }),
   abandonRun: (runId: string) => ipcRenderer.invoke("runs:abandon", runId),
+  getArtifactStatus: (uri: string) => ipcRenderer.invoke("runs:getArtifactStatus", uri),
+  readArtifactPreview: (uri: string, range?: { start?: number; end?: number }) =>
+    ipcRenderer.invoke("runs:readArtifactPreview", { uri, range }),
+  collectArtifactGarbage: () => ipcRenderer.invoke("runs:collectArtifactGarbage"),
   onRunEvent: (handler: (event: unknown) => void): (() => void) => {
     const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
     ipcRenderer.on("runs:event", listener)

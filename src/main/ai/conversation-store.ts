@@ -315,6 +315,17 @@ export class ConversationStore {
     deletionEpoch: number
     finalizationId: string
     messages: DurableChatMessage[]
+    /** Extra artifact URIs to pin into `artifactUris` beyond what
+     *  `deriveArtifactUris(messages)` finds by scanning message content —
+     *  closes the history-artifact gap (Task 21): a context-compaction
+     *  round's `fullArtifact` lives at `checkpoint.contextCompaction`, a
+     *  field entirely separate from `messages`, and a superseded round's
+     *  artifact isn't referenced by the live checkpoint at all once a later
+     *  round replaces it. Callers (run-finalizer.ts) pass the run's current
+     *  plus every superseded compaction artifact uri here so this
+     *  conversation's canonical `artifactUris` never drops a still-relevant
+     *  history artifact. */
+    additionalArtifactUris?: readonly string[]
   }): Promise<{ contentRevision: number }> {
     return this.withLock(input.conversationId, async () => {
       const now = this.now()
@@ -351,7 +362,10 @@ export class ConversationStore {
         ...record,
         contentRevision,
         messages: input.messages,
-        artifactUris: deriveArtifactUris(input.messages),
+        artifactUris: mergeArtifactUris(
+          deriveArtifactUris(input.messages),
+          input.additionalArtifactUris
+        ),
         recordRevision: record.recordRevision + 1,
         activeRun: {
           ...record.activeRun!,
@@ -417,6 +431,47 @@ export class ConversationStore {
       }
       await this.writeRecord(tombstoneOf(record, now))
     })
+  }
+
+  // --- artifact retention support ---------------------------------------
+
+  /**
+   * Every artifact URI still pinned by a canonical conversation reference —
+   * an active conversation's own `artifactUris`, plus a tombstoned
+   * conversation's `artifactUris` for as long as it remains within
+   * `tombstoneGraceMs` of its deletion (design §"Retention": "Explicit
+   * conversation deletion schedules associated run artifacts for deletion
+   * after the conversation's undo/grace window; its tombstone continues to
+   * pin the URIs during that window"). Retention (artifact-retention.ts /
+   * ArtifactStore.collectEligible via its injected `isArtifactReferenced`)
+   * calls this fresh immediately before deleting any bytes — the record is
+   * canonical; nothing here is a best-effort cached index.
+   */
+  async collectReferencedArtifactUris(now: number, tombstoneGraceMs: number): Promise<Set<string>> {
+    let files: string[]
+    try {
+      files = await fs.readdir(this.dir)
+    } catch (err) {
+      if (isFileNotFound(err)) return new Set()
+      throw err
+    }
+
+    const uris = new Set<string>()
+    for (const file of files) {
+      if (!file.endsWith(".json")) continue
+      const id = file.slice(0, -".json".length)
+      if (!isSafeId(id)) continue
+      const record = await this.withLock(id, () => this.readForMutation(id))
+      if (!record) continue
+      if (record.state === "active") {
+        for (const uri of record.artifactUris) uris.add(uri)
+        continue
+      }
+      if (record.deletedAt !== undefined && now - record.deletedAt < tombstoneGraceMs) {
+        for (const uri of record.artifactUris) uris.add(uri)
+      }
+    }
+    return uris
   }
 
   // --- internals --------------------------------------------------------
@@ -596,4 +651,8 @@ function safeId(id: string): string {
 
 function isFileNotFound(err: unknown): boolean {
   return Boolean(err && typeof err === "object" && (err as { code?: string }).code === "ENOENT")
+}
+
+function mergeArtifactUris(derived: readonly string[], additional?: readonly string[]): string[] {
+  return [...new Set([...derived, ...(additional ?? [])])].sort()
 }
