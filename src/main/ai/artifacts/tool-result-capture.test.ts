@@ -174,6 +174,9 @@ describe("captureToolResultText — offload failure", () => {
       },
       stat: async (ref: AgentArtifactRef) => ref,
       read: async () => new Uint8Array(0),
+      resolve: async (): Promise<AgentArtifactRef> => {
+        throw new Error("resolve should not be called by captureToolResultText")
+      },
       releaseRunPin: async () => {},
       collectEligible: async () => ({
         reconciledReservations: 0,
@@ -205,6 +208,9 @@ describe("captureToolResultText — offload failure", () => {
       },
       stat: async (ref: AgentArtifactRef) => ref,
       read: async () => new Uint8Array(0),
+      resolve: async (): Promise<AgentArtifactRef> => {
+        throw new Error("resolve should not be called by captureToolResultText")
+      },
       releaseRunPin: async () => {},
       collectEligible: async () => ({
         reconciledReservations: 0,

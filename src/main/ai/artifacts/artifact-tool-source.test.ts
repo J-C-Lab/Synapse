@@ -1,5 +1,4 @@
 import type { ToolCaller } from "@synapse/plugin-sdk"
-import type { AgentRunCheckpointV1 } from "../runs/checkpoint-schema"
 import type { ArtifactOwnerContext } from "./artifact-types"
 import { Buffer } from "node:buffer"
 import { promises as fs } from "node:fs"
@@ -10,7 +9,6 @@ import { ArtifactStore } from "./artifact-store"
 import {
   ARTIFACT_FQ_PREFIX,
   ArtifactToolSource,
-  findArtifactRefInCheckpoint,
   MAX_ARTIFACT_READ_BYTES,
   parseArtifactUri,
   READ_ARTIFACT_FQ,
@@ -49,38 +47,6 @@ function caller(overrides: Partial<ToolCaller> = {}): ToolCaller {
   return { kind: "agent", runId: "run-1", ...overrides }
 }
 
-/** A checkpoint fixture minimal enough for findArtifactRefInCheckpoint's own
- *  needs (only `messages` is read) — cast rather than filled out in full,
- *  matching this file's narrow concern (resolving a uri to a ref), not the
- *  full checkpoint shape tool-batch-runner.test.ts already covers. */
-function fakeCheckpoint(
-  toolResultBlocks: Array<{ toolUseId: string; artifact?: unknown }>
-): AgentRunCheckpointV1 {
-  return {
-    messages: [
-      {
-        messageId: "carrier-1",
-        message: {
-          role: "user",
-          content: toolResultBlocks.map((b) => ({
-            type: "tool_result",
-            toolUseId: b.toolUseId,
-            content: "preview",
-            isError: false,
-            artifact: b.artifact,
-          })),
-        },
-      },
-    ],
-  } as unknown as AgentRunCheckpointV1
-}
-
-function checkpointLookup(checkpoints: Record<string, AgentRunCheckpointV1 | undefined>) {
-  return {
-    loadCheckpoint: async (runId: string) => checkpoints[runId],
-  }
-}
-
 describe("parseArtifactUri", () => {
   it("extracts runId/artifactId from a well-formed uri", () => {
     expect(parseArtifactUri("artifact://run/run-1/artifact-1")).toEqual({
@@ -98,10 +64,7 @@ describe("parseArtifactUri", () => {
 
 describe("artifactToolSource — ownsTool / listTools", () => {
   it("owns every artifact: fqName and lists exactly read_artifact, read-only", () => {
-    const source = new ArtifactToolSource({
-      store: makeStore(),
-      checkpoints: checkpointLookup({}),
-    })
+    const source = new ArtifactToolSource({ store: makeStore() })
     expect(source.ownsTool(READ_ARTIFACT_FQ)).toBe(true)
     expect(source.ownsTool("artifact:core/anything")).toBe(true)
     expect(source.ownsTool("execution:core/read_file")).toBe(false)
@@ -124,11 +87,7 @@ describe("read_artifact — successful reads", () => {
       { runId: "run-1", owner: owner(), kind: "tool-result", mediaType: "text/plain" },
       { abort: () => {} }
     )
-    const checkpoint = fakeCheckpoint([{ toolUseId: "t1", artifact: ref }])
-    const source = new ArtifactToolSource({
-      store,
-      checkpoints: checkpointLookup({ "run-1": checkpoint }),
-    })
+    const source = new ArtifactToolSource({ store })
 
     const result = await source.invokeTool(
       READ_ARTIFACT_FQ,
@@ -154,12 +113,7 @@ describe("read_artifact — successful reads", () => {
       { runId: "run-1", owner: owner(), kind: "tool-result", mediaType: "text/plain" },
       { abort: () => {} }
     )
-    const source = new ArtifactToolSource({
-      store,
-      checkpoints: checkpointLookup({
-        "run-1": fakeCheckpoint([{ toolUseId: "t1", artifact: ref }]),
-      }),
-    })
+    const source = new ArtifactToolSource({ store })
 
     const result = await source.invokeTool(READ_ARTIFACT_FQ, { uri: ref.uri }, { caller: caller() })
     const payload = JSON.parse((result.content[0] as { text: string }).text)
@@ -175,12 +129,7 @@ describe("read_artifact — successful reads", () => {
       { runId: "run-1", owner: owner(), kind: "tool-result", mediaType: "text/plain" },
       { abort: () => {} }
     )
-    const source = new ArtifactToolSource({
-      store,
-      checkpoints: checkpointLookup({
-        "run-1": fakeCheckpoint([{ toolUseId: "t1", artifact: ref }]),
-      }),
-    })
+    const source = new ArtifactToolSource({ store })
 
     const result = await source.invokeTool(
       READ_ARTIFACT_FQ,
@@ -192,6 +141,35 @@ describe("read_artifact — successful reads", () => {
     expect(payload.lineStart).toBe(1)
     expect(payload.lineEnd).toBe(3)
     expect(payload.allBytesScanned).toBe(true)
+  })
+
+  it("resolves and reads a command-stdout-style artifact captured with no checkpoint involved (Task 18 interop)", async () => {
+    // run_command (execution-tool-host.ts, Task 18) never touches
+    // ChatContentBlock.tool_result.artifact — it embeds its stdout/stderr
+    // artifact uris as plain JSON text inside its own bespoke payload. This
+    // is exactly that shape: a raw store.capture() with kind
+    // "command-stdout", nothing durably referencing it from any checkpoint
+    // message. read_artifact must still be able to resolve and read it.
+    const store = makeStore()
+    const stdout = "$ pnpm build\n...\nbuild succeeded\n"
+    const ref = await store.capture(
+      new TextEncoder().encode(stdout),
+      {
+        runId: "run-1",
+        owner: owner(),
+        kind: "command-stdout",
+        mediaType: "text/plain; charset=utf-8",
+      },
+      { abort: () => {} }
+    )
+    const source = new ArtifactToolSource({ store })
+
+    const result = await source.invokeTool(READ_ARTIFACT_FQ, { uri: ref.uri }, { caller: caller() })
+
+    expect(result.isError).toBeUndefined()
+    const payload = JSON.parse((result.content[0] as { text: string }).text)
+    expect(payload.kind).toBe("command-stdout")
+    expect(payload.content).toBe(stdout)
   })
 })
 
@@ -209,12 +187,7 @@ describe("read_artifact — binary content", () => {
       },
       { abort: () => {} }
     )
-    const source = new ArtifactToolSource({
-      store,
-      checkpoints: checkpointLookup({
-        "run-1": fakeCheckpoint([{ toolUseId: "t1", artifact: ref }]),
-      }),
-    })
+    const source = new ArtifactToolSource({ store })
 
     const result = await source.invokeTool(READ_ARTIFACT_FQ, { uri: ref.uri }, { caller: caller() })
     const payload = JSON.parse((result.content[0] as { text: string }).text)
@@ -234,12 +207,7 @@ describe("read_artifact — range validation", () => {
       { runId: "run-1", owner: owner(), kind: "tool-result", mediaType: "text/plain" },
       { abort: () => {} }
     )
-    source = new ArtifactToolSource({
-      store,
-      checkpoints: checkpointLookup({
-        "run-1": fakeCheckpoint([{ toolUseId: "t1", artifact: ref }]),
-      }),
-    })
+    source = new ArtifactToolSource({ store })
   })
 
   it("rejects a start beyond the artifact's captured length", async () => {
@@ -282,7 +250,7 @@ describe("read_artifact — range validation", () => {
     expect(result.isError).toBe(true)
   })
 
-  it("rejects a uri with no known checkpoint entry as artifact_missing", async () => {
+  it("rejects a uri with no captured artifact as artifact_missing", async () => {
     const result = await source.invokeTool(
       READ_ARTIFACT_FQ,
       { uri: artifactUri("run-1", "never-captured") },
@@ -316,11 +284,7 @@ describe("read_artifact — access control", () => {
       },
       { abort: () => {} }
     )
-    const checkpoint = fakeCheckpoint([{ toolUseId: "t1", artifact: ref }])
-    const source = new ArtifactToolSource({
-      store,
-      checkpoints: checkpointLookup({ "victim-run": checkpoint }),
-    })
+    const source = new ArtifactToolSource({ store })
 
     // An unrelated run trying to read it — no parent/child edge, no
     // delegation — must be rejected by the store's own access check.
@@ -352,11 +316,7 @@ describe("read_artifact — access control", () => {
       },
       { abort: () => {} }
     )
-    const checkpoint = fakeCheckpoint([{ toolUseId: "t1", artifact: ref }])
-    const source = new ArtifactToolSource({
-      store,
-      checkpoints: checkpointLookup({ "child-run": checkpoint }),
-    })
+    const source = new ArtifactToolSource({ store })
 
     const result = await source.invokeTool(
       READ_ARTIFACT_FQ,
@@ -385,12 +345,7 @@ describe("read_artifact — access control", () => {
       { runId: "child-a", owner: childOwner, kind: "tool-result", mediaType: "text/plain" },
       { abort: () => {} }
     )
-    const source = new ArtifactToolSource({
-      store,
-      checkpoints: checkpointLookup({
-        "child-a": fakeCheckpoint([{ toolUseId: "t1", artifact: ref }]),
-      }),
-    })
+    const source = new ArtifactToolSource({ store })
 
     const result = await source.invokeTool(
       READ_ARTIFACT_FQ,
@@ -412,18 +367,13 @@ describe("read_artifact — restart reads", () => {
       { runId: "run-1", owner: owner(), kind: "tool-result", mediaType: "text/plain" },
       { abort: () => {} }
     )
-    const checkpoint = fakeCheckpoint([{ toolUseId: "t1", artifact: ref }])
 
     // Simulate a process restart: fresh ArtifactStore instance (no shared
     // in-memory state) over the same on-disk directory, fresh
-    // ArtifactToolSource, checkpoint re-"loaded" from what was durably
-    // persisted (a plain object here, exactly as a real AgentRunStore.load
-    // would hand back after re-reading its JSON file).
+    // ArtifactToolSource. No checkpoint/message-history fixture is involved
+    // at all — resolve() reads the manifest straight off disk by id.
     const restartedStore = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
-    const restartedSource = new ArtifactToolSource({
-      store: restartedStore,
-      checkpoints: checkpointLookup({ "run-1": checkpoint }),
-    })
+    const restartedSource = new ArtifactToolSource({ store: restartedStore })
 
     const result = await restartedSource.invokeTool(
       READ_ARTIFACT_FQ,
@@ -433,22 +383,5 @@ describe("read_artifact — restart reads", () => {
     expect(result.isError).toBeUndefined()
     const payload = JSON.parse((result.content[0] as { text: string }).text)
     expect(payload.content).toBe(text)
-  })
-})
-
-describe("findArtifactRefInCheckpoint", () => {
-  it("finds the ref by uri among multiple tool_result blocks", () => {
-    const refA = { uri: artifactUri("run-1", "a"), kind: "tool-result" } as never
-    const refB = { uri: artifactUri("run-1", "b"), kind: "tool-result" } as never
-    const checkpoint = fakeCheckpoint([
-      { toolUseId: "t1", artifact: refA },
-      { toolUseId: "t2", artifact: refB },
-    ])
-    expect(findArtifactRefInCheckpoint(checkpoint, artifactUri("run-1", "b"))).toBe(refB)
-  })
-
-  it("returns undefined when no block carries a matching artifact", () => {
-    const checkpoint = fakeCheckpoint([{ toolUseId: "t1" }])
-    expect(findArtifactRefInCheckpoint(checkpoint, artifactUri("run-1", "x"))).toBeUndefined()
   })
 })

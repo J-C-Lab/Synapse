@@ -191,8 +191,17 @@ export interface ArtifactProducer {
   signal?: AbortSignal
 }
 
-/** The narrow interface design §"Recoverable artifact backend" specifies.
- *  artifact-store.ts's class implements this exactly. */
+/** The narrow interface design §"Recoverable artifact backend" specifies,
+ *  plus `resolve` (Task 19 follow-up): a by-id lookup for callers — like
+ *  read_artifact — that only ever have a bare `runId`/`artifactId` (parsed
+ *  from a uri) and no caller-supplied ref to cross-check. `stat`/`read`
+ *  require a full ref because their caller-supplied `sha256` is checked as
+ *  a forgery/staleness guard against the freshly loaded, authoritative
+ *  on-disk manifest; `resolve` skips that guard entirely (there is nothing
+ *  to forge when the caller never supplied a ref in the first place) and
+ *  simply returns the authoritative on-disk ref, still gated by the exact
+ *  same `checkArtifactAccess` check `stat`/`read` use. artifact-store.ts's
+ *  class implements this exactly. */
 export interface AgentArtifactStore {
   capture: (
     input: AsyncIterable<Uint8Array> | Uint8Array,
@@ -201,6 +210,13 @@ export interface AgentArtifactStore {
   ) => Promise<AgentArtifactRef>
   stat: (ref: AgentArtifactRef, caller: ArtifactCaller) => Promise<AgentArtifactRef>
   read: (ref: AgentArtifactRef, range: ArtifactRange, caller: ArtifactCaller) => Promise<Uint8Array>
+  /** Looks up an artifact by id alone (no caller-supplied ref to trust or
+   *  cross-check) and returns the authoritative on-disk ref, access
+   *  -checked exactly like `stat`/`read`. Throws the same closed
+   *  `ArtifactReadError` codes: `artifact_missing` (unknown/invalid id),
+   *  `artifact_corrupt` (unreadable/malformed manifest), `artifact_forbidden`
+   *  (access denied). */
+  resolve: (runId: string, artifactId: string, caller: ArtifactCaller) => Promise<AgentArtifactRef>
   releaseRunPin: (runId: string, finalizationId: string) => Promise<void>
   collectEligible: () => Promise<ArtifactGcResult>
 }

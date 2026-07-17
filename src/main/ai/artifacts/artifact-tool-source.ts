@@ -2,7 +2,6 @@ import type { JsonSchema } from "@synapse/plugin-manifest"
 import type { ToolCaller, ToolResult } from "@synapse/plugin-sdk"
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../../plugins/types"
 import type { ToolHostSource } from "../composite-tool-host"
-import type { AgentRunCheckpointV1 } from "../runs/checkpoint-schema"
 import type {
   AgentArtifactRef,
   AgentArtifactStore,
@@ -20,24 +19,27 @@ import { ArtifactReadError } from "./artifact-types"
 // every other tool.
 //
 // The one subtlety this module exists to solve: the model only ever sees a
-// bare `artifact://run/<runId>/<artifactId>` string. AgentArtifactStore's
-// `stat`/`read` take a full `AgentArtifactRef` and cross-check EVERY field
-// against the on-disk manifest — including `sha256` — before trusting
-// anything (see artifact-store.ts's loadAndAuthorize: `manifest.ref.sha256
-// !== ref.sha256` is a hard rejection, not a re-derived/ignored field). A
-// ref reconstructed from the bare uri alone can supply a correct
-// runId/artifactId/uri but has no way to know the real sha256, so it can
-// never pass that check. The fix used here: the full ref (uri, kind,
-// mediaType, capturedBytes, complete, truncationReason, sha256, ...) is
-// already durably persisted by tool-batch-runner.ts's materializeBatch onto
-// `ChatContentBlock.tool_result.artifact` the moment an offloaded result is
-// captured — so this source resolves a uri back to its true ref by scanning
-// the owning run's own checkpoint for it, via an injected `checkpoints`
-// lookup, rather than ever fabricating a ref. This is restart-safe (the
-// checkpoint is durable) and adds no new trust: `store.stat()`/`store.read()`
-// still perform their own full manifest cross-check and access-control pass
-// on whatever ref is found, so a checkpoint scan can only ever find the
-// *real* ref for a *real* artifact — it grants no authority by itself.
+// bare `artifact://run/<runId>/<artifactId>` string, never a full ref.
+// `AgentArtifactStore.stat()`/`read()` take a full `AgentArtifactRef` and
+// cross-check EVERY field against the on-disk manifest — including
+// `sha256` — as a forgery/staleness guard against a caller-supplied ref;
+// a ref rebuilt from a bare uri has no way to know the real sha256, so it
+// can never pass that guard.
+//
+// `AgentArtifactStore.resolve(runId, artifactId, caller)` is the fix
+// (artifact-store.ts, Task 19 follow-up): it looks the manifest up by id
+// alone — no caller-supplied ref to trust or cross-check — and returns the
+// authoritative on-disk ref (real sha256 included), still gated by the same
+// `checkArtifactAccess` check `stat`/`read` run. This works for every
+// artifact ever captured, regardless of which tool captured it or how (or
+// whether) its uri was ever echoed into a ChatContentBlock — unlike an
+// earlier version of this file that scanned the owning run's checkpoint
+// message history, `resolve` never depends on live checkpoint content
+// still existing for a given call, so it is unaffected by e.g. Task 18's
+// run_command (which never touches ChatContentBlock.tool_result.artifact
+// at all — its stdout/stderr artifact uris live only in run_command's own
+// bespoke JSON payload text) or a future context-compression pass evicting
+// old messages.
 
 export const ARTIFACT_FQ_PREFIX = "artifact:"
 const ARTIFACT_PLUGIN_ID = "artifact:core"
@@ -54,46 +56,18 @@ export const MAX_ARTIFACT_READ_BYTES = 200_000
  *  omitted. */
 const DEFAULT_LINE_WINDOW = 200
 
-/** Resolves the run whose checkpoint may contain the full, durably-persisted
- *  ref for a given uri. Returns `undefined` for any failure (unknown run,
- *  corrupt checkpoint, missing run store) — read_artifact reports that
- *  uniformly as "unknown artifact", never distinguishing "run gone" from
- *  "artifact never existed" to the model. */
-export interface ArtifactCheckpointLookup {
-  loadCheckpoint: (runId: string) => Promise<AgentRunCheckpointV1 | undefined>
-}
-
 export interface ArtifactToolSourceOptions {
   store: AgentArtifactStore
-  checkpoints: ArtifactCheckpointLookup
 }
 
 /** Parses the one URI shape every artifact ref uses. Charset-restricted to
  *  the same `[\w-]{1,128}` id grammar artifact-store.ts enforces, so a
  *  malformed/injected uri is rejected here before it ever reaches the
- *  checkpoint lookup or the store. */
+ *  store. */
 export function parseArtifactUri(uri: string): { runId: string; artifactId: string } | undefined {
   const match = /^artifact:\/\/run\/([\w-]{1,128})\/([\w-]{1,128})$/.exec(uri)
   if (!match) return undefined
   return { runId: match[1]!, artifactId: match[2]! }
-}
-
-/** Scans a checkpoint's message history for the tool_result block that
- *  carries this exact uri, returning its full (host-only) ref. Every
- *  offloaded tool result's ref is written here by materializeBatch at the
- *  same time the bounded summary is written to PersistedToolResult, so this
- *  is the durable, restart-safe source of truth read_artifact resolves
- *  against. */
-export function findArtifactRefInCheckpoint(
-  checkpoint: AgentRunCheckpointV1,
-  uri: string
-): AgentArtifactRef | undefined {
-  for (const durable of checkpoint.messages) {
-    for (const block of durable.message.content) {
-      if (block.type === "tool_result" && block.artifact?.uri === uri) return block.artifact
-    }
-  }
-  return undefined
 }
 
 const INPUT_SCHEMA: JsonSchema = {
@@ -169,17 +143,17 @@ export class ArtifactToolSource implements ToolHostSource {
     const parsed = parseInput(input)
     if (!parsed.ok) return errorResult(parsed.reason)
 
-    if (!parseArtifactUri(parsed.value.uri)) {
+    const uriParts = parseArtifactUri(parsed.value.uri)
+    if (!uriParts) {
       return errorResult(`range_invalid: malformed artifact uri: ${parsed.value.uri}`)
     }
 
-    const resolved = await this.resolveRef(parsed.value.uri)
-    if (!resolved) {
-      return errorResult(`artifact_missing: no known artifact for uri ${parsed.value.uri}`)
-    }
-
     try {
-      const stat = await this.options.store.stat(resolved, artifactCaller)
+      const stat = await this.options.store.resolve(
+        uriParts.runId,
+        uriParts.artifactId,
+        artifactCaller
+      )
       if (parsed.value.rangeKind === "lines") {
         return await this.readLines(stat, artifactCaller, parsed.value)
       }
@@ -270,14 +244,6 @@ export class ArtifactToolSource implements ToolHostSource {
       encoding: "utf-8",
       content: lines.slice(start, end).join("\n"),
     })
-  }
-
-  private async resolveRef(uri: string): Promise<AgentArtifactRef | undefined> {
-    const parsed = parseArtifactUri(uri)
-    if (!parsed) return undefined
-    const checkpoint = await this.options.checkpoints.loadCheckpoint(parsed.runId)
-    if (!checkpoint) return undefined
-    return findArtifactRefInCheckpoint(checkpoint, uri)
   }
 }
 

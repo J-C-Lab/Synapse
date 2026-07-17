@@ -1018,26 +1018,14 @@ async function createAgentService(): Promise<AgentService> {
   const executionApprovalResolver = new ExecutionApprovalResolver({ log: executionLog })
 
   // Host-owned, read-only read_artifact (Task 19). Resolves a model-supplied
-  // artifact:// uri back to its full ref by scanning the OWNING run's own
-  // checkpoint (never the caller's) for the tool_result block that carries
-  // it — durable and restart-safe, since that ref (with its real sha256) was
-  // written there by tool-batch-runner.ts's materializeBatch the moment the
-  // result was captured. A missing/corrupt/not-yet-existing run's checkpoint
-  // just resolves to "no known artifact", the same outcome read_artifact
-  // reports for any other unresolvable uri.
-  const artifactSource = new ArtifactToolSource({
-    store: artifactStore,
-    checkpoints: {
-      loadCheckpoint: async (runId) => {
-        try {
-          const result = await agentRunStore.load(runId)
-          return result.ok ? result.checkpoint : undefined
-        } catch {
-          return undefined
-        }
-      },
-    },
-  })
+  // artifact:// uri directly via artifactStore.resolve(runId, artifactId,
+  // caller) — a by-id lookup (Task 19 follow-up) that needs no caller
+  // -supplied ref and no checkpoint involvement at all, so it works
+  // uniformly for every artifact ever captured (including run_command's
+  // Task-18 stdout/stderr captures, which never touch
+  // ChatContentBlock.tool_result.artifact) and stays correct even once a
+  // future context-compression pass evicts old checkpoint messages.
+  const artifactSource = new ArtifactToolSource({ store: artifactStore })
 
   const runsDir = runTraceDir(userDataDir)
   const recordRun = (trace: RunTrace): void => persistRunTrace(runsDir, trace)

@@ -972,6 +972,7 @@ describe("advanceToolBatch — artifact offload (Task 19)", () => {
       },
       stat: (...args) => realStore.stat(...args),
       read: (...args) => realStore.read(...args),
+      resolve: (...args) => realStore.resolve(...args),
       releaseRunPin: (...args) => realStore.releaseRunPin(...args),
       collectEligible: (...args) => realStore.collectEligible(...args),
     }

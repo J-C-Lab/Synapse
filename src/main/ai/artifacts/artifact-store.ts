@@ -544,6 +544,55 @@ export class ArtifactStore implements AgentArtifactStore {
     return removed
   }
 
+  /** Loads and shape-validates the on-disk manifest for `runId`/`artifactId`
+   *  by id alone — no caller-supplied ref to cross-check, since that step
+   *  differs between `loadAndAuthorize` (has one) and `resolve` (doesn't).
+   *  Throws the same closed `ArtifactReadError` codes either caller already
+   *  surfaces: `artifact_missing` for an unknown/invalid id,
+   *  `artifact_corrupt` for unreadable/malformed JSON. Never checks access —
+   *  every caller of this helper runs `checkArtifactAccess` itself
+   *  immediately after, against whatever `caller` context it has. */
+  private async loadManifestById(runId: string, artifactId: string): Promise<ArtifactManifestV1> {
+    if (!isSafeId(runId) || !isSafeId(artifactId)) {
+      throw new ArtifactReadError(
+        "artifact_missing",
+        `unknown artifact: run/${runId}/${artifactId}`
+      )
+    }
+    const manifestPath = await this.resolveContainedPath(runId, artifactId, MANIFEST_FILE)
+    let raw: unknown
+    try {
+      raw = JSON.parse(await fs.readFile(manifestPath, "utf-8"))
+    } catch (err) {
+      throw new ArtifactReadError(
+        "artifact_corrupt",
+        `artifact manifest for run/${runId}/${artifactId} is corrupt: ${(err as Error).message}`
+      )
+    }
+    if (!isValidManifest(raw)) {
+      throw new ArtifactReadError(
+        "artifact_corrupt",
+        `artifact manifest for run/${runId}/${artifactId} is malformed`
+      )
+    }
+    return raw
+  }
+
+  async resolve(
+    runId: string,
+    artifactId: string,
+    caller: ArtifactCaller
+  ): Promise<AgentArtifactRef> {
+    const manifest = await this.loadManifestById(runId, artifactId)
+    if (!checkArtifactAccess(manifest.owner, manifest.delegateToRunIds, caller)) {
+      throw new ArtifactReadError(
+        "artifact_forbidden",
+        `caller run ${caller.runId} may not read artifact ${manifest.ref.uri}`
+      )
+    }
+    return manifest.ref
+  }
+
   private async loadAndAuthorize(
     ref: AgentArtifactRef,
     caller: ArtifactCaller
@@ -555,23 +604,7 @@ export class ArtifactStore implements AgentArtifactStore {
       throw new ArtifactReadError("artifact_forbidden", `forged artifact uri: ${ref.uri}`)
     }
 
-    const manifestPath = await this.resolveContainedPath(ref.runId, ref.artifactId, MANIFEST_FILE)
-    let raw: unknown
-    try {
-      raw = JSON.parse(await fs.readFile(manifestPath, "utf-8"))
-    } catch (err) {
-      throw new ArtifactReadError(
-        "artifact_corrupt",
-        `artifact manifest for ${ref.uri} is corrupt: ${(err as Error).message}`
-      )
-    }
-    if (!isValidManifest(raw)) {
-      throw new ArtifactReadError(
-        "artifact_corrupt",
-        `artifact manifest for ${ref.uri} is malformed`
-      )
-    }
-    const manifest = raw
+    const manifest = await this.loadManifestById(ref.runId, ref.artifactId)
 
     // Never trust the caller-supplied ref for anything security-relevant —
     // only the freshly loaded, on-disk manifest is authoritative. A ref

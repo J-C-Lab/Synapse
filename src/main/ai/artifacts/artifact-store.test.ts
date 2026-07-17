@@ -590,6 +590,97 @@ describe("artifactStore — access control", () => {
   })
 })
 
+describe("artifactStore.resolve — by-id lookup with no caller-supplied ref (Task 19 follow-up)", () => {
+  it("returns the authoritative ref, real sha256 included, for an artifact captured with no checkpoint or ref round-trip involved", async () => {
+    // Simulates exactly the Task 18 run_command interop case:
+    // execution-tool-host.ts calls store.capture() directly and only ever
+    // embeds the resulting uri as plain JSON text in its own bespoke
+    // payload — nothing ever hands a full AgentArtifactRef back in, and
+    // nothing durably references it from a checkpoint message. resolve()
+    // must still find it from runId+artifactId alone.
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    const content = bytesOf("$ pnpm build\nbuild succeeded\n")
+    const ref = await store.capture(
+      content,
+      metadata({ kind: "command-stdout", mediaType: "text/plain; charset=utf-8" }),
+      noopProducer()
+    )
+
+    const resolved = await store.resolve(ref.runId, ref.artifactId, caller())
+
+    expect(resolved).toEqual(ref)
+    expect(resolved.sha256).toBe(createHash("sha256").update(content).digest("hex"))
+  })
+
+  it("applies the same checkArtifactAccess rules as stat/read: denies an unrelated caller", async () => {
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    const childOwner = owner({ runId: "child-1", rootRunId: "root-1", parentRunId: "parent-1" })
+    const ref = await store.capture(
+      bytesOf("secret"),
+      metadata({ runId: "child-1", owner: childOwner }),
+      noopProducer()
+    )
+    const sibling = caller({ runId: "child-2", rootRunId: "root-1", parentRunId: "parent-1" })
+    await expect(store.resolve(ref.runId, ref.artifactId, sibling)).rejects.toMatchObject({
+      code: "artifact_forbidden",
+    })
+  })
+
+  it("allows a parent to resolve a child's artifact only when explicitly delegated", async () => {
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    const childOwner = owner({ runId: "child-1", rootRunId: "root-1", parentRunId: "parent-1" })
+    const undelegated = await store.capture(
+      bytesOf("not shared"),
+      metadata({ runId: "child-1", owner: childOwner }),
+      noopProducer()
+    )
+    const parent = caller({ runId: "parent-1", rootRunId: "root-1" })
+    await expect(
+      store.resolve(undelegated.runId, undelegated.artifactId, parent)
+    ).rejects.toMatchObject({ code: "artifact_forbidden" })
+
+    const delegated = await store.capture(
+      bytesOf("shared result"),
+      metadata({ runId: "child-1", owner: childOwner, delegateToRunIds: ["parent-1"] }),
+      noopProducer()
+    )
+    const resolved = await store.resolve(delegated.runId, delegated.artifactId, parent)
+    expect(resolved.uri).toBe(delegated.uri)
+  })
+
+  it("always allows the owning run to resolve its own artifact regardless of delegation", async () => {
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    const ref = await store.capture(bytesOf("mine"), metadata(), noopProducer())
+    const resolved = await store.resolve(ref.runId, ref.artifactId, caller())
+    expect(resolved.uri).toBe(ref.uri)
+  })
+
+  it("reports an unknown artifactId as artifact_missing", async () => {
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    await store.capture(bytesOf("real content"), metadata(), noopProducer())
+    await expect(
+      store.resolve("run-1", "00000000-0000-0000-0000-000000000000", caller())
+    ).rejects.toMatchObject({ code: "artifact_missing" })
+  })
+
+  it("rejects a path-traversal-shaped runId as artifact_missing", async () => {
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    await expect(store.resolve("../escape", "x", caller())).rejects.toMatchObject({
+      code: "artifact_missing",
+    })
+  })
+
+  it("reports a hand-corrupted manifest file as artifact_corrupt", async () => {
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    const ref = await store.capture(bytesOf("real content"), metadata(), noopProducer())
+    const manifestPath = join(dir, "run-1", ref.artifactId, "manifest.json")
+    await fs.writeFile(manifestPath, "{ not: valid json ]")
+    await expect(store.resolve(ref.runId, ref.artifactId, caller())).rejects.toMatchObject({
+      code: "artifact_corrupt",
+    })
+  })
+})
+
 describe("artifactStore — traversal, forgery, and corruption defenses", () => {
   it("rejects a ref with a path-traversal-shaped runId as artifact_missing", async () => {
     const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
