@@ -25,8 +25,16 @@ interface ScriptedTurn {
 function fakeProvider(turns: ScriptedTurn[]): ChatProvider {
   let index = 0
   return {
-    id: "fake",
-    descriptor: { providerId: "fake", estimatorId: "fake", estimatorVersion: "1" },
+    // A real catalogued provider id (Task 23): setupBackgroundRun now
+    // resolves a real capability profile at creation and rejects a finite
+    // runBudgetTokens the resolved profile's estimator cannot back
+    // (isEligibleForFiniteBudget). A synthetic "fake" id would fall back to
+    // the conservative unknown-model profile, which is never eligible for a
+    // finite budget — this file's tests exercise background-agent-runner.ts
+    // itself, not provider-adapter behavior, so any real catalogued id is a
+    // faithful stand-in.
+    id: "anthropic",
+    descriptor: { providerId: "anthropic", estimatorId: "fake", estimatorVersion: "1" },
     estimateRequestUpperBound: () => ({
       estimatorId: "fake",
       estimatorVersion: "1",

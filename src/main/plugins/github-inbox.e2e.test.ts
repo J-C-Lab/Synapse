@@ -124,10 +124,15 @@ describe("github inbox plugin", () => {
 
 function fakeDigestProvider(seenTools: ProviderToolSchema[][]): ChatProvider {
   return {
-    id: "fake",
-    // The manifest configures a finite maxTokensPerRun; durable admission
-    // fails closed for a finite-budget run whose provider can't guarantee
-    // an upper bound.
+    // A real catalogued provider id (Task 23): setupBackgroundRun now
+    // resolves a real capability profile at run creation and rejects a
+    // finite runBudgetTokens/maxTokensPerRun the resolved profile's own
+    // estimator cannot back — a synthetic "fake" id would fall back to the
+    // never-finite-budget-eligible unknown-model profile. The manifest
+    // configures a finite maxTokensPerRun; durable admission (at first
+    // dispatch) also fails closed for a finite-budget run whose provider
+    // can't guarantee an upper bound.
+    id: "anthropic",
     estimateRequestUpperBound: () => ({
       estimatorId: "fake",
       estimatorVersion: "1",

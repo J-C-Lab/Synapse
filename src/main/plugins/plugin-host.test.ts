@@ -54,10 +54,18 @@ const noopFsWatchAdapter: FsWatchAdapter = {
 
 function fakeProvider(onStream?: () => void): ChatProvider {
   return {
-    id: "fake",
-    // Required for background-agent-trigger tests: their manifests configure
-    // finite maxTokensPerRun, and durable admission fails closed for a
-    // finite-budget run whose provider can't guarantee an upper bound.
+    // A real catalogued provider id (Task 23): setupBackgroundRun now
+    // resolves a real capability profile at run creation and rejects a
+    // finite runBudgetTokens/maxTokensPerRun the resolved profile's own
+    // estimator cannot back (isEligibleForFiniteBudget) — a synthetic
+    // "fake" id would fall back to the never-finite-budget-eligible
+    // unknown-model profile regardless of what this mock's own
+    // estimateRequestUpperBound below returns. Required for
+    // background-agent-trigger tests: their manifests configure finite
+    // maxTokensPerRun, and durable admission (at first dispatch) also fails
+    // closed for a finite-budget run whose provider can't guarantee an
+    // upper bound.
+    id: "anthropic",
     estimateRequestUpperBound: () => ({
       estimatorId: "fake",
       estimatorVersion: "1",
@@ -1294,10 +1302,10 @@ function providerWithToolCall(toolName: string, input: unknown = { query: "hi" }
   let index = 0
   const turns = [{ toolUses: [{ id: "t1", name: toolName, input }] }, { text: "done" }]
   return {
-    id: "fake",
-    // The manifest configures a finite maxTokensPerRun; durable admission
-    // fails closed for a finite-budget run whose provider can't guarantee
-    // an upper bound.
+    // See fakeProvider's comment above (Task 23): a real catalogued
+    // provider id is required now that setupBackgroundRun rejects a finite
+    // maxTokensPerRun the resolved profile's estimator cannot back.
+    id: "anthropic",
     estimateRequestUpperBound: () => ({
       estimatorId: "fake",
       estimatorVersion: "1",

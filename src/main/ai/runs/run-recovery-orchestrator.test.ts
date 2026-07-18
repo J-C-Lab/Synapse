@@ -134,7 +134,13 @@ describe("continueBackgroundOrSubagentRun", () => {
         allowedUses: [],
         instruction: "must not start",
         event: {},
-        providerId: "fake",
+        // A real catalogued provider id (Task 23): setupBackgroundRun now
+        // rejects a finite runBudgetTokens the resolved profile's estimator
+        // cannot back — a synthetic "fake" id falls back to the
+        // never-finite-budget-eligible unknown-model profile. This test's
+        // actual subject is the expired-deadline short-circuit, not
+        // provider-adapter behavior.
+        providerId: "anthropic",
         model: "fake-model",
         maxOutputTokens: 1,
         runBudgetTokens: 10,

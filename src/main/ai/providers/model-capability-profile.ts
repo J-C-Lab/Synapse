@@ -98,3 +98,143 @@ export function resolveModelCapabilityProfile(
 export function isEligibleForFiniteBudget(profile: ModelCapabilityProfile): boolean {
   return profile.tokenBudgeting.upperBoundEstimatorId !== NO_GUARANTEE_ESTIMATOR_ID
 }
+
+// --- Frozen run limits (Task 23) -------------------------------------------
+//
+// Every durable run freezes its numeric budgeting/compression limits into
+// `FrozenRunConfigV1` exactly once, at setup. Before this task, every
+// production run-setup path either passed a raw caller number straight
+// through (`maxOutputTokens`) or hardcoded a magic default
+// (`keepRecentFraction: 0.5`, `hardReserveTokens: 0`) instead of reading it
+// off the resolved profile. `deriveFrozenRunLimits` is the single place that
+// turns "what the caller asked for" plus "what the resolved profile allows"
+// into the exact values a checkpoint freezes — and the single place that
+// rejects an impossible combination before any checkpoint/lease/ledger
+// mutation happens, so a misconfigured run never reaches provider dispatch
+// (design §"Model capability profiles", Checkpoint C exit gate).
+
+/** Only `compressionEnabled` and `explicitThresholdTokens` are real caller
+ *  input today (interactive runs read these off `AiSettings.contextCompression`;
+ *  background/subagent runs always pass `compressionEnabled: false`).
+ *  `maxOutputTokens` is optional — forward-compatible with a future
+ *  per-run override that doesn't exist yet — and every other frozen number
+ *  (`keepRecentFraction`, `hardReserveTokens`) comes from the profile
+ *  unconditionally; there is deliberately no way to request them here. */
+export interface RequestedRunLimits {
+  /** Caller-requested max output tokens. Omitted → derived from the
+   *  resolved profile's `defaultMaxOutputTokens`. */
+  maxOutputTokens?: number
+  /** Whether context compression will run for this checkpoint at all. */
+  compressionEnabled: boolean
+  /** An explicit user-configured absolute threshold. By the existing
+   *  `AiSettings.contextCompression`/renderer convention, `0` (or omitted)
+   *  means "no explicit value" — derive the default from the profile's
+   *  `summarizeAtFraction` instead of treating 0 as a real threshold. */
+  explicitThresholdTokens?: number
+  /** The run's own finite per-run token budget, if any (`undefined` means
+   *  unlimited). Only consulted here to reject a finite budget that the
+   *  resolved profile's estimator cannot back — never stored in the
+   *  returned limits, since it is threaded into the checkpoint directly by
+   *  the caller. */
+  runBudgetTokens?: number
+}
+
+export interface FrozenRunLimits {
+  maxOutputTokens: number
+  contextCompression: {
+    enabled: boolean
+    thresholdTokens: number
+    keepRecentFraction: number
+    hardReserveTokens: number
+  }
+}
+
+export type RunLimitsRejectionReason =
+  | "max-output-tokens-at-or-above-context-window"
+  | "compression-threshold-at-or-below-hard-reserve"
+  | "finite-budget-requires-finite-budget-eligible-profile"
+
+/** Thrown by `deriveFrozenRunLimits` for an impossible (profile, requested)
+ *  combination. A typed run-creation failure, not a silent clamp: every
+ *  production run-setup path (interactive/background/subagent) calls this
+ *  before acquiring any lease or mutating any ledger, so a misconfigured run
+ *  fails at creation instead of at first provider dispatch. */
+export class InvalidRunLimitsError extends Error {
+  constructor(
+    readonly reason: RunLimitsRejectionReason,
+    message: string
+  ) {
+    super(message)
+    this.name = "InvalidRunLimitsError"
+  }
+}
+
+/**
+ * Derives the frozen numeric run limits from a resolved profile and the
+ * caller's request, rejecting an impossible combination before any
+ * checkpoint is created.
+ *
+ * `hardReserveTokens` semantics (settling Task 20's review flag): it is a
+ * safety margin subtracted from the compression trigger threshold —
+ * `durable-agent-driver.ts`'s `maybeCompressHistory` computes
+ * `effectiveThreshold = max(0, thresholdTokens - hardReserveTokens)` — so
+ * compression fires `hardReserveTokens` tokens *before* the raw threshold is
+ * reached. That headroom exists because the threshold check runs against the
+ * durable message projection alone, before the request actually being built
+ * adds its own output/framing overhead on top; without a reserve, compression
+ * could still fire a step too late to keep that step's own request under
+ * budget. A threshold at or below the hard reserve can never leave any such
+ * headroom (the effective threshold would be zero — compression would fire on
+ * every single call), so that combination is rejected here rather than
+ * silently clamped.
+ */
+export function deriveFrozenRunLimits(
+  profile: ModelCapabilityProfile,
+  requested: RequestedRunLimits
+): FrozenRunLimits {
+  if (requested.runBudgetTokens !== undefined && !isEligibleForFiniteBudget(profile)) {
+    throw new InvalidRunLimitsError(
+      "finite-budget-requires-finite-budget-eligible-profile",
+      `profile ${profile.profileId} uses an estimator (${profile.tokenBudgeting.upperBoundEstimatorId}) ` +
+        `that cannot guarantee an upper bound, so it cannot back a finite-budget run ` +
+        `(requested runBudgetTokens=${requested.runBudgetTokens})`
+    )
+  }
+
+  const maxOutputTokens = requested.maxOutputTokens ?? profile.defaultMaxOutputTokens
+  if (maxOutputTokens >= profile.contextWindowTokens) {
+    throw new InvalidRunLimitsError(
+      "max-output-tokens-at-or-above-context-window",
+      `requested maxOutputTokens (${maxOutputTokens}) is at or above profile ${profile.profileId}'s ` +
+        `context window (${profile.contextWindowTokens})`
+    )
+  }
+
+  const hardReserveTokens = profile.contextPolicy.hardReserveTokens
+  const keepRecentFraction = profile.contextPolicy.keepRecentFraction
+  const defaultThresholdTokens = Math.floor(
+    profile.contextWindowTokens * profile.contextPolicy.summarizeAtFraction
+  )
+  const thresholdTokens =
+    requested.explicitThresholdTokens !== undefined && requested.explicitThresholdTokens > 0
+      ? requested.explicitThresholdTokens
+      : defaultThresholdTokens
+
+  if (requested.compressionEnabled && thresholdTokens <= hardReserveTokens) {
+    throw new InvalidRunLimitsError(
+      "compression-threshold-at-or-below-hard-reserve",
+      `compression threshold (${thresholdTokens}) must exceed profile ${profile.profileId}'s hard ` +
+        `reserve (${hardReserveTokens})`
+    )
+  }
+
+  return {
+    maxOutputTokens,
+    contextCompression: {
+      enabled: requested.compressionEnabled,
+      thresholdTokens,
+      keepRecentFraction,
+      hardReserveTokens,
+    },
+  }
+}

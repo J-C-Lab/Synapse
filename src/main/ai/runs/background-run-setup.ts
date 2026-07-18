@@ -11,7 +11,10 @@ import type { AgentRunCheckpointV1, ModelCapabilityProfile } from "./checkpoint-
 import { triggerUseToCapability } from "@synapse/plugin-manifest"
 import { buildDefaultSystemText } from "../agent-runtime"
 import { createRootBudgetLedger } from "../budget/root-budget-ledger"
-import { resolveModelCapabilityProfile } from "../providers/model-capability-profile"
+import {
+  deriveFrozenRunLimits,
+  resolveModelCapabilityProfile,
+} from "../providers/model-capability-profile"
 import { freezeAuthoritySnapshot } from "./authority-snapshot"
 import { canonicalHash } from "./canonical-json"
 import { buildContextSnapshot } from "./context-snapshot"
@@ -97,6 +100,21 @@ export async function setupBackgroundRun(
   deps: BackgroundRunSetupDeps,
   input: BackgroundRunSetupInput
 ): Promise<AgentRunCheckpointV1> {
+  // Resolve the profile and reject an impossible (profile, requested-limits)
+  // combination before any side effect below (context assembly, authority
+  // freeze, checkpoint/ledger creation).
+  const resolvedProfile: ModelCapabilityProfile = resolveModelCapabilityProfile(
+    input.providerId,
+    input.model
+  )
+  const limits = deriveFrozenRunLimits(resolvedProfile, {
+    maxOutputTokens: input.maxOutputTokens,
+    // Background runs never compress — see the frozen contextCompression
+    // block below.
+    compressionEnabled: false,
+    runBudgetTokens: input.runBudgetTokens,
+  })
+
   const durableMessages = toDurableMessages([], [backgroundUserMessage(input)], input.runId)
 
   const baseSystemText = buildDefaultSystemText(input.executionWorkspaces)
@@ -114,11 +132,6 @@ export async function setupBackgroundRun(
       modelSchema: schema,
     })),
   })
-
-  const resolvedProfile: ModelCapabilityProfile = resolveModelCapabilityProfile(
-    input.providerId,
-    input.model
-  )
 
   const now = deps.now()
   const checkpoint: AgentRunCheckpointV1 = {
@@ -143,15 +156,10 @@ export async function setupBackgroundRun(
       providerId: input.providerId,
       model: input.model,
       resolvedProfile,
-      maxOutputTokens: input.maxOutputTokens,
+      maxOutputTokens: limits.maxOutputTokens,
       runBudgetTokens: input.runBudgetTokens,
       maxSteps: input.maxSteps,
-      contextCompression: {
-        enabled: false,
-        thresholdTokens: 0,
-        keepRecentFraction: 0.5,
-        hardReserveTokens: 0,
-      },
+      contextCompression: limits.contextCompression,
       workspaceBinding: {
         workspaceId: input.workspaceId,
         bindingRevision: 0,

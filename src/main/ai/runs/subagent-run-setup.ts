@@ -4,7 +4,10 @@ import type { AiToolRegistry } from "../tool-registry"
 import type { AgentRunStore } from "./agent-run-store"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
 import { createRootBudgetLedger, reserveChildAccount } from "../budget/root-budget-ledger"
-import { resolveModelCapabilityProfile } from "../providers/model-capability-profile"
+import {
+  deriveFrozenRunLimits,
+  resolveModelCapabilityProfile,
+} from "../providers/model-capability-profile"
 import { freezeAuthoritySnapshot } from "./authority-snapshot"
 import { buildContextSnapshot } from "./context-snapshot"
 import { toDurableMessages } from "./durable-messages"
@@ -69,6 +72,17 @@ export async function setupSubagentRun(
   }
   const parent = parentResult.checkpoint
   const resolvedProfile = resolveSubagentModelProfile(input)
+  // Reject an impossible (profile, requested-limits) combination BEFORE
+  // ensureBudgetAccount below, which mutates the shared root ledger
+  // (reserving a child account) — a rejected run must never leave a stray
+  // budget reservation with no checkpoint behind it.
+  const limits = deriveFrozenRunLimits(resolvedProfile, {
+    maxOutputTokens: input.maxOutputTokens,
+    // Subagents never compress — see the frozen contextCompression block
+    // below.
+    compressionEnabled: false,
+    runBudgetTokens: parent.config.runBudgetTokens,
+  })
 
   const rootRunId = await ensureBudgetAccount(deps, input, parent)
 
@@ -108,15 +122,10 @@ export async function setupSubagentRun(
       providerId: input.providerId,
       model: input.model,
       resolvedProfile,
-      maxOutputTokens: input.maxOutputTokens,
+      maxOutputTokens: limits.maxOutputTokens,
       runBudgetTokens: parent.config.runBudgetTokens,
       maxSteps: input.maxSteps,
-      contextCompression: {
-        enabled: false,
-        thresholdTokens: 0,
-        keepRecentFraction: 0.5,
-        hardReserveTokens: 0,
-      },
+      contextCompression: limits.contextCompression,
       workspaceBinding: parent.config.workspaceBinding,
       authority,
       context,

@@ -570,14 +570,17 @@ export class AgentService {
           text,
           providerId,
           model,
-          maxOutputTokens: 4096,
+          // No per-conversation override exists today — omitted, so
+          // setupInteractiveRun derives it from the resolved profile's
+          // defaultMaxOutputTokens instead of this formerly-hardcoded 4096.
           runBudgetTokens: resolvedBudget,
           maxSteps: 10,
           contextCompression: {
             enabled: cfg?.enabled ?? false,
-            thresholdTokens: cfg?.thresholdTokens ?? 0,
-            keepRecentFraction: 0.5,
-            hardReserveTokens: 0,
+            // keepRecentFraction/hardReserveTokens are no longer accepted
+            // here — setupInteractiveRun derives both from the resolved
+            // profile unconditionally (see deriveFrozenRunLimits).
+            thresholdTokens: cfg?.thresholdTokens,
           },
           executionWorkspaces: resolvedExecutionRoots,
         }
