@@ -1170,6 +1170,12 @@ never intentionally left pointing at deleted bytes.
 
 ### 5. Host-internal lifecycle kernel
 
+> **Not built in v1 (2026-07-18 scope revision).** `durable-agent-driver.ts`
+> already executes this ordering as fixed, typed, order-checked code that the
+> A/B crash matrix proves. Extracting a formal stage/patch abstraction would add
+> no product capability and no security guarantee, so the refactor is dropped.
+> The ordering below stands as the contract the driver already honors.
+
 Refactor `AgentRuntime` into explicit deterministic phases without exposing a
 general plugin middleware API:
 
@@ -1284,6 +1290,13 @@ not edited as a second source of truth.
 
 ### 7. Model capability profiles
 
+> **Partly built (2026-07-18 scope revision).** The profile shape, provider
+> defaults, conservative unknown fallback, and estimator eligibility rule
+> shipped during Checkpoints A–B. v1 keeps provider-default resolution and does
+> **not** implement the exact/ordered-pattern precedence described below; that
+> waits until a supported model needs distinct limits. Checkpoint C's remaining
+> work is deriving and freezing the numeric limits at run creation.
+
 Extend provider descriptors with capability data separate from user settings:
 
 ```ts
@@ -1333,6 +1346,15 @@ not part of profile v1. Provider quirks belong in provider adapters; behavioral
 prompt experiments require a separately reviewed prompt profile with evals.
 
 ### 8. Progressive skill runtime
+
+> **Reduced in v1 (2026-07-18 scope revision).** v1 supports `SKILL.md` only,
+> from the user and bound-workspace directories. Lazy asset loading,
+> plugin-contributed sources, a dedicated management UI, and the
+> preferred-source conflict setting are deferred; `SkillSourceKind`'s `builtin`,
+> `plugin`, and `marketplace` variants stay unused for now. The immutable
+> content-addressed package store, activation snapshot, package lease, tool
+> intersection, and untrusted-content treatment below are all in scope and
+> required.
 
 Skills are introduced after the artifact backend and lifecycle kernel exist.
 
@@ -1482,6 +1504,18 @@ inside its signed package, but installing that plugin and activating one of its
 skills remain separate user-visible facts.
 
 ### 9. Durable async child tasks
+
+> **Substantially reduced in v1 (2026-07-18 scope revision).** v1 fixes a task's
+> owning conversation at creation. That deletes the `ChildTaskOwnership`
+> attached/detached union, `ownerEpoch`, `nextAdoptionFencingToken`,
+> adoption leases, the detach/adopt/release tools, `update_subagent_task`,
+> per-task run history, and the attached-parent wait protocol — everything below
+> that exists to make an ownership handoff safe. v1 ships four tools (start,
+> check, list, cancel), one child run per task, a finite per-task budget account,
+> and bounded concurrency. The retained design below is the reference for a later
+> release that genuinely needs to move a task between conversations; the budget
+> accounting, concurrency, and least-privilege rules in this section apply
+> unchanged to v1.
 
 Keep the existing synchronous `spawn_subagent` path during migration. Add async
 tasks only after checkpoint/recovery and run events are production-ready.
@@ -1828,6 +1862,74 @@ state must be explainable to users, not only serializable for a graph engine.
 
 ## Delivery checkpoints
 
+### Scope revision — 2026-07-18
+
+Checkpoints A and B shipped as PRs #58 and #59. Checkpoints C–E were then
+replanned from 14 tasks to 5, against the code that actually landed rather than
+against the code this document originally assumed.
+
+The architecture sections above are kept intact as the full design. This
+section is the authoritative statement of what the v1 implementation builds;
+where the two disagree, this section wins. Deferred material is marked in place
+with a pointer here, not deleted, so the reasoning survives for whoever revisits
+it.
+
+**Why the compression is possible.** A and B built more substrate than the
+original checkpoint boundaries implied. `durable-agent-driver.ts` already runs a
+fixed, typed, order-checked sequence proven by a real-process crash matrix.
+`ModelCapabilityProfile`, provider defaults, the conservative unknown fallback,
+`isEligibleForFiniteBudget`, and the frozen `FrozenRunConfigV1.contextCompression`
+block all exist. `checkpoint-schema.ts` already carries
+`SkillActivationSnapshot`, `skillPackageLeaseIds`, and the `skill-instructions`
+and `skill-asset` artifact kinds. `root-budget-ledger.ts` already implements
+`reserveChildAccount` and `reconcileAbandonedChildAccount`.
+`AgentChildTaskSummary` and `ChildTaskUpdatedEvent` are already in the shared
+protocol, and the synchronous subagent already runs on the durable driver.
+
+**What v1 must deliver.** Four closed loops, nothing more:
+
+1. model context and output limits are resolved, validated, and frozen at run
+   creation;
+2. an agent discovers local skills and activates them on demand, keeps the same
+   instructions across recovery, and cannot gain authority by doing so;
+3. an agent starts several async child tasks under bounded concurrency and a
+   bounded budget, and after an app restart can still list, inspect, cancel, and
+   read them;
+4. every existing capability, approval, workspace, provenance, audit,
+   untrusted-content, and artifact boundary keeps holding.
+
+**Three deliberate deletions.** These are removals of scope, not repackaging:
+
+- *The ten-stage lifecycle kernel* (§5) is not built. It was a refactor of
+  behavior the durable driver already enforces, so extracting a formal
+  stage/patch abstraction would add no product capability and no security
+  guarantee. Section 5 stands as the conceptual ordering the driver already
+  honors.
+- *Exact/ordered-pattern profile rules* (§7) are not built. Provider defaults
+  plus the conservative unknown fallback remain, until some supported model
+  actually needs distinct limits.
+- *The child-task ownership subsystem* (§9) is not built. v1 fixes a task's
+  owning conversation at creation, which removes `ChildTaskOwnership`'s
+  attached/detached union, `ownerEpoch`, adoption leases, fencing tokens, and
+  the attached-parent wait protocol. The original exit gate's "cannot terminal
+  with an attached orphan" then holds by construction: a run terminalizing
+  orphans nothing, because tasks hang off the conversation rather than the run.
+  §9's design is retained for a future release that genuinely needs handoff
+  between conversations.
+
+**Also deferred to a later release:** skill lazy assets, plugin-contributed
+skill sources, dedicated skill management UI, the preferred-source conflict
+setting, child-task `update` and run history, and the eight-tool async
+interface (v1 ships four: start, check, list, cancel).
+
+**Not deferred, under any schedule pressure.** These are invariants, not
+features, and the compressed checkpoints below still gate on them: skill
+content is untrusted third-party/workspace input and must carry the existing
+untrusted envelope; discovery and installation must execute nothing; skill
+activation may only narrow a run's visible tools; child budgets must be finite
+and must not oversubscribe the root; and a task must be actionable only from the
+conversation that owns it.
+
 ### Checkpoint A — durable run core and event identity
 
 - `AgentRunIdentity`, explicit status/recovery disposition, checkpoint
@@ -1874,46 +1976,74 @@ integrity-checkable `complete: false` artifact with a precise reason, without
 unbounded disk, memory, IPC, or model payload growth. Oldest-run cleanup cannot
 invalidate an artifact URI still stored in an active conversation.
 
-### Checkpoint C — lifecycle kernel and model profiles
+### Checkpoint C — frozen model profile limits
 
-- refactor runtime into fixed typed phases;
-- capability profile resolution and conservative unknown-model fallback;
-- profile-driven context budgets and versioned provider admission estimator;
-- invariant tests proving profiles/stages cannot weaken security.
+Revised 2026-07-18; the fixed-typed-phase refactor is dropped (see "Scope
+revision").
 
-Exit gate: current provider/runtime behavior is preserved and no profile can
-alter caller authority.
+- resolve the capability profile from provider and model at run creation, and
+  derive `maxOutputTokens`, compression threshold, keep-recent fraction, and
+  hard reserve from it rather than from unchecked call-site numbers;
+- settle the `hardReserveTokens` semantics and wire it for real — today every
+  production setup pins it to zero;
+- keep the provider default and conservative unknown-model fallback; add no
+  exact/pattern rule system;
+- reject impossible combinations at run creation, before any provider dispatch.
+
+Exit gate: current provider/runtime behavior is preserved, an impossible profile
+combination fails at creation rather than at dispatch, a settings change cannot
+alter values already frozen into a recovering run, and no profile can alter
+caller authority.
 
 ### Checkpoint D — local progressive skills
 
-- discovery/parser/catalog/activation for built-in, user, workspace, and plugin
-  package sources;
-- immutable content-addressed `SkillPackageStore` plus run-scoped activation
-  snapshots/artifacts;
-- durable package lease for every active/recoverable activation;
-- trust/provenance/conflict rules and tool intersection;
-- skill UI and activation events;
-- injection, oversized-package, path traversal, and script non-execution tests.
+Revised 2026-07-18; `SKILL.md` only. Lazy assets, plugin sources, dedicated UI,
+and the preferred-source setting are deferred (see "Scope revision").
 
-Exit gate: local skills add workflows without authority or eager prompt bloat,
-and source/package changes after activation cannot change instructions used by
-a recovered run; uninstall cannot remove a package before its first lazy asset
-read or terminal finalization.
+- bounded discovery of the user and bound-workspace skill directories only;
+- bounded `SKILL.md` parsing with YAML aliases and custom tags disabled;
+- immutable content-addressed package store with a canonical manifest, so a
+  source edit produces a new package rather than mutating an existing one;
+- source-stable ids; a duplicate name across sources is a visible conflict, not
+  a silent overwrite;
+- bounded catalog metadata in fresh-run context, never eager instructions;
+- durable activation: instructions captured to a run artifact and a package
+  lease taken before the checkpoint references them, populating the existing
+  `SkillActivationSnapshot` and `skillPackageLeaseIds` fields;
+- tool intersection that can only narrow a run's visible tools;
+- path traversal, symlink/junction escape, oversized package, untrusted-envelope,
+  and script non-execution tests.
 
-### Checkpoint E — durable async child tasks
+Exit gate: local skills add workflows without authority or eager prompt bloat;
+editing or deleting a source file after activation cannot change the
+instructions a recovered run uses; skill text reaches the model as untrusted
+content; activation never widens the visible tool set; and a package lease
+prevents removal of bytes an active or recoverable run still needs.
 
-- local scheduler, task store, eight task tools including detach/adopt/release,
-  result artifacts;
-- root-scoped durable budget reservations/charges/releases;
-- attached wait/cancel and detached/adopted conversation ownership;
-- expiring/fenced adoption leases and adopter terminal rules;
-- bounded concurrency, approval UI, cancellation/restart recovery;
-- parent/child event projections and run observatory linkage.
+### Checkpoint E — conversation-owned async child tasks
 
-Exit gate: a parent can start multiple children without oversubscribing one
-root budget, restart the app, and inspect their exact state; it cannot terminal
-with an attached orphan, while a detached task can be held by at most one live
-adoption lease at a time and becomes adoptable again after release/expiry.
+Revised 2026-07-18; ownership is fixed at creation, which removes the entire
+detach/adopt/release subsystem (see "Scope revision").
+
+- child task store whose records are owned by a conversation from creation —
+  no ownership union, owner epoch, adoption lease, or fencing token;
+- bounded local scheduler: at most three active tasks per root run plus a global
+  worker cap, with the remainder queued;
+- a finite child budget account per task through the existing
+  `reserveChildAccount` operations, failing closed when no finite bound is
+  available;
+- exactly one child run per task, reusing the durable subagent path so
+  least-privilege tool intersection, workspace binding, and principal lineage
+  are unchanged;
+- four tools — start, check, list, cancel;
+- cancellation and restart recovery, with results still readable afterwards;
+- child projections through the already-defined `AgentChildTaskSummary` and
+  `ChildTaskUpdatedEvent`, surfaced in the run observatory.
+
+Exit gate: a parent can start multiple children without oversubscribing one root
+budget, restart the app, and still list, inspect, cancel, and read them; a task
+is actionable only from the conversation that owns it; and a terminalizing run
+leaves no orphan, because ownership never belonged to the run.
 
 ### Checkpoint F — marketplace skills and isolated execution follow-ups
 
@@ -2054,14 +2184,18 @@ not only unit reconstruction of a class.
 
 ### Profile tests
 
-- provider default/exact/pattern precedence;
+- provider default precedence (exact/pattern precedence is deferred with the
+  rule system itself — see "Scope revision");
 - conservative fallback for unknown model;
 - context threshold derived from frozen run profile;
+- an impossible combination — max output at or above the context window, or a
+  compression threshold at or below the hard reserve — fails at run creation
+  rather than at first dispatch;
 - upper-bound estimator id/version/framing reserve are frozen and cover exact
   system/context/messages/tools/max-output request bytes;
 - finite-budget unknown models without a guaranteed estimator fail before
   dispatch rather than using post-hoc soft accounting;
-- profile cannot remove mandatory stages or expand tools;
+- profile cannot weaken a mandatory durability/security step or expand tools;
 - provider adapters honor supported features and ignore unsupported toggles.
 
 ### Skill tests and evals
@@ -2073,15 +2207,21 @@ not only unit reconstruction of a class.
 - only metadata enters base prompt and full instructions load on activation;
 - activation checkpoints package/instruction hashes, trust, effective tools,
   and a run artifact before instruction injection;
-- activation acquires a package lease; uninstall before the first lazy asset
-  read cannot delete bytes, and orphan/missing leases reconcile safely;
+- activation acquires a package lease; uninstall cannot delete bytes an active
+  or recoverable run still needs, and orphan/missing leases reconcile safely;
 - edit/uninstall/update between crash and recovery cannot change activated
   bytes or effective tools;
 - `allowedTools` only narrows;
-- marketplace/workspace skill prompt-injection corpus cannot override approval,
-  workspace, provenance, or secret handling;
+- workspace skill prompt-injection corpus cannot override approval, workspace,
+  provenance, or secret handling, and skill text carries the untrusted-content
+  envelope rather than reaching the model as host-trusted instructions;
 - installing/discovering a skill executes no script;
 - token-cost and task-success evals compare catalog-only, eager-load, and no-skill baselines.
+
+The 2026-07-18 revision defers the broad eval matrix and the marketplace
+injection corpus with their features. The injection, non-execution,
+untrusted-envelope, narrowing-only, and lease-through-recovery cases above are
+not deferred.
 
 ### Child task tests
 
@@ -2091,24 +2231,20 @@ not only unit reconstruction of a class.
 - allocation/admission/settlement/release operations are idempotent and reconcile one-sided
   crash states conservatively;
 - parent cancellation and app restart transitions;
-- update preserves task id and creates a new child run id;
-- update of a running task durably cancels/terminals the old run before queueing
-  the new one and retains immutable run history;
 - tool allowlist and workspace scope cannot expand;
 - child approval identifies lineage and resumes correctly;
 - no nesting in v1;
-- attached parent cannot terminal without wait/cancel/detach;
-- detach requires confirmation and a conversation owner; background tasks
-  cannot detach;
-- adoption validates tombstone, conversation/workspace/principal/authority and
-  owner epoch, and concurrent adoption has exactly one winner;
-- adoption lease renewal/expiry/fencing rejects stale R2 actions and permits R3
-  adoption after release/expiry;
-- an adopter cannot terminal with a live adopted task until wait/cancel/release,
-  and cancellation releases rather than accidentally killing detached work;
-- adoption cannot enlarge the old reservation; an updated child must reserve
-  from the adopter's root ledger;
-- child result artifact is readable by parent but not sibling.
+- a background run without a conversation cannot create a task;
+- a caller in another conversation cannot list, check, cancel, or read the task
+  or its result;
+- `queued` and `running` tasks survive a restart and stay cancellable, and a
+  completed task's result stays readable afterwards;
+- child result artifact is readable by the owning conversation but not a sibling.
+
+The 2026-07-18 revision removes the update, detach, adopt, release, ownership
+epoch, and adoption-lease cases with the features themselves. Concurrency,
+budget non-oversubscription, idempotent ledger operations, least-privilege, and
+restart recovery above remain required.
 
 ### Execution replay contract tests
 
@@ -2170,12 +2306,15 @@ This programme is complete only when:
 7. fenced conversation CAS/tombstones prevent stale recovery from overwriting
    or resurrecting a conversation;
 8. renderer state is rebuilt from a versioned run snapshot/event protocol;
-9. context/admission policy is driven by a full frozen model capability profile;
+9. context/admission policy is driven by a model capability profile resolved
+   and frozen at run creation, and an impossible combination fails there rather
+   than at dispatch;
 10. local skills use immutable package refs, durable activation package leases,
-    and run snapshots, progressive disclosure, and cannot grant authority;
-11. async child tasks survive restart with root-ledger budget accounting and
-    attached/detached ownership plus expiring/fenced adoption leases while
-    least-privilege lineage remains intact;
+    and run snapshots, progressive disclosure, reach the model as untrusted
+    content, and cannot grant authority;
+11. async child tasks survive restart with root-ledger budget accounting, stay
+    actionable only from the conversation that owns them, and keep
+    least-privilege lineage intact;
 12. the local execution backend is honestly labeled non-isolated and exposes
     an explicit replay recovery contract plus the isolated-provider seam;
 13. all current security, workspace, provenance, approval, audit, and injection
