@@ -219,6 +219,7 @@ export async function continueBackgroundOrSubagentRun(
           },
           now,
           maxSteps: checkpoint.config.maxSteps,
+          artifactStore: deps.artifactStore,
           eventEmitter,
         },
         toolBatch: {
@@ -239,6 +240,7 @@ export async function continueBackgroundOrSubagentRun(
                   invocationId: checkpoint.identity.invocationId,
                   triggerInstanceId: checkpoint.identity.triggerInstanceId,
                 },
+          artifactCapture: deps.artifactStore ? { store: deps.artifactStore } : undefined,
           resolver: async () => {
             if (origin === "subagent") return "allow"
             for (;;) {

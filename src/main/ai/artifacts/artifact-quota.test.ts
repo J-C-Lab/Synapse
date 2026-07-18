@@ -142,6 +142,29 @@ describe("artifactQuotaStore.reserve", () => {
     ).rejects.toMatchObject({ reason: "disk-reserve" })
   })
 
+  it("subtracts unsettled reservations from a stable disk sample", async () => {
+    // statfs cannot know that the first admitted capture still owns 80 bytes
+    // even if its temporary file has not reached the filesystem yet.
+    const stableDisk = async () => ({ freeBytes: 100, totalBytes: 100 })
+    const store = new ArtifactQuotaStore(dir, stableDisk)
+    const limits = limitsWith({
+      perArtifactBytes: 80,
+      perRunBytes: 1_000,
+      globalBytes: 1_000,
+      minFreeBytes: 0,
+      minFreeFraction: 0,
+    })
+    await store.reserve({ operationId: "op-1", runId: "run-1", artifactId: "art-1", limits })
+    const second = await store.reserve({
+      operationId: "op-2",
+      runId: "run-2",
+      artifactId: "art-2",
+      limits,
+    })
+    expect(second.grantedBytes).toBe(20)
+    expect(second.limitingReason).toBe("disk-reserve")
+  })
+
   it("is idempotent for a retry with the same operationId and payload", async () => {
     const store = new ArtifactQuotaStore(dir, ampleDisk)
     const limits = limitsWith({ perArtifactBytes: 1000, perRunBytes: 10_000, globalBytes: 100_000 })

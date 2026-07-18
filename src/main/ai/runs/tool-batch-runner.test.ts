@@ -934,6 +934,35 @@ describe("advanceToolBatch — artifact offload (Task 19)", () => {
     expect(call.resolution.result.preview.length).toBeLessThan(bigOutput.length)
   })
 
+  it("persists a typed offload failure when artifact capture throws", async () => {
+    const runId = "run-artifact-offload-failure"
+    const { registry } = makeRegistry(["big"], { big: () => "output ".repeat(5_000) })
+    await seed(runId, registry, [{ id: "t1", name: "big", input: {} }])
+    const realStore = makeArtifactStore()
+    const failingStore: AgentArtifactStore = {
+      capture: async () => {
+        throw new Error("simulated artifact backend failure")
+      },
+      stat: (...args) => realStore.stat(...args),
+      read: (...args) => realStore.read(...args),
+      resolve: (...args) => realStore.resolve(...args),
+      releaseRunPin: (...args) => realStore.releaseRunPin(...args),
+      collectEligible: (...args) => realStore.collectEligible(...args),
+    }
+    const outcome = await advanceToolBatch(
+      baseDeps(registry, {
+        caller: { kind: "agent", runId },
+        artifactCapture: { store: failingStore, captureThresholdChars: 100 },
+      }),
+      runId,
+      0
+    )
+    const call = outcome.checkpoint.toolBatches[0]!.calls[0]!
+    if (call.resolution.status !== "resolved") throw new Error("expected resolved")
+    expect(call.resolution.result.complete).toBe(false)
+    expect(call.resolution.result.offloadFailureCode).toBe("artifact-capture-failed")
+  })
+
   it("falls back to captureThresholdChars derived from maxToolResultChars when artifactCapture doesn't set one", async () => {
     const runId = "run-artifact-4"
     const output = "x".repeat(500)

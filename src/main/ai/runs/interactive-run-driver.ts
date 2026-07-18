@@ -9,7 +9,11 @@ import type { FinalizeRunInput } from "./run-finalizer"
 import type { ToolBatchDeps } from "./tool-batch-runner"
 import { InsufficientBudgetError } from "../budget/root-budget-ledger"
 import { EstimatorProfileQuarantinedError } from "../estimator-quarantine-store"
-import { advanceDurableRun, EstimatorIncompatibleError } from "./durable-agent-driver"
+import {
+  advanceDurableRun,
+  EstimatorIncompatibleError,
+  HistoryCompressionError,
+} from "./durable-agent-driver"
 import { InsufficientEstimateError } from "./model-step-runner"
 import { advanceToolBatch } from "./tool-batch-runner"
 
@@ -111,6 +115,12 @@ export async function runInteractiveTurn(
       // startup recovery to rediscover and throw the same error forever.
       if (err instanceof EstimatorProfileQuarantinedError) {
         return finalizeTerminal(deps, runId, "budget_exceeded", undefined, "failed")
+      }
+      // An incomplete/unverifiable history capture is an explicit durable
+      // infrastructure failure, not permission to evict the original slice
+      // or leave a `running` checkpoint that recovery will retry forever.
+      if (err instanceof HistoryCompressionError) {
+        return finalizeTerminal(deps, runId, "error", undefined, "failed")
       }
       throw err
     }

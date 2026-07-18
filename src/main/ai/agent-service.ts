@@ -772,12 +772,21 @@ export class AgentService {
             },
             now: this.now,
             maxSteps: checkpoint.config.maxSteps,
+            artifactStore: this.options.artifactStore,
             onTextDelta: (delta) => textBatcher.push(delta),
             eventEmitter,
           },
           toolBatch: {
             tools: this.options.tools,
-            caller: { kind: "agent", conversationId, runId },
+            caller: {
+              kind: "agent",
+              conversationId,
+              runId,
+              workspaceId: checkpoint.identity.workspaceId,
+            },
+            artifactCapture: this.options.artifactStore
+              ? { store: this.options.artifactStore }
+              : undefined,
             resolver: (policyInput) =>
               this.resolveDurableApprovalPolicy(conversationId, policyInput),
             requestApproval: (approvalId, policyInput) =>

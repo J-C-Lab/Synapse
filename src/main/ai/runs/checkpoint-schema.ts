@@ -95,6 +95,10 @@ export interface PersistedToolResult {
   preview: string
   artifact?: AgentArtifactRefSummary
   complete: boolean
+  /** Typed durable explanation for an attempted artifact offload that
+   * failed. Kept separate from `isError`: the tool itself may have succeeded
+   * even when only its oversized output could not be captured. */
+  offloadFailureCode?: "artifact-capture-failed"
 }
 
 export type ToolExecutionAttemptState =
@@ -532,6 +536,89 @@ function isBoolean(value: unknown): value is boolean {
   return typeof value === "boolean"
 }
 
+const ARTIFACT_ID_PATTERN = /^[\w-]{1,128}$/
+const ARTIFACT_SHA256_PATTERN = /^[a-f0-9]{64}$/
+const KNOWN_ARTIFACT_KINDS = new Set([
+  "tool-result",
+  "command-stdout",
+  "command-stderr",
+  "history",
+  "media",
+  "child-result",
+  "skill-instructions",
+  "skill-asset",
+])
+const KNOWN_ARTIFACT_TRUNCATION_REASONS = new Set([
+  "artifact-limit",
+  "run-limit",
+  "global-limit",
+  "disk-reserve",
+  "producer-aborted",
+  "write-error",
+])
+
+/** Checkpoint artifact pointers are authority-bearing durable input: the
+ * renderer projection and finalizer derive URI retention pins from them
+ * before ArtifactStore gets a chance to compare a manifest. Keep this strict
+ * shared validator here rather than accepting arbitrary objects at every
+ * field site. */
+function isValidArtifactSummary(v: unknown): v is AgentArtifactRefSummary {
+  if (!isRecord(v)) return false
+  if (!isString(v.uri) || !isString(v.kind) || !KNOWN_ARTIFACT_KINDS.has(v.kind)) return false
+  if (!isString(v.mediaType) || v.mediaType.length === 0) return false
+  if (!isNonNegativeInteger(v.capturedBytes) || !isBoolean(v.complete)) return false
+  if (!/^artifact:\/\/run\/[\w-]{1,128}\/[\w-]{1,128}$/.test(v.uri)) return false
+  if (v.complete !== (v.truncationReason === undefined)) return false
+  return (
+    v.truncationReason === undefined ||
+    (isString(v.truncationReason) && KNOWN_ARTIFACT_TRUNCATION_REASONS.has(v.truncationReason))
+  )
+}
+
+function isValidArtifactRef(v: unknown): v is AgentArtifactRef {
+  if (!isValidArtifactSummary(v)) return false
+  if (!isRecord(v)) return false
+  if (!isString(v.runId) || !ARTIFACT_ID_PATTERN.test(v.runId)) return false
+  if (!isString(v.artifactId) || !ARTIFACT_ID_PATTERN.test(v.artifactId)) return false
+  if (v.uri !== `artifact://run/${v.runId}/${v.artifactId}`) return false
+  if (!isString(v.sha256) || !ARTIFACT_SHA256_PATTERN.test(v.sha256)) return false
+  if (!isNonNegativeInteger(v.createdAt)) return false
+  if (v.sourceBytes !== undefined) {
+    if (
+      typeof v.sourceBytes !== "number" ||
+      !isNonNegativeInteger(v.sourceBytes) ||
+      v.sourceBytes < v.capturedBytes
+    ) {
+      return false
+    }
+    if (v.complete && v.sourceBytes !== v.capturedBytes) return false
+  }
+  if (v.expiresAt !== undefined) {
+    if (
+      typeof v.expiresAt !== "number" ||
+      !isNonNegativeInteger(v.expiresAt) ||
+      v.expiresAt < (v.createdAt as number)
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
+function artifactSummaryMatchesRef(
+  summary: AgentArtifactRefSummary,
+  ref: AgentArtifactRef
+): boolean {
+  return (
+    summary.uri === ref.uri &&
+    summary.kind === ref.kind &&
+    summary.mediaType === ref.mediaType &&
+    summary.capturedBytes === ref.capturedBytes &&
+    summary.complete === ref.complete &&
+    summary.truncationReason === ref.truncationReason
+  )
+}
+
 function isStringArray(value: unknown): boolean {
   return Array.isArray(value) && value.every((v) => typeof v === "string")
 }
@@ -931,11 +1018,7 @@ function isValidChatContentBlock(v: unknown): boolean {
       isString(v.toolUseId) &&
       isString(v.content) &&
       (v.isError === undefined || isBoolean(v.isError)) &&
-      // artifact is a forward-declared full AgentArtifactRef (Task 19) —
-      // presence-only checked here, same precedent as elsewhere in this
-      // file; read_artifact re-validates it fully against the on-disk
-      // manifest before anything trusts it.
-      (v.artifact === undefined || isRecord(v.artifact))
+      (v.artifact === undefined || isValidArtifactRef(v.artifact))
     )
   }
   return false
@@ -990,12 +1073,14 @@ function isValidToolApproval(v: unknown): boolean {
   return false
 }
 
-function isValidPersistedToolResult(v: unknown): boolean {
+function isValidPersistedToolResult(v: unknown): v is PersistedToolResult {
   if (!isRecord(v)) return false
   if (!isBoolean(v.isError) || !isString(v.preview) || !isBoolean(v.complete)) return false
-  // artifact is a forward-declared AgentArtifactRefSummary (Checkpoint B) —
-  // presence-only checked here; its own store validates deeper.
-  if (v.artifact !== undefined && !isRecord(v.artifact)) return false
+  if (v.artifact !== undefined && !isValidArtifactSummary(v.artifact)) return false
+  if (v.offloadFailureCode !== undefined && v.offloadFailureCode !== "artifact-capture-failed") {
+    return false
+  }
+  if (v.offloadFailureCode !== undefined && v.complete) return false
   return true
 }
 
@@ -1037,12 +1122,11 @@ function isValidToolCallResolution(v: unknown): boolean {
       KNOWN_RESOLUTION_REASONS.has(v.reason) &&
       isValidPersistedToolResult(v.result) &&
       isOptionalString(v.attemptId) &&
-      // fullArtifact is a forward-declared full AgentArtifactRef (Task 19)
-      // — presence-only checked here, matching the same precedent as
-      // PersistedToolResult.artifact/SkillActivationSnapshot.instructionsArtifact
-      // above; the artifact store's own stat()/read() re-validate it fully
-      // against the on-disk manifest before anything trusts it.
-      (v.fullArtifact === undefined || isRecord(v.fullArtifact))
+      (v.fullArtifact === undefined || isValidArtifactRef(v.fullArtifact)) &&
+      (v.fullArtifact === undefined ||
+        (v.result.artifact !== undefined &&
+          isValidArtifactSummary(v.result.artifact) &&
+          artifactSummaryMatchesRef(v.result.artifact, v.fullArtifact as AgentArtifactRef)))
     )
   }
   return false
@@ -1118,9 +1202,7 @@ function isValidSkillActivation(v: unknown): boolean {
   if (!isString(v.trust) || !knownTrust.has(v.trust)) return false
   if (!isStringArray(v.effectiveToolNames)) return false
   if (!isString(v.packageLeaseId)) return false
-  // instructionsArtifact is a forward-declared AgentArtifactRefSummary
-  // (Checkpoint B) — presence-only checked here.
-  if (!isRecord(v.instructionsArtifact)) return false
+  if (!isValidArtifactSummary(v.instructionsArtifact)) return false
   if (!isFiniteNumber(v.activatedAt)) return false
   return true
 }
@@ -1187,15 +1269,14 @@ function isValidContextCompaction(v: unknown): boolean {
   if (!isString(v.compactionId) || !isString(v.evictedThroughMessageId)) return false
   if (!isString(v.summaryText)) return false
   if (!isNonNegativeInteger(v.summarizerTokens)) return false
-  // artifact is a forward-declared AgentArtifactRefSummary (Checkpoint B) —
-  // presence-only checked here, matching every other artifact-summary field
-  // in this file (PersistedToolResult.artifact,
-  // SkillActivationSnapshot.instructionsArtifact); the artifact store's own
-  // stat()/read() re-validate it fully against the on-disk manifest.
-  if (!isRecord(v.artifact)) return false
-  // fullArtifact is a forward-declared full AgentArtifactRef — same
-  // presence-only precedent as ToolCallResolution.fullArtifact above.
-  if (v.fullArtifact !== undefined && !isRecord(v.fullArtifact)) return false
+  if (!isValidArtifactSummary(v.artifact)) return false
+  if (v.fullArtifact !== undefined && !isValidArtifactRef(v.fullArtifact)) return false
+  if (
+    v.fullArtifact !== undefined &&
+    !artifactSummaryMatchesRef(v.artifact, v.fullArtifact as AgentArtifactRef)
+  ) {
+    return false
+  }
   if (!isFiniteNumber(v.createdAt)) return false
   return true
 }

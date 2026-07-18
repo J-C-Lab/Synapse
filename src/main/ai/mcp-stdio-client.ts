@@ -5,10 +5,8 @@ import type {
   McpToolDefinition,
 } from "./mcp-client-manager"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import {
-  getDefaultEnvironment,
-  StdioClientTransport,
-} from "@modelcontextprotocol/sdk/client/stdio.js"
+import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js"
+import { BoundedStdioMcpTransport } from "./bounded-mcp-transport"
 import { attachRootsCapability, notifyRootsChangedIfEnabled } from "./mcp-roots"
 
 // Production MCP client: spawns the configured executable and speaks MCP over
@@ -23,14 +21,13 @@ export const createStdioMcpClient: McpClientFactory = (
   if (!config.command) throw new Error(`MCP server "${config.id}" has no command for stdio.`)
   const client = new Client({ name: "synapse", version: "0.3.0" }, { capabilities: {} })
   attachRootsCapability(client, config, getExecutionWorkspaces)
-  const transport = new StdioClientTransport({
+  const transport = new BoundedStdioMcpTransport({
     command: config.command,
     args: config.args,
     // Merge over the safe default env so the child still finds PATH etc.; an
     // explicit env passed to the SDK would otherwise replace the defaults.
     env: config.env ? { ...getDefaultEnvironment(), ...config.env } : undefined,
     cwd: config.cwd,
-    stderr: "inherit",
   })
 
   return {

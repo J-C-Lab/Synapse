@@ -1,4 +1,4 @@
-import type { AgentArtifactStore } from "../artifacts/artifact-types"
+import type { AgentArtifactRef, AgentArtifactStore } from "../artifacts/artifact-types"
 import type { SummarizeResult } from "../context/context-compressor"
 import type { ChatContentBlock, ChatMessage } from "../providers/types"
 import type { AgentRunCheckpointV1, ModelBudgetAdmission } from "./checkpoint-schema"
@@ -181,6 +181,12 @@ async function maybeCompressHistory(
   // attempt before doing anything else this call — see
   // reconcileStuckCompressionAttempt's docstring.
   let checkpoint = await reconcileStuckCompressionAttempt(deps, checkpointIn)
+  if (checkpoint.compressionAttempt?.admission.estimatorIncompatible) {
+    // The incompatible verdict is checkpointed with the settled compression
+    // admission, so a restart after `after_compression_settle_ledger` still
+    // follows the same quarantine/finalization path as the original pass.
+    throw new EstimatorIncompatibleError(checkpoint)
+  }
 
   const runId = checkpoint.identity.runId
   const rootRunId = checkpoint.identity.rootRunId
@@ -250,6 +256,9 @@ async function maybeCompressHistory(
 
   const result = await compressor.compress(system, projected)
   checkpoint = latest
+  if (checkpoint.compressionAttempt?.admission.estimatorIncompatible) {
+    throw new EstimatorIncompatibleError(checkpoint)
+  }
   if (result.evicted.length === 0) {
     // Usually a genuine no-op (the projection already fits). But
     // ContextCompressor.compress() can also legitimately compute a
@@ -306,7 +315,31 @@ async function maybeCompressHistory(
     checkpoint.identity,
     checkpoint.config.authority.principal.actor
   )
-  const artifactRef = await captureHistorySlice(artifactStore, owner, runId, evictedDurable)
+  let artifactRef: AgentArtifactRef
+  try {
+    artifactRef = await captureHistorySlice(artifactStore, owner, runId, evictedDurable)
+  } catch (err) {
+    throw new HistoryCompressionError(
+      `history capture for run ${runId} failed; refusing to compact: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    )
+  }
+  // Compression is lossy only in the model-facing projection, never in the
+  // durable record. A quota/producer-limited capture returns a perfectly
+  // valid *incomplete* artifact ref rather than throwing; accepting it here
+  // would evict canonical history with no recoverable full slice. Require
+  // the exact source-byte contract and a real digest before touching the
+  // compaction checkpoint.
+  if (
+    !artifactRef.complete ||
+    artifactRef.sourceBytes !== artifactRef.capturedBytes ||
+    !/^[a-f0-9]{64}$/.test(artifactRef.sha256)
+  ) {
+    throw new HistoryCompressionError(
+      `history capture for run ${runId} was incomplete or unverifiable; refusing to compact`
+    )
+  }
   await deps.fault?.("after_history_capture")
 
   const record = buildCompactionRecord({
@@ -410,6 +443,30 @@ async function reconcileStuckCompressionAttempt(
 ): Promise<AgentRunCheckpointV1> {
   const attempt = checkpoint.compressionAttempt
   if (!attempt || attempt.admission.state !== "held") return checkpoint
+  // A crash can land after the durable budget settlement but before the
+  // checkpoint records `settled`. Inspect the idempotent ledger receipt
+  // first: forfeiting in that state would try to release a hold that no
+  // longer exists and permanently strand the run with BudgetOverRelease.
+  const ledger = await deps.budgetStore.load(checkpoint.identity.rootRunId)
+  const settled = ledger.operations[`settle:${attempt.admission.operationId}`]
+  if (
+    settled?.kind === "settle" &&
+    settled.accountId === attempt.admission.accountId &&
+    settled.attemptId === attempt.attemptId
+  ) {
+    const actualTokens = settled.consumedTokens ?? 0
+    const admission: ModelBudgetAdmission = {
+      ...attempt.admission,
+      state: "settled",
+      actualTokens,
+      estimatorIncompatible: actualTokens > attempt.admission.heldTokens,
+    }
+    return deps.runStore.mutate(checkpoint.identity.runId, checkpoint.revision, (cp) => ({
+      ...cp,
+      compressionAttempt: { attemptId: attempt.attemptId, admission },
+      updatedAt: deps.now(),
+    }))
+  }
   return forfeitCompressionAttempt(deps, checkpoint, attempt.attemptId, attempt.admission)
 }
 
@@ -530,22 +587,24 @@ async function runCompressionAttempt(
   await deps.fault?.("after_compression_provider_call")
 
   const actualTokens = summary.tokens
+  let estimatorIncompatible = false
   try {
     const ledgerNow = await deps.budgetStore.load(input.rootRunId)
-    const { ledger: settledLedger } = settleModelAttempt(ledgerNow, {
+    const settled = settleModelAttempt(ledgerNow, {
       operationId: `settle:${admission.operationId}`,
       accountId: admission.accountId,
       attemptId,
       heldTokens: admission.heldTokens,
       actualTokens,
     })
-    await deps.budgetStore.mutate(input.rootRunId, ledgerNow.revision, () => settledLedger)
+    estimatorIncompatible = settled.estimatorIncompatible
+    await deps.budgetStore.mutate(input.rootRunId, ledgerNow.revision, () => settled.ledger)
   } catch (err) {
     throw new CompressionAttemptFailure(cp, err)
   }
   await deps.fault?.("after_compression_settle_ledger")
 
-  admission = { ...admission, state: "settled", actualTokens }
+  admission = { ...admission, state: "settled", actualTokens, estimatorIncompatible }
   cp = await deps.runStore.mutate(cp.identity.runId, cp.revision, (c) => ({
     ...c,
     compressionAttempt: { attemptId, admission },

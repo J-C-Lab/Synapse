@@ -461,7 +461,9 @@ export class ConversationStore {
       if (!file.endsWith(".json")) continue
       const id = file.slice(0, -".json".length)
       if (!isSafeId(id)) continue
-      const record = await this.withLock(id, () => this.readForMutation(id))
+      // Retention may irreversibly remove bytes, so it cannot fold corrupt
+      // canonical records into "missing" like compatibility reads do.
+      const record = await this.withLock(id, () => this.readForRetention(id))
       if (!record) continue
       if (record.state === "active") {
         for (const uri of record.artifactUris) uris.add(uri)
@@ -489,6 +491,48 @@ export class ConversationStore {
     const migrated = migrateLegacyRecord(legacy)
     await this.writeRecord(migrated)
     return migrated
+  }
+
+  /** Strict read used solely by destructive retention scans. Unlike normal
+   * mutation compatibility reads, JSON syntax errors and an incomplete V2
+   * reference index are not folded into "conversation missing": that would
+   * make an artifact referenced by a damaged canonical record eligible for
+   * irreversible GC. */
+  private async readForRetention(id: string): Promise<ConversationRecordV2 | undefined> {
+    let text: string
+    try {
+      text = await fs.readFile(this.filePath(id), "utf-8")
+    } catch (err) {
+      if (isFileNotFound(err)) return undefined
+      throw err
+    }
+    let raw: unknown
+    try {
+      raw = JSON.parse(text) as unknown
+    } catch (err) {
+      throw new Error(
+        `conversation ${id} is malformed and cannot be scanned for artifact retention`,
+        {
+          cause: err,
+        }
+      )
+    }
+    const v2 = tryParseV2(raw)
+    if (v2) {
+      const source = raw as Record<string, unknown>
+      if (
+        v2.id !== id ||
+        !Array.isArray(source.artifactUris) ||
+        !source.artifactUris.every((uri) => typeof uri === "string") ||
+        (source.state !== "active" && source.state !== "deleted")
+      ) {
+        throw new Error(`conversation ${id} has an incomplete artifact reference index`)
+      }
+      return v2
+    }
+    const legacy = tryParseLegacy(raw)
+    if (legacy) return migrateLegacyRecord(legacy)
+    throw new Error(`conversation ${id} has an unsupported structure for artifact retention`)
   }
 
   private async writeRecord(record: ConversationRecordV2): Promise<void> {

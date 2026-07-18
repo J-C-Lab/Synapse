@@ -12,6 +12,7 @@ import { join } from "node:path"
 import { afterAll, describe, expect, it, vi } from "vitest"
 import { AgentMissingKeyError, AgentService } from "./agent-service"
 import { DEFAULT_TOOL_RESILIENCE } from "./ai-settings-store"
+import { ArtifactStore } from "./artifacts/artifact-store"
 import { RootBudgetLedgerStore } from "./budget/root-budget-ledger"
 import { ConversationStore } from "./conversation-store"
 import { emptyUsage } from "./providers/types"
@@ -237,6 +238,53 @@ function minimalService(overrides: Partial<AgentServiceOptions>): AgentService {
 }
 
 describe("agentService — durable event emission", () => {
+  it("wires the runtime artifact backend through the real interactive driver", async () => {
+    const stores = runStores()
+    const artifactStore = new ArtifactStore(
+      join(tempDir("synapse-agent-artifacts-"), "artifacts"),
+      {
+        quotaLimits: {
+          perArtifactBytes: 100_000,
+          perRunBytes: 200_000,
+          globalBytes: 500_000,
+          minFreeBytes: 0,
+          minFreeFraction: 0,
+          manifestReserveBytes: 4096,
+        },
+        statDiskSpace: async () => ({ freeBytes: 1_000_000, totalBytes: 1_000_000 }),
+      }
+    )
+    const host = fakeHost({ readOnlyHint: true })
+    host.invokeTool = vi.fn(async () => ({
+      content: [{ type: "text" as const, text: "artifact-result-".repeat(4_000) }],
+    }))
+    const svc = new AgentService({
+      credentials: credentials("sk-test"),
+      tools: new AiToolRegistry(host),
+      conversations: conversations().store,
+      artifactStore,
+      sendEvent: () => {},
+      createProvider: () =>
+        fakeProvider([
+          { toolUses: [{ id: "artifact-call", name: ACT_TOOL_NAME, input: {} }] },
+          { text: "done" },
+        ]),
+      now: () => 1000,
+      ...stores,
+    })
+
+    await svc.chat("artifact-conv", "go")
+    const [run] = await stores.runStore.scan({})
+    const loaded = await stores.runStore.load(run!.runId)
+    expect(loaded.ok).toBe(true)
+    if (!loaded.ok) return
+    const call = loaded.checkpoint.toolBatches[0]!.calls[0]!
+    expect(call.resolution.status).toBe("resolved")
+    if (call.resolution.status !== "resolved") return
+    expect(call.resolution.result.artifact?.complete).toBe(true)
+    expect(call.resolution.fullArtifact).toBeDefined()
+  })
+
   it("emits run_started and run_completed to the durable event journal for a normal chat turn", async () => {
     const stores = runStores()
     const svc = new AgentService({

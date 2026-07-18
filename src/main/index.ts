@@ -1627,6 +1627,11 @@ if (isMcpStdioMode) {
 
       applyCsp()
       registerStaticProtocol()
+      // Reconcile only artifacts interrupted by a prior process before any
+      // driver or GC can start. This settles manifest-backed captures exactly
+      // and removes unmanifested debris; doing it from a normal GC sweep
+      // would race live capture reservations.
+      await artifactStore.reconcileStartup()
       plugins = initPluginHost()
       app.on("browser-window-created", (_, win) => {
         bindCapabilityPromptLifecycle(win)

@@ -644,6 +644,7 @@ async function executionPhase(
       preview: labeled,
       complete: emergencyCapped ? false : captured.complete,
       artifact: captured.artifact,
+      ...(captured.offloadFailed ? { offloadFailureCode: "artifact-capture-failed" as const } : {}),
     }
     fullArtifact = captured.fullArtifact
   }

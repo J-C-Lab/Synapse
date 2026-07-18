@@ -268,6 +268,7 @@ export class ArtifactStore implements AgentArtifactStore {
   private readonly now: () => number
   private readonly diskRecheckIntervalBytes: number
   private readonly isArtifactReferenced?: (uri: AgentArtifactRef["uri"]) => Promise<boolean>
+  private startupReconciliation?: Promise<{ reconciledCount: number; reclaimedBytes: number }>
 
   constructor(
     private readonly baseDir: string,
@@ -407,6 +408,13 @@ export class ArtifactStore implements AgentArtifactStore {
             break
           }
         }
+        // A producer can be aborted after yielding its final chunk but before
+        // async iteration reaches EOF. Re-check after the loop so that race
+        // is never misreported as a complete artifact.
+        if (complete && producer.signal?.aborted) {
+          complete = false
+          truncationReason = "producer-aborted"
+        }
       } catch {
         complete = false
         truncationReason = "write-error"
@@ -463,6 +471,9 @@ export class ArtifactStore implements AgentArtifactStore {
       delegateToRunIds: [...(metadata.delegateToRunIds ?? [])],
     }
 
+    // The manifest is this capture's durable commit record, so it lands
+    // before the reservation is settled. Startup can then reconcile a crash
+    // in the remaining window from a valid manifest plus pending grant.
     // The manifest is real bytes on disk too — settle its actual measured
     // size (matching atomic-json-store.ts's `${JSON.stringify(v, null, 2)}\n`
     // encoding exactly) alongside the payload in the same settle operation.
@@ -470,13 +481,27 @@ export class ArtifactStore implements AgentArtifactStore {
     // silently clamping if this ever exceeds the reserved headroom — which
     // estimateManifestReserveBytes is specifically designed to prevent.
     const manifestBytes = Buffer.byteLength(`${JSON.stringify(manifest, null, 2)}\n`, "utf-8")
+    try {
+      await writeJsonFile(this.manifestPath(metadata.runId, artifactId), manifest)
+    } catch (err) {
+      // No manifest means no durable reference. Best-effort compensation
+      // handles a normal I/O error; startup removes an unmanifested pending
+      // directory if the process dies in this branch.
+      await this.quotaStore
+        .settle({
+          operationId: `${reserveOperationId}:abandon`,
+          reserveOperationId,
+          actualBytes: 0,
+        })
+        .catch(() => {})
+      await fs.rm(artifactDir, { recursive: true, force: true }).catch(() => {})
+      throw err
+    }
     await this.quotaStore.settle({
       operationId: `${reserveOperationId}:settle`,
       reserveOperationId,
       actualBytes: capturedBytes + manifestBytes,
     })
-
-    await writeJsonFile(this.manifestPath(metadata.runId, artifactId), manifest)
     return ref
   }
 
@@ -491,6 +516,10 @@ export class ArtifactStore implements AgentArtifactStore {
     caller: ArtifactCaller
   ): Promise<Uint8Array> {
     const { manifest } = await this.loadAndAuthorize(ref, caller)
+    // A manifest is only metadata; never serve bytes merely because it
+    // parses. Verify exact length and digest first so short reads, a
+    // same-length replacement, and a post-capture append all fail closed.
+    await this.verifyArtifactData(manifest.ref)
     const capturedBytes = manifest.ref.capturedBytes
     const start = range.start
     const end = range.end ?? capturedBytes
@@ -514,7 +543,17 @@ export class ArtifactStore implements AgentArtifactStore {
     const handle = await fs.open(dataPath, "r")
     try {
       const buffer = Buffer.alloc(length)
-      await handle.read(buffer, 0, length, start)
+      let offset = 0
+      while (offset < length) {
+        const { bytesRead } = await handle.read(buffer, offset, length - offset, start + offset)
+        if (bytesRead === 0) {
+          throw new ArtifactReadError(
+            "artifact_corrupt",
+            `artifact data ended early while reading ${ref.uri}`
+          )
+        }
+        offset += bytesRead
+      }
       return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
     } finally {
       await handle.close()
@@ -532,8 +571,65 @@ export class ArtifactStore implements AgentArtifactStore {
     await this.pinStore.release(runId, finalizationId, this.now())
   }
 
-  /** Reconciles crash-abandoned reservations/temp files (pre-existing), then
-   *  runs the real Task 21 retention sweep: every artifact whose run has
+  /** Reconciles only reservations left by a previous process. This is an
+   * explicit startup phase, not part of GC: an ordinary GC sweep can overlap
+   * a live capture and therefore must never decide its pending reservation is
+   * abandoned. Valid manifest/data pairs are settled exactly; everything
+   * else is deleted before a zero-byte settlement so orphaned bytes cannot
+   * escape both the quota ledger and later retention. */
+  async reconcileStartup(): Promise<{ reconciledCount: number; reclaimedBytes: number }> {
+    if (!this.startupReconciliation) {
+      this.startupReconciliation = this.reconcileStartupOnce()
+    }
+    return this.startupReconciliation
+  }
+
+  private async reconcileStartupOnce(): Promise<{
+    reconciledCount: number
+    reclaimedBytes: number
+  }> {
+    const result = await this.quotaStore.reconcileStartupPending(async (pending) => {
+      if (!isSafeId(pending.runId) || !isSafeId(pending.artifactId)) return undefined
+      const artifactDir = path.join(this.baseDir, pending.runId, pending.artifactId)
+      const manifest = await this.readManifestForGc(pending.runId, pending.artifactId)
+      if (
+        !manifest ||
+        manifest.ref.runId !== pending.runId ||
+        manifest.ref.artifactId !== pending.artifactId
+      ) {
+        await fs.rm(artifactDir, { recursive: true, force: true })
+        return 0
+      }
+      try {
+        await this.verifyArtifactData(manifest.ref)
+        const manifestPath = await this.resolveContainedPath(
+          pending.runId,
+          pending.artifactId,
+          MANIFEST_FILE
+        )
+        const manifestBytes = (await fs.stat(manifestPath)).size
+        const actualBytes = manifest.ref.capturedBytes + manifestBytes
+        // A manifest whose physical bytes exceed its original reservation is
+        // not safely recoverable by silently committing an overrun. Remove
+        // the orphan and settle zero; the operation log remains internally
+        // consistent and a caller never inherits unaccounted disk usage.
+        if (actualBytes > pending.bytes) {
+          await fs.rm(artifactDir, { recursive: true, force: true })
+          return 0
+        }
+        return actualBytes
+      } catch {
+        await fs.rm(artifactDir, { recursive: true, force: true })
+        return 0
+      }
+    })
+    // At this point no drivers have started in production. Clearing tmp
+    // files is safe only in this startup phase, never in collectEligible().
+    await this.removeOrphanedTempFiles()
+    return result
+  }
+
+  /** Runs the Task 21 retention sweep: every artifact whose run has
    *  released its pin AND is not currently referenced (per
    *  `isArtifactReferenced`, re-checked fresh for each candidate rather than
    *  from any cached index) has its bytes deleted and a tombstone recorded.
@@ -541,7 +637,10 @@ export class ArtifactStore implements AgentArtifactStore {
    *  construction — a store with no way to know what's still referenced
    *  must never guess. */
   async collectEligible(): Promise<ArtifactGcResult> {
-    const reconciled = await this.quotaStore.reconcileAbandoned()
+    // Do not reconcile pending reservations or remove tmp files here. GC is
+    // allowed while a live capture owns both, and revoking that reservation
+    // would turn a successful capture into UnknownArtifactReservationError.
+    // Startup-only recovery is performed by reconcileStartup().
     // A prior process may have died after removing an eligible directory but
     // before reclaiming its settled quota. Detect only directories that are
     // genuinely absent (not malformed or merely unreadable) and compensate
@@ -559,13 +658,12 @@ export class ArtifactStore implements AgentArtifactStore {
         throw err
       }
     })
-    const orphanedTempFilesRemoved = await this.removeOrphanedTempFiles()
     const deletion = await this.deleteEligibleArtifacts()
     await this.tombstoneStore.pruneExpired(this.now())
     return {
-      reconciledReservations: reconciled.reconciledCount,
-      reclaimedReservedBytes: reconciled.reclaimedBytes,
-      orphanedTempFilesRemoved,
+      reconciledReservations: 0,
+      reclaimedReservedBytes: 0,
+      orphanedTempFilesRemoved: 0,
       deletedArtifacts: deletion.deletedArtifacts,
       deletedBytes: deletion.deletedBytes,
     }
@@ -646,13 +744,13 @@ export class ArtifactStore implements AgentArtifactStore {
         if (referenced) continue
         const manifest = manifestByArtifactId.get(candidate.artifactId)!
         const artifactDir = path.join(runDir, candidate.artifactId)
-        await fs.rm(artifactDir, { recursive: true, force: true })
         await this.tombstoneStore.record(
           buildArtifactTombstone(manifest.ref, this.now(), "retention-terminal-unreferenced")
         )
-        // Physical deletion precedes quota reclaim. If the process dies in
-        // between, the next collectEligible() detects the missing directory
-        // above and replays this release from the ledger without guessing.
+        // Make deletion intent durable before removing bytes. A crash before
+        // fs.rm merely retries next sweep; a crash after it is reconciled
+        // from quota.json before another quota decision is made.
+        await fs.rm(artifactDir, { recursive: true, force: true })
         await this.quotaStore.reclaim({
           operationId: `gc-reclaim:${runId}:${candidate.artifactId}`,
           runId,
@@ -840,6 +938,50 @@ export class ArtifactStore implements AgentArtifactStore {
     }
 
     return { manifest }
+  }
+
+  /** Streams and verifies the authoritative data file. `FileHandle.read`
+   * may legally return fewer bytes than requested, so this never relies on
+   * a single read or implicitly zero-filled Buffer tail. A full digest check
+   * is deliberately done before every public read for correctness; a future
+   * verified chunk index/cache may optimize that only if it preserves this
+   * exact invalidation and mutation-detection contract. */
+  private async verifyArtifactData(ref: AgentArtifactRef): Promise<void> {
+    const dataPath = await this.resolveContainedPath(ref.runId, ref.artifactId, DATA_FILE)
+    const handle = await fs.open(dataPath, "r")
+    try {
+      const hash = createHash("sha256")
+      let offset = 0
+      const chunkSize = 64 * 1024
+      while (offset < ref.capturedBytes) {
+        const buffer = Buffer.alloc(Math.min(chunkSize, ref.capturedBytes - offset))
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset)
+        if (bytesRead === 0) {
+          throw new ArtifactReadError(
+            "artifact_corrupt",
+            `artifact data is shorter than its manifest for ${ref.uri}`
+          )
+        }
+        hash.update(buffer.subarray(0, bytesRead))
+        offset += bytesRead
+      }
+      const extra = Buffer.alloc(1)
+      const { bytesRead: extraBytes } = await handle.read(extra, 0, 1, ref.capturedBytes)
+      if (extraBytes !== 0) {
+        throw new ArtifactReadError(
+          "artifact_corrupt",
+          `artifact data is longer than its manifest for ${ref.uri}`
+        )
+      }
+      if (hash.digest("hex") !== ref.sha256) {
+        throw new ArtifactReadError(
+          "artifact_corrupt",
+          `artifact data digest does not match its manifest for ${ref.uri}`
+        )
+      }
+    } finally {
+      await handle.close()
+    }
   }
 
   /** Resolves `<baseDir>/<runId>/<artifactId>/<fileName>` and verifies —

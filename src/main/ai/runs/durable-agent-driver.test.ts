@@ -13,7 +13,6 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { Logger } from "../../logging"
-import { ArtifactQuotaExceededError } from "../artifacts/artifact-quota"
 import { ArtifactStore } from "../artifacts/artifact-store"
 import {
   createRootBudgetLedger,
@@ -735,7 +734,7 @@ describe("advanceDurableRun — context compression (Task 20)", () => {
         },
         runId
       )
-    ).rejects.toBeInstanceOf(ArtifactQuotaExceededError)
+    ).rejects.toBeInstanceOf(HistoryCompressionError)
 
     const reloaded = await runStore.load(runId)
     if (!reloaded.ok) throw new Error("expected ok checkpoint")
@@ -967,6 +966,60 @@ describe("advanceDurableRun — context compression (Task 20)", () => {
     // not the crashed one.
     expect(outcome.checkpoint.compressionAttempt?.admission.state).toBe("settled")
     expect(outcome.checkpoint.contextCompaction).toBeDefined()
+  })
+
+  it("replays a settled summarizer receipt after an after_settle crash instead of forfeiting a nonexistent hold", async () => {
+    const runId = "compress-after-settle"
+    const messages = [
+      userMsg("m1", longText("old", 200)),
+      assistantMsg("m2", longText("old2", 200)),
+      userMsg("m3", "recent question"),
+    ]
+    await runStore.create(
+      checkpointForCompression(runId, messages, { enabled: true, thresholdTokens: 100 })
+    )
+    await budgetStore.create(createRootBudgetLedger(runId, 10_000))
+    await expect(
+      advanceDurableRun(
+        {
+          runStore,
+          budgetStore,
+          provider: fakeProviderWithSummarizer(modelReply, "SUMMARY"),
+          tools: () => [],
+          now: () => 1000,
+          maxSteps: 10,
+          artifactStore,
+          fault: (point) => {
+            if (point === "after_compression_settle_ledger") throw new Error("simulated crash")
+          },
+        },
+        runId
+      )
+    ).rejects.toThrow("simulated crash")
+
+    const stuck = await runStore.load(runId)
+    if (!stuck.ok) throw new Error("expected checkpoint")
+    expect(stuck.checkpoint.compressionAttempt?.admission.state).toBe("held")
+    const settledLedger = await budgetStore.load(runId)
+    expect(settledLedger.accounts[ROOT_ACCOUNT_ID]!.heldTokens).toBe(0)
+
+    // Recovery discovers the durable settle receipt and first repairs the
+    // checkpoint to settled; it never invokes forfeitModelAttempt against a
+    // hold that ledger settlement already released.
+    const outcome = await advanceDurableRun(
+      {
+        runStore,
+        budgetStore,
+        provider: fakeProviderWithSummarizer(modelReply, "SUMMARY retry"),
+        tools: () => [],
+        now: () => 2000,
+        maxSteps: 10,
+        artifactStore,
+      },
+      runId
+    )
+    expect(outcome.kind).toBe("compressed")
+    expect((await budgetStore.load(runId)).accounts[ROOT_ACCOUNT_ID]!.heldTokens).toBe(0)
   })
 
   it("a compression budget hold left stuck 'planned' by a crash before the ledger admit resumes safely in place, never double-charging", async () => {

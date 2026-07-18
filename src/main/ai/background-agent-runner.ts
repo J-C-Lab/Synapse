@@ -153,6 +153,7 @@ export class BackgroundAgentRunner {
             },
             now: this.now,
             maxSteps: checkpoint.config.maxSteps,
+            artifactStore: this.options.artifactStore,
             signal: controller.signal,
           },
           toolBatch: {
@@ -164,6 +165,9 @@ export class BackgroundAgentRunner {
               invocationId: input.invocationId,
               triggerInstanceId: input.instanceId,
             },
+            artifactCapture: this.options.artifactStore
+              ? { store: this.options.artifactStore }
+              : undefined,
             // Background runs have no UI to prompt — the whole approval
             // decision is this hard resolver (a per-run tool-call budget
             // check), which always resolves definitively, so

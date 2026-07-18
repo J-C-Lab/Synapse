@@ -185,6 +185,24 @@ describe("artifactStore.read — ranges", () => {
     const read = await store.read(ref, { start: 5, end: 1000 }, caller())
     expect(Buffer.from(read).toString("utf-8")).toBe("56789")
   })
+
+  it("rejects a same-length data replacement whose digest no longer matches", async () => {
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    const ref = await store.capture(bytesOf("0123456789"), metadata(), noopProducer())
+    await fs.writeFile(join(dir, ref.runId, ref.artifactId, "data.bin"), "abcdefghij")
+    await expect(store.read(ref, { start: 0 }, caller())).rejects.toMatchObject({
+      code: "artifact_corrupt",
+    })
+  })
+
+  it("rejects a shortened data file instead of returning a zero-filled tail", async () => {
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    const ref = await store.capture(bytesOf("0123456789"), metadata(), noopProducer())
+    await fs.writeFile(join(dir, ref.runId, ref.artifactId, "data.bin"), "0123")
+    await expect(store.read(ref, { start: 0 }, caller())).rejects.toMatchObject({
+      code: "artifact_corrupt",
+    })
+  })
 })
 
 describe("artifactStore.capture — truncation and allocation limits", () => {
@@ -446,6 +464,19 @@ describe("artifactStore.capture — producer abort and write failure", () => {
     expect(aborts).toEqual(["producer-aborted"])
     const read = await store.read(ref, { start: 0 }, caller())
     expect(Buffer.from(read).toString("utf-8")).toBe("before-abort-")
+  })
+
+  it("marks producer-aborted when cancellation races with normal EOF", async () => {
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    const controller = new AbortController()
+    async function* input(): AsyncIterable<Uint8Array> {
+      yield bytesOf("last-chunk")
+      controller.abort()
+    }
+    const producer = { abort: vi.fn(), signal: controller.signal }
+    const ref = await store.capture(input(), metadata(), producer)
+    expect(ref.complete).toBe(false)
+    expect(ref.truncationReason).toBe("producer-aborted")
   })
 
   it("marks write-error and preserves already-captured bytes when the input iterable throws", async () => {
@@ -798,7 +829,7 @@ describe("artifactStore — traversal, forgery, and corruption defenses", () => 
 })
 
 describe("artifactStore.collectEligible", () => {
-  it("reconciles an abandoned reservation left over from a crash and removes an orphaned temp file", async () => {
+  it("reconciles an abandoned reservation only at startup and removes its orphaned temp file", async () => {
     const manifestReserve = estimateManifestReserveBytes(metadata())
     const limits = {
       perArtifactBytes: 100,
@@ -824,12 +855,16 @@ describe("artifactStore.collectEligible", () => {
     await fs.writeFile(join(artifactDir, "data.bin.tmp"), "orphaned partial bytes")
 
     const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk, quotaLimits: limits })
-    const result = await store.collectEligible()
-    expect(result.reconciledReservations).toBe(1)
-    expect(result.reclaimedReservedBytes).toBe(100)
-    expect(result.orphanedTempFilesRemoved).toBe(1)
+    const startup = await store.reconcileStartup()
+    expect(startup.reconciledCount).toBe(1)
+    expect(startup.reclaimedBytes).toBe(100)
 
     await expect(fs.access(join(artifactDir, "data.bin.tmp"))).rejects.toThrow()
+
+    const result = await store.collectEligible()
+    expect(result.reconciledReservations).toBe(0)
+    expect(result.reclaimedReservedBytes).toBe(0)
+    expect(result.orphanedTempFilesRemoved).toBe(0)
 
     // The reconciled reservation frees the run's budget for a fresh capture.
     const ref = await store.capture(bytesOf("fresh"), metadata(), noopProducer())
@@ -846,6 +881,31 @@ describe("artifactStore.collectEligible", () => {
       deletedArtifacts: 0,
       deletedBytes: 0,
     })
+  })
+
+  it("does not reclaim a live capture reservation when GC runs concurrently", async () => {
+    let releaseSecondChunk!: () => void
+    let firstChunkSeen!: () => void
+    const firstChunk = new Promise<void>((resolve) => {
+      firstChunkSeen = resolve
+    })
+    const secondChunk = new Promise<void>((resolve) => {
+      releaseSecondChunk = resolve
+    })
+    async function* slowProducer(): AsyncIterable<Uint8Array> {
+      yield bytesOf("first")
+      firstChunkSeen()
+      await secondChunk
+      yield bytesOf(" second")
+    }
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    const capture = store.capture(slowProducer(), metadata(), noopProducer())
+    await firstChunk
+
+    const gc = await store.collectEligible()
+    expect(gc.reconciledReservations).toBe(0)
+    releaseSecondChunk()
+    await expect(capture).resolves.toMatchObject({ complete: true })
   })
 })
 

@@ -217,9 +217,14 @@ describe("applyNonStreamingEmergencyCap", () => {
     expect(capped.isError).toBe(true)
     expect(capped.content).toHaveLength(1)
     const text = (capped.content[0] as { text: string }).text
-    expect(text.length).toBeGreaterThan(500)
-    expect(text).toContain("x".repeat(500))
-    expect(text).toContain("1500 more chars omitted")
+    expect(text.length).toBeLessThanOrEqual(500)
+    expect(text).toContain(
+      "x".repeat(
+        500 -
+          "\n\n[Synapse: non-streaming buffering cap reached; output was rejected before persistence. This result is incomplete.]"
+            .length
+      )
+    )
     expect(text).toContain("incomplete")
   })
 
@@ -227,7 +232,8 @@ describe("applyNonStreamingEmergencyCap", () => {
     const result = { content: [{ type: "text" as const, text: "y".repeat(100) }] }
     const capped = applyNonStreamingEmergencyCap(result, 10)
     const text = (capped.content[0] as { text: string }).text
-    expect(text).toMatch(/incomplete/)
+    // A cap smaller than the safety notice must still remain a hard cap.
+    expect(text.length).toBeLessThanOrEqual(10)
     expect(capped.isError).toBe(true)
   })
 
@@ -262,7 +268,7 @@ describe("applyNonStreamingEmergencyCap", () => {
     const result = { content: [{ type: "text" as const, text: "v".repeat(2000) }] }
     const capped = applyNonStreamingEmergencyCap(result, 500)
     expect(isNonStreamingEmergencyCapMarker(capped.structured)).toBe(true)
-    expect(capped.structured).toEqual({ synapseNonStreamingCapped: true, omittedChars: 1500 })
+    expect(capped.structured).toEqual({ synapseNonStreamingCapped: true, omittedChars: 1616 })
   })
 
   it("leaves structured untouched (undefined) when under the cap", () => {

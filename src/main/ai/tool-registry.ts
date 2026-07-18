@@ -6,6 +6,10 @@ import { createHash } from "node:crypto"
 import { logger } from "../logging"
 import { projectModelVisibleTool, warnOnce } from "./guardrails/tool-metadata"
 import { frozenProvenance } from "./runs/authority-snapshot"
+import {
+  boundNonStreamingToolResult,
+  NON_STREAMING_INGRESS_CAP_CHARS,
+} from "./tool-result-boundary"
 import { noneRecoveryAdapter } from "./tools/invocation-recovery"
 
 // Bridges the plugin tool surface to what a model can call. Plugin fqNames look
@@ -36,7 +40,7 @@ import { noneRecoveryAdapter } from "./tools/invocation-recovery"
  * It exists purely as the last-resort backstop for the pathological case
  * that capture path was never designed to buffer safely in the first place.
  */
-export const NON_STREAMING_EMERGENCY_CAP_CHARS = 2_000_000
+export const NON_STREAMING_EMERGENCY_CAP_CHARS = NON_STREAMING_INGRESS_CAP_CHARS
 
 /** The slice of PluginHost the AI tool registry depends on. */
 export interface ToolHostPort {
@@ -212,26 +216,7 @@ export function applyNonStreamingEmergencyCap(
   result: ToolResult,
   maxChars: number = NON_STREAMING_EMERGENCY_CAP_CHARS
 ): ToolResult {
-  const text = renderToolResultText(result)
-  if (text.length <= maxChars) return result
-  const omittedChars = text.length - maxChars
-  const marker: NonStreamingEmergencyCapMarker = {
-    synapseNonStreamingCapped: true,
-    omittedChars,
-  }
-  return {
-    content: [
-      {
-        type: "text",
-        text:
-          `${text.slice(0, maxChars)}\n\n[Synapse: tool output exceeded the ${maxChars}-character ` +
-          `non-streaming buffering cap (${omittedChars} more chars omitted) and could not be safely ` +
-          "captured in full before this cap applied. This result is incomplete.]",
-      },
-    ],
-    isError: true,
-    structured: marker,
-  }
+  return boundNonStreamingToolResult(result, maxChars)
 }
 
 export function sanitizeToolName(fqName: string): string {

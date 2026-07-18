@@ -92,6 +92,7 @@ export class SubagentRunner {
           },
           now: this.now,
           maxSteps: checkpoint.config.maxSteps,
+          artifactStore: this.options.artifactStore,
           signal: input.signal,
         },
         toolBatch: {
@@ -103,6 +104,9 @@ export class SubagentRunner {
             conversationId: checkpoint.identity.conversationId,
             workspaceId: checkpoint.identity.workspaceId,
           },
+          artifactCapture: this.options.artifactStore
+            ? { store: this.options.artifactStore }
+            : undefined,
           // Matches today's behavior exactly: SubagentRunner never passed an
           // `approve` hook to the old AgentRuntime, and AgentRuntime auto-
           // allows every call when one is absent — a subagent already runs

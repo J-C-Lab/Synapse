@@ -128,6 +128,9 @@ function toolCallSummaries(checkpoint: AgentRunCheckpointV1): AgentRunToolCallSu
           ? {
               isError: call.resolution.result.isError,
               resultPreview: call.resolution.result.preview,
+              ...(call.resolution.result.offloadFailureCode
+                ? { offloadFailureCode: call.resolution.result.offloadFailureCode }
+                : {}),
             }
           : {}),
       })

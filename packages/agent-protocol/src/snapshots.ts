@@ -38,6 +38,9 @@ export interface AgentRunToolCallSummary {
    *  never-duplicate-tool-arguments-or-results boundary run-projection.ts's
    *  header already documents. */
   resultPreview?: string
+  /** An attempted artifact offload failed, so the bounded preview is the
+   * only surviving result representation. */
+  offloadFailureCode?: "artifact-capture-failed"
 }
 
 export type AgentRunModelAttemptState =

@@ -110,6 +110,57 @@ describe("validateCheckpoint", () => {
     expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
   })
 
+  it("rejects forged artifact pointers before projection/finalization can consume them", () => {
+    const checkpoint = minimalCheckpoint()
+    const fullRef = {
+      uri: "artifact://run/run-1/art-1" as const,
+      runId: "run-1",
+      artifactId: "art-1",
+      kind: "tool-result" as const,
+      mediaType: "text/plain",
+      capturedBytes: 12,
+      sourceBytes: 12,
+      complete: true,
+      sha256: "a".repeat(64),
+      createdAt: 1,
+    }
+    const withArtifact = sealCheckpointIntegrity({
+      ...checkpoint,
+      messages: [
+        {
+          messageId: "m1",
+          message: {
+            role: "user",
+            content: [
+              { type: "tool_result", toolUseId: "t1", content: "preview", artifact: fullRef },
+            ],
+          },
+        },
+      ],
+    })
+    expect(validateCheckpoint(withArtifact).ok).toBe(true)
+    const forged = sealCheckpointIntegrity({
+      ...withArtifact,
+      messages: [
+        {
+          ...withArtifact.messages[0]!,
+          message: {
+            ...withArtifact.messages[0]!.message,
+            content: [
+              {
+                type: "tool_result",
+                toolUseId: "t1",
+                content: "preview",
+                artifact: { ...fullRef, sha256: "not-a-digest" },
+              },
+            ],
+          },
+        },
+      ],
+    } as AgentRunCheckpointV1)
+    expect(validateCheckpoint(forged)).toEqual({ ok: false, reason: "malformed" })
+  })
+
   it("rejects authority or frozen context whose digest no longer matches its payload", () => {
     const checkpoint = minimalCheckpoint()
     expect(

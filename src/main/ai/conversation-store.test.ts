@@ -585,4 +585,11 @@ describe("conversationStore.collectReferencedArtifactUris (Task 21)", () => {
     const fresh = new ConversationStore(join(dir, "does-not-exist"))
     expect(await fresh.collectReferencedArtifactUris(1000, 60_000)).toEqual(new Set())
   })
+
+  it("fails closed when any canonical conversation is malformed", async () => {
+    const s = store()
+    await commitWithArtifact(s, "good-conv", "run-1", "artifact://run/run-1/a1")
+    await fs.writeFile(join(dir, "damaged-conv.json"), "{ not valid json")
+    await expect(s.collectReferencedArtifactUris(1000, 60_000)).rejects.toThrow(/malformed/)
+  })
 })

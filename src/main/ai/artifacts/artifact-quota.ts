@@ -126,6 +126,14 @@ interface PendingReservation {
   bytes: number
 }
 
+/** A reservation that survived until process startup. It deliberately
+ * exposes no mutable ledger internals: ArtifactStore supplies the only safe
+ * answer to "how many bytes really made it to disk?" by inspecting its own
+ * manifest/data pair before this store settles the grant. */
+export interface PendingArtifactReservation extends PendingReservation {
+  reserveOperationId: string
+}
+
 export interface ArtifactQuotaOperationReceipt {
   operationId: string
   kind: "reserve" | "settle" | "reclaim"
@@ -232,7 +240,14 @@ export function reserveArtifactCapacity(
   const globalRemainingTotal =
     input.limits.globalBytes - ledger.globalReservedBytes - ledger.globalCommittedBytes
   const diskRemainingTotal =
-    input.disk.freeBytes - freeSpaceReserveBytes(input.disk.totalBytes, input.limits)
+    // statfs already reflects committed bytes, but it cannot reserve space
+    // for captures another caller has admitted and not yet settled. Count
+    // those pending grants exactly once here. This is intentionally
+    // conservative while a temporary file is partly written: the unsafe
+    // alternative lets serial reservations overcommit a stable statfs sample.
+    input.disk.freeBytes -
+    freeSpaceReserveBytes(input.disk.totalBytes, input.limits) -
+    ledger.globalReservedBytes
 
   // True exhaustion: not even the manifest's own headroom fits anywhere.
   // This is the one case a capture cannot produce a checkpointed ref for at
@@ -597,6 +612,50 @@ export class ArtifactQuotaStore {
       const result = reconcileAbandonedPendingReservations(ledger, `reconcile-${Date.now()}`)
       await this.save(result.ledger)
       return { reconciledCount: result.reconciledCount, reclaimedBytes: result.reclaimedBytes }
+    })
+  }
+
+  /** Startup-only reconciliation for captures interrupted between reserve
+   * and settle. The artifact store owns the filesystem state, so it returns
+   * an exact committed byte count (or zero after safely deleting an
+   * unmanifested/corrupt capture). Returning undefined is fail-closed: leave
+   * the reservation pending for a later startup rather than guess.
+   *
+   * Do not call this from ordinary GC. A live process can legitimately have
+   * pending reservations while its producer streams data. */
+  async reconcileStartupPending(
+    recover: (pending: PendingArtifactReservation) => Promise<number | undefined>
+  ): Promise<{ reconciledCount: number; reclaimedBytes: number }> {
+    return this.withLock(async () => {
+      let ledger = await this.load()
+      let reconciledCount = 0
+      let reclaimedBytes = 0
+      for (const [reserveOperationId, pending] of Object.entries(ledger.pendingReservations)) {
+        let actualBytes: number | undefined
+        try {
+          actualBytes = await recover({ ...pending, reserveOperationId })
+        } catch {
+          continue
+        }
+        if (
+          actualBytes === undefined ||
+          !Number.isSafeInteger(actualBytes) ||
+          actualBytes < 0 ||
+          actualBytes > pending.bytes
+        ) {
+          continue
+        }
+        const outcome = settleArtifactCapacity(ledger, {
+          operationId: `startup-reconcile:${reserveOperationId}`,
+          reserveOperationId,
+          actualBytes,
+        })
+        ledger = outcome.ledger
+        reconciledCount += 1
+        reclaimedBytes += outcome.receipt.releasedBytes ?? 0
+      }
+      if (reconciledCount > 0) await this.save(ledger)
+      return { reconciledCount, reclaimedBytes }
     })
   }
 

@@ -12,6 +12,7 @@ import type {
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import vm from "node:vm"
+import { boundNonStreamingToolResult } from "../ai/tool-result-boundary"
 import { logger } from "../logging"
 import { CapabilityDenied } from "./capability-gate"
 import { PermissionDenied } from "./permissions"
@@ -309,7 +310,9 @@ export class PluginSandbox {
         ),
         rejectWhenAborted(signal),
       ])
-      return normalizeToolResult(result)
+      // First host-owned boundary after same-process plugin code returns.
+      // Bound before registry/model/checkpoint code can stringify it again.
+      return boundNonStreamingToolResult(normalizeToolResult(result))
     } catch (err) {
       // Infrastructure (timeout/cancel/bad-shape) and policy (permission)
       // errors propagate; a fault inside the handler is surfaced to the model
