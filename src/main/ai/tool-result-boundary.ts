@@ -143,8 +143,14 @@ function cloneToolResult(value: unknown): ToolResult | undefined {
     }
 
     const result: ToolResult = { content }
+    // An own `isError` whose value is `undefined` is treated as absent, not as
+    // invalid. Adapters routinely emit `isError: result.isError` in an object
+    // literal, so a successful (non-error) result carries `isError: undefined`
+    // as an OWN property; rejecting it here would destroy every such result.
+    // Only a genuinely-invalid (present, non-undefined, non-boolean) `isError`
+    // is a reason to reject, and only a real boolean is copied across.
     const isError = Object.getOwnPropertyDescriptor(value, "isError")
-    if (isError !== undefined) {
+    if (isError !== undefined && isError.value !== undefined) {
       if (!isDataDescriptor(isError) || typeof isError.value !== "boolean") return undefined
       result.isError = isError.value
     }
@@ -315,11 +321,50 @@ function cappedResult(
   }
 }
 
-/** Conservative, non-allocating upper bound for JSON serialization. It may
- * reject a value that would fit, but never accepts one whose normal JSON
- * encoding can exceed `limit`. `for…in` avoids allocating Object.keys() for
- * an attacker-provided enormous object. */
+/** Non-allocating upper bound for JSON serialization. Never accepts a value
+ * whose real `JSON.stringify` output can exceed `limit`, and — after this fix —
+ * never rejects one whose real output fits.
+ *
+ * Two stages, both non-allocating:
+ *
+ *  1. FAST-ACCEPT: the original conservative walk charges every string its
+ *     worst-case `\uXXXX` expansion (6 chars/char). If even that 6× bound fits,
+ *     the real serialization certainly fits — accept immediately, zero extra
+ *     work. This is the common path for small results.
+ *  2. EXACT FALLBACK: the 6× bound overshoots by ~6× for ordinary ASCII/JSON,
+ *     so a legitimate ~400 KB–1 MB ASCII string (real output well under a 2 MB
+ *     cap) would be falsely rejected by stage 1 alone. When stage 1 fails we
+ *     re-walk charging each string its EXACT JSON-encoded length, computed
+ *     char-by-char without ever building the encoded string and short-circuited
+ *     at the cap. Because the exact walk's per-string charge equals the real
+ *     output length, accepting here guarantees the subsequent `JSON.stringify`
+ *     still cannot allocate beyond `limit`. No unbounded/attacker-controlled
+ *     allocation happens in either stage.
+ *
+ * `for…in` avoids allocating Object.keys() for an attacker-provided enormous
+ * object; getters/accessors and inherited fields are rejected, never evaluated.
+ */
 function valueFitsWithin(value: unknown, limit: number): boolean {
+  if (walkFitsWithin(value, limit, conservativeStringLength)) return true
+  return walkFitsWithin(value, limit, (text) => exactJsonStringLength(text, limit))
+}
+
+/** Worst-case JSON string length (every char escaped as `\uXXXX`), including
+ * the surrounding quotes. Cheap and allocation-free. */
+function conservativeStringLength(text: string): number {
+  return text.length * 6 + 2
+}
+
+/**
+ * A single non-allocating structural walk that charges each JSON string via the
+ * injected `stringLength` (either the conservative 6× bound or the exact
+ * measurement). Returns true only if the summed charge stays within `limit`.
+ */
+function walkFitsWithin(
+  value: unknown,
+  limit: number,
+  stringLength: (text: string) => number
+): boolean {
   let remaining = limit
   let nodes = 0
   const consume = (count: number): boolean => {
@@ -332,7 +377,7 @@ function valueFitsWithin(value: unknown, limit: number): boolean {
     if (current === undefined) return true
     if (current === null || typeof current === "boolean") return consume(5)
     if (typeof current === "number") return Number.isFinite(current) && consume(32)
-    if (typeof current === "string") return consume(current.length * 6 + 2)
+    if (typeof current === "string") return consume(stringLength(current))
     if (Array.isArray(current)) {
       if (!isPlainJsonContainer(current)) return false
       if (!consume(2)) return false
@@ -352,7 +397,8 @@ function valueFitsWithin(value: unknown, limit: number): boolean {
     let count = 0
     for (const key in current as Record<string, unknown>) {
       count += 1
-      if (count > MAX_NON_STREAMING_JSON_NODES || !consume(key.length * 6 + 4)) return false
+      // Charge the key its string length plus the colon and comma separators.
+      if (count > MAX_NON_STREAMING_JSON_NODES || !consume(stringLength(key) + 2)) return false
       const descriptor = Object.getOwnPropertyDescriptor(current, key)
       // Enumerable inherited properties and getters are never plain JSON
       // data. Reject rather than evaluating either during the later
@@ -368,6 +414,44 @@ function valueFitsWithin(value: unknown, limit: number): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * Exact character length of `JSON.stringify(text)` — including the surrounding
+ * quotes — computed WITHOUT allocating the encoded string. Scanning stops as
+ * soon as the running length passes `ceiling`, so a maliciously large string is
+ * rejected in bounded time with zero allocation. Mirrors well-formed (ES2019+)
+ * JSON.stringify escaping, including lone surrogates, so the returned length is
+ * never below the real output length — we never under-count and let an
+ * oversized value slip past the cap.
+ */
+function exactJsonStringLength(text: string, ceiling: number): number {
+  let length = 2 // opening and closing quotes
+  const end = text.length
+  for (let i = 0; i < end; i += 1) {
+    const code = text.charCodeAt(i)
+    if (code === 0x22 || code === 0x5c) {
+      length += 2 // \" or \\
+    } else if (code < 0x20) {
+      // \b \t \n \f \r collapse to two chars; other C0 controls become \u00XX.
+      length +=
+        code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d ? 2 : 6
+    } else if (code < 0xd800 || code > 0xdfff) {
+      length += 1 // ordinary code unit, emitted literally
+    } else if (code <= 0xdbff && i + 1 < end) {
+      const next = text.charCodeAt(i + 1)
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        length += 2 // valid surrogate pair, both units emitted literally
+        i += 1
+      } else {
+        length += 6 // lone high surrogate -> \uXXXX
+      }
+    } else {
+      length += 6 // lone low surrogate, or unpaired high surrogate at end
+    }
+    if (length > ceiling) return length
+  }
+  return length
 }
 
 function isDataDescriptor(

@@ -330,6 +330,61 @@ describe("applyNonStreamingEmergencyCap", () => {
     const result = { content: [{ type: "text" as const, text: "short" }] }
     expect(applyNonStreamingEmergencyCap(result, 1000).structured).toBeUndefined()
   })
+
+  it("passes through the real MCP adapter shape (own isError: undefined) unmodified", () => {
+    // This is EXACTLY what mcp-client-manager's toToolResult emits for a
+    // successful call: `isError: result.isError` in an object literal means a
+    // non-error result carries `isError` as an OWN property whose value is
+    // `undefined`. The boundary must treat that as absent, not reject the whole
+    // result — otherwise every successful MCP tool call is destroyed.
+    const result: {
+      content: { type: "text"; text: string }[]
+      isError?: boolean
+      structured: unknown
+    } = {
+      content: [{ type: "text", text: "ok" }],
+      isError: undefined,
+      structured: { n: 1 },
+    }
+    expect(Object.hasOwn(result, "isError")).toBe(true)
+    const bounded = applyNonStreamingEmergencyCap(result, 1000)
+    expect(bounded.content).toEqual([{ type: "text", text: "ok" }])
+    expect(bounded.structured).toEqual({ n: 1 })
+    // Not capped/rejected: no false emergency-cap error, no marker.
+    expect(bounded.isError).toBeUndefined()
+    expect(isNonStreamingEmergencyCapMarker(bounded.structured)).toBe(false)
+  })
+
+  it("admits a legitimate large ASCII json block whose real output fits the cap", () => {
+    // ~500 KB of ASCII: real JSON.stringify output ≈ 500 KB (well under 2 MB),
+    // but the conservative 6× fast-accept bound (≈3 MB) overshoots the cap. The
+    // exact-measurement fallback must admit it unchanged rather than falsely
+    // capping it.
+    const blob = "a".repeat(500_000)
+    const result = { content: [{ type: "json" as const, json: { blob } }] }
+    const bounded = applyNonStreamingEmergencyCap(result, NON_STREAMING_EMERGENCY_CAP_CHARS)
+    expect(bounded.isError).toBeUndefined()
+    expect(bounded.content).toEqual([{ type: "json", json: { blob } }])
+  })
+
+  it("admits a legitimate large ASCII structured value whose real output fits the cap", () => {
+    const blob = "b".repeat(500_000)
+    const result = { content: [{ type: "text" as const, text: "ok" }], structured: { blob } }
+    const bounded = applyNonStreamingEmergencyCap(result, NON_STREAMING_EMERGENCY_CAP_CHARS)
+    expect(bounded.isError).toBeUndefined()
+    expect(bounded.structured).toEqual({ blob })
+    expect(isNonStreamingEmergencyCapMarker(bounded.structured)).toBe(false)
+  })
+
+  it("still caps a structured value whose real serialized size exceeds the cap", () => {
+    // Real JSON.stringify output ≈ 2.5 MB > 2 MB cap: the exact fallback must
+    // still reject it (bounded, no unbounded allocation).
+    const blob = "c".repeat(2_500_000)
+    const result = { content: [{ type: "text" as const, text: "ok" }], structured: { blob } }
+    const capped = applyNonStreamingEmergencyCap(result, NON_STREAMING_EMERGENCY_CAP_CHARS)
+    expect(capped.isError).toBe(true)
+    expect(isNonStreamingEmergencyCapMarker(capped.structured)).toBe(true)
+  })
 })
 
 describe("isNonStreamingEmergencyCapMarker", () => {
