@@ -39,10 +39,14 @@ export function boundNonStreamingToolResult(
   let truncated = false
   let omittedChars = 0
 
-  const content = result.content
-  if (!isPlainJsonContainer(result) || !isPlainJsonContainer(content)) {
+  // Never read a property from an adapter-owned result before proving it is a
+  // data property. Even a result which fits the cap is copied: returning the
+  // original would leave an accessor for a later renderer/persistence step.
+  const sanitized = cloneToolResult(result)
+  if (!sanitized) {
     return cappedResult(safeMax, "", 1, notice)
   }
+  const content = sanitized.content
   const blockLimit = Math.min(content.length, MAX_NON_STREAMING_CONTENT_BLOCKS)
   for (let index = 0; index < blockLimit; index += 1) {
     const descriptor = Object.getOwnPropertyDescriptor(content, String(index))
@@ -90,7 +94,7 @@ export function boundNonStreamingToolResult(
 
   // Structured data is another unbounded downstream serialization surface.
   // Retain it only after proving an intentionally conservative upper bound.
-  const structuredDescriptor = Object.getOwnPropertyDescriptor(result, "structured")
+  const structuredDescriptor = Object.getOwnPropertyDescriptor(sanitized, "structured")
   if (
     !truncated &&
     structuredDescriptor !== undefined &&
@@ -99,11 +103,156 @@ export function boundNonStreamingToolResult(
   ) {
     truncated = true
   }
-  if (!truncated) return result
+  if (!truncated) return sanitized
 
   const rawPreview = pieces.join("\n")
   const preview = rawPreview.slice(0, payloadBudget)
   return cappedResult(safeMax, preview, omittedChars, notice)
+}
+
+/** Builds a host-owned result from descriptors only. This is intentionally
+ * narrower than TypeScript's structural ToolResult type: fields not consumed
+ * by Synapse are not carried across the untrusted boundary. */
+function cloneToolResult(value: unknown): ToolResult | undefined {
+  try {
+    if (!value || typeof value !== "object" || !isPlainJsonContainer(value)) return undefined
+    const contentValue = dataProperty(value, "content")
+    if (
+      contentValue === INVALID_DATA ||
+      !Array.isArray(contentValue) ||
+      !isPlainJsonContainer(contentValue)
+    ) {
+      return undefined
+    }
+    const length = dataProperty(contentValue, "length")
+    if (
+      typeof length !== "number" ||
+      !Number.isSafeInteger(length) ||
+      length < 0 ||
+      length > MAX_NON_STREAMING_CONTENT_BLOCKS
+    ) {
+      return undefined
+    }
+    const content: ToolContentBlock[] = []
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(contentValue, String(index))
+      if (!descriptor || !isDataDescriptor(descriptor)) return undefined
+      const block = cloneContentBlock(descriptor.value)
+      if (!block) return undefined
+      content.push(block)
+    }
+
+    const result: ToolResult = { content }
+    const isError = Object.getOwnPropertyDescriptor(value, "isError")
+    if (isError !== undefined) {
+      if (!isDataDescriptor(isError) || typeof isError.value !== "boolean") return undefined
+      result.isError = isError.value
+    }
+    const structured = Object.getOwnPropertyDescriptor(value, "structured")
+    if (structured !== undefined) {
+      if (!isDataDescriptor(structured)) return undefined
+      const cloned = cloneJsonValue(structured.value)
+      if (!cloned.ok) return undefined
+      result.structured = cloned.value
+    }
+    return result
+  } catch {
+    return undefined
+  }
+}
+
+function cloneContentBlock(value: unknown): ToolContentBlock | undefined {
+  if (!value || typeof value !== "object" || !isPlainJsonContainer(value)) return undefined
+  const type = dataProperty(value, "type")
+  if (typeof type !== "string") return undefined
+  if (type === "text") {
+    const text = dataProperty(value, "text")
+    return typeof text === "string" ? { type, text } : undefined
+  }
+  if (type === "image") {
+    const path = dataProperty(value, "path")
+    const mimeType = dataProperty(value, "mimeType")
+    return typeof path === "string" && typeof mimeType === "string"
+      ? { type, path, mimeType }
+      : undefined
+  }
+  if (type !== "json") return undefined
+  const json = dataProperty(value, "json")
+  if (json === INVALID_DATA) return undefined
+  const cloned = cloneJsonValue(json)
+  return cloned.ok ? { type, json: cloned.value } : undefined
+}
+
+type JsonClone = { ok: true; value: unknown } | { ok: false }
+
+/** Descriptor-only JSON clone. It rejects cycles, hooks, accessors and
+ * inherited enumerable fields rather than evaluating any of them. */
+function cloneJsonValue(value: unknown): JsonClone {
+  const seen = new WeakSet<object>()
+  let nodes = 0
+  const clone = (current: unknown, depth: number): JsonClone => {
+    nodes += 1
+    if (depth > 32 || nodes > MAX_NON_STREAMING_JSON_NODES) return { ok: false }
+    if (current === undefined || current === null || typeof current === "boolean") {
+      return { ok: true, value: current }
+    }
+    if (typeof current === "number") {
+      return Number.isFinite(current) ? { ok: true, value: current } : { ok: false }
+    }
+    if (typeof current === "string") return { ok: true, value: current }
+    if (typeof current !== "object" || !isPlainJsonContainer(current) || seen.has(current)) {
+      return { ok: false }
+    }
+    seen.add(current)
+    if (Array.isArray(current)) {
+      const length = dataProperty(current, "length")
+      if (
+        typeof length !== "number" ||
+        !Number.isSafeInteger(length) ||
+        length > MAX_NON_STREAMING_JSON_NODES
+      ) {
+        return { ok: false }
+      }
+      const output: unknown[] = []
+      for (let index = 0; index < length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(current, String(index))
+        // JSON.stringify renders sparse array slots as null.
+        if (!descriptor) {
+          output.push(null)
+          continue
+        }
+        if (!isDataDescriptor(descriptor)) return { ok: false }
+        const item = clone(descriptor.value, depth + 1)
+        if (!item.ok) return item
+        output.push(item.value)
+      }
+      return { ok: true, value: output }
+    }
+    const output: Record<string, unknown> = {}
+    let properties = 0
+    for (const key in current as Record<string, unknown>) {
+      properties += 1
+      if (properties > MAX_NON_STREAMING_JSON_NODES) return { ok: false }
+      const descriptor = Object.getOwnPropertyDescriptor(current, key)
+      if (!descriptor || !descriptor.enumerable || !isDataDescriptor(descriptor)) {
+        return { ok: false }
+      }
+      const item = clone(descriptor.value, depth + 1)
+      if (!item.ok) return item
+      Object.defineProperty(output, key, {
+        value: item.value,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      })
+    }
+    return { ok: true, value: output }
+  }
+  try {
+    return clone(value, 0)
+  } catch {
+    return { ok: false }
+  }
 }
 
 function renderedBlockWithinBudget(block: ToolContentBlock, remaining: number): string | undefined {

@@ -71,6 +71,9 @@ export interface ConversationRecordV2 {
   additionalArtifactUris: string[]
   /** Canonical hash of the derived, additional, and merged URI sets. */
   artifactIndexIntegrityHash: string
+  /** Versioned so a current record with a damaged reference index is never
+   * mistaken for one created before the index existed. */
+  artifactIndexVersion: number
   deletedAt?: number
   title?: string
   workspaceId: string
@@ -495,11 +498,18 @@ export class ConversationStore {
     const v2 = tryParseV2(raw)
     if (v2) {
       // V2 records written before the artifact-retention integrity contract
-      // had no separately durable additional set or hash. A normal mutation
-      // upgrades them conservatively by treating every prior non-message URI
-      // as an additional pin. Retention itself never performs this migration:
-      // destructive scans must fail closed until a trusted writer does.
+      // had no separately durable additional set or hash. Only a raw record
+      // which demonstrably lacks those fields may take this compatibility
+      // migration. In particular, a present-but-invalid hash/index is
+      // corruption, not an upgrade opportunity: rewriting it here could
+      // erase history pins and authorize GC of still-referenced artifacts.
       if (!hasValidArtifactReferenceIndex(v2)) {
+        if (
+          !hasUnversionedButValidArtifactReferenceIndex(v2) &&
+          !canMigrateLegacyArtifactReferenceIndex(raw)
+        ) {
+          throw new Error(`conversation ${id} has an incomplete artifact reference index`)
+        }
         const upgraded: ConversationRecordV2 = {
           ...v2,
           ...artifactReferenceIndex(v2.messages, v2.artifactUris),
@@ -547,7 +557,8 @@ export class ConversationStore {
       const source = raw as Record<string, unknown>
       if (
         v2.id !== id ||
-        !hasValidArtifactReferenceIndex(v2) ||
+        (!hasValidArtifactReferenceIndex(v2) &&
+          !hasUnversionedButValidArtifactReferenceIndex(v2)) ||
         (source.state !== "active" && source.state !== "deleted")
       ) {
         throw new Error(`conversation ${id} has an incomplete artifact reference index`)
@@ -662,6 +673,7 @@ function tryParseV2(value: unknown): ConversationRecordV2 | undefined {
       : [],
     artifactIndexIntegrityHash:
       typeof v.artifactIndexIntegrityHash === "string" ? v.artifactIndexIntegrityHash : "",
+    artifactIndexVersion: typeof v.artifactIndexVersion === "number" ? v.artifactIndexVersion : 0,
     deletedAt: typeof v.deletedAt === "number" ? v.deletedAt : undefined,
     title: typeof v.title === "string" ? v.title : undefined,
     workspaceId:
@@ -738,7 +750,7 @@ function artifactReferenceIndex(
   additional?: readonly string[]
 ): Pick<
   ConversationRecordV2,
-  "artifactUris" | "additionalArtifactUris" | "artifactIndexIntegrityHash"
+  "artifactUris" | "additionalArtifactUris" | "artifactIndexIntegrityHash" | "artifactIndexVersion"
 > {
   const derivedArtifactUris = deriveArtifactUris(messages)
   const derived = new Set(derivedArtifactUris)
@@ -754,6 +766,7 @@ function artifactReferenceIndex(
       derivedArtifactUris,
       additionalArtifactUris,
     }),
+    artifactIndexVersion: 1,
   }
 }
 
@@ -761,6 +774,17 @@ function artifactReferenceIndex(
  * trusting the merged side index. Any uncertainty is handled by the
  * retention caller as a scan failure, which leaves artifacts pinned. */
 function hasValidArtifactReferenceIndex(record: ConversationRecordV2): boolean {
+  return record.artifactIndexVersion === 1 && hasArtifactReferenceIndexContent(record)
+}
+
+/** `artifactIndexVersion` was introduced after the hash itself. A record from
+ * that narrow transition period is safe to upgrade only after validating the
+ * full old index; any missing or corrupt field still fails closed. */
+function hasUnversionedButValidArtifactReferenceIndex(record: ConversationRecordV2): boolean {
+  return record.artifactIndexVersion === 0 && hasArtifactReferenceIndexContent(record)
+}
+
+function hasArtifactReferenceIndexContent(record: ConversationRecordV2): boolean {
   if (
     !record.artifactUris.every((uri) => typeof uri === "string") ||
     !record.additionalArtifactUris.every((uri) => typeof uri === "string") ||
@@ -773,6 +797,18 @@ function hasValidArtifactReferenceIndex(record: ConversationRecordV2): boolean {
     sameStringArray(record.artifactUris, expected.artifactUris) &&
     sameStringArray(record.additionalArtifactUris, expected.additionalArtifactUris) &&
     record.artifactIndexIntegrityHash === expected.artifactIndexIntegrityHash
+  )
+}
+
+/** A migration is allowed only for the precise legacy shape that predates the
+ * integrity contract. Partial records and invalid current records fail closed
+ * instead of being rewritten into a fresh, but potentially incomplete, hash. */
+function canMigrateLegacyArtifactReferenceIndex(raw: unknown): boolean {
+  if (!isRecord(raw)) return false
+  return (
+    !Object.hasOwn(raw, "artifactIndexVersion") &&
+    !Object.hasOwn(raw, "additionalArtifactUris") &&
+    !Object.hasOwn(raw, "artifactIndexIntegrityHash")
   )
 }
 

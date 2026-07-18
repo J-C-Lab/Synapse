@@ -326,6 +326,73 @@ module.exports = {
     })
   })
 
+  it("rejects a result content accessor inside the VM without executing it", async () => {
+    const entry = await writePlugin(`
+globalThis.toolContentGetterCalls = 0
+module.exports = {
+  commands: { "test.run": { run() { return { type: "toast", message: "x" } } } },
+  tools: {
+    accessor() {
+      const result = {}
+      Object.defineProperty(result, "content", {
+        enumerable: true,
+        get() { globalThis.toolContentGetterCalls += 1; return [] }
+      })
+      return result
+    },
+    count() {
+      return { content: [{ type: "text", text: String(globalThis.toolContentGetterCalls) }] }
+    }
+  }
+}
+`)
+    const sandbox = sandboxForTest()
+    await sandbox.loadPlugin(entry)
+
+    await expect(
+      sandbox.invokeTool({
+        pluginId: entry.pluginId,
+        toolName: "accessor",
+        input: {},
+        options: { caller: { kind: "agent" } },
+      })
+    ).rejects.toThrow(/property content must be data/)
+    await expect(
+      sandbox.invokeTool({
+        pluginId: entry.pluginId,
+        toolName: "count",
+        input: {},
+        options: { caller: { kind: "agent" } },
+      })
+    ).resolves.toMatchObject({ content: [{ type: "text", text: "0" }] })
+  })
+
+  it("bounds proxy descriptor traps within the VM result-validation timeout", async () => {
+    const entry = await writePlugin(`
+module.exports = {
+  commands: { "test.run": { run() { return { type: "toast", message: "x" } } } },
+  tools: {
+    proxy() {
+      return new Proxy({ content: [] }, {
+        getOwnPropertyDescriptor() { while (true) {} }
+      })
+    }
+  }
+}
+`)
+    const sandbox = sandboxForTest(2000, 2000, 10)
+    await sandbox.loadPlugin(entry)
+
+    await expect(
+      sandbox.invokeTool({
+        pluginId: entry.pluginId,
+        toolName: "proxy",
+        input: {},
+        options: { caller: { kind: "agent" } },
+      })
+    ).rejects.toThrow(/result validation exceeded/)
+  })
+
   it("surfaces a thrown handler error as an error result", async () => {
     const entry = await writePlugin(`
 module.exports = {

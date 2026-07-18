@@ -601,19 +601,32 @@ export class ArtifactStore implements AgentArtifactStore {
   }
 
   /** Compensates a capture that never produced a verifiable final data.bin.
-   * The zero-byte settlement releases the pending capacity before deleting
-   * the directory; if the process dies in either step, startup reconciliation
-   * sees either the still-pending directory or the operation receipt and can
-   * safely finish the idempotent cleanup. */
+   * Delete the bytes before releasing their reservation. If removal fails, a
+   * pending ledger entry deliberately remains so startup reconciliation can
+   * retry it; settling first would create physical bytes invisible to both
+   * quota accounting and retention. */
   private async abandonCapture(reserveOperationId: string, artifactDir: string): Promise<void> {
-    await this.quotaStore
-      .settle({
+    try {
+      await fs.rm(artifactDir, { recursive: true, force: true })
+    } catch (err) {
+      throw new Error(`unable to remove uncommitted artifact payload at ${artifactDir}`, {
+        cause: err,
+      })
+    }
+    try {
+      await this.quotaStore.settle({
         operationId: `${reserveOperationId}:abandon`,
         reserveOperationId,
         actualBytes: 0,
       })
-      .catch(() => {})
-    await fs.rm(artifactDir, { recursive: true, force: true }).catch(() => {})
+    } catch (err) {
+      // The directory is already gone. Keep the reservation pending: a later
+      // startup pass observes its missing directory and idempotently settles
+      // it to zero instead of silently losing a ledger update.
+      throw new Error(`unable to release abandoned artifact reservation ${reserveOperationId}`, {
+        cause: err,
+      })
+    }
   }
 
   /** Producer cancellation is best effort from the store's perspective: an

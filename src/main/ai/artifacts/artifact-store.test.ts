@@ -604,6 +604,56 @@ describe("artifactStore.capture — producer abort and write failure", () => {
       renameSpy.mockRestore()
     }
   })
+
+  it("keeps an abandoned reservation pending until an undeletable payload is reconciled", async () => {
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    const realRename = fs.rename.bind(fs)
+    const realRm = fs.rm.bind(fs)
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (oldPath, newPath) => {
+      if (String(oldPath).endsWith("data.bin.tmp") && String(newPath).endsWith("data.bin")) {
+        throw new Error("simulated rename failure")
+      }
+      return realRename(oldPath, newPath)
+    })
+    const rmSpy = vi.spyOn(fs, "rm").mockImplementation(async (path, options) => {
+      if (options?.recursive) {
+        throw new Error("simulated artifact cleanup failure")
+      }
+      return realRm(path, options)
+    })
+
+    try {
+      await expect(store.capture(bytesOf("payload"), metadata(), noopProducer())).rejects.toThrow(
+        /unable to remove uncommitted artifact payload/
+      )
+      const ledgerRaw = JSON.parse(await fs.readFile(join(dir, "quota.json"), "utf-8")) as {
+        pendingReservations: Record<string, unknown>
+      }
+      expect(Object.keys(ledgerRaw.pendingReservations)).toHaveLength(1)
+
+      const runEntries = await fs.readdir(join(dir, "run-1"))
+      expect(runEntries).toHaveLength(1)
+      await expect(
+        fs.stat(join(dir, "run-1", runEntries[0]!, "data.bin.tmp"))
+      ).resolves.toBeDefined()
+
+      rmSpy.mockRestore()
+      renameSpy.mockRestore()
+      await expect(
+        new ArtifactStore(dir, { statDiskSpace: ampleDisk }).reconcileStartup()
+      ).resolves.toMatchObject({
+        reconciledCount: 1,
+      })
+      const reconciledLedger = JSON.parse(await fs.readFile(join(dir, "quota.json"), "utf-8")) as {
+        pendingReservations: Record<string, unknown>
+      }
+      expect(Object.keys(reconciledLedger.pendingReservations)).toHaveLength(0)
+      await expect(fs.readdir(join(dir, "run-1"))).resolves.toEqual([])
+    } finally {
+      rmSpy.mockRestore()
+      renameSpy.mockRestore()
+    }
+  })
 })
 
 describe("artifactStore.capture — concurrency", () => {

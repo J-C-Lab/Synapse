@@ -205,9 +205,12 @@ describe("renderToolResultText", () => {
 })
 
 describe("applyNonStreamingEmergencyCap", () => {
-  it("returns the same result unchanged when under the cap", () => {
+  it("returns a host-owned clone when under the cap", () => {
     const result = { content: [{ type: "text" as const, text: "short" }] }
-    expect(applyNonStreamingEmergencyCap(result, 1000)).toBe(result)
+    const bounded = applyNonStreamingEmergencyCap(result, 1000)
+    expect(bounded).toEqual(result)
+    expect(bounded).not.toBe(result)
+    expect(bounded.content).not.toBe(result.content)
   })
 
   it("truncates and marks isError when the rendered text exceeds the cap", () => {
@@ -280,9 +283,18 @@ describe("applyNonStreamingEmergencyCap", () => {
     expect(getter).not.toHaveBeenCalled()
   })
 
+  it("rejects an accessor-backed root content field without reading the accessor", () => {
+    const getter = vi.fn(() => [{ type: "text", text: "would run untrusted code" }])
+    const result = {}
+    Object.defineProperty(result, "content", { get: getter, enumerable: true })
+    const capped = applyNonStreamingEmergencyCap(result as never, 100)
+    expect(capped.isError).toBe(true)
+    expect(getter).not.toHaveBeenCalled()
+  })
+
   it("defaults to NON_STREAMING_EMERGENCY_CAP_CHARS when no cap is passed", () => {
     const underCap = { content: [{ type: "text" as const, text: "z".repeat(1000) }] }
-    expect(applyNonStreamingEmergencyCap(underCap)).toBe(underCap)
+    expect(applyNonStreamingEmergencyCap(underCap)).toEqual(underCap)
 
     const overCap = {
       content: [{ type: "text" as const, text: "z".repeat(NON_STREAMING_EMERGENCY_CAP_CHARS + 1) }],

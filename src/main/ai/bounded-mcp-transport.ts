@@ -74,8 +74,12 @@ export async function boundedMcpFetch(input: string | URL, init?: RequestInit): 
  * long-lived HTTP response. */
 class SseFrameCounter {
   private eventBytes = 0
-  private lineBytes = 0
-  private lineOnlyCarriageReturn = false
+  private lineHasContent = false
+  /** A CR may be a standalone terminator or the first half of CRLF. Keep it
+   * across stream chunks so the following LF does not become a second empty
+   * line/event boundary. */
+  private pendingCarriageReturn = false
+  private pendingCarriageReturnEndedEvent = false
 
   constructor(private readonly maxBytes: number) {}
 
@@ -85,16 +89,35 @@ class SseFrameCounter {
       if (this.eventBytes > this.maxBytes) {
         throw new McpFrameLimitError("MCP SSE event exceeded configured maximum")
       }
-      if (byte === 0x0a) {
-        // CRLF represents an empty line as just "\r" before this LF.
-        if (this.lineBytes === 0 || this.lineOnlyCarriageReturn) this.eventBytes = 0
-        this.lineBytes = 0
-        this.lineOnlyCarriageReturn = false
+      if (this.pendingCarriageReturn) {
+        const endedEvent = this.pendingCarriageReturnEndedEvent
+        this.pendingCarriageReturn = false
+        this.pendingCarriageReturnEndedEvent = false
+        if (byte === 0x0a) {
+          // The CR already reset a completed event; LF is its other line
+          // ending byte, not the first byte of the following event.
+          if (endedEvent) this.eventBytes = 0
+          continue
+        }
+      }
+      if (byte === 0x0d) {
+        this.pendingCarriageReturnEndedEvent = this.finishLine()
+        this.pendingCarriageReturn = true
+      } else if (byte === 0x0a) {
+        this.finishLine()
       } else {
-        this.lineOnlyCarriageReturn = this.lineBytes === 0 && byte === 0x0d
-        this.lineBytes += 1
+        this.lineHasContent = true
       }
     }
+  }
+
+  private finishLine(): boolean {
+    // An empty line terminates the current event. SSE permits CR, LF, and
+    // CRLF line endings, so this must not be coupled to LF alone.
+    const endedEvent = !this.lineHasContent
+    if (endedEvent) this.eventBytes = 0
+    this.lineHasContent = false
+    return endedEvent
   }
 }
 

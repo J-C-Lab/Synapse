@@ -49,6 +49,38 @@ describe("boundedMcpFetch", () => {
     expect(await consume(await boundedMcpFetch("https://mcp.example/sse"))).toBe(total)
   })
 
+  it("resets each CR-only SSE event, including delimiters split across chunks", async () => {
+    const encoder = new TextEncoder()
+    const payload = "x".repeat(900_000)
+    const beforeDelimiter = encoder.encode(`data: ${payload}\r`)
+    const afterDelimiter = encoder.encode("\r")
+    const total = (beforeDelimiter.byteLength + afterDelimiter.byteLength) * 3
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            byteStream([
+              beforeDelimiter,
+              afterDelimiter,
+              beforeDelimiter,
+              afterDelimiter,
+              beforeDelimiter,
+              afterDelimiter,
+            ]),
+            {
+              headers: {
+                "content-type": "text/event-stream",
+                "content-length": String(total),
+              },
+            }
+          )
+      )
+    )
+
+    expect(await consume(await boundedMcpFetch("https://mcp.example/sse"))).toBe(total)
+  })
+
   it("rejects one oversized fragmented SSE event before delivering it", async () => {
     const encoder = new TextEncoder()
     const first = encoder.encode(`data: ${"x".repeat(MCP_MAX_INBOUND_FRAME_BYTES - 10)}`)

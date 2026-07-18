@@ -277,6 +277,13 @@ async function seedInteractiveToolRun(userDir: string, runId: string, conversati
     workspaceId: "default",
     messages: [],
     artifactUris: [],
+    additionalArtifactUris: [],
+    artifactIndexIntegrityHash: canonicalHash({
+      artifactUris: [],
+      derivedArtifactUris: [],
+      additionalArtifactUris: [],
+    }),
+    artifactIndexVersion: 1,
     createdAt: 1,
     updatedAt: 1,
   }
@@ -376,6 +383,13 @@ async function seedReferencedArtifact(
       },
     ],
     artifactUris: [uri],
+    additionalArtifactUris: [],
+    artifactIndexIntegrityHash: canonicalHash({
+      artifactUris: [uri],
+      derivedArtifactUris: [uri],
+      additionalArtifactUris: [],
+    }),
+    artifactIndexVersion: 1,
     createdAt: 1,
     updatedAt: 1,
   }

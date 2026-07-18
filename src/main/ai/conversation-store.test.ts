@@ -499,6 +499,7 @@ describe("conversationStore — artifactUris derivation (Task 21)", () => {
     expect(raw.artifactUris).toEqual(["artifact://run/run-1/a1"])
     expect(raw.additionalArtifactUris).toEqual([])
     expect(raw.artifactIndexIntegrityHash).toMatch(/^[a-f0-9]{64}$/)
+    expect(raw.artifactIndexVersion).toBe(1)
   })
 
   it("merges additionalArtifactUris (superseded compaction artifacts) into artifactUris", async () => {
@@ -529,6 +530,45 @@ describe("conversationStore — artifactUris derivation (Task 21)", () => {
       "artifact://run/run-1/history-1",
       "artifact://run/run-1/history-2",
     ])
+  })
+
+  it("upgrades only a record that explicitly predates the artifact index fields", async () => {
+    const s = store()
+    await seededDefault(s, "legacy-index")
+    const path = join(dir, "legacy-index.json")
+    const raw = JSON.parse(await fs.readFile(path, "utf-8")) as Record<string, unknown>
+    delete raw.artifactIndexVersion
+    delete raw.additionalArtifactUris
+    delete raw.artifactIndexIntegrityHash
+    await fs.writeFile(path, JSON.stringify(raw))
+
+    await expect(s.get("legacy-index")).resolves.toMatchObject({ id: "legacy-index" })
+    const upgraded = JSON.parse(await fs.readFile(path, "utf-8")) as Record<string, unknown>
+    expect(upgraded.artifactIndexVersion).toBe(1)
+    expect(upgraded.artifactIndexIntegrityHash).toMatch(/^[a-f0-9]{64}$/)
+  })
+
+  it("does not rewrite a current record whose present artifact index is corrupt", async () => {
+    const s = store()
+    await seededDefault(s, "corrupt-index")
+    const { fencingToken } = await s.acquireRunLease("corrupt-index", 0, "run-1")
+    await s.commitRun({
+      conversationId: "corrupt-index",
+      runId: "run-1",
+      fencingToken,
+      baseContentRevision: 0,
+      deletionEpoch: 0,
+      finalizationId: "fin-1",
+      messages: [],
+    })
+    const path = join(dir, "corrupt-index.json")
+    const tampered = JSON.parse(await fs.readFile(path, "utf-8")) as Record<string, unknown>
+    tampered.artifactIndexIntegrityHash = "0".repeat(64)
+    const serialized = JSON.stringify(tampered)
+    await fs.writeFile(path, serialized)
+
+    await expect(s.get("corrupt-index")).rejects.toThrow(/incomplete artifact reference index/)
+    expect(await fs.readFile(path, "utf-8")).toBe(serialized)
   })
 })
 
