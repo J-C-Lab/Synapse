@@ -145,12 +145,10 @@ export interface ArtifactAllocationReceipt {
   >
 }
 
-/** What one `collectEligible()` pass did. This task's store only reconciles
- *  abandoned reservations left over from a crash mid-capture (orphaned temp
- *  files and never-settled quota holds) — it does not implement retention
- *  deletion of otherwise-eligible artifacts, which is Task 21's job. The
- *  shape stays stable so Task 21 can add real deletion counts without a
- *  breaking change. */
+/** What one `collectEligible()` pass did. In addition to abandoned pending
+ * reservations, retention deletion returns the deleted artifact's committed
+ * quota to the durable ledger (including the crash-recovery path where the
+ * bytes disappeared before that release could be persisted). */
 export interface ArtifactGcResult {
   reconciledReservations: number
   reclaimedReservedBytes: number

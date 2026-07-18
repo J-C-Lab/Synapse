@@ -542,6 +542,23 @@ export class ArtifactStore implements AgentArtifactStore {
    *  must never guess. */
   async collectEligible(): Promise<ArtifactGcResult> {
     const reconciled = await this.quotaStore.reconcileAbandoned()
+    // A prior process may have died after removing an eligible directory but
+    // before reclaiming its settled quota. Detect only directories that are
+    // genuinely absent (not malformed or merely unreadable) and compensate
+    // from the durable quota operation log before considering new deletions.
+    await this.quotaStore.reconcileMissingArtifacts(async ({ runId, artifactId }) => {
+      // quota.json is durable input too. Never let a corrupted historical
+      // operation turn this recovery probe into a path traversal outside the
+      // artifacts root; leave that entry accounted for rather than guessing.
+      if (!isSafeId(runId) || !isSafeId(artifactId)) return true
+      try {
+        await fs.access(path.join(this.baseDir, runId, artifactId))
+        return true
+      } catch (err) {
+        if (isNotFound(err)) return false
+        throw err
+      }
+    })
     const orphanedTempFilesRemoved = await this.removeOrphanedTempFiles()
     const deletion = await this.deleteEligibleArtifacts()
     await this.tombstoneStore.pruneExpired(this.now())
@@ -633,6 +650,14 @@ export class ArtifactStore implements AgentArtifactStore {
         await this.tombstoneStore.record(
           buildArtifactTombstone(manifest.ref, this.now(), "retention-terminal-unreferenced")
         )
+        // Physical deletion precedes quota reclaim. If the process dies in
+        // between, the next collectEligible() detects the missing directory
+        // above and replays this release from the ledger without guessing.
+        await this.quotaStore.reclaim({
+          operationId: `gc-reclaim:${runId}:${candidate.artifactId}`,
+          runId,
+          artifactId: candidate.artifactId,
+        })
         deletedArtifacts += 1
         deletedBytes += manifest.ref.capturedBytes
       }

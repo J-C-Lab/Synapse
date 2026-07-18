@@ -911,6 +911,71 @@ describe("artifactStore.releaseRunPin / collectEligible — retention (Task 21)"
     })
   })
 
+  it("returns committed quota after deleting an eligible artifact, so a later capture is admitted", async () => {
+    const manifestReserve = estimateManifestReserveBytes(metadata())
+    const limits = {
+      perArtifactBytes: 10,
+      perRunBytes: manifestReserve + 10,
+      globalBytes: manifestReserve + 10,
+      minFreeBytes: 0,
+      minFreeFraction: 0,
+      manifestReserveBytes: 0,
+    }
+    const store = new ArtifactStore(dir, {
+      statDiskSpace: ampleDisk,
+      quotaLimits: limits,
+      isArtifactReferenced: async () => false,
+    })
+    await store.capture(bytesOf("0123456789"), metadata(), noopProducer())
+    await store.releaseRunPin("run-1", "fin-1")
+    await store.collectEligible()
+
+    const replacement = await store.capture(bytesOf("abcdefghij"), metadata(), noopProducer())
+    expect(replacement.capturedBytes).toBe(10)
+    expect(replacement.complete).toBe(true)
+  })
+
+  it("reconciles quota on restart when deletion completed just before the GC process crashed", async () => {
+    const manifestReserve = estimateManifestReserveBytes(metadata())
+    const limits = {
+      perArtifactBytes: 10,
+      perRunBytes: manifestReserve + 10,
+      globalBytes: manifestReserve + 10,
+      minFreeBytes: 0,
+      minFreeFraction: 0,
+      manifestReserveBytes: 0,
+    }
+    const store = new ArtifactStore(dir, {
+      statDiskSpace: ampleDisk,
+      quotaLimits: limits,
+      isArtifactReferenced: async () => false,
+    })
+    const ref = await store.capture(bytesOf("0123456789"), metadata(), noopProducer())
+    await store.releaseRunPin("run-1", "fin-1")
+
+    const artifactDir = join(dir, "run-1", ref.artifactId)
+    const realRm = fs.rm.bind(fs)
+    const rmSpy = vi.spyOn(fs, "rm").mockImplementation(async (target, options) => {
+      if (String(target) === artifactDir) {
+        await realRm(target as never, options as never)
+        throw new Error("simulated crash after artifact deletion")
+      }
+      return realRm(target as never, options as never)
+    })
+    await expect(store.collectEligible()).rejects.toThrow(/simulated crash after artifact deletion/)
+    rmSpy.mockRestore()
+
+    const restarted = new ArtifactStore(dir, {
+      statDiskSpace: ampleDisk,
+      quotaLimits: limits,
+      isArtifactReferenced: async () => false,
+    })
+    await restarted.collectEligible()
+    const replacement = await restarted.capture(bytesOf("abcdefghij"), metadata(), noopProducer())
+    expect(replacement.complete).toBe(true)
+    expect(replacement.capturedBytes).toBe(10)
+  })
+
   it("never deletes anything when isArtifactReferenced is not wired at all", async () => {
     const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
     await store.capture(bytesOf("no reference predicate wired"), metadata(), noopProducer())

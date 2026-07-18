@@ -335,6 +335,76 @@ describe("artifactQuotaStore.settle", () => {
   })
 })
 
+describe("artifactQuotaStore.reclaim", () => {
+  it("returns a GC-deleted artifact's committed bytes to both run and global capacity", async () => {
+    const store = new ArtifactQuotaStore(dir, ampleDisk)
+    const limits = limitsWith({ perArtifactBytes: 1000, perRunBytes: 1000, globalBytes: 1000 })
+    await store.reserve({ operationId: "reserve-1", runId: "run-1", artifactId: "art-1", limits })
+    await store.settle({
+      operationId: "settle-1",
+      reserveOperationId: "reserve-1",
+      actualBytes: 1000,
+    })
+
+    const reclaimed = await store.reclaim({
+      operationId: "gc-1",
+      runId: "run-1",
+      artifactId: "art-1",
+    })
+    expect(reclaimed.releasedBytes).toBe(1000)
+
+    const next = await store.reserve({
+      operationId: "reserve-2",
+      runId: "run-1",
+      artifactId: "art-2",
+      limits,
+    })
+    expect(next.grantedBytes).toBe(1000)
+  })
+
+  it("is idempotent and reconciles a deletion that happened before a process crash", async () => {
+    const first = new ArtifactQuotaStore(dir, ampleDisk)
+    const limits = limitsWith({ perArtifactBytes: 1000, perRunBytes: 1000, globalBytes: 1000 })
+    await first.reserve({ operationId: "reserve-1", runId: "run-1", artifactId: "art-1", limits })
+    await first.settle({
+      operationId: "settle-1",
+      reserveOperationId: "reserve-1",
+      actualBytes: 1000,
+    })
+
+    const restarted = new ArtifactQuotaStore(dir, ampleDisk)
+    const reconciled = await restarted.reconcileMissingArtifacts(async () => false)
+    expect(reconciled).toEqual({ reconciledCount: 1, reclaimedBytes: 1000 })
+    const secondPass = await restarted.reconcileMissingArtifacts(async () => false)
+    expect(secondPass).toEqual({ reconciledCount: 0, reclaimedBytes: 0 })
+
+    const next = await restarted.reserve({
+      operationId: "reserve-2",
+      runId: "run-1",
+      artifactId: "art-2",
+      limits,
+    })
+    expect(next.grantedBytes).toBe(1000)
+  })
+
+  it("replays numeric-looking operation ids by durable revision, not object-key order", async () => {
+    const store = new ArtifactQuotaStore(dir, ampleDisk)
+    const limits = limitsWith({ perArtifactBytes: 1000, perRunBytes: 1000, globalBytes: 1000 })
+    await store.reserve({ operationId: "1", runId: "run-1", artifactId: "art-1", limits })
+    await store.settle({ operationId: "2", reserveOperationId: "1", actualBytes: 1000 })
+    // JavaScript enumerates integer-like object keys in numeric order, so
+    // this later reclaim is listed before "1" and "2" unless recovery
+    // explicitly uses the persisted revision ordering.
+    await store.reclaim({ operationId: "0", runId: "run-1", artifactId: "art-1" })
+
+    const restarted = new ArtifactQuotaStore(dir, ampleDisk)
+    expect(await restarted.reconcileMissingArtifacts(async () => false)).toEqual({
+      reconciledCount: 0,
+      reclaimedBytes: 0,
+    })
+  })
+})
+
 describe("artifactQuotaStore.reconcileAbandoned", () => {
   it("releases every never-settled reservation back to free capacity", async () => {
     const store = new ArtifactQuotaStore(dir, ampleDisk)

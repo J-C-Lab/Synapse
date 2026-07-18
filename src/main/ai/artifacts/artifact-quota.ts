@@ -128,7 +128,7 @@ interface PendingReservation {
 
 export interface ArtifactQuotaOperationReceipt {
   operationId: string
-  kind: "reserve" | "settle"
+  kind: "reserve" | "settle" | "reclaim"
   runId: string
   artifactId: string
   payloadHash: string
@@ -318,6 +318,111 @@ export interface SettleInput {
   actualBytes: number
 }
 
+export interface ReclaimInput {
+  /** A deterministic GC/reconciliation operation id. Replaying the same
+   * deletion after a crash is harmless; reusing it for another artifact is
+   * corruption, just like reserve/settle operation ids. */
+  operationId: string
+  runId: string
+  artifactId: string
+}
+
+export interface CommittedArtifact {
+  runId: string
+  artifactId: string
+  bytes: number
+}
+
+function committedArtifactKey(runId: string, artifactId: string): string {
+  return canonicalHash([runId, artifactId] as unknown as CanonicalJson)
+}
+
+/** Derives live committed artifact bytes from the durable operation log.
+ * The ledger predates explicit GC releases, so keeping this derivation (not
+ * a new required v1 field) makes existing quota.json files immediately
+ * reclaimable without a risky migration. Artifact ids are UUIDs, but the
+ * map sums defensively in case a corrupt/legacy log contains more than one
+ * settlement for the same identity. */
+export function listCommittedArtifacts(ledger: ArtifactQuotaLedgerV1): CommittedArtifact[] {
+  const committed = new Map<string, CommittedArtifact>()
+  // Object property enumeration is not an operation-order guarantee for
+  // numeric-looking ids. `appliedAtRevision` is the durable total order, so
+  // replay the log by it when a reclaim must cancel an earlier settlement.
+  const receipts = Object.values(ledger.operations).sort(
+    (a, b) => a.appliedAtRevision - b.appliedAtRevision
+  )
+  for (const receipt of receipts) {
+    const key = committedArtifactKey(receipt.runId, receipt.artifactId)
+    if (receipt.kind === "settle") {
+      const bytes = receipt.actualBytes ?? 0
+      if (bytes <= 0) continue
+      const existing = committed.get(key)
+      committed.set(key, {
+        runId: receipt.runId,
+        artifactId: receipt.artifactId,
+        bytes: (existing?.bytes ?? 0) + bytes,
+      })
+      continue
+    }
+    if (receipt.kind === "reclaim") committed.delete(key)
+  }
+  return [...committed.values()]
+}
+
+/** Releases the committed bytes belonging to one artifact after its on-disk
+ * directory has been removed. This is deliberately a separate idempotent
+ * operation rather than folding deletion into settle(): retention may run
+ * days later, and a crash after fs.rm must be repairable from quota.json.
+ *
+ * A missing committed entry is a safe zero-byte no-op. It covers artifacts
+ * created before quota accounting existed and a second reconciliation after
+ * a successful reclaim, without ever making counters negative. */
+export function reclaimArtifactCapacity(
+  ledger: ArtifactQuotaLedgerV1,
+  input: ReclaimInput
+): ReserveOutcome {
+  const idempotency = checkIdempotency(ledger, input.operationId, input)
+  if (idempotency.replay) return { ledger, receipt: idempotency.receipt }
+
+  const committed = listCommittedArtifacts(ledger).find(
+    (entry) => entry.runId === input.runId && entry.artifactId === input.artifactId
+  )
+  const reclaimedBytes = committed?.bytes ?? 0
+  const run = runUsage(ledger, input.runId)
+  if (reclaimedBytes > run.committedBytes || reclaimedBytes > ledger.globalCommittedBytes) {
+    throw new ArtifactQuotaOperationCorruptionError(
+      `artifact quota committed bytes for ${input.runId}/${input.artifactId} exceed ledger totals`
+    )
+  }
+
+  const receipt: ArtifactQuotaOperationReceipt = {
+    operationId: input.operationId,
+    kind: "reclaim",
+    runId: input.runId,
+    artifactId: input.artifactId,
+    payloadHash: idempotency.payloadHash,
+    grantedBytes: reclaimedBytes,
+    releasedBytes: reclaimedBytes,
+    appliedAtRevision: ledger.revision + 1,
+  }
+  return {
+    ledger: {
+      ...ledger,
+      revision: ledger.revision + 1,
+      globalCommittedBytes: ledger.globalCommittedBytes - reclaimedBytes,
+      runs: {
+        ...ledger.runs,
+        [input.runId]: {
+          reservedBytes: run.reservedBytes,
+          committedBytes: run.committedBytes - reclaimedBytes,
+        },
+      },
+      operations: { ...ledger.operations, [input.operationId]: receipt },
+    },
+    receipt,
+  }
+}
+
 /** Moves a pending reservation's actual usage into committed totals and
  *  releases whatever was reserved but never used. Used both for a normal
  *  successful capture and for releasing an aborted/failed one (actualBytes
@@ -440,6 +545,49 @@ export class ArtifactQuotaStore {
       const outcome = settleArtifactCapacity(ledger, input)
       await this.save(outcome.ledger)
       return outcome.receipt
+    })
+  }
+
+  async reclaim(input: ReclaimInput): Promise<ArtifactQuotaOperationReceipt> {
+    return this.withLock(async () => {
+      const ledger = await this.load()
+      const outcome = reclaimArtifactCapacity(ledger, input)
+      await this.save(outcome.ledger)
+      return outcome.receipt
+    })
+  }
+
+  /** Compensates the crash window after a caller has removed an artifact
+   * directory but before it could durably call reclaim(). The predicate is
+   * owned by ArtifactStore because quota.json intentionally knows nothing
+   * about filesystem layout. Any predicate failure is fail-closed: leave the
+   * committed quota in place and retry on a later collection pass. */
+  async reconcileMissingArtifacts(
+    isArtifactPresent: (artifact: CommittedArtifact) => Promise<boolean>
+  ): Promise<{ reconciledCount: number; reclaimedBytes: number }> {
+    return this.withLock(async () => {
+      let ledger = await this.load()
+      let reconciledCount = 0
+      let reclaimedBytes = 0
+      for (const artifact of listCommittedArtifacts(ledger)) {
+        let present: boolean
+        try {
+          present = await isArtifactPresent(artifact)
+        } catch {
+          continue
+        }
+        if (present) continue
+        const outcome = reclaimArtifactCapacity(ledger, {
+          operationId: `reconcile-missing:${committedArtifactKey(artifact.runId, artifact.artifactId)}`,
+          runId: artifact.runId,
+          artifactId: artifact.artifactId,
+        })
+        ledger = outcome.ledger
+        reconciledCount += 1
+        reclaimedBytes += outcome.receipt.releasedBytes ?? 0
+      }
+      if (reconciledCount > 0) await this.save(ledger)
+      return { reconciledCount, reclaimedBytes }
     })
   }
 
