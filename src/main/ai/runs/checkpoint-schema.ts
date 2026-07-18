@@ -18,7 +18,11 @@ import type { FrozenContextSnapshotV1 } from "./context-snapshot"
 import type { DurableChatMessage } from "./durable-messages"
 import { authorityIntegrityHash } from "./authority-snapshot"
 import { canonicalHash } from "./canonical-json"
-import { contextSha256, contextSnapshotIntegrityMatches } from "./context-snapshot"
+import {
+  contextSha256,
+  contextSnapshotIntegrityMatches,
+  skillCatalogHash,
+} from "./context-snapshot"
 
 // The authoritative recovery snapshot for one durable run (design
 // §"Durable checkpoint store"). Host-only — never imported by the renderer.
@@ -388,6 +392,11 @@ export type CheckpointValidationResult =
  * change data behind a digest it has already persisted. */
 export function sealCheckpointIntegrity(checkpoint: AgentRunCheckpointV1): AgentRunCheckpointV1 {
   const context = checkpoint.config.context
+  // Task 24 note: this must fold in `skillCatalogHash` exactly the way
+  // context-snapshot.ts's own `buildContextSnapshot`/
+  // `contextSnapshotIntegrityMatches` do — this function is an independent
+  // recomputation of the same aggregate, not a call-through to that module,
+  // so the two formulas have to be kept in lockstep by hand.
   const sealedContext: FrozenContextSnapshotV1 = {
     ...context,
     baseSystemPrompt: {
@@ -398,12 +407,14 @@ export function sealCheckpointIntegrity(checkpoint: AgentRunCheckpointV1): Agent
       ...instruction,
       sha256: contextSha256(instruction.normalizedText),
     })),
+    skillCatalogHash: skillCatalogHash(context.skillCatalog),
     aggregateHash: "",
   }
   sealedContext.aggregateHash = contextSha256(
     [
       sealedContext.baseSystemPrompt.sha256,
       ...sealedContext.workspaceInstructions.map((instruction) => instruction.sha256),
+      sealedContext.skillCatalogHash,
     ].join("|")
   )
   const authority = checkpoint.config.authority
@@ -963,6 +974,33 @@ function isValidWorkspaceInstruction(v: unknown): boolean {
   return true
 }
 
+const KNOWN_SKILL_SOURCE_KINDS: ReadonlySet<string> = new Set([
+  "builtin",
+  "user",
+  "workspace",
+  "plugin",
+  "marketplace",
+])
+
+// Mirrors SkillActivationSnapshot.trust above, which is itself
+// forward-declared from skill-types.ts's SkillTrust — see that field's
+// comment for why this file inlines the literal union instead of importing
+// it.
+const KNOWN_SKILL_TRUST: ReadonlySet<string> = new Set([
+  "host",
+  "user-authored",
+  "third-party",
+  "workspace-content",
+])
+
+function isValidFrozenSkillCatalogEntry(v: unknown): boolean {
+  if (!isRecord(v)) return false
+  if (!isString(v.id) || !isString(v.name) || !isString(v.description)) return false
+  if (!isString(v.source) || !KNOWN_SKILL_SOURCE_KINDS.has(v.source)) return false
+  if (!isString(v.trust) || !KNOWN_SKILL_TRUST.has(v.trust)) return false
+  return true
+}
+
 function isValidContext(v: unknown): boolean {
   if (!isRecord(v)) return false
   if (v.schemaVersion !== 1) return false
@@ -976,6 +1014,10 @@ function isValidContext(v: unknown): boolean {
   ) {
     return false
   }
+  if (!Array.isArray(v.skillCatalog) || !v.skillCatalog.every(isValidFrozenSkillCatalogEntry)) {
+    return false
+  }
+  if (!isString(v.skillCatalogHash)) return false
   if (!isString(v.aggregateHash)) return false
   return true
 }

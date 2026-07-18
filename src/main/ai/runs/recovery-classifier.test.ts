@@ -7,6 +7,7 @@ import type { FrozenContextSnapshotV1 } from "./context-snapshot"
 import { createHash } from "node:crypto"
 import { describe, expect, it } from "vitest"
 import { freezeAuthoritySnapshot } from "./authority-snapshot"
+import { skillCatalogHash } from "./context-snapshot"
 import { classifyRunRecovery } from "./recovery-classifier"
 
 function sha256(text: string): string {
@@ -61,10 +62,23 @@ function contextSnapshot(): FrozenContextSnapshotV1 {
       sha256: sha256("do the thing"),
     },
   ]
+  const skillCatalog: FrozenContextSnapshotV1["skillCatalog"] = []
+  const skillCatalogHashValue = skillCatalogHash(skillCatalog)
   const aggregateHash = sha256(
-    [baseSystemPrompt.sha256, ...workspaceInstructions.map((i) => i.sha256)].join("|")
+    [
+      baseSystemPrompt.sha256,
+      ...workspaceInstructions.map((i) => i.sha256),
+      skillCatalogHashValue,
+    ].join("|")
   )
-  return { schemaVersion: 1, baseSystemPrompt, workspaceInstructions, aggregateHash }
+  return {
+    schemaVersion: 1,
+    baseSystemPrompt,
+    workspaceInstructions,
+    skillCatalog,
+    skillCatalogHash: skillCatalogHashValue,
+    aggregateHash,
+  }
 }
 
 function baseCheckpoint(overrides: Partial<AgentRunCheckpointV1> = {}): AgentRunCheckpointV1 {

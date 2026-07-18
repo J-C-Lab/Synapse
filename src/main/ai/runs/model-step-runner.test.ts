@@ -86,6 +86,8 @@ function minimalCheckpoint(runId: string, runBudgetTokens?: number): AgentRunChe
         schemaVersion: 1,
         baseSystemPrompt: { normalizedText: "You are helpful.", sha256: "h" },
         workspaceInstructions: [],
+        skillCatalog: [],
+        skillCatalogHash: "h",
         aggregateHash: "h",
       },
     },
@@ -254,6 +256,8 @@ describe("advanceModelStep — workspace-instruction context injection", () => {
           sha256: "h2",
         },
       ],
+      skillCatalog: [],
+      skillCatalogHash: "h3",
       aggregateHash: "h3",
     }
     await runStore.create(sealCheckpointIntegrity(checkpoint))

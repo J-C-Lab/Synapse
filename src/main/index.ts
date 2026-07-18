@@ -95,6 +95,7 @@ import {
   autoResumeRecoverableRuns,
   continueBackgroundOrSubagentRun,
 } from "./ai/runs/run-recovery-orchestrator"
+import { skillPackagesRoot, SkillPackageStore } from "./ai/skills/skill-package-store"
 import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
@@ -357,6 +358,14 @@ const artifactStore = new ArtifactStore(artifactsRoot(app.getPath("userData")), 
     return referenced.has(uri)
   },
 })
+// The immutable, content-addressed skill package store (Task 24, design
+// §"Progressive skill runtime"). Mirrors artifactStore's construction above:
+// one store per app run, rooted under userData. Not yet threaded into a
+// live discovery/activation call path by this task — Task 25 (activation)
+// and whichever run-setup wiring first needs a real catalog are the
+// consumers that will call discoverSkills()/buildSkillCatalog() against
+// this instance.
+const skillPackageStore = new SkillPackageStore(skillPackagesRoot(app.getPath("userData")))
 let accountService: MarketplaceAccountService
 let marketplaceTokens: MarketplaceTokenStore | undefined
 // External MCP servers feeding tools to the built-in agent (P5). Held at module
@@ -1632,6 +1641,12 @@ if (isMcpStdioMode) {
       // and removes unmanifested debris; doing it from a normal GC sweep
       // would race live capture reservations.
       await artifactStore.reconcileStartup()
+      // Skill packages are ingested via an atomic stage-then-rename (Task
+      // 24); the only crash-recoverable debris is a `.tmp-*` staging
+      // directory a prior process never finished renaming away. No live
+      // discovery/activation path exists yet to race this, so it is safe to
+      // run unconditionally at startup, same as artifactStore above.
+      await skillPackageStore.reconcileStartup()
       plugins = initPluginHost()
       app.on("browser-window-created", (_, win) => {
         bindCapabilityPromptLifecycle(win)

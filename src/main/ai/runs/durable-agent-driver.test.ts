@@ -98,6 +98,8 @@ function minimalCheckpoint(runId: string, maxSteps = 10): AgentRunCheckpointV1 {
         schemaVersion: 1,
         baseSystemPrompt: { normalizedText: "You are helpful.", sha256: "h" },
         workspaceInstructions: [],
+        skillCatalog: [],
+        skillCatalogHash: "h",
         aggregateHash: "h",
       },
     },

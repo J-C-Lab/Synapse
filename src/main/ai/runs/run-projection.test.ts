@@ -60,6 +60,8 @@ function minimalCheckpoint(overrides: Partial<AgentRunCheckpointV1> = {}): Agent
         schemaVersion: 1,
         baseSystemPrompt: { normalizedText: "You are helpful.", sha256: "h" },
         workspaceInstructions: [],
+        skillCatalog: [],
+        skillCatalogHash: "h",
         aggregateHash: "h",
       },
     },

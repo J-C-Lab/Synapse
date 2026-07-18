@@ -115,6 +115,10 @@ function baseCheckpoint(
         schemaVersion: 1,
         baseSystemPrompt: { normalizedText: baseSystemText, sha256: sha256(baseSystemText) },
         workspaceInstructions: [],
+        // Both re-derived below by sealCheckpointIntegrity(...) — these
+        // placeholders exist only to satisfy FrozenContextSnapshotV1's shape.
+        skillCatalog: [],
+        skillCatalogHash: "",
         aggregateHash: sha256(sha256(baseSystemText)),
       },
     },

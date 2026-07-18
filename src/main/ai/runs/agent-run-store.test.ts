@@ -77,6 +77,8 @@ function checkpoint(runId: string): AgentRunCheckpointV1 {
         schemaVersion: 1,
         baseSystemPrompt: { normalizedText: "base", sha256: "h" },
         workspaceInstructions: [],
+        skillCatalog: [],
+        skillCatalogHash: "h",
         aggregateHash: "h",
       },
     },

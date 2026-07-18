@@ -339,6 +339,8 @@ describe("registerRunsIpc — durable endpoints", () => {
           schemaVersion: 1 as const,
           baseSystemPrompt: { normalizedText: "hi", sha256: "h" },
           workspaceInstructions: [],
+          skillCatalog: [],
+          skillCatalogHash: "h",
           aggregateHash: "h",
         },
       },
