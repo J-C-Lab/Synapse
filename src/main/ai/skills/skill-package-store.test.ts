@@ -162,6 +162,41 @@ describe("skillPackageStore.ingest", () => {
     await expect(store.ingest(parsed)).rejects.toThrow(SkillPackageQuotaExceededError)
   })
 
+  it("serializes concurrent ingests so the aggregate cap is never jointly exceeded", async () => {
+    const baseDir = await tempDir("synapse-skill-store-")
+    const rootA = await tempDir("synapse-skill-fixture-a-")
+    const rootB = await tempDir("synapse-skill-fixture-b-")
+    await writeFiles(rootA, { "SKILL.md": skillMd("skill-a", "desc") })
+    await writeFiles(rootB, { "SKILL.md": skillMd("skill-b", "desc") })
+    const parsedA = await parseSkillPackage(rootA)
+    const parsedB = await parseSkillPackage(rootB)
+    const sizeA = parsedA.manifest[0]!.length
+    const sizeB = parsedB.manifest[0]!.length
+
+    // The cap fits exactly one package but not both together — without an
+    // in-process lock around check-then-write, two concurrent ingest()
+    // calls could each see the (still-empty) aggregate total during their
+    // own capacity check before either commits, letting both succeed and
+    // jointly exceeding the cap.
+    const store = new SkillPackageStore(baseDir, {
+      statDiskSpace: ampleDisk,
+      maxAggregateBytes: sizeA + sizeB - 1,
+    })
+
+    const [resultA, resultB] = await Promise.allSettled([
+      store.ingest(parsedA),
+      store.ingest(parsedB),
+    ])
+
+    const fulfilled = [resultA, resultB].filter((r) => r.status === "fulfilled")
+    const rejected = [resultA, resultB].filter((r) => r.status === "rejected")
+    expect(fulfilled).toHaveLength(1)
+    expect(rejected).toHaveLength(1)
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+      SkillPackageQuotaExceededError
+    )
+  })
+
   it("rejects ingestion when live disk headroom is below the reserve watermark", async () => {
     const baseDir = await tempDir("synapse-skill-store-")
     const store = new SkillPackageStore(baseDir, {

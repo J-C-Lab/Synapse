@@ -375,21 +375,60 @@ function parseSkillMdFrontmatter(
 // structures whose "cost" only shows up once something downstream clones or
 // serializes them without a bound; this rejects the construct outright
 // rather than relying on every future reader of a SkillDescriptor's
-// frontmatter to prove that never happens. Quoted string content is
-// stripped first so ordinary text like "R&D notes" or "3 * base rate"
-// never false-positives.
-const FORBIDDEN_YAML_CONSTRUCT_PATTERN = /(?:^|[\s,[{])[&*!]/m
-
+// frontmatter to prove that never happens.
+//
+// YAML only treats `&`/`*`/`!` as special in true *indicator position* —
+// immediately after a mapping key's `:` separator, immediately after a
+// block-sequence `-`, or immediately after a flow-collection `[`/`{`/`,` —
+// never merely "preceded by whitespace somewhere in the line". An earlier
+// version of this guard flagged any `&`/`*`/`!` preceded by whitespace or a
+// comma anywhere in the line, which misfired on ordinary unquoted prose
+// like "Salt & pepper", "Compute a * b", or "Good, & useful". This version
+// only inspects the true indicator positions, so prose containing those
+// characters — quoted or not — is left alone, while a real anchor/alias/tag
+// construct in the position YAML would actually parse it is still rejected.
 function assertNoAliasesOrCustomTags(frontmatterText: string): void {
   const stripped = frontmatterText
     .replace(/"(?:[^"\\]|\\.)*"/g, '""')
     .replace(/'(?:[^'\\]|'')*'/g, "''")
-  if (FORBIDDEN_YAML_CONSTRUCT_PATTERN.test(stripped)) {
-    throw new SkillPackageParseError(
-      "alias_or_tag_disabled",
-      "frontmatter may not use YAML anchors, aliases, or custom tags"
-    )
+  for (const rawLine of stripped.split(/\r\n|\n/)) {
+    const trimmed = rawLine.replace(/^\s+/, "")
+    if (trimmed.length === 0) continue
+
+    // Block-sequence item: "- &anchor", "-  *alias", "- !!tag".
+    if (/^-\s*[&*!]/.test(trimmed)) {
+      throwAliasOrTagDisabled()
+    }
+
+    // Block-mapping value: "key: <value>" — only a colon that is actually
+    // followed by whitespace/end-of-line (the real YAML key/value
+    // separator) counts, so a colon embedded in prose never reaches here.
+    const mappingMatch = /^[^:#]+:(?:\s|$)([\s\S]*)$/.exec(trimmed)
+    if (mappingMatch) {
+      const value = mappingMatch[1]!.replace(/^\s+/, "")
+      if (/^[&*!]/.test(value)) throwAliasOrTagDisabled()
+      assertNoFlowEntryIndicators(value)
+    } else {
+      assertNoFlowEntryIndicators(trimmed)
+    }
   }
+}
+
+/** Within an actual flow collection (`[...]`/`{...}`) on this line, every
+ *  entry-start position — right after `[`, `{`, or `,`, skipping
+ *  whitespace — is a true indicator position too (e.g.
+ *  `allowed-tools: [&x, *x]`). Only scanned when the text contains a real
+ *  bracket; a bare comma in ordinary prose never triggers this. */
+function assertNoFlowEntryIndicators(text: string): void {
+  if (!/[[{]/.test(text)) return
+  if (/[[{,]\s*[&*!]/.test(text)) throwAliasOrTagDisabled()
+}
+
+function throwAliasOrTagDisabled(): never {
+  throw new SkillPackageParseError(
+    "alias_or_tag_disabled",
+    "frontmatter may not use YAML anchors, aliases, or custom tags"
+  )
 }
 
 function validateFrontmatterShape(parsed: unknown): ParsedSkillFrontmatter {

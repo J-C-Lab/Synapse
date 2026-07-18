@@ -169,14 +169,28 @@ async function copyAndHash(
  * without touching disk again; ingesting changed bytes always produces a
  * different `packageHash` while the previous directory's bytes stay exactly
  * as they were.
+ *
+ * `ingest()`/`reconcileStartup()` are serialized through an in-process
+ * promise-chain mutex, mirroring artifact-quota.ts's `ArtifactQuotaStore
+ * .withLock` — `src/main/index.ts` wires exactly one process-wide instance
+ * of this store, so without this lock two concurrent `ingest()` calls could
+ * both pass `checkCapacity()`'s directory-sum check before either commits,
+ * letting the aggregate quota cap be exceeded. `stat()`/`read()` are pure
+ * reads and stay unlocked, same as ArtifactStore's read paths.
  */
 export class SkillPackageStore {
+  private lock: Promise<void> = Promise.resolve()
+
   constructor(
     private readonly baseDir: string,
     private readonly options: SkillPackageStoreOptions = {}
   ) {}
 
   async ingest(parsed: ParsedSkillPackage): Promise<SkillPackageRef> {
+    return this.withLock(() => this.ingestLocked(parsed))
+  }
+
+  private async ingestLocked(parsed: ParsedSkillPackage): Promise<SkillPackageRef> {
     const manifest: SkillPackageManifestV1 = { schemaVersion: 1, entries: parsed.manifest }
     const manifestHash = computeSkillManifestHash(manifest)
     const packageHash = computeSkillPackageHash(manifestHash)
@@ -314,6 +328,10 @@ export class SkillPackageStore {
    *  ingest's live directory. Mirrors artifact-store.ts's
    *  `reconcileStartup()` being called once, before any driver/GC starts. */
   async reconcileStartup(): Promise<{ removedStagingDirs: number }> {
+    return this.withLock(() => this.reconcileStartupLocked())
+  }
+
+  private async reconcileStartupLocked(): Promise<{ removedStagingDirs: number }> {
     let entries: string[]
     try {
       entries = await fs.readdir(this.baseDir)
@@ -328,6 +346,18 @@ export class SkillPackageStore {
       removedStagingDirs += 1
     }
     return { removedStagingDirs }
+  }
+
+  /** One constant lock key, mirroring ArtifactQuotaStore.withLock: every
+   *  mutation this store performs is serialized in-process through a single
+   *  promise chain rather than racing on any finer-grained key. */
+  private withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.lock.then(fn, fn)
+    this.lock = run.then(
+      () => undefined,
+      () => undefined
+    )
+    return run
   }
 
   private packageDirPath(packageHash: string): string {

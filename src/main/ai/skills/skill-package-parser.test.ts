@@ -200,6 +200,56 @@ body
     expect(parsed.frontmatter.description).toBe("R&D helper: computes rate * base.")
   })
 
+  it("accepts unquoted prose containing '&', '*', and '!' outside indicator position", async () => {
+    const root = await tempSkillDir()
+    await writeFiles(root, {
+      "SKILL.md": `---
+name: my-skill
+description: Handles R&D and Q&A workflows, AT&T style, and matches *.txt files. Fast, & fun!
+---
+body
+`,
+    })
+
+    const parsed = await parseSkillPackage(root)
+    expect(parsed.frontmatter.description).toBe(
+      "Handles R&D and Q&A workflows, AT&T style, and matches *.txt files. Fast, & fun!"
+    )
+  })
+
+  it("rejects a real anchor/alias even when only the immediate value indicator is present", async () => {
+    const root = await tempSkillDir()
+    await writeFiles(root, {
+      "SKILL.md": `---
+name: my-skill
+description: &anchor Does something useful.
+---
+body
+`,
+    })
+
+    await expect(parseSkillPackage(root)).rejects.toMatchObject({
+      reason: "alias_or_tag_disabled",
+    })
+  })
+
+  it("rejects an alias/anchor used as a flow-sequence entry", async () => {
+    const root = await tempSkillDir()
+    await writeFiles(root, {
+      "SKILL.md": `---
+name: my-skill
+description: Does something useful.
+allowed-tools: [read_file, &x, *x]
+---
+body
+`,
+    })
+
+    await expect(parseSkillPackage(root)).rejects.toMatchObject({
+      reason: "alias_or_tag_disabled",
+    })
+  })
+
   it("rejects SKILL.md larger than the configured limit", async () => {
     const root = await tempSkillDir()
     await writeFiles(root, { "SKILL.md": MINIMAL_SKILL_MD })
