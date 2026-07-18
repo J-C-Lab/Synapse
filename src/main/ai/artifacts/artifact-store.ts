@@ -280,7 +280,10 @@ export class ArtifactStore implements AgentArtifactStore {
     this.pinStore = new ArtifactPinStore(baseDir)
     this.tombstoneStore = new ArtifactTombstoneStore(baseDir)
     this.now = options.now ?? (() => Date.now())
-    this.diskRecheckIntervalBytes = options.diskRecheckIntervalBytes ?? DISK_RECHECK_INTERVAL_BYTES
+    this.diskRecheckIntervalBytes = Math.max(
+      1,
+      Math.floor(options.diskRecheckIntervalBytes ?? DISK_RECHECK_INTERVAL_BYTES)
+    )
     this.isArtifactReferenced = options.isArtifactReferenced
   }
 
@@ -337,7 +340,7 @@ export class ArtifactStore implements AgentArtifactStore {
       // Not even the manifest's own headroom fits anywhere — genuinely
       // nothing is safe to write or account for. Abort the producer and
       // reject rather than fabricate an unaccounted checkpoint.
-      await producer.abort(err.reason)
+      await this.abortProducer(producer, err.reason)
       throw err
     }
 
@@ -354,100 +357,111 @@ export class ArtifactStore implements AgentArtifactStore {
     let complete = true
     let truncationReason: ArtifactTruncationReason | undefined
 
-    let handle: FileHandle | undefined
+    let handle: FileHandle
     try {
       handle = await fs.open(tempPath, "w")
-    } catch {
-      // Give an open failure the same checkpointed-incomplete-ref treatment
-      // as a mid-stream write failure, rather than letting it propagate as
-      // a raw rejection outside the design's "always finalize an incomplete
-      // ref" rule.
-      complete = false
-      truncationReason = "write-error"
+    } catch (err) {
+      // A ref is a promise that data.bin exists and matches its digest. If we
+      // cannot even create the temporary payload, no valid incomplete ref can
+      // be manufactured; compensate the reservation and fail explicitly.
+      await this.abortProducer(producer, "write-error")
+      await this.abandonCapture(reserveOperationId, artifactDir)
+      throw new Error(`unable to open artifact payload for ${metadata.runId}`, { cause: err })
     }
 
-    if (handle) {
-      let bytesSinceDiskCheck = 0
-      try {
-        for await (const rawChunk of toAsyncIterable(input)) {
-          if (producer.signal?.aborted) {
-            complete = false
-            truncationReason = "producer-aborted"
-            break
-          }
-          // Checked before spending anything on this chunk (not after
-          // writing it) so a watermark drop rejects the chunk that would
-          // breach it rather than a hypothetical next one.
-          if (bytesSinceDiskCheck >= this.diskRecheckIntervalBytes) {
-            bytesSinceDiskCheck = 0
+    let bytesUntilDiskCheck = 0
+    try {
+      for await (const rawChunk of toAsyncIterable(input)) {
+        if (producer.signal?.aborted) {
+          complete = false
+          truncationReason = "producer-aborted"
+          break
+        }
+        const chunk = ArrayBuffer.isView(rawChunk)
+          ? toUint8Array(rawChunk)
+          : new Uint8Array(rawChunk)
+        let chunkOffset = 0
+        while (chunkOffset < chunk.length) {
+          // Recheck before the first byte and before every bounded write
+          // window. The exact current headroom limits the next write, so a
+          // single giant producer chunk cannot cross the watermark between
+          // periodic checks.
+          if (bytesUntilDiskCheck <= 0) {
             const disk = await this.statDiskSpace(this.baseDir)
             const reserve = freeSpaceReserveBytes(disk.totalBytes, this.limits)
-            if (disk.freeBytes - reserve <= 0) {
+            const headroom = Math.floor(disk.freeBytes - reserve)
+            if (!Number.isFinite(headroom) || headroom <= 0) {
               complete = false
               truncationReason = "disk-reserve"
               break
             }
+            bytesUntilDiskCheck = Math.min(this.diskRecheckIntervalBytes, headroom)
           }
-          const chunk = ArrayBuffer.isView(rawChunk)
-            ? toUint8Array(rawChunk)
-            : new Uint8Array(rawChunk)
+
           const remaining = grantedBytes - capturedBytes
           if (remaining <= 0) {
             complete = false
             truncationReason = limitingReason ?? "artifact-limit"
             break
           }
-          const toWrite = chunk.length <= remaining ? chunk : chunk.subarray(0, remaining)
-          await handle.write(toWrite)
-          hash.update(toWrite)
-          capturedBytes += toWrite.length
-          bytesSinceDiskCheck += toWrite.length
-          if (toWrite.length < chunk.length) {
+          const byteCount = Math.min(chunk.length - chunkOffset, remaining, bytesUntilDiskCheck)
+          if (byteCount <= 0) {
             complete = false
-            truncationReason = limitingReason ?? "artifact-limit"
+            truncationReason = "disk-reserve"
             break
           }
+
+          const toWrite = chunk.subarray(chunkOffset, chunkOffset + byteCount)
+          let writeOffset = 0
+          while (writeOffset < toWrite.length) {
+            const { bytesWritten } = await handle.write(
+              toWrite,
+              writeOffset,
+              toWrite.length - writeOffset,
+              null
+            )
+            if (bytesWritten <= 0) {
+              throw new Error("artifact payload write made no progress")
+            }
+            const written = toWrite.subarray(writeOffset, writeOffset + bytesWritten)
+            // Account only bytes that FileHandle has confirmed reached the
+            // OS. If a later short-write continuation fails, the incomplete
+            // ref still describes exactly the bytes that did land.
+            hash.update(written)
+            capturedBytes += bytesWritten
+            bytesUntilDiskCheck -= bytesWritten
+            writeOffset += bytesWritten
+          }
+          chunkOffset += toWrite.length
         }
-        // A producer can be aborted after yielding its final chunk but before
-        // async iteration reaches EOF. Re-check after the loop so that race
-        // is never misreported as a complete artifact.
-        if (complete && producer.signal?.aborted) {
-          complete = false
-          truncationReason = "producer-aborted"
-        }
-      } catch {
-        complete = false
-        truncationReason = "write-error"
-      } finally {
-        await handle.close()
+        if (!complete) break
       }
-    } else {
-      // open() itself failed — nothing was written, but a (possibly empty)
-      // temp file must still exist for the rename below to produce a
-      // uniform on-disk artifact. This fallback can itself fail for the
-      // same reason open() did (EACCES/EROFS/ENOSPC/EMFILE tend to affect
-      // every call against the same path identically) — swallowed here,
-      // handled by the rename guard below rather than left to throw.
-      await fs.writeFile(tempPath, new Uint8Array(0)).catch(() => {})
-    }
-
-    if (!complete) {
-      await producer.abort(truncationReason!)
-    }
-
-    // Never let this throw: if both open() and the zero-byte fallback above
-    // failed, tempPath was never created and rename() would reject with
-    // ENOENT — the exact bug this write-error path exists to avoid. Treat
-    // any rename failure as write-error (idempotent if already set) and
-    // fall back to writing an empty data file directly at its final
-    // location, so the capture still resolves with a checkpointed ref
-    // instead of throwing and leaving the reservation dangling.
-    try {
-      await fs.rename(tempPath, finalPath)
+      // A producer can be aborted after yielding its final chunk but before
+      // async iteration reaches EOF. Re-check after the loop so that race
+      // is never misreported as a complete artifact.
+      if (complete && producer.signal?.aborted) {
+        complete = false
+        truncationReason = "producer-aborted"
+      }
     } catch {
       complete = false
       truncationReason = "write-error"
-      await fs.writeFile(finalPath, new Uint8Array(0)).catch(() => {})
+    } finally {
+      await handle.close()
+    }
+
+    if (!complete) {
+      await this.abortProducer(producer, truncationReason!)
+    }
+
+    // A manifest may only be committed after the exact final payload exists.
+    // Never replace a failed rename with an empty data.bin: that would make a
+    // returned ref's byte count/hash describe a file that is not there.
+    try {
+      await fs.rename(tempPath, finalPath)
+    } catch (err) {
+      await this.abandonCapture(reserveOperationId, artifactDir)
+      throw new Error(`unable to finalize artifact payload for ${metadata.runId}`, { cause: err })
     }
 
     const ref: AgentArtifactRef = {
@@ -471,6 +485,17 @@ export class ArtifactStore implements AgentArtifactStore {
       delegateToRunIds: [...(metadata.delegateToRunIds ?? [])],
     }
 
+    try {
+      // Prove the final rename produced the exact bytes the ref commits to
+      // before either the manifest or quota settlement makes it durable.
+      await this.verifyArtifactData(ref)
+    } catch (err) {
+      await this.abandonCapture(reserveOperationId, artifactDir)
+      throw new Error(`final artifact payload failed verification for ${metadata.runId}`, {
+        cause: err,
+      })
+    }
+
     // The manifest is this capture's durable commit record, so it lands
     // before the reservation is settled. Startup can then reconcile a crash
     // in the remaining window from a valid manifest plus pending grant.
@@ -482,19 +507,23 @@ export class ArtifactStore implements AgentArtifactStore {
     // estimateManifestReserveBytes is specifically designed to prevent.
     const manifestBytes = Buffer.byteLength(`${JSON.stringify(manifest, null, 2)}\n`, "utf-8")
     try {
+      const disk = await this.statDiskSpace(this.baseDir)
+      const reserve = freeSpaceReserveBytes(disk.totalBytes, this.limits)
+      const headroom = Math.floor(disk.freeBytes - reserve)
+      if (!Number.isFinite(headroom) || headroom < manifestBytes) {
+        throw new Error("disk watermark cannot admit artifact manifest")
+      }
+    } catch (err) {
+      await this.abandonCapture(reserveOperationId, artifactDir)
+      throw new Error(`unable to commit artifact manifest for ${metadata.runId}`, { cause: err })
+    }
+    try {
       await writeJsonFile(this.manifestPath(metadata.runId, artifactId), manifest)
     } catch (err) {
       // No manifest means no durable reference. Best-effort compensation
       // handles a normal I/O error; startup removes an unmanifested pending
       // directory if the process dies in this branch.
-      await this.quotaStore
-        .settle({
-          operationId: `${reserveOperationId}:abandon`,
-          reserveOperationId,
-          actualBytes: 0,
-        })
-        .catch(() => {})
-      await fs.rm(artifactDir, { recursive: true, force: true }).catch(() => {})
+      await this.abandonCapture(reserveOperationId, artifactDir)
       throw err
     }
     await this.quotaStore.settle({
@@ -569,6 +598,32 @@ export class ArtifactStore implements AgentArtifactStore {
   async releaseRunPin(runId: string, finalizationId: string): Promise<void> {
     if (!isSafeId(runId)) throw new InvalidArtifactRunIdError(runId)
     await this.pinStore.release(runId, finalizationId, this.now())
+  }
+
+  /** Compensates a capture that never produced a verifiable final data.bin.
+   * The zero-byte settlement releases the pending capacity before deleting
+   * the directory; if the process dies in either step, startup reconciliation
+   * sees either the still-pending directory or the operation receipt and can
+   * safely finish the idempotent cleanup. */
+  private async abandonCapture(reserveOperationId: string, artifactDir: string): Promise<void> {
+    await this.quotaStore
+      .settle({
+        operationId: `${reserveOperationId}:abandon`,
+        reserveOperationId,
+        actualBytes: 0,
+      })
+      .catch(() => {})
+    await fs.rm(artifactDir, { recursive: true, force: true }).catch(() => {})
+  }
+
+  /** Producer cancellation is best effort from the store's perspective: an
+   * adapter's abort rejection must never skip durable quota compensation or
+   * leave an unverifiable payload directory behind. */
+  private async abortProducer(
+    producer: ArtifactProducer,
+    reason: ArtifactTruncationReason
+  ): Promise<void> {
+    await Promise.resolve(producer.abort(reason)).catch(() => {})
   }
 
   /** Reconciles only reservations left by a previous process. This is an

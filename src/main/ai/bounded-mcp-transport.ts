@@ -16,18 +16,24 @@ export class McpFrameLimitError extends Error {
 }
 
 /** Fetch wrapper for HTTP/SSE MCP transports. It rejects a declared oversized
- * response before reading it and counts streamed bytes before the SDK can
- * buffer/JSON-parse them. */
+ * ordinary response before reading it and counts streamed bytes before the
+ * SDK can buffer/JSON-parse them. SSE is deliberately bounded per event,
+ * rather than across its long-lived connection: many individually-safe
+ * server events must not eventually disconnect a healthy MCP session. */
 export async function boundedMcpFetch(input: string | URL, init?: RequestInit): Promise<Response> {
   const response = await fetch(input, init)
+  const isEventStream = /^text\/event-stream(?:\s*;|$)/i.test(
+    response.headers.get("content-type") ?? ""
+  )
   const declared = Number(response.headers.get("content-length") ?? "0")
-  if (Number.isFinite(declared) && declared > MCP_MAX_INBOUND_FRAME_BYTES) {
+  if (!isEventStream && Number.isFinite(declared) && declared > MCP_MAX_INBOUND_FRAME_BYTES) {
     await response.body?.cancel()
     throw new McpFrameLimitError("MCP HTTP response exceeds configured maximum")
   }
   if (!response.body) return response
   const reader = response.body.getReader()
   let received = 0
+  const sseFrames = isEventStream ? new SseFrameCounter(MCP_MAX_INBOUND_FRAME_BYTES) : undefined
   const boundedBody = new ReadableStream<Uint8Array>({
     async pull(controller) {
       const next = await reader.read()
@@ -35,10 +41,18 @@ export async function boundedMcpFetch(input: string | URL, init?: RequestInit): 
         controller.close()
         return
       }
-      received += next.value.byteLength
-      if (received > MCP_MAX_INBOUND_FRAME_BYTES) {
+      try {
+        if (sseFrames) {
+          sseFrames.consume(next.value)
+        } else {
+          received += next.value.byteLength
+          if (received > MCP_MAX_INBOUND_FRAME_BYTES) {
+            throw new McpFrameLimitError("MCP HTTP response exceeded configured maximum")
+          }
+        }
+      } catch (err) {
         await reader.cancel()
-        controller.error(new McpFrameLimitError("MCP HTTP response exceeded configured maximum"))
+        controller.error(err)
         return
       }
       controller.enqueue(next.value)
@@ -52,6 +66,36 @@ export async function boundedMcpFetch(input: string | URL, init?: RequestInit): 
     statusText: response.statusText,
     headers: response.headers,
   })
+}
+
+/** Counts complete SSE events including all field lines. A blank line ends an
+ * event; the counter resets only then, so one oversized fragmented event is
+ * rejected while any number of separately bounded events can share the same
+ * long-lived HTTP response. */
+class SseFrameCounter {
+  private eventBytes = 0
+  private lineBytes = 0
+  private lineOnlyCarriageReturn = false
+
+  constructor(private readonly maxBytes: number) {}
+
+  consume(chunk: Uint8Array): void {
+    for (const byte of chunk) {
+      this.eventBytes += 1
+      if (this.eventBytes > this.maxBytes) {
+        throw new McpFrameLimitError("MCP SSE event exceeded configured maximum")
+      }
+      if (byte === 0x0a) {
+        // CRLF represents an empty line as just "\r" before this LF.
+        if (this.lineBytes === 0 || this.lineOnlyCarriageReturn) this.eventBytes = 0
+        this.lineBytes = 0
+        this.lineOnlyCarriageReturn = false
+      } else {
+        this.lineOnlyCarriageReturn = this.lineBytes === 0 && byte === 0x0d
+        this.lineBytes += 1
+      }
+    }
+  }
 }
 
 /** Minimal stdio MCP transport with bounded line framing. The SDK's stock

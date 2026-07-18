@@ -497,6 +497,8 @@ describe("conversationStore — artifactUris derivation (Task 21)", () => {
     })
     const raw = JSON.parse(await fs.readFile(join(dir, "c1.json"), "utf-8"))
     expect(raw.artifactUris).toEqual(["artifact://run/run-1/a1"])
+    expect(raw.additionalArtifactUris).toEqual([])
+    expect(raw.artifactIndexIntegrityHash).toMatch(/^[a-f0-9]{64}$/)
   })
 
   it("merges additionalArtifactUris (superseded compaction artifacts) into artifactUris", async () => {
@@ -520,6 +522,10 @@ describe("conversationStore — artifactUris derivation (Task 21)", () => {
     })
     const raw = JSON.parse(await fs.readFile(join(dir, "c1.json"), "utf-8"))
     expect(raw.artifactUris).toEqual([
+      "artifact://run/run-1/history-1",
+      "artifact://run/run-1/history-2",
+    ])
+    expect(raw.additionalArtifactUris).toEqual([
       "artifact://run/run-1/history-1",
       "artifact://run/run-1/history-2",
     ])
@@ -591,5 +597,56 @@ describe("conversationStore.collectReferencedArtifactUris (Task 21)", () => {
     await commitWithArtifact(s, "good-conv", "run-1", "artifact://run/run-1/a1")
     await fs.writeFile(join(dir, "damaged-conv.json"), "{ not valid json")
     await expect(s.collectReferencedArtifactUris(1000, 60_000)).rejects.toThrow(/malformed/)
+  })
+
+  it("fails closed when a legal JSON record drops a message-derived artifact from its index", async () => {
+    const s = store()
+    await seededDefault(s, "indexed-conv")
+    const { fencingToken } = await s.acquireRunLease("indexed-conv", 0, "run-1")
+    await s.commitRun({
+      conversationId: "indexed-conv",
+      runId: "run-1",
+      fencingToken,
+      baseContentRevision: 0,
+      deletionEpoch: 0,
+      finalizationId: "fin-1",
+      messages: [
+        {
+          messageId: "m1",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                toolUseId: "t1",
+                content: "preview",
+                artifact: { uri: "artifact://run/run-1/a1" } as never,
+              },
+            ],
+          },
+        },
+      ],
+    })
+    const path = join(dir, "indexed-conv.json")
+    const tampered = JSON.parse(await fs.readFile(path, "utf-8")) as Record<string, unknown>
+    tampered.artifactUris = []
+    await fs.writeFile(path, JSON.stringify(tampered))
+
+    await expect(s.collectReferencedArtifactUris(1000, 60_000)).rejects.toThrow(
+      /incomplete artifact reference index/
+    )
+  })
+
+  it("fails closed when an additional history URI or its integrity hash is altered", async () => {
+    const s = store()
+    await commitWithArtifact(s, "history-index", "run-1", "artifact://run/run-1/history-1")
+    const path = join(dir, "history-index.json")
+    const tampered = JSON.parse(await fs.readFile(path, "utf-8")) as Record<string, unknown>
+    tampered.additionalArtifactUris = []
+    await fs.writeFile(path, JSON.stringify(tampered))
+
+    await expect(s.collectReferencedArtifactUris(1000, 60_000)).rejects.toThrow(
+      /incomplete artifact reference index/
+    )
   })
 })

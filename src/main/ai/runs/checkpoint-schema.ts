@@ -1117,16 +1117,27 @@ function isValidToolCallResolution(v: unknown): boolean {
   if (!isRecord(v)) return false
   if (v.status === "unresolved") return true
   if (v.status === "resolved") {
+    const hasSummary =
+      v.result !== undefined && isRecord(v.result) && v.result.artifact !== undefined
+    const hasFull = v.fullArtifact !== undefined
     return (
       isString(v.reason) &&
       KNOWN_RESOLUTION_REASONS.has(v.reason) &&
       isValidPersistedToolResult(v.result) &&
       isOptionalString(v.attemptId) &&
-      (v.fullArtifact === undefined || isValidArtifactRef(v.fullArtifact)) &&
-      (v.fullArtifact === undefined ||
-        (v.result.artifact !== undefined &&
-          isValidArtifactSummary(v.result.artifact) &&
-          artifactSummaryMatchesRef(v.result.artifact, v.fullArtifact as AgentArtifactRef)))
+      // A projection summary without the host-only full ref will be lost by
+      // materialization, leaving the conversation to claim an artifact that
+      // GC is free to delete. Require the pair in both directions instead of
+      // accepting a one-sided pointer from an old/forged checkpoint.
+      hasSummary === hasFull &&
+      (!hasFull ||
+        (isValidArtifactRef(v.fullArtifact) &&
+          v.fullArtifact.kind === "tool-result" &&
+          isValidArtifactSummary((v.result as PersistedToolResult).artifact) &&
+          artifactSummaryMatchesRef(
+            (v.result as PersistedToolResult).artifact!,
+            v.fullArtifact as AgentArtifactRef
+          )))
     )
   }
   return false
@@ -1271,6 +1282,7 @@ function isValidContextCompaction(v: unknown): boolean {
   if (!isNonNegativeInteger(v.summarizerTokens)) return false
   if (!isValidArtifactSummary(v.artifact)) return false
   if (v.fullArtifact !== undefined && !isValidArtifactRef(v.fullArtifact)) return false
+  if (v.fullArtifact !== undefined && v.fullArtifact.kind !== "history") return false
   if (
     v.fullArtifact !== undefined &&
     !artifactSummaryMatchesRef(v.artifact, v.fullArtifact as AgentArtifactRef)

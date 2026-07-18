@@ -41,6 +41,7 @@ import { noneRecoveryAdapter } from "./tools/invocation-recovery"
  * that capture path was never designed to buffer safely in the first place.
  */
 export const NON_STREAMING_EMERGENCY_CAP_CHARS = NON_STREAMING_INGRESS_CAP_CHARS
+export { MAX_NON_STREAMING_CONTENT_BLOCKS } from "./tool-result-boundary"
 
 /** The slice of PluginHost the AI tool registry depends on. */
 export interface ToolHostPort {

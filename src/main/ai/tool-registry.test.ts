@@ -6,6 +6,7 @@ import {
   applyNonStreamingEmergencyCap,
   invocationAdapterFor,
   isNonStreamingEmergencyCapMarker,
+  MAX_NON_STREAMING_CONTENT_BLOCKS,
   modelToolName,
   NON_STREAMING_EMERGENCY_CAP_CHARS,
   renderToolResultText,
@@ -235,6 +236,48 @@ describe("applyNonStreamingEmergencyCap", () => {
     // A cap smaller than the safety notice must still remain a hard cap.
     expect(text.length).toBeLessThanOrEqual(10)
     expect(capped.isError).toBe(true)
+  })
+
+  it("counts inter-block separators and caps an array of empty blocks", () => {
+    const result = {
+      content: Array.from({ length: 20 }, () => ({ type: "text" as const, text: "" })),
+    }
+    const capped = applyNonStreamingEmergencyCap(result, 10)
+    expect(capped).not.toBe(result)
+    expect(capped.isError).toBe(true)
+    expect(capped.content).toHaveLength(1)
+    expect((capped.content[0] as { text: string }).text.length).toBeLessThanOrEqual(10)
+  })
+
+  it("rejects a huge number of tiny blocks before a downstream join can allocate them", () => {
+    const result = {
+      content: Array.from({ length: MAX_NON_STREAMING_CONTENT_BLOCKS + 1 }, () => ({
+        type: "text" as const,
+        text: "",
+      })),
+    }
+    expect(applyNonStreamingEmergencyCap(result, 100_000).isError).toBe(true)
+  })
+
+  it("rejects JSON with a toJSON hook without invoking it", () => {
+    const toJSON = vi.fn(() => "would allocate an unbounded string")
+    const value = {}
+    Object.defineProperty(value, "toJSON", { value: toJSON, enumerable: false })
+    const capped = applyNonStreamingEmergencyCap(
+      { content: [{ type: "json" as const, json: value }] },
+      100
+    )
+    expect(capped.isError).toBe(true)
+    expect(toJSON).not.toHaveBeenCalled()
+  })
+
+  it("rejects an accessor-backed content block without reading the accessor", () => {
+    const getter = vi.fn(() => "would run untrusted code")
+    const block = { type: "text" }
+    Object.defineProperty(block, "text", { get: getter, enumerable: true })
+    const capped = applyNonStreamingEmergencyCap({ content: [block] } as never, 100)
+    expect(capped.isError).toBe(true)
+    expect(getter).not.toHaveBeenCalled()
   })
 
   it("defaults to NON_STREAMING_EMERGENCY_CAP_CHARS when no cap is passed", () => {

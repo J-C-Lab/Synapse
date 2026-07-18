@@ -721,7 +721,15 @@ async function recoverInterruptedAttempt(
   const conforms = call.replayGuarantee === "dedupe-and-result-replay"
 
   if (recovery.status === "prior-result" && conforms) {
-    const result = recovery.result as PersistedToolResult
+    const recovered = recovery.result as PersistedToolResult
+    // Recovery adapters can replay only the renderer-safe result summary;
+    // they cannot prove a host-owned full artifact ref. Do not persist a
+    // one-sided summary that materialization would subsequently drop and GC
+    // could collect. The bounded preview remains useful, explicitly marked
+    // incomplete rather than falsely advertising a durable artifact.
+    const result: PersistedToolResult = recovered.artifact
+      ? { ...recovered, artifact: undefined, complete: false }
+      : recovered
     const completedAt = deps.now()
     const checkpoint = await mutateCheckpoint(deps, runId, (cp) =>
       updateCall(cp, modelStep, ordinal, (c) => ({

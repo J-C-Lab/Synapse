@@ -434,10 +434,37 @@ describe("artifactStore.capture — truncation and allocation limits", () => {
       yield bytesOf("b")
     }
     const producer = noopProducer()
-    const ref = await store.capture(input(), metadata(), producer)
-    expect(ref.complete).toBe(false)
-    expect(ref.truncationReason).toBe("disk-reserve")
-    expect(ref.capturedBytes).toBe(1)
+    await expect(store.capture(input(), metadata(), producer)).rejects.toThrow(
+      /unable to commit artifact manifest/
+    )
+    expect(producer.aborts).toEqual(["disk-reserve"])
+  })
+
+  it("checks the watermark before the first byte and never writes a chunk past current headroom", async () => {
+    let checks = 0
+    const diskThatDropsAfterReserve = async () => {
+      checks += 1
+      // reserve() sees room for the payload+manifest; another writer consumes
+      // it before capture's mandatory pre-first-write recheck.
+      return checks === 1
+        ? { freeBytes: 10_000, totalBytes: 1_000_000 }
+        : { freeBytes: 0, totalBytes: 1_000_000 }
+    }
+    const store = new ArtifactStore(dir, {
+      statDiskSpace: diskThatDropsAfterReserve,
+      quotaLimits: {
+        perArtifactBytes: 1_000,
+        perRunBytes: 1_000_000,
+        globalBytes: 1_000_000,
+        minFreeBytes: 0,
+        minFreeFraction: 0,
+        manifestReserveBytes: 0,
+      },
+    })
+    const producer = noopProducer()
+    await expect(
+      store.capture(bytesOf("a very large first chunk"), metadata(), producer)
+    ).rejects.toThrow(/unable to commit artifact manifest/)
     expect(producer.aborts).toEqual(["disk-reserve"])
   })
 })
@@ -494,7 +521,7 @@ describe("artifactStore.capture — producer abort and write failure", () => {
     expect(Buffer.from(read).toString("utf-8")).toBe("partial-data-")
   })
 
-  it("resolves with a checkpointed incomplete ref (never throws) when both fs.open and the zero-byte fallback fs.writeFile fail", async () => {
+  it("compensates the reservation and rejects when the temporary payload cannot be opened", async () => {
     const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
 
     function eaccesError(): NodeJS.ErrnoException {
@@ -503,29 +530,13 @@ describe("artifactStore.capture — producer abort and write failure", () => {
       return err
     }
 
-    // EACCES/EROFS/ENOSPC/EMFILE realistically affect every call against the
-    // same path identically — mock both fs.open and fs.writeFile to reject
-    // whenever they target this artifact's data file, while leaving every
-    // other path (manifest.json, quota.json — both written via
-    // writeJsonFile's own distinct temp-file names) working normally.
     const openSpy = vi.spyOn(fs, "open").mockRejectedValue(eaccesError())
-    const realWriteFile = fs.writeFile.bind(fs)
-    const writeFileSpy = vi
-      .spyOn(fs, "writeFile")
-      .mockImplementation(async (filePath: Parameters<typeof fs.writeFile>[0], ...rest) => {
-        const p = String(filePath)
-        if (p.endsWith("data.bin.tmp") || p.endsWith("data.bin")) {
-          throw eaccesError()
-        }
-        return realWriteFile(filePath, ...(rest as [never, never]))
-      })
 
     try {
       const producer = noopProducer()
-      const ref = await store.capture(bytesOf("hello"), metadata(), producer)
-      expect(ref.complete).toBe(false)
-      expect(ref.truncationReason).toBe("write-error")
-      expect(ref.capturedBytes).toBe(0)
+      await expect(store.capture(bytesOf("hello"), metadata(), producer)).rejects.toThrow(
+        /unable to open artifact payload/
+      )
       expect(producer.aborts).toEqual(["write-error"])
 
       // The quota reservation must have been settled (moved out of
@@ -534,14 +545,63 @@ describe("artifactStore.capture — producer abort and write failure", () => {
         pendingReservations: Record<string, unknown>
       }
       expect(Object.keys(ledgerRaw.pendingReservations)).toHaveLength(0)
-
-      // stat() still works — the manifest itself was written successfully
-      // (only the data file writes were mocked to fail).
-      const statted = await store.stat(ref, caller())
-      expect(statted.complete).toBe(false)
     } finally {
       openSpy.mockRestore()
-      writeFileSpy.mockRestore()
+    }
+  })
+
+  it("retries a short FileHandle.write and commits only the bytes actually written", async () => {
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    const realOpen = fs.open.bind(fs)
+    const openSpy = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      const handle = await realOpen(...args)
+      if (String(args[0]).endsWith("data.bin.tmp")) {
+        const realWrite = handle.write.bind(handle)
+        let firstWrite = true
+        handle.write = (async (buffer, offset, length, position) => {
+          if (firstWrite) {
+            firstWrite = false
+            const requested = length ?? buffer.byteLength
+            return realWrite(buffer, offset ?? 0, Math.max(1, Math.floor(requested / 8)), position)
+          }
+          return realWrite(buffer, offset, length, position)
+        }) as typeof handle.write
+      }
+      return handle
+    })
+
+    try {
+      const ref = await store.capture(bytesOf("12345678"), metadata(), noopProducer())
+      expect(ref.complete).toBe(true)
+      expect(ref.capturedBytes).toBe(8)
+      expect(Buffer.from(await store.read(ref, { start: 0 }, caller())).toString("utf8")).toBe(
+        "12345678"
+      )
+    } finally {
+      openSpy.mockRestore()
+    }
+  })
+
+  it("never returns a ref when rename cannot establish the final data file", async () => {
+    const store = new ArtifactStore(dir, { statDiskSpace: ampleDisk })
+    const realRename = fs.rename.bind(fs)
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (oldPath, newPath) => {
+      if (String(oldPath).endsWith("data.bin.tmp") && String(newPath).endsWith("data.bin")) {
+        throw new Error("simulated rename failure")
+      }
+      return realRename(oldPath, newPath)
+    })
+
+    try {
+      await expect(store.capture(bytesOf("payload"), metadata(), noopProducer())).rejects.toThrow(
+        /unable to finalize artifact payload/
+      )
+      const ledgerRaw = JSON.parse(await fs.readFile(join(dir, "quota.json"), "utf-8")) as {
+        pendingReservations: Record<string, unknown>
+      }
+      expect(Object.keys(ledgerRaw.pendingReservations)).toHaveLength(0)
+    } finally {
+      renameSpy.mockRestore()
     }
   })
 })

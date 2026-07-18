@@ -4,6 +4,11 @@ import type { ToolContentBlock, ToolResult } from "@synapse/plugin-sdk"
  * Command execution has its own byte-stream tee; this is for adapters that
  * otherwise deliver one already-materialized result object. */
 export const NON_STREAMING_INGRESS_CAP_CHARS = 2_000_000
+/** Stops a huge array of individually tiny blocks from bypassing the text
+ * budget and forcing an unbounded join/render allocation downstream. */
+export const MAX_NON_STREAMING_CONTENT_BLOCKS = 1_024
+const MAX_NON_STREAMING_JSON_NODES = 10_000
+const INVALID_DATA = Symbol("invalid-data-property")
 
 export interface NonStreamingEmergencyCapMarker {
   synapseNonStreamingCapped: true
@@ -34,13 +39,35 @@ export function boundNonStreamingToolResult(
   let truncated = false
   let omittedChars = 0
 
-  for (const block of result.content) {
-    const remaining = Math.max(0, payloadBudget - used)
+  const content = result.content
+  if (!isPlainJsonContainer(result) || !isPlainJsonContainer(content)) {
+    return cappedResult(safeMax, "", 1, notice)
+  }
+  const blockLimit = Math.min(content.length, MAX_NON_STREAMING_CONTENT_BLOCKS)
+  for (let index = 0; index < blockLimit; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(content, String(index))
+    if (!descriptor || !isDataDescriptor(descriptor)) {
+      truncated = true
+      omittedChars += 1
+      break
+    }
+    const block = descriptor.value as ToolContentBlock
+    // renderToolResultText joins blocks with newlines. Charge that separator
+    // here too so many empty blocks cannot exceed the advertised hard cap.
+    const separatorChars = pieces.length === 0 ? 0 : 1
+    const remainingBeforeBlock = payloadBudget - used - separatorChars
+    if (remainingBeforeBlock < 0) {
+      truncated = true
+      omittedChars += 1
+      break
+    }
+    const remaining = remainingBeforeBlock
     const rendered = renderedBlockWithinBudget(block, remaining)
     if (rendered === undefined) {
-      if (block.type === "text") {
-        pieces.push(block.text.slice(0, remaining))
-        omittedChars += block.text.length - remaining
+      const text = textBlockValue(block)
+      if (text !== undefined) {
+        pieces.push(text.slice(0, remaining))
+        omittedChars += text.length - remaining
       } else {
         omittedChars += 1
       }
@@ -54,16 +81,77 @@ export function boundNonStreamingToolResult(
       break
     }
     pieces.push(rendered)
-    used += rendered.length
+    used += separatorChars + rendered.length
+  }
+  if (!truncated && content.length > blockLimit) {
+    truncated = true
+    omittedChars += content.length - blockLimit
   }
 
   // Structured data is another unbounded downstream serialization surface.
   // Retain it only after proving an intentionally conservative upper bound.
-  if (!truncated && !valueFitsWithin(result.structured, safeMax)) truncated = true
+  const structuredDescriptor = Object.getOwnPropertyDescriptor(result, "structured")
+  if (
+    !truncated &&
+    structuredDescriptor !== undefined &&
+    (!isDataDescriptor(structuredDescriptor) ||
+      !valueFitsWithin(structuredDescriptor.value, safeMax))
+  ) {
+    truncated = true
+  }
   if (!truncated) return result
 
   const rawPreview = pieces.join("\n")
   const preview = rawPreview.slice(0, payloadBudget)
+  return cappedResult(safeMax, preview, omittedChars, notice)
+}
+
+function renderedBlockWithinBudget(block: ToolContentBlock, remaining: number): string | undefined {
+  const type = blockType(block)
+  if (!type) return undefined
+  if (type === "text") {
+    const text = textBlockValue(block)
+    return text !== undefined && text.length <= remaining ? text : undefined
+  }
+  if (type === "image") {
+    const path = dataProperty(block, "path")
+    if (typeof path !== "string") return undefined
+    const text = `[image: ${path}]`
+    return text.length <= remaining ? text : undefined
+  }
+  if (type !== "json") return undefined
+  const json = dataProperty(block, "json")
+  if (json === INVALID_DATA || !valueFitsWithin(json, remaining)) return undefined
+  // The conservative preflight above bounds this serialization before it is
+  // attempted, so JSON.stringify never gets an unbounded allocation budget.
+  const text = JSON.stringify(json)
+  if (typeof text !== "string") return undefined
+  return text.length <= remaining ? text : undefined
+}
+
+function dataProperty(value: object, key: string): unknown | typeof INVALID_DATA {
+  if (!isPlainJsonContainer(value)) return INVALID_DATA
+  const descriptor = Object.getOwnPropertyDescriptor(value, key)
+  return descriptor && isDataDescriptor(descriptor) ? descriptor.value : INVALID_DATA
+}
+
+function blockType(block: ToolContentBlock): string | undefined {
+  const type = dataProperty(block, "type")
+  return typeof type === "string" ? type : undefined
+}
+
+function textBlockValue(block: ToolContentBlock): string | undefined {
+  if (blockType(block) !== "text") return undefined
+  const text = dataProperty(block, "text")
+  return typeof text === "string" ? text : undefined
+}
+
+function cappedResult(
+  maxChars: number,
+  preview: string,
+  omittedChars: number,
+  notice: string
+): ToolResult {
   const marker: NonStreamingEmergencyCapMarker = {
     synapseNonStreamingCapped: true,
     // This is an exact count for bounded text blocks and a lower bound for
@@ -72,23 +160,10 @@ export function boundNonStreamingToolResult(
     omittedChars: Math.max(1, omittedChars),
   }
   return {
-    content: [{ type: "text", text: `${preview}${notice}`.slice(0, safeMax) }],
+    content: [{ type: "text", text: `${preview}${notice}`.slice(0, maxChars) }],
     isError: true,
     structured: marker,
   }
-}
-
-function renderedBlockWithinBudget(block: ToolContentBlock, remaining: number): string | undefined {
-  if (block.type === "text") return block.text.length <= remaining ? block.text : undefined
-  if (block.type === "image") {
-    const text = `[image: ${block.path}]`
-    return text.length <= remaining ? text : undefined
-  }
-  if (!valueFitsWithin(block.json, remaining)) return undefined
-  // The conservative preflight above bounds this serialization before it is
-  // attempted, so JSON.stringify never gets an unbounded allocation budget.
-  const text = JSON.stringify(block.json)
-  return text.length <= remaining ? text : undefined
 }
 
 /** Conservative, non-allocating upper bound for JSON serialization. It may
@@ -97,39 +172,91 @@ function renderedBlockWithinBudget(block: ToolContentBlock, remaining: number): 
  * an attacker-provided enormous object. */
 function valueFitsWithin(value: unknown, limit: number): boolean {
   let remaining = limit
+  let nodes = 0
   const consume = (count: number): boolean => {
     remaining -= count
     return remaining >= 0
   }
   const walk = (current: unknown, depth: number): boolean => {
-    if (depth > 32 || remaining < 0) return false
+    nodes += 1
+    if (depth > 32 || nodes > MAX_NON_STREAMING_JSON_NODES || remaining < 0) return false
     if (current === undefined) return true
     if (current === null || typeof current === "boolean") return consume(5)
     if (typeof current === "number") return Number.isFinite(current) && consume(32)
     if (typeof current === "string") return consume(current.length * 6 + 2)
     if (Array.isArray(current)) {
+      if (!isPlainJsonContainer(current)) return false
       if (!consume(2)) return false
       for (let index = 0; index < current.length; index += 1) {
         if (index > 0 && !consume(1)) return false
-        if (index >= 10_000 || !walk(current[index], depth + 1)) return false
+        if (index >= MAX_NON_STREAMING_JSON_NODES) return false
+        const descriptor = Object.getOwnPropertyDescriptor(current, String(index))
+        if (descriptor && !isDataDescriptor(descriptor)) return false
+        // JSON.stringify renders sparse array slots as null.
+        if (!descriptor ? !consume(4) : !walk(descriptor.value, depth + 1)) return false
       }
       return true
     }
     if (typeof current !== "object") return false
+    if (!isPlainJsonContainer(current)) return false
     if (!consume(2)) return false
     let count = 0
     for (const key in current as Record<string, unknown>) {
       count += 1
-      if (count > 10_000 || !consume(key.length * 6 + 4)) return false
-      let child: unknown
-      try {
-        child = (current as Record<string, unknown>)[key]
-      } catch {
+      if (count > MAX_NON_STREAMING_JSON_NODES || !consume(key.length * 6 + 4)) return false
+      const descriptor = Object.getOwnPropertyDescriptor(current, key)
+      // Enumerable inherited properties and getters are never plain JSON
+      // data. Reject rather than evaluating either during the later
+      // JSON.stringify call.
+      if (!descriptor || !isDataDescriptor(descriptor) || !walk(descriptor.value, depth + 1)) {
         return false
       }
-      if (!walk(child, depth + 1)) return false
     }
     return true
   }
-  return walk(value, 0)
+  try {
+    return walk(value, 0)
+  } catch {
+    return false
+  }
+}
+
+function isDataDescriptor(
+  descriptor: PropertyDescriptor
+): descriptor is PropertyDescriptor & { value: unknown } {
+  return "value" in descriptor
+}
+
+/** JSON.stringify can invoke toJSON and accessor getters. Admit only simple
+ * same- or cross-realm plain objects/arrays whose entire prototype chain is
+ * free of a serialization hook; property descriptors are checked by the
+ * walker above before their values are read. */
+function isPlainJsonContainer(value: object): boolean {
+  const prototype = Object.getPrototypeOf(value)
+  if (!prototype) return true
+  const parent = Object.getPrototypeOf(prototype)
+  const constructorName = ownConstructorName(prototype)
+  const isPlainObject = constructorName === "Object" && parent === null
+  const isPlainArray =
+    constructorName === "Array" &&
+    parent !== null &&
+    ownConstructorName(parent) === "Object" &&
+    Object.getPrototypeOf(parent) === null
+  // Plain objects have Object.prototype -> null. Arrays have
+  // Array.prototype -> Object.prototype -> null. Checking constructor names
+  // rather than object identity also accepts values returned from a plugin
+  // VM, whose intrinsic prototypes belong to a different realm.
+  if (!isPlainObject && !isPlainArray) return false
+  for (let current: object | null = value; current; current = Object.getPrototypeOf(current)) {
+    if (Object.getOwnPropertyDescriptor(current, "toJSON")) return false
+  }
+  return true
+}
+
+function ownConstructorName(prototype: object): string | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, "constructor")
+  if (!descriptor || !isDataDescriptor(descriptor) || typeof descriptor.value !== "function") {
+    return undefined
+  }
+  return descriptor.value.name
 }

@@ -62,8 +62,15 @@ export interface ConversationRecordV2 {
   activeRun?: ConversationActiveRun
   messages: DurableChatMessage[]
   /** Host-derived from `messages` in the same atomic write — never a
-   *  best-effort side index. */
+   *  best-effort side index. Together with `additionalArtifactUris` and
+   *  `artifactIndexIntegrityHash`, retention can prove this has not silently
+   *  dropped an artifact pointer before it authorizes irreversible GC. */
   artifactUris: string[]
+  /** History-compaction artifacts that are not embedded in a chat content
+   * block and therefore cannot be derived from `messages`. */
+  additionalArtifactUris: string[]
+  /** Canonical hash of the derived, additional, and merged URI sets. */
+  artifactIndexIntegrityHash: string
   deletedAt?: number
   title?: string
   workspaceId: string
@@ -145,7 +152,11 @@ export class ConversationStore {
         title: conversation.title,
         workspaceId: conversation.workspaceId,
         messages,
-        artifactUris: deriveArtifactUris(messages),
+        // The legacy whole-history save path has no separate compaction
+        // ledger to recompute history artifacts from. Preserve the already
+        // verified extras rather than silently unpinning them when a caller
+        // appends ordinary chat messages through this compatibility API.
+        ...artifactReferenceIndex(messages, existing?.additionalArtifactUris),
         contentRevision: base.contentRevision + (messages.length > previousMessages.length ? 1 : 0),
         recordRevision: base.recordRevision + 1,
         updatedAt: now,
@@ -362,10 +373,7 @@ export class ConversationStore {
         ...record,
         contentRevision,
         messages: input.messages,
-        artifactUris: mergeArtifactUris(
-          deriveArtifactUris(input.messages),
-          input.additionalArtifactUris
-        ),
+        ...artifactReferenceIndex(input.messages, input.additionalArtifactUris),
         recordRevision: record.recordRevision + 1,
         activeRun: {
           ...record.activeRun!,
@@ -485,7 +493,24 @@ export class ConversationStore {
     const raw = await readJsonFile(this.filePath(id))
     if (raw === null) return undefined
     const v2 = tryParseV2(raw)
-    if (v2) return v2
+    if (v2) {
+      // V2 records written before the artifact-retention integrity contract
+      // had no separately durable additional set or hash. A normal mutation
+      // upgrades them conservatively by treating every prior non-message URI
+      // as an additional pin. Retention itself never performs this migration:
+      // destructive scans must fail closed until a trusted writer does.
+      if (!hasValidArtifactReferenceIndex(v2)) {
+        const upgraded: ConversationRecordV2 = {
+          ...v2,
+          ...artifactReferenceIndex(v2.messages, v2.artifactUris),
+          recordRevision: v2.recordRevision + 1,
+          updatedAt: this.now(),
+        }
+        await this.writeRecord(upgraded)
+        return upgraded
+      }
+      return v2
+    }
     const legacy = tryParseLegacy(raw)
     if (!legacy) return undefined
     const migrated = migrateLegacyRecord(legacy)
@@ -522,8 +547,7 @@ export class ConversationStore {
       const source = raw as Record<string, unknown>
       if (
         v2.id !== id ||
-        !Array.isArray(source.artifactUris) ||
-        !source.artifactUris.every((uri) => typeof uri === "string") ||
+        !hasValidArtifactReferenceIndex(v2) ||
         (source.state !== "active" && source.state !== "deleted")
       ) {
         throw new Error(`conversation ${id} has an incomplete artifact reference index`)
@@ -596,7 +620,7 @@ function emptyRecord(id: string, workspaceId: string, createdAt: number): Conver
     lastFencingToken: 0,
     activeRun: undefined,
     messages: [],
-    artifactUris: [],
+    ...artifactReferenceIndex([]),
     title: undefined,
     workspaceId,
     createdAt,
@@ -633,6 +657,11 @@ function tryParseV2(value: unknown): ConversationRecordV2 | undefined {
       : undefined,
     messages: v.messages as DurableChatMessage[],
     artifactUris: Array.isArray(v.artifactUris) ? (v.artifactUris as string[]) : [],
+    additionalArtifactUris: Array.isArray(v.additionalArtifactUris)
+      ? (v.additionalArtifactUris as string[])
+      : [],
+    artifactIndexIntegrityHash:
+      typeof v.artifactIndexIntegrityHash === "string" ? v.artifactIndexIntegrityHash : "",
     deletedAt: typeof v.deletedAt === "number" ? v.deletedAt : undefined,
     title: typeof v.title === "string" ? v.title : undefined,
     workspaceId:
@@ -670,7 +699,7 @@ function migrateLegacyRecord(legacy: StoredConversation): ConversationRecordV2 {
     lastFencingToken: 0,
     activeRun: undefined,
     messages,
-    artifactUris: deriveArtifactUris(messages),
+    ...artifactReferenceIndex(messages),
     title: legacy.title,
     workspaceId: legacy.workspaceId,
     createdAt: legacy.createdAt,
@@ -699,4 +728,54 @@ function isFileNotFound(err: unknown): boolean {
 
 function mergeArtifactUris(derived: readonly string[], additional?: readonly string[]): string[] {
   return [...new Set([...derived, ...(additional ?? [])])].sort()
+}
+
+/** Produces the only artifact-reference index shape writers are allowed to
+ * persist. The extra list is reduced against the message-derived list, so
+ * the integrity hash has one canonical representation for every URI set. */
+function artifactReferenceIndex(
+  messages: readonly DurableChatMessage[],
+  additional?: readonly string[]
+): Pick<
+  ConversationRecordV2,
+  "artifactUris" | "additionalArtifactUris" | "artifactIndexIntegrityHash"
+> {
+  const derivedArtifactUris = deriveArtifactUris(messages)
+  const derived = new Set(derivedArtifactUris)
+  const additionalArtifactUris = [...new Set(additional ?? [])]
+    .filter((uri): uri is string => typeof uri === "string" && !derived.has(uri))
+    .sort()
+  const artifactUris = mergeArtifactUris(derivedArtifactUris, additionalArtifactUris)
+  return {
+    artifactUris,
+    additionalArtifactUris,
+    artifactIndexIntegrityHash: canonicalHash({
+      artifactUris,
+      derivedArtifactUris,
+      additionalArtifactUris,
+    }),
+  }
+}
+
+/** Strictly validates the hash and both components rather than merely
+ * trusting the merged side index. Any uncertainty is handled by the
+ * retention caller as a scan failure, which leaves artifacts pinned. */
+function hasValidArtifactReferenceIndex(record: ConversationRecordV2): boolean {
+  if (
+    !record.artifactUris.every((uri) => typeof uri === "string") ||
+    !record.additionalArtifactUris.every((uri) => typeof uri === "string") ||
+    !record.artifactIndexIntegrityHash
+  ) {
+    return false
+  }
+  const expected = artifactReferenceIndex(record.messages, record.additionalArtifactUris)
+  return (
+    sameStringArray(record.artifactUris, expected.artifactUris) &&
+    sameStringArray(record.additionalArtifactUris, expected.additionalArtifactUris) &&
+    record.artifactIndexIntegrityHash === expected.artifactIndexIntegrityHash
+  )
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
 }

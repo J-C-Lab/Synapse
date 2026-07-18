@@ -161,6 +161,90 @@ describe("validateCheckpoint", () => {
     expect(validateCheckpoint(forged)).toEqual({ ok: false, reason: "malformed" })
   })
 
+  it("requires a resolved tool artifact summary and full ref to appear together", () => {
+    const checkpoint = minimalCheckpoint()
+    const fullRef = {
+      uri: "artifact://run/run-1/art-1" as const,
+      runId: "run-1",
+      artifactId: "art-1",
+      kind: "tool-result" as const,
+      mediaType: "text/plain",
+      capturedBytes: 12,
+      sourceBytes: 12,
+      complete: true,
+      sha256: "a".repeat(64),
+      createdAt: 1,
+    }
+    const summary = {
+      uri: fullRef.uri,
+      kind: fullRef.kind,
+      mediaType: fullRef.mediaType,
+      capturedBytes: fullRef.capturedBytes,
+      complete: fullRef.complete,
+    }
+    const paired = sealCheckpointIntegrity({
+      ...checkpoint,
+      messages: [
+        {
+          messageId: "a1",
+          message: {
+            role: "assistant",
+            content: [{ type: "tool_use", id: "t1", name: "unknown", input: {} }],
+          },
+        },
+      ],
+      toolBatches: [
+        {
+          modelStep: 0,
+          assistantMessageId: "a1",
+          resultCarrierMessageId: "r1",
+          calls: [
+            {
+              ordinal: 0,
+              toolUseId: "t1",
+              safeName: "unknown",
+              fqName: "unknown",
+              input: {},
+              annotations: {},
+              replayGuarantee: "none",
+              approval: { status: "not_required" },
+              attempts: [],
+              resolution: {
+                status: "resolved",
+                reason: "invalid-tool-call",
+                result: { isError: true, preview: "missing", complete: false, artifact: summary },
+                fullArtifact: fullRef,
+              },
+            },
+          ],
+        },
+      ],
+    })
+    expect(validateCheckpoint(paired).ok).toBe(true)
+
+    const pairedResolution = paired.toolBatches[0]!.calls[0]!.resolution
+    if (pairedResolution.status !== "resolved") throw new Error("fixture must be resolved")
+
+    const dangling = sealCheckpointIntegrity({
+      ...paired,
+      toolBatches: [
+        {
+          ...paired.toolBatches[0]!,
+          calls: [
+            {
+              ...paired.toolBatches[0]!.calls[0]!,
+              resolution: {
+                ...pairedResolution,
+                fullArtifact: undefined,
+              },
+            },
+          ],
+        },
+      ],
+    })
+    expect(validateCheckpoint(dangling)).toEqual({ ok: false, reason: "malformed" })
+  })
+
   it("rejects authority or frozen context whose digest no longer matches its payload", () => {
     const checkpoint = minimalCheckpoint()
     expect(
