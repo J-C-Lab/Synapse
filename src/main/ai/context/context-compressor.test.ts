@@ -1,6 +1,10 @@
 import type { ChatMessage } from "../providers/types"
 import { describe, expect, it, vi } from "vitest"
-import { ContextCompressor, isSummaryMessage } from "./context-compressor"
+import {
+  ContextCompressor,
+  isSummaryMessage,
+  SummarizeInfrastructureError,
+} from "./context-compressor"
 
 function user(text: string): ChatMessage {
   return { role: "user", content: [{ type: "text", text }] }
@@ -23,13 +27,17 @@ describe("contextCompressor", () => {
     const messages = [user("a"), assistant("b")]
     const out = await c.compress("SYS", messages)
     expect(out.messages).toEqual(messages)
+    expect(out.evicted).toEqual([])
     expect(summarize).not.toHaveBeenCalled()
   })
 
   it("replaces older turns with one summary message when over threshold", async () => {
     const summarize = summarizer("recap")
     const c = new ContextCompressor({ thresholdTokens: 200, keepFraction: 0.5, summarize })
-    const messages = [big("old ", 200), user("recent-1"), assistant("recent-2")]
+    const older = big("old ", 200)
+    const recent1 = user("recent-1")
+    const recent2 = assistant("recent-2")
+    const messages = [older, recent1, recent2]
     const out = await c.compress("SYS", messages)
 
     expect(summarize).toHaveBeenCalledTimes(1)
@@ -38,6 +46,11 @@ describe("contextCompressor", () => {
     expect(out.messages).toContainEqual(user("recent-1"))
     expect(out.messages).toContainEqual(assistant("recent-2"))
     expect(out.summarizerTokens).toBe(5)
+    expect(out.summaryText).toBe("recap")
+    // evicted is the exact leading prefix that didn't survive — here just
+    // `older`, by reference, in original order.
+    expect(out.evicted).toEqual([older])
+    expect(out.evicted[0]).toBe(older)
   })
 
   it("pulls the boundary back to include a whole tool_use/tool_result pair", async () => {
@@ -117,5 +130,112 @@ describe("contextCompressor", () => {
     expect(
       out.messages.every((m) => JSON.stringify(m).includes("old ") === false || m === messages[0])
     ).toBe(true)
+    // Still evicted, and computeEvicted's reference-scan reports it, even
+    // though no summary was produced for it.
+    expect(out.evicted).toEqual([messages[0]])
+  })
+
+  it("reports the exact evicted prefix (including a hard-trimmed tool_use/tool_result pair) as `evicted`", async () => {
+    const longSummary = "S".repeat(4000)
+    const summarize = vi.fn(async () => ({ text: longSummary, tokens: 5 }))
+    const c = new ContextCompressor({ thresholdTokens: 300, keepFraction: 0.5, summarize })
+    const older = big("old ", 400)
+    const recentA = big("recent-a ", 60)
+    const recentB = big("recent-b ", 60)
+    const tail = user("tail")
+    const messages = [older, recentA, recentB, tail]
+    const out = await c.compress("SYS", messages)
+
+    expect(out.messages[out.messages.length - 1]).toEqual(tail)
+    // Whatever hardTrim additionally dropped beyond `older` (recentA and/or
+    // recentB) must show up in `evicted` too — it's real content that
+    // didn't survive, regardless of which internal branch dropped it.
+    expect(out.evicted[0]).toBe(older)
+    expect(out.evicted.length).toBeGreaterThan(1)
+    // evicted + kept-verbatim-tail must exactly reconstruct the original
+    // input length (the synthetic summary message, if any, isn't part of
+    // either count — it's neither original input nor evicted-from-input).
+    const keptVerbatimCount = out.messages.length - (isSummaryMessage(out.messages[0]) ? 1 : 0)
+    expect(out.evicted.length + keptVerbatimCount).toBe(messages.length)
+  })
+
+  it("propagates the original error when summarize throws SummarizeInfrastructureError, instead of silently hard-trimming", async () => {
+    class FakeBudgetError extends Error {}
+    const original = new FakeBudgetError("insufficient budget")
+    const summarize = vi.fn(async () => {
+      throw new SummarizeInfrastructureError("infra failure", { cause: original })
+    })
+    const c = new ContextCompressor({ thresholdTokens: 200, keepFraction: 0.5, summarize })
+    const messages = [big("old ", 200), user("recent")]
+
+    await expect(c.compress("SYS", messages)).rejects.toBe(original)
+  })
+
+  it("second round of compression evicts the prior synthetic summary along with newly-old real messages", async () => {
+    let call = 0
+    const summarize = vi.fn(async () => {
+      call += 1
+      return { text: `recap-${call}`, tokens: 5 }
+    })
+    const c = new ContextCompressor({ thresholdTokens: 200, keepFraction: 0.5, summarize })
+
+    const round1Older = big("old ", 200)
+    const round1Recent = user("recent-1")
+    const first = await c.compress("SYS", [round1Older, round1Recent])
+    expect(first.evicted).toEqual([round1Older])
+    expect(isSummaryMessage(first.messages[0])).toBe(true)
+
+    // Simulate the caller re-projecting: the round-1 synthetic summary is
+    // fed back in as position 0 (as durable-agent-driver.ts's
+    // projectCompactedMessages would build it), plus enough new real
+    // content to exceed the threshold again.
+    const priorSummary = first.messages[0]
+    const round2New = big("new ", 200)
+    const round2Recent = user("recent-2")
+    const second = await c.compress("SYS", [priorSummary, round2New, round2Recent])
+
+    expect(summarize).toHaveBeenCalledTimes(2)
+    // The prior summary is always the leading element of whatever gets
+    // evicted this round, since eviction only ever removes a leading
+    // prefix and the synthetic summary is always at position 0.
+    expect(second.evicted[0]).toBe(priorSummary)
+    expect(second.evicted).toContainEqual(round2New)
+    expect(second.messages).toContainEqual(round2Recent)
+  })
+
+  it("reports nothing evicted (never the preserved summary itself) when a large system prompt forces hardTrim to drop interior recent content while pinning an already-summarized message at the front", async () => {
+    // A pre-existing summary from an earlier compaction round, fed back in
+    // as position 0 — exactly how durable-agent-driver.ts's
+    // projectCompactedMessages rebuilds it every call.
+    const priorSummary: ChatMessage = {
+      role: "user",
+      content: [{ type: "text", text: `[Earlier conversation summary]\nreal recap from round 1` }],
+    }
+    const interior = big("mid ", 20)
+    const recentTail = user("recent-tail")
+    const summarize = vi.fn(async () => ({ text: "SHOULD NOT BE CALLED", tokens: 5 }))
+    const c = new ContextCompressor({ thresholdTokens: 100, keepFraction: 0.5, summarize })
+
+    // A large system prompt is what pushes the total estimate over
+    // threshold even though [priorSummary, interior, recentTail] together
+    // easily fit inside the keep-budget — the exact condition that routes
+    // compress() into the `older.length === 0` branch on a second round
+    // (recentStartIndex walks back to 0, since even the whole message list
+    // fits the keep-budget), which then calls hardTrim on the *entire*
+    // input, including the already-summarized message at the front.
+    const bigSystem = "S".repeat(400)
+    const out = await c.compress(bigSystem, [priorSummary, interior, recentTail])
+
+    // hardTrim never calls summarize() in this branch — older was empty.
+    expect(summarize).not.toHaveBeenCalled()
+    // The prior summary survives completely unchanged at position 0 …
+    expect(out.messages[0]).toBe(priorSummary)
+    // … while `evicted` must NOT claim it was evicted (the contradiction
+    // this test guards against), and in fact must report nothing evicted
+    // at all this round, since the only real change was an interior drop
+    // that can't be represented as a leading-prefix eviction.
+    expect(out.evicted).toEqual([])
+    expect(out.evicted).not.toContainEqual(priorSummary)
+    expect(out.summaryText).toBeUndefined()
   })
 })

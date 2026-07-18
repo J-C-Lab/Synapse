@@ -9,7 +9,11 @@ import type { FinalizeRunInput } from "./run-finalizer"
 import type { ToolBatchDeps } from "./tool-batch-runner"
 import { InsufficientBudgetError } from "../budget/root-budget-ledger"
 import { EstimatorProfileQuarantinedError } from "../estimator-quarantine-store"
-import { advanceDurableRun, EstimatorIncompatibleError } from "./durable-agent-driver"
+import {
+  advanceDurableRun,
+  EstimatorIncompatibleError,
+  HistoryCompressionError,
+} from "./durable-agent-driver"
 import { InsufficientEstimateError } from "./model-step-runner"
 import { advanceToolBatch } from "./tool-batch-runner"
 
@@ -112,6 +116,12 @@ export async function runInteractiveTurn(
       if (err instanceof EstimatorProfileQuarantinedError) {
         return finalizeTerminal(deps, runId, "budget_exceeded", undefined, "failed")
       }
+      // An incomplete/unverifiable history capture is an explicit durable
+      // infrastructure failure, not permission to evict the original slice
+      // or leave a `running` checkpoint that recovery will retry forever.
+      if (err instanceof HistoryCompressionError) {
+        return finalizeTerminal(deps, runId, "error", undefined, "failed")
+      }
       throw err
     }
 
@@ -120,6 +130,14 @@ export async function runInteractiveTurn(
     }
     if (stepOutcome.kind === "max_steps") {
       return finalizeTerminal(deps, runId, "max_steps", stepOutcome.checkpoint)
+    }
+    if (stepOutcome.kind === "compressed") {
+      // Context compression (Task 20) committed a compaction checkpoint —
+      // not a model step, so there is no new tool batch to drive and
+      // nextStep did not advance. Loop back so the next iteration
+      // re-evaluates the (now-compacted) checkpoint from scratch, same as
+      // every other durable side effect in this loop.
+      continue
     }
 
     // tool_batch_required — the model step that just settled produced tool

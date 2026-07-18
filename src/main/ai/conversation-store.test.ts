@@ -24,6 +24,10 @@ function store(now = () => 1000): ConversationStore {
   return new ConversationStore(dir, now)
 }
 
+async function seededDefault(s: ConversationStore, id: string): Promise<void> {
+  await s.save({ id, workspaceId: "default", messages: [], createdAt: 1, updatedAt: 1 })
+}
+
 describe("conversationStore — legacy-compatible projection", () => {
   it("saves and reads back a conversation", async () => {
     const s = store()
@@ -458,5 +462,231 @@ describe("conversationStore — durable lease/commit/tombstone", () => {
   it("throws ConversationNotFoundError for lease operations on a missing conversation", async () => {
     const s = store()
     await expect(s.acquireRunLease("nope", 0, "run-1")).rejects.toThrow(ConversationNotFoundError)
+  })
+})
+
+describe("conversationStore — artifactUris derivation (Task 21)", () => {
+  it("derives artifactUris from tool_result.artifact fields in the same commit", async () => {
+    const s = store()
+    await seededDefault(s, "c1")
+    const { fencingToken } = await s.acquireRunLease("c1", 0, "run-1")
+    const durable = [
+      {
+        messageId: "m1",
+        message: {
+          role: "user" as const,
+          content: [
+            {
+              type: "tool_result" as const,
+              toolUseId: "t1",
+              content: "preview",
+              artifact: { uri: "artifact://run/run-1/a1" } as never,
+            },
+          ],
+        },
+      },
+    ]
+    await s.commitRun({
+      conversationId: "c1",
+      runId: "run-1",
+      fencingToken,
+      baseContentRevision: 0,
+      deletionEpoch: 0,
+      finalizationId: "fin-1",
+      messages: durable,
+    })
+    const raw = JSON.parse(await fs.readFile(join(dir, "c1.json"), "utf-8"))
+    expect(raw.artifactUris).toEqual(["artifact://run/run-1/a1"])
+    expect(raw.additionalArtifactUris).toEqual([])
+    expect(raw.artifactIndexIntegrityHash).toMatch(/^[a-f0-9]{64}$/)
+    expect(raw.artifactIndexVersion).toBe(1)
+  })
+
+  it("merges additionalArtifactUris (superseded compaction artifacts) into artifactUris", async () => {
+    const s = store()
+    await seededDefault(s, "c1")
+    const { fencingToken } = await s.acquireRunLease("c1", 0, "run-1")
+    await s.commitRun({
+      conversationId: "c1",
+      runId: "run-1",
+      fencingToken,
+      baseContentRevision: 0,
+      deletionEpoch: 0,
+      finalizationId: "fin-1",
+      messages: [
+        {
+          messageId: "m1",
+          message: { role: "user" as const, content: [{ type: "text" as const, text: "hi" }] },
+        },
+      ],
+      additionalArtifactUris: ["artifact://run/run-1/history-2", "artifact://run/run-1/history-1"],
+    })
+    const raw = JSON.parse(await fs.readFile(join(dir, "c1.json"), "utf-8"))
+    expect(raw.artifactUris).toEqual([
+      "artifact://run/run-1/history-1",
+      "artifact://run/run-1/history-2",
+    ])
+    expect(raw.additionalArtifactUris).toEqual([
+      "artifact://run/run-1/history-1",
+      "artifact://run/run-1/history-2",
+    ])
+  })
+
+  it("upgrades only a record that explicitly predates the artifact index fields", async () => {
+    const s = store()
+    await seededDefault(s, "legacy-index")
+    const path = join(dir, "legacy-index.json")
+    const raw = JSON.parse(await fs.readFile(path, "utf-8")) as Record<string, unknown>
+    delete raw.artifactIndexVersion
+    delete raw.additionalArtifactUris
+    delete raw.artifactIndexIntegrityHash
+    await fs.writeFile(path, JSON.stringify(raw))
+
+    await expect(s.get("legacy-index")).resolves.toMatchObject({ id: "legacy-index" })
+    const upgraded = JSON.parse(await fs.readFile(path, "utf-8")) as Record<string, unknown>
+    expect(upgraded.artifactIndexVersion).toBe(1)
+    expect(upgraded.artifactIndexIntegrityHash).toMatch(/^[a-f0-9]{64}$/)
+  })
+
+  it("does not rewrite a current record whose present artifact index is corrupt", async () => {
+    const s = store()
+    await seededDefault(s, "corrupt-index")
+    const { fencingToken } = await s.acquireRunLease("corrupt-index", 0, "run-1")
+    await s.commitRun({
+      conversationId: "corrupt-index",
+      runId: "run-1",
+      fencingToken,
+      baseContentRevision: 0,
+      deletionEpoch: 0,
+      finalizationId: "fin-1",
+      messages: [],
+    })
+    const path = join(dir, "corrupt-index.json")
+    const tampered = JSON.parse(await fs.readFile(path, "utf-8")) as Record<string, unknown>
+    tampered.artifactIndexIntegrityHash = "0".repeat(64)
+    const serialized = JSON.stringify(tampered)
+    await fs.writeFile(path, serialized)
+
+    await expect(s.get("corrupt-index")).rejects.toThrow(/incomplete artifact reference index/)
+    expect(await fs.readFile(path, "utf-8")).toBe(serialized)
+  })
+})
+
+describe("conversationStore.collectReferencedArtifactUris (Task 21)", () => {
+  async function commitWithArtifact(
+    s: ConversationStore,
+    conversationId: string,
+    runId: string,
+    uri: string
+  ): Promise<void> {
+    await seededDefault(s, conversationId)
+    const { fencingToken } = await s.acquireRunLease(conversationId, 0, runId)
+    await s.commitRun({
+      conversationId,
+      runId,
+      fencingToken,
+      baseContentRevision: 0,
+      deletionEpoch: 0,
+      finalizationId: "fin-1",
+      messages: [
+        {
+          messageId: "m1",
+          message: { role: "user" as const, content: [{ type: "text" as const, text: "hi" }] },
+        },
+      ],
+      additionalArtifactUris: [uri],
+    })
+  }
+
+  it("includes an active conversation's artifactUris", async () => {
+    const s = store()
+    await commitWithArtifact(s, "active-conv", "run-1", "artifact://run/run-1/a1")
+    const referenced = await s.collectReferencedArtifactUris(1000, 60_000)
+    expect(referenced.has("artifact://run/run-1/a1")).toBe(true)
+  })
+
+  it("includes a tombstoned conversation's artifactUris while inside the grace window", async () => {
+    let clock = 1000
+    const s = new ConversationStore(dir, () => clock)
+    await commitWithArtifact(s, "grace-conv", "run-1", "artifact://run/run-1/a1")
+    clock = 2000
+    await s.tombstone("grace-conv", 1)
+
+    const referenced = await s.collectReferencedArtifactUris(2500, 60_000)
+    expect(referenced.has("artifact://run/run-1/a1")).toBe(true)
+  })
+
+  it("excludes a tombstoned conversation's artifactUris once past the grace window", async () => {
+    let clock = 1000
+    const s = new ConversationStore(dir, () => clock)
+    await commitWithArtifact(s, "expired-conv", "run-1", "artifact://run/run-1/a1")
+    clock = 2000
+    await s.tombstone("expired-conv", 1)
+
+    const referenced = await s.collectReferencedArtifactUris(2000 + 60_000, 60_000)
+    expect(referenced.has("artifact://run/run-1/a1")).toBe(false)
+  })
+
+  it("returns an empty set when the conversations directory does not exist", async () => {
+    const fresh = new ConversationStore(join(dir, "does-not-exist"))
+    expect(await fresh.collectReferencedArtifactUris(1000, 60_000)).toEqual(new Set())
+  })
+
+  it("fails closed when any canonical conversation is malformed", async () => {
+    const s = store()
+    await commitWithArtifact(s, "good-conv", "run-1", "artifact://run/run-1/a1")
+    await fs.writeFile(join(dir, "damaged-conv.json"), "{ not valid json")
+    await expect(s.collectReferencedArtifactUris(1000, 60_000)).rejects.toThrow(/malformed/)
+  })
+
+  it("fails closed when a legal JSON record drops a message-derived artifact from its index", async () => {
+    const s = store()
+    await seededDefault(s, "indexed-conv")
+    const { fencingToken } = await s.acquireRunLease("indexed-conv", 0, "run-1")
+    await s.commitRun({
+      conversationId: "indexed-conv",
+      runId: "run-1",
+      fencingToken,
+      baseContentRevision: 0,
+      deletionEpoch: 0,
+      finalizationId: "fin-1",
+      messages: [
+        {
+          messageId: "m1",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                toolUseId: "t1",
+                content: "preview",
+                artifact: { uri: "artifact://run/run-1/a1" } as never,
+              },
+            ],
+          },
+        },
+      ],
+    })
+    const path = join(dir, "indexed-conv.json")
+    const tampered = JSON.parse(await fs.readFile(path, "utf-8")) as Record<string, unknown>
+    tampered.artifactUris = []
+    await fs.writeFile(path, JSON.stringify(tampered))
+
+    await expect(s.collectReferencedArtifactUris(1000, 60_000)).rejects.toThrow(
+      /incomplete artifact reference index/
+    )
+  })
+
+  it("fails closed when an additional history URI or its integrity hash is altered", async () => {
+    const s = store()
+    await commitWithArtifact(s, "history-index", "run-1", "artifact://run/run-1/history-1")
+    const path = join(dir, "history-index.json")
+    const tampered = JSON.parse(await fs.readFile(path, "utf-8")) as Record<string, unknown>
+    tampered.additionalArtifactUris = []
+    await fs.writeFile(path, JSON.stringify(tampered))
+
+    await expect(s.collectReferencedArtifactUris(1000, 60_000)).rejects.toThrow(
+      /incomplete artifact reference index/
+    )
   })
 })

@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { ArtifactStore } from "../ai/artifacts/artifact-store"
 import {
   ConversationConflictUnresumableError,
   RecoveryBlockedError,
@@ -12,10 +13,14 @@ import { AgentRunStore } from "../ai/runs/agent-run-store"
 import { sealCheckpointIntegrity } from "../ai/runs/checkpoint-schema"
 import { RunEventStore } from "../ai/runs/run-event-store"
 import {
+  getArtifactStatus,
+  normalizeArtifactPreviewQuery,
+  normalizeArtifactUri,
   normalizeEventsSinceQuery,
   normalizeResumeQuery,
   normalizeRunListQuery,
   normalizeRunTraceForRenderer,
+  readArtifactPreview,
   registerRunsIpc,
   toRunSummary,
 } from "./runs"
@@ -505,5 +510,164 @@ describe("registerRunsIpc — durable endpoints", () => {
     )
     await ipcMain.handlers.get("runs:abandon")?.({}, "r1")
     expect(calledWith).toBe("r1")
+  })
+
+  it("does not register artifact channels when no artifact store is wired", () => {
+    const ipcMain = register(fakeRecovery({}))
+    expect(ipcMain.handlers.has("runs:getArtifactStatus")).toBe(false)
+    expect(ipcMain.handlers.has("runs:readArtifactPreview")).toBe(false)
+    expect(ipcMain.handlers.has("runs:collectArtifactGarbage")).toBe(false)
+  })
+
+  it("registers artifact channels when an artifact store is wired", async () => {
+    const artifactStore = new ArtifactStore(join(dir, "artifacts"), {
+      statDiskSpace: async () => ({ freeBytes: 1e12, totalBytes: 1e12 }),
+    })
+    const ipcMain = fakeIpcMain()
+    registerRunsIpc(
+      ipcMain as never,
+      "/tmp/does-not-matter",
+      { runStore, eventStore, recovery: fakeRecovery({}) as never, artifactStore },
+      { isTrustedSender: () => true }
+    )
+    expect(ipcMain.handlers.has("runs:getArtifactStatus")).toBe(true)
+    expect(ipcMain.handlers.has("runs:readArtifactPreview")).toBe(true)
+    expect(ipcMain.handlers.has("runs:collectArtifactGarbage")).toBe(true)
+
+    const status = await ipcMain.handlers.get("runs:getArtifactStatus")?.(
+      {},
+      "artifact://run/never-existed/never-existed"
+    )
+    expect(status).toEqual({ status: "unavailable", code: "artifact_missing" })
+
+    const gc = await ipcMain.handlers.get("runs:collectArtifactGarbage")?.({})
+    expect(gc).toMatchObject({ deletedArtifacts: 0 })
+  })
+})
+
+describe("normalizeArtifactUri", () => {
+  it("requires a non-empty string", () => {
+    expect(normalizeArtifactUri("artifact://run/r1/a1")).toBe("artifact://run/r1/a1")
+    expect(() => normalizeArtifactUri(42)).toThrow()
+  })
+})
+
+describe("normalizeArtifactPreviewQuery", () => {
+  it("accepts a bare uri with no range", () => {
+    expect(normalizeArtifactPreviewQuery({ uri: "artifact://run/r1/a1" })).toEqual({
+      uri: "artifact://run/r1/a1",
+    })
+  })
+
+  it("accepts an explicit start/end range", () => {
+    expect(
+      normalizeArtifactPreviewQuery({ uri: "artifact://run/r1/a1", range: { start: 0, end: 10 } })
+    ).toEqual({ uri: "artifact://run/r1/a1", range: { start: 0, end: 10 } })
+  })
+
+  it("rejects a negative or non-integer range bound", () => {
+    expect(() =>
+      normalizeArtifactPreviewQuery({ uri: "artifact://run/r1/a1", range: { start: -1 } })
+    ).toThrow(/non-negative integer/)
+    expect(() =>
+      normalizeArtifactPreviewQuery({ uri: "artifact://run/r1/a1", range: { end: 1.5 } })
+    ).toThrow(/non-negative integer/)
+  })
+
+  it("rejects a non-object payload", () => {
+    expect(() => normalizeArtifactPreviewQuery("nope")).toThrow(/payload must be an object/)
+  })
+})
+
+describe("getArtifactStatus / readArtifactPreview (Task 21)", () => {
+  let artDir: string
+  let artifactStore: ArtifactStore
+
+  beforeEach(async () => {
+    artDir = await fs.mkdtemp(join(tmpdir(), "synapse-runs-ipc-artifacts-"))
+    artifactStore = new ArtifactStore(artDir, {
+      statDiskSpace: async () => ({ freeBytes: 1e12, totalBytes: 1e12 }),
+    })
+  })
+
+  afterEach(async () => {
+    await fs.rm(artDir, { recursive: true, force: true })
+  })
+
+  async function captureText(text: string) {
+    return artifactStore.capture(
+      new TextEncoder().encode(text),
+      {
+        runId: "run-1",
+        owner: { runId: "run-1", rootRunId: "run-1", principal: { kind: "internal-agent" } },
+        kind: "tool-result",
+        mediaType: "text/plain",
+      },
+      { abort: () => {} }
+    )
+  }
+
+  it("reports artifact_missing for a malformed uri", async () => {
+    expect(await getArtifactStatus(artifactStore, "not-a-uri")).toEqual({
+      status: "unavailable",
+      code: "artifact_missing",
+    })
+    expect(await readArtifactPreview(artifactStore, "not-a-uri")).toEqual({
+      status: "unavailable",
+      code: "artifact_missing",
+    })
+  })
+
+  it("reports available with a bounded summary for a real artifact", async () => {
+    const ref = await captureText("hello artifact")
+    const status = await getArtifactStatus(artifactStore, ref.uri)
+    expect(status).toEqual({
+      status: "available",
+      summary: {
+        uri: ref.uri,
+        kind: "tool-result",
+        mediaType: "text/plain",
+        capturedBytes: ref.capturedBytes,
+        complete: true,
+        truncationReason: undefined,
+      },
+    })
+  })
+
+  it("reads a bounded text preview, defaulting to the whole (short) artifact", async () => {
+    const ref = await captureText("hello artifact")
+    const preview = await readArtifactPreview(artifactStore, ref.uri)
+    expect(preview).toEqual({
+      status: "available",
+      content: "hello artifact",
+      encoding: "utf-8",
+      range: { start: 0, end: ref.capturedBytes },
+      rangeClamped: false,
+    })
+  })
+
+  it("respects an explicit byte range", async () => {
+    const ref = await captureText("0123456789")
+    const preview = await readArtifactPreview(artifactStore, ref.uri, { start: 2, end: 5 })
+    expect(preview).toMatchObject({ status: "available", content: "234" })
+  })
+
+  it("reports artifact_expired (never artifact_missing) once retention deletes the bytes", async () => {
+    const ref = await captureText("goodbye")
+    const referenced = new ArtifactStore(artDir, {
+      statDiskSpace: async () => ({ freeBytes: 1e12, totalBytes: 1e12 }),
+      isArtifactReferenced: async () => false,
+    })
+    await referenced.releaseRunPin("run-1", "fin-1")
+    await referenced.collectEligible()
+
+    expect(await getArtifactStatus(artifactStore, ref.uri)).toMatchObject({
+      status: "unavailable",
+      code: "artifact_expired",
+    })
+    expect(await readArtifactPreview(artifactStore, ref.uri)).toMatchObject({
+      status: "unavailable",
+      code: "artifact_expired",
+    })
   })
 })

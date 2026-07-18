@@ -18,11 +18,11 @@ import {
   settleModelAttempt,
 } from "../budget/model-admission"
 import { freeBalance, ROOT_ACCOUNT_ID } from "../budget/root-budget-ledger"
+import { projectCompactedMessages } from "../context/history-artifact"
 import { streamWithDeadlines } from "../provider-stream-deadlines"
 import { addUsage, emptyUsage, totalTokens } from "../providers/types"
 import { canonicalHash } from "./canonical-json"
 import { assembleFromContextSnapshot } from "./context-snapshot"
-import { toChatMessages } from "./durable-messages"
 
 // Durable model-attempt boundaries (design §"Implement durable model-
 // attempt boundaries"). advanceModelStep always reloads the latest
@@ -46,6 +46,25 @@ export type ModelStepFaultPoint =
   | "after_unknown_response_checkpoint"
   | "after_forfeit_ledger"
   | "after_forfeit_checkpoint"
+  // Context-compression fault points (Task 20, durable-agent-driver.ts's
+  // maybeCompressHistory) — named here alongside the model-step points
+  // since both share the one `fault` seam on ModelStepDeps/
+  // DurableAgentDriverDeps.
+  | "after_history_capture"
+  | "after_compaction_checkpoint"
+  // Compression's own durable budget-attempt fault points (Issue 2 follow-up
+  // review fix, durable-agent-driver.ts's runCompressionAttempt/
+  // forfeitCompressionAttempt) — mirror the model-step points above one
+  // level down, scoped to the summarizer's own admit/settle/forfeit
+  // sequence rather than the real model step's.
+  | "after_compression_prepared"
+  | "after_compression_hold_ledger"
+  | "after_compression_hold"
+  | "after_compression_provider_call"
+  | "after_compression_settle_ledger"
+  | "after_compression_settle"
+  | "after_compression_forfeit_ledger"
+  | "after_compression_forfeit_checkpoint"
 
 export interface ModelStepDeps {
   runStore: AgentRunStore
@@ -499,12 +518,25 @@ function budgetAccountIdFor(checkpoint: AgentRunCheckpointV1): string {
  *  the upper-bound estimate/request hash and the actual dispatched request,
  *  so admission is never computed against a smaller payload than what's
  *  actually sent. */
-function outgoingRequestContext(checkpoint: AgentRunCheckpointV1): {
+/** Exported so durable-agent-driver.ts's compression step can build the
+ *  identical `{system, messages}` a real dispatch would use (minus the
+ *  untrusted-context injection below, which the compression decision
+ *  intentionally skips — see history-artifact.ts's top-of-file note on why
+ *  the compression step projects from raw durable messages instead). */
+export function outgoingRequestContext(checkpoint: AgentRunCheckpointV1): {
   system: string
   messages: ChatMessage[]
 } {
   const { system, instructionContextText } = assembleFromContextSnapshot(checkpoint.config.context)
-  const durableMessages = toChatMessages(checkpoint.messages)
+  // Compression changes the model request *projection*, never the stored
+  // conversation (design §"Context compression writes the evicted message
+  // slice to a `history` artifact"): `checkpoint.messages` itself is always
+  // passed through untouched here, and projectCompactedMessages applies
+  // whatever compaction (if any) durable-agent-driver.ts has committed.
+  const durableMessages = projectCompactedMessages(
+    checkpoint.messages,
+    checkpoint.contextCompaction
+  )
   const messages = instructionContextText
     ? injectUntrustedContext(durableMessages, instructionContextText)
     : durableMessages

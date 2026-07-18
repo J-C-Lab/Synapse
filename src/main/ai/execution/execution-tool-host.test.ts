@@ -1,7 +1,10 @@
 import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import process from "node:process"
 import { afterEach, describe, expect, it } from "vitest"
+import { DEFAULT_ARTIFACT_QUOTA_LIMITS } from "../artifacts/artifact-quota"
+import { ArtifactStore } from "../artifacts/artifact-store"
 import { ExecutionLogStore } from "./execution-log-store"
 import { ExecutionToolHostSource } from "./execution-tool-host"
 
@@ -275,5 +278,261 @@ describe("executionToolHostSource", () => {
     )
     expect(result.isError).toBe(true)
     expect((result.content[0] as { text: string }).text).toMatch(/root not available/i)
+  })
+})
+
+const ampleDisk = async () => ({
+  freeBytes: 100 * 1024 * 1024 * 1024,
+  totalBytes: 1024 * 1024 * 1024 * 1024,
+})
+
+async function makeArtifactsDir(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-exec-host-artifacts-"))
+  tempDirs.push(dir)
+  return dir
+}
+
+interface RunCommandStreamPayload {
+  headPreview: string
+  tailPreview: string
+  artifactUri: string
+  artifactId: string
+  capturedBytes: number
+  complete: boolean
+  truncationReason?: string
+}
+
+interface RunCommandPayload {
+  exitCode?: number | null
+  timedOut?: boolean
+  cancelled?: boolean
+  error?: string
+  stdout?: string | RunCommandStreamPayload
+  stderr?: string | RunCommandStreamPayload
+  stdoutTruncated?: boolean
+  stderrTruncated?: boolean
+}
+
+function payloadOf(result: {
+  content: readonly { type: string; text?: string }[]
+}): RunCommandPayload {
+  return JSON.parse((result.content[0] as { text: string }).text) as RunCommandPayload
+}
+
+function asStream(value: string | RunCommandStreamPayload | undefined): RunCommandStreamPayload {
+  if (typeof value === "string" || value === undefined) {
+    throw new TypeError("expected artifact-backed stream payload, got legacy string/undefined")
+  }
+  return value
+}
+
+describe("executionToolHostSource — run_command artifact-backed capture (Task 18)", () => {
+  it("captures stdout/stderr as artifacts and returns bounded head/tail previews when the caller has a runId", async () => {
+    const root = await makeWorkspace()
+    const logFile = path.join(root, "log.json")
+    const artifactsDir = await makeArtifactsDir()
+    const store = new ArtifactStore(artifactsDir, { statDiskSpace: ampleDisk })
+    const workspaceRoots = fakeWorkspaceRoots([
+      { id: "repo", workspaceId: "w1", name: "repo", root, role: "primary", createdAt: 1000 },
+    ])
+    const source = new ExecutionToolHostSource({
+      workspaceRoots,
+      log: new ExecutionLogStore(logFile),
+      isAllowed: () => true,
+      now: () => 1000,
+      artifactStore: store,
+    })
+    await source.refresh()
+
+    const command = process.platform === "win32" ? "Write-Output ok" : "echo ok"
+    const result = await source.invokeTool(
+      "execution:core/run_command",
+      { rootId: "repo", command },
+      { caller: { kind: "agent", conversationId: "c1", workspaceId: "w1", runId: "run-1" } }
+    )
+    expect(result.isError).toBeFalsy()
+    const payload = payloadOf(result)
+    expect(payload.error).toBeUndefined()
+    const stdout = asStream(payload.stdout)
+    expect(stdout.complete).toBe(true)
+    expect(stdout.headPreview).toContain("ok")
+    expect(stdout.tailPreview).toContain("ok")
+    expect(stdout.artifactUri).toBe(`artifact://run/run-1/${stdout.artifactId}`)
+    expect(typeof stdout.capturedBytes).toBe("number")
+  })
+
+  it("falls back to the legacy in-memory shape when the caller has no runId, even with an artifact store configured", async () => {
+    const root = await makeWorkspace()
+    const logFile = path.join(root, "log.json")
+    const artifactsDir = await makeArtifactsDir()
+    const store = new ArtifactStore(artifactsDir, { statDiskSpace: ampleDisk })
+    const workspaceRoots = fakeWorkspaceRoots([
+      { id: "repo", workspaceId: "w1", name: "repo", root, role: "primary", createdAt: 1000 },
+    ])
+    const source = new ExecutionToolHostSource({
+      workspaceRoots,
+      log: new ExecutionLogStore(logFile),
+      isAllowed: () => true,
+      now: () => 1000,
+      artifactStore: store,
+    })
+    await source.refresh()
+    const command = process.platform === "win32" ? "Write-Output ok" : "echo ok"
+    const result = await source.invokeTool(
+      "execution:core/run_command",
+      { rootId: "repo", command },
+      { caller: { kind: "agent", conversationId: "c1", workspaceId: "w1" } } // no runId
+    )
+    const payload = payloadOf(result)
+    expect(typeof payload.stdout).toBe("string")
+    expect(payload.stdout).toContain("ok")
+    expect(payload.error).toBeUndefined()
+  })
+
+  it("derives rootRunId from caller.runId when there is no parentRunId (root-level run)", async () => {
+    const root = await makeWorkspace()
+    const logFile = path.join(root, "log.json")
+    const artifactsDir = await makeArtifactsDir()
+    const store = new ArtifactStore(artifactsDir, { statDiskSpace: ampleDisk })
+    const workspaceRoots = fakeWorkspaceRoots([
+      { id: "repo", workspaceId: "w1", name: "repo", root, role: "primary", createdAt: 1000 },
+    ])
+    const source = new ExecutionToolHostSource({
+      workspaceRoots,
+      log: new ExecutionLogStore(logFile),
+      isAllowed: () => true,
+      now: () => 1000,
+      artifactStore: store,
+    })
+    await source.refresh()
+    const command = process.platform === "win32" ? "Write-Output ok" : "echo ok"
+    const result = await source.invokeTool(
+      "execution:core/run_command",
+      { rootId: "repo", command },
+      { caller: { kind: "agent", workspaceId: "w1", runId: "root-run-2" } }
+    )
+    const payload = payloadOf(result)
+    const stdout = asStream(payload.stdout)
+    const manifestPath = path.join(artifactsDir, "root-run-2", stdout.artifactId, "manifest.json")
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf-8"))
+    expect(manifest.owner.runId).toBe("root-run-2")
+    expect(manifest.owner.rootRunId).toBe("root-run-2")
+    expect(manifest.owner.parentRunId).toBeUndefined()
+  })
+
+  it("derives rootRunId from caller.parentRunId for a subagent run (no nesting beyond one level)", async () => {
+    const root = await makeWorkspace()
+    const logFile = path.join(root, "log.json")
+    const artifactsDir = await makeArtifactsDir()
+    const store = new ArtifactStore(artifactsDir, { statDiskSpace: ampleDisk })
+    const workspaceRoots = fakeWorkspaceRoots([
+      { id: "repo", workspaceId: "w1", name: "repo", root, role: "primary", createdAt: 1000 },
+    ])
+    const source = new ExecutionToolHostSource({
+      workspaceRoots,
+      log: new ExecutionLogStore(logFile),
+      isAllowed: () => true,
+      now: () => 1000,
+      artifactStore: store,
+    })
+    await source.refresh()
+    const command = process.platform === "win32" ? "Write-Output ok" : "echo ok"
+    const result = await source.invokeTool(
+      "execution:core/run_command",
+      { rootId: "repo", command },
+      {
+        caller: {
+          kind: "subagent",
+          workspaceId: "w1",
+          runId: "sub-run-1",
+          parentRunId: "root-run-1",
+        },
+      }
+    )
+    const payload = payloadOf(result)
+    const stdout = asStream(payload.stdout)
+    const manifestPath = path.join(artifactsDir, "sub-run-1", stdout.artifactId, "manifest.json")
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf-8"))
+    expect(manifest.owner.runId).toBe("sub-run-1")
+    expect(manifest.owner.rootRunId).toBe("root-run-1")
+    expect(manifest.owner.parentRunId).toBe("root-run-1")
+  })
+
+  it("surfaces a visible output_limit_exceeded signal when a stream is truncated for a hard quota reason", async () => {
+    const root = await makeWorkspace()
+    const logFile = path.join(root, "log.json")
+    const artifactsDir = await makeArtifactsDir()
+    const store = new ArtifactStore(artifactsDir, {
+      statDiskSpace: ampleDisk,
+      quotaLimits: { ...DEFAULT_ARTIFACT_QUOTA_LIMITS, perArtifactBytes: 200 },
+    })
+    const workspaceRoots = fakeWorkspaceRoots([
+      { id: "repo", workspaceId: "w1", name: "repo", root, role: "primary", createdAt: 1000 },
+    ])
+    const source = new ExecutionToolHostSource({
+      workspaceRoots,
+      log: new ExecutionLogStore(logFile),
+      isAllowed: () => true,
+      now: () => 1000,
+      artifactStore: store,
+    })
+    await source.refresh()
+    const size = 5000
+    const command =
+      process.platform === "win32"
+        ? `Write-Output ('a' * ${size})`
+        : `node -e "process.stdout.write('a'.repeat(${size}))"`
+    const result = await source.invokeTool(
+      "execution:core/run_command",
+      { rootId: "repo", command },
+      { caller: { kind: "agent", workspaceId: "w1", runId: "run-limit-1" } }
+    )
+    const payload = payloadOf(result)
+    expect(payload.error).toBe("output_limit_exceeded")
+    expect(asStream(payload.stdout).complete).toBe(false)
+    // Load-bearing, not just a JSON field: resilient-tool-host.ts's circuit
+    // breaker only calls recordToolError when isError is true,
+    // agent-runtime.ts/run-projection.ts propagate isError into the
+    // model/UI's tool_result event, and interactive-run-driver.ts computes
+    // the run trace's `ok` as `!result.isError` — all three would silently
+    // treat a truncated-output command as a clean success without this.
+    expect(result.isError).toBe(true)
+
+    const events = await new ExecutionLogStore(logFile).list()
+    expect(events[0]).toMatchObject({ errorPreview: "output_limit_exceeded" })
+  })
+
+  it("records backend descriptor and artifact ids in the audit log, without inlining raw output", async () => {
+    const root = await makeWorkspace()
+    const logFile = path.join(root, "log.json")
+    const artifactsDir = await makeArtifactsDir()
+    const store = new ArtifactStore(artifactsDir, { statDiskSpace: ampleDisk })
+    const workspaceRoots = fakeWorkspaceRoots([
+      { id: "repo", workspaceId: "w1", name: "repo", root, role: "primary", createdAt: 1000 },
+    ])
+    const source = new ExecutionToolHostSource({
+      workspaceRoots,
+      log: new ExecutionLogStore(logFile),
+      isAllowed: () => true,
+      now: () => 1000,
+      artifactStore: store,
+    })
+    await source.refresh()
+    const command = process.platform === "win32" ? "Write-Output ok" : "echo ok"
+    const result = await source.invokeTool(
+      "execution:core/run_command",
+      { rootId: "repo", command },
+      { caller: { kind: "agent", workspaceId: "w1", runId: "run-audit-1" } }
+    )
+    const payload = payloadOf(result)
+    const events = await new ExecutionLogStore(logFile).list()
+    expect(events[0]).toMatchObject({
+      backendId: "local-policy",
+      backendIsolation: "none",
+      backendReplayGuarantee: "none",
+      stdoutArtifactId: asStream(payload.stdout).artifactId,
+      stderrArtifactId: asStream(payload.stderr).artifactId,
+    })
+    expect(events[0].outputPreview.length).toBeLessThanOrEqual(2000)
   })
 })

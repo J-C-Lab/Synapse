@@ -135,6 +135,11 @@ export interface PluginHostOptions {
   runStore: AgentRunStore
   budgetStore: RootBudgetLedgerStore
   upsertTrace: (input: TraceUpsertInput) => TraceUpsertReceipt
+  /** Recoverable artifact backend (Checkpoint B) — threaded to
+   *  BackgroundAgentRunner so a trigger-woken agent's terminal finalization
+   *  can release its artifact run pin. Omitted in tests that don't exercise
+   *  artifact retention. */
+  artifactStore?: import("../ai/artifacts/artifact-types").AgentArtifactStore
   workspaceRoots: Pick<WorkspaceRootStore, "listForWorkspace">
   workspaces?: Pick<WorkspaceStore, "get" | "exists" | "isActive" | "isArchived">
   /** The interactive path's own MemoryToolSource/ExecutionToolHostSource
@@ -586,6 +591,7 @@ export class PluginHost {
       upsertTrace: this.options.upsertTrace,
       workspaceRoots: this.options.workspaceRoots,
       estimatorQuarantine: this.options.estimatorQuarantine?.(),
+      artifactStore: this.options.artifactStore,
     })
     await runner.run({
       pluginId: request.pluginId,

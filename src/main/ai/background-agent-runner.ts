@@ -1,5 +1,6 @@
 import type { AgentTriggerBudget, NormalizedCapability, TriggerUse } from "@synapse/plugin-manifest"
 import type { GrantIdentity } from "../plugins/grant-store"
+import type { AgentArtifactStore } from "./artifacts/artifact-types"
 import type { RootBudgetLedgerStore } from "./budget/root-budget-ledger"
 import type { EstimatorQuarantineStore } from "./estimator-quarantine-store"
 import type { ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
@@ -15,6 +16,7 @@ import {
   stableStringify,
 } from "@synapse/plugin-manifest"
 import { AgentBudgetLedger } from "../plugins/agent-budget"
+import { releaseArtifactRunResources } from "./artifacts/artifact-retention"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
 import { resolveModelCapabilityProfile } from "./providers/model-capability-profile"
 import { emptyUsage } from "./providers/types"
@@ -58,6 +60,9 @@ export interface BackgroundAgentRunnerOptions {
   recordRun?: (trace: RunTrace) => void
   workspaceRoots: Pick<WorkspaceRootStore, "listForWorkspace">
   estimatorQuarantine?: EstimatorQuarantineStore
+  /** Recoverable artifact backend (Checkpoint B). Omitted in tests that
+   *  don't exercise artifact retention. */
+  artifactStore?: AgentArtifactStore
 }
 
 export class BackgroundAgentRunner {
@@ -148,6 +153,7 @@ export class BackgroundAgentRunner {
             },
             now: this.now,
             maxSteps: checkpoint.config.maxSteps,
+            artifactStore: this.options.artifactStore,
             signal: controller.signal,
           },
           toolBatch: {
@@ -159,6 +165,9 @@ export class BackgroundAgentRunner {
               invocationId: input.invocationId,
               triggerInstanceId: input.instanceId,
             },
+            artifactCapture: this.options.artifactStore
+              ? { store: this.options.artifactStore }
+              : undefined,
             // Background runs have no UI to prompt — the whole approval
             // decision is this hard resolver (a per-run tool-call budget
             // check), which always resolves definitively, so
@@ -201,7 +210,10 @@ export class BackgroundAgentRunner {
           buildResourceReleasePlan: () => ({
             budgetOperationIds: [],
             skillPackageLeaseIds: [],
-            releaseArtifactRunPin: false,
+            // Every call here comes from finalizeTerminal
+            // (interactive-run-driver.ts) — always a genuine terminal
+            // outcome for this background run.
+            releaseArtifactRunPin: true,
             adoptionLeaseIds: [],
           }),
           quarantineEstimatorProfile: async (failedCheckpoint) => {
@@ -241,7 +253,8 @@ export class BackgroundAgentRunner {
     return {
       runStore: this.options.runStore,
       upsertTrace: this.options.upsertTrace,
-      releaseResources: async () => {},
+      releaseResources: (plan, context) =>
+        releaseArtifactRunResources(this.options.artifactStore, plan, context),
       now: this.now,
     }
   }

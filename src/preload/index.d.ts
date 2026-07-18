@@ -380,10 +380,53 @@ declare global {
     cacheReadInputTokens: number
   }
 
+  /** Bounded, renderer-safe artifact reference — the same shape as
+   *  `AgentArtifactRefSummary` in @synapse/agent-protocol. Never the full
+   *  host-only `AgentArtifactRef` (which carries `sha256`/`runId`
+   *  /`artifactId` and is never sent across this IPC boundary). */
+  interface SynapseArtifactRefSummary {
+    uri: `artifact://run/${string}/${string}`
+    kind: string
+    mediaType: string
+    capturedBytes: number
+    complete: boolean
+    truncationReason?: string
+  }
+
+  type SynapseArtifactReadErrorCode =
+    | "artifact_expired"
+    | "artifact_missing"
+    | "artifact_corrupt"
+    | "artifact_forbidden"
+    | "range_invalid"
+
+  type SynapseArtifactStatusResult =
+    | { status: "available"; summary: SynapseArtifactRefSummary }
+    | { status: "unavailable"; code: SynapseArtifactReadErrorCode }
+
+  type SynapseArtifactPreviewResult =
+    | {
+        status: "available"
+        content: string
+        encoding: "utf-8" | "base64"
+        range: { start: number; end: number }
+        rangeClamped: boolean
+      }
+    | { status: "unavailable"; code: SynapseArtifactReadErrorCode }
+
   type SynapseAiChatContentBlock =
     | { type: "text"; text: string }
     | { type: "tool_use"; id: string; name: string; input: unknown }
-    | { type: "tool_result"; toolUseId: string; content: string; isError?: boolean }
+    | {
+        type: "tool_result"
+        toolUseId: string
+        content: string
+        isError?: boolean
+        /** Present only when this result's output was captured to a durable
+         *  artifact (Task 19/21). Bounded summary only — never the full
+         *  host-only ref. */
+        artifact?: SynapseArtifactRefSummary
+      }
 
   interface SynapseAiChatMessage {
     role: "user" | "assistant"
@@ -859,6 +902,18 @@ declare global {
         decision?: { kind: "retry" | "mark_failed" }
       ) => Promise<SynapseResumeRunResult>
       abandonRun: (runId: string) => Promise<void>
+      getArtifactStatus: (uri: string) => Promise<SynapseArtifactStatusResult>
+      readArtifactPreview: (
+        uri: string,
+        range?: { start?: number; end?: number }
+      ) => Promise<SynapseArtifactPreviewResult>
+      collectArtifactGarbage: () => Promise<{
+        reconciledReservations: number
+        reclaimedReservedBytes: number
+        orphanedTempFilesRemoved: number
+        deletedArtifacts: number
+        deletedBytes: number
+      }>
       onRunEvent: (handler: (event: AgentRunEvent) => void) => () => void
       listWorkspaceRoots: (workspaceId: string) => Promise<SynapseWorkspaceRoot[]>
       getMcpOnboardingAvailability: (

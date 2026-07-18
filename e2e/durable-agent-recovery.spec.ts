@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer"
 import { createHash } from "node:crypto"
 import { promises as fs } from "node:fs"
 import * as os from "node:os"
@@ -30,6 +31,10 @@ import {
 
 function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex")
+}
+
+function sha256Bytes(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex")
 }
 
 // Playwright does not resolve the main-process path aliases. This small
@@ -272,6 +277,13 @@ async function seedInteractiveToolRun(userDir: string, runId: string, conversati
     workspaceId: "default",
     messages: [],
     artifactUris: [],
+    additionalArtifactUris: [],
+    artifactIndexIntegrityHash: canonicalHash({
+      artifactUris: [],
+      derivedArtifactUris: [],
+      additionalArtifactUris: [],
+    }),
+    artifactIndexVersion: 1,
     createdAt: 1,
     updatedAt: 1,
   }
@@ -282,6 +294,114 @@ async function seedInteractiveToolRun(userDir: string, runId: string, conversati
     JSON.stringify(conversation),
     "utf-8"
   )
+}
+
+/** Checkpoint B artifact gate (Task 22). Seeds an artifact's manifest/data
+ *  files directly under `<userDir>/artifacts/<runId>/<artifactId>/`,
+ *  mirroring artifact-store.ts's exact on-disk layout (`manifest.json` +
+ *  `data.bin`, envelopeVersion 1) byte-for-byte, and a conversation whose
+ *  one message references that artifact's uri — the same
+ *  bypass-the-real-store-code convention `seedRun`/`seedInteractiveToolRun`
+ *  already use above (Playwright cannot resolve the `@synapse/*` main-process
+ *  path aliases artifact-store.ts itself lives behind). Returns the seeded
+ *  artifact's uri, content, and sha256 so the test can assert round-trip
+ *  fidelity after a real Electron launch. */
+async function seedReferencedArtifact(
+  userDir: string,
+  runId: string,
+  artifactId: string,
+  conversationId: string
+): Promise<{ uri: string; content: string; sha256: string }> {
+  const content = "Synapse e2e artifact recovery fixture: readable after a real restart.\n"
+  const bytes = Buffer.from(content, "utf-8")
+  const hash = sha256Bytes(bytes)
+  const uri = `artifact://run/${runId}/${artifactId}`
+
+  const artifactDir = path.join(userDir, "artifacts", runId, artifactId)
+  await fs.mkdir(artifactDir, { recursive: true })
+  await fs.writeFile(path.join(artifactDir, "data.bin"), bytes)
+  const manifest = {
+    envelopeVersion: 1,
+    ref: {
+      uri,
+      runId,
+      artifactId,
+      kind: "tool-result",
+      mediaType: "text/plain; charset=utf-8",
+      capturedBytes: bytes.byteLength,
+      complete: true,
+      sha256: hash,
+      createdAt: 1,
+    },
+    owner: {
+      runId,
+      rootRunId: runId,
+      principal: { kind: "local-user" },
+    },
+    delegateToRunIds: [],
+  }
+  await fs.writeFile(path.join(artifactDir, "manifest.json"), JSON.stringify(manifest, null, 2))
+
+  // A run whose artifact-store pin has already been released (terminal),
+  // matching finalization's ordering rule ("release the run pin only after
+  // conversation commit") — the strongest version of this proof: even a
+  // terminal, pin-released run's artifact must survive real GC because the
+  // conversation below still references it.
+  const pinLedger = {
+    schemaVersion: 1,
+    releasedRuns: { [runId]: { finalizationId: "e2e-fin-1", releasedAt: 1 } },
+  }
+  await fs.writeFile(
+    path.join(userDir, "artifacts", "run-pins.json"),
+    JSON.stringify(pinLedger, null, 2)
+  )
+
+  const conversation = {
+    schemaVersion: 2,
+    id: conversationId,
+    state: "active",
+    recordRevision: 1,
+    contentRevision: 1,
+    deletionEpoch: 0,
+    lastFencingToken: 0,
+    title: "Artifact recovery fixture",
+    workspaceId: "default",
+    messages: [
+      {
+        messageId: "m1",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              toolUseId: "t1",
+              content: "preview",
+              artifact: manifest.ref,
+            },
+          ],
+        },
+      },
+    ],
+    artifactUris: [uri],
+    additionalArtifactUris: [],
+    artifactIndexIntegrityHash: canonicalHash({
+      artifactUris: [uri],
+      derivedArtifactUris: [uri],
+      additionalArtifactUris: [],
+    }),
+    artifactIndexVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  const conversationsDir = path.join(userDir, "ai", "conversations")
+  await fs.mkdir(conversationsDir, { recursive: true })
+  await fs.writeFile(
+    path.join(conversationsDir, `${conversationId}.json`),
+    JSON.stringify(conversation),
+    "utf-8"
+  )
+
+  return { uri, content, sha256: hash }
 }
 
 test("renderer discovers a run interrupted before this launch and resumes/abandons it via real IPC", async () => {
@@ -379,6 +499,91 @@ test("durable agent recovery reconnects one tool card after a real renderer rest
       await shell.getByRole("button", { name: "Recovery fixture" }).click()
       await expect(shell.getByText("read_file", { exact: true })).toHaveCount(1)
       await assertNoShellDiagnostics(launched, shell)
+    } finally {
+      await launched.dispose()
+    }
+  } finally {
+    removeVerifiedDirUnder(os.tmpdir(), userDir)
+  }
+})
+
+// Checkpoint B artifact gate (Task 22), real-Electron-restart leg. Every
+// other artifact crash/restart proof in this programme (artifact-pressure
+// .test.ts, artifact-retention.test.ts) runs against real ArtifactStore/
+// ConversationStore instances inside a Vitest process. This is the one that
+// starts from the OTHER end, exactly like the two tests above did for
+// Checkpoint A's run/conversation stores: artifact bytes and a manifest
+// written to disk as if by a PRIOR process, before the real, unpacked
+// Electron app's first launch against that profile — proving the actual
+// production wiring (src/main/index.ts's module-scope ArtifactStore backed
+// by ConversationStore.collectReferencedArtifactUris, and the
+// runs:getArtifactStatus / runs:readArtifactPreview /
+// runs:collectArtifactGarbage IPC handlers) discovers, reads, and safely
+// garbage-collects around it — not a mocked electron module, a real IPC
+// round-trip.
+test("a conversation-referenced artifact survives a real Electron restart and is read/GC-safe (artifact recovery)", async () => {
+  const userDir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-e2e-artifact-recovery-"))
+  const runId = "e2e-artifact-recovery-run"
+  const artifactId = "e2e-artifact-recovery-artifact"
+  const conversationId = "e2e-artifact-recovery-conversation"
+
+  try {
+    const fixture = await seedReferencedArtifact(userDir, runId, artifactId, conversationId)
+    const launched = await launchSynapseDevAtUserDir(userDir)
+    try {
+      const { shell } = await awaitShellReadiness(launched, { mode: "dev" })
+
+      // Real IPC round-trip through the actual preload/main wiring — status
+      // and a full content read — proving the on-disk artifact from a
+      // "previous session" is discoverable and readable once this fresh
+      // process constructs its own ArtifactStore, not merely present as
+      // inert bytes on disk.
+      const status = await shell.evaluate(
+        (uri) => window.electronAPI.getArtifactStatus(uri),
+        fixture.uri
+      )
+      expect(status).toMatchObject({
+        status: "available",
+        summary: {
+          uri: fixture.uri,
+          capturedBytes: Buffer.byteLength(fixture.content, "utf-8"),
+          complete: true,
+        },
+      })
+
+      const preview = await shell.evaluate(
+        (uri) => window.electronAPI.readArtifactPreview(uri),
+        fixture.uri
+      )
+      expect(preview).toMatchObject({
+        status: "available",
+        content: fixture.content,
+        encoding: "utf-8",
+      })
+
+      // A real GC sweep through the actual runs:collectArtifactGarbage IPC
+      // handler must not delete this artifact: its owning run's pin was
+      // seeded as already released (terminal — the strongest version of this
+      // proof), but the still-active conversation reference must protect it,
+      // via the real ConversationStore/ArtifactStore wiring index.ts uses in
+      // production, not a mocked predicate.
+      const gcResult = await shell.evaluate(() => window.electronAPI.collectArtifactGarbage())
+      expect(gcResult.deletedArtifacts).toBe(0)
+
+      await assertNoShellDiagnostics(launched, shell)
+
+      // Confirm durably on disk, not just optimistic IPC-response state.
+      const manifestOnDisk = JSON.parse(
+        await fs.readFile(
+          path.join(userDir, "artifacts", runId, artifactId, "manifest.json"),
+          "utf-8"
+        )
+      ) as { ref: { sha256: string; capturedBytes: number } }
+      expect(manifestOnDisk.ref.sha256).toBe(fixture.sha256)
+      expect(manifestOnDisk.ref.capturedBytes).toBe(Buffer.byteLength(fixture.content, "utf-8"))
+      await expect(
+        fs.access(path.join(userDir, "artifacts", runId, artifactId, "data.bin"))
+      ).resolves.toBeUndefined()
     } finally {
       await launched.dispose()
     }

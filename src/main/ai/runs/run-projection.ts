@@ -1,4 +1,5 @@
 import type {
+  AgentArtifactRefSummary,
   AgentRunMessageSummary,
   AgentRunModelStepSummary,
   AgentRunSnapshot,
@@ -43,16 +44,42 @@ export function toAgentRunSnapshot(
     plan: checkpoint.plan,
     pendingApprovalIds: pendingApprovalIds(checkpoint),
     // Checkpoint A has no rich child-task ledger — only a single optional
-    // activeChildTaskId — and no artifact store (Checkpoint B). Both stay
-    // empty until those checkpoints land; this function's shape is already
-    // forward-compatible with them.
+    // activeChildTaskId. Stays empty until a later checkpoint adds one;
+    // this function's shape is already forward-compatible with it.
     childTasks: [],
-    artifacts: [],
+    artifacts: artifactSummaries(checkpoint),
     messages: messageSummaries(checkpoint),
     toolCalls: toolCallSummaries(checkpoint),
     currentModelStep: currentModelStepSummary(checkpoint),
     finalizationPhase: checkpoint.finalization?.phase,
   }
+}
+
+/** Every distinct artifact this run's checkpoint currently references,
+ *  deduped by uri (Task 21) — completed tool-result offloads, activated
+ *  skill instruction bundles, and the currently-active context-compaction
+ *  history artifact. Deliberately does NOT include
+ *  `supersededCompactionArtifactUris` (checkpoint-schema.ts): those are
+ *  bare uri strings with no captured `AgentArtifactRefSummary` locally
+ *  available, and this is a pure projection with no store access to look
+ *  one up — a caller that needs a superseded artifact's status can query it
+ *  individually via the runs:getArtifactStatus IPC channel by uri. */
+function artifactSummaries(checkpoint: AgentRunCheckpointV1): AgentArtifactRefSummary[] {
+  const byUri = new Map<string, AgentArtifactRefSummary>()
+  for (const batch of checkpoint.toolBatches) {
+    for (const call of batch.calls) {
+      if (call.resolution.status === "resolved" && call.resolution.result.artifact) {
+        byUri.set(call.resolution.result.artifact.uri, call.resolution.result.artifact)
+      }
+    }
+  }
+  for (const skill of checkpoint.activatedSkills) {
+    byUri.set(skill.instructionsArtifact.uri, skill.instructionsArtifact)
+  }
+  if (checkpoint.contextCompaction) {
+    byUri.set(checkpoint.contextCompaction.artifact.uri, checkpoint.contextCompaction.artifact)
+  }
+  return [...byUri.values()]
 }
 
 function pendingApprovalIds(checkpoint: AgentRunCheckpointV1): string[] {
@@ -101,6 +128,9 @@ function toolCallSummaries(checkpoint: AgentRunCheckpointV1): AgentRunToolCallSu
           ? {
               isError: call.resolution.result.isError,
               resultPreview: call.resolution.result.preview,
+              ...(call.resolution.result.offloadFailureCode
+                ? { offloadFailureCode: call.resolution.result.offloadFailureCode }
+                : {}),
             }
           : {}),
       })

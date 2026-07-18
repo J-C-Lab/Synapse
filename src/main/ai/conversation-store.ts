@@ -62,8 +62,18 @@ export interface ConversationRecordV2 {
   activeRun?: ConversationActiveRun
   messages: DurableChatMessage[]
   /** Host-derived from `messages` in the same atomic write — never a
-   *  best-effort side index. */
+   *  best-effort side index. Together with `additionalArtifactUris` and
+   *  `artifactIndexIntegrityHash`, retention can prove this has not silently
+   *  dropped an artifact pointer before it authorizes irreversible GC. */
   artifactUris: string[]
+  /** History-compaction artifacts that are not embedded in a chat content
+   * block and therefore cannot be derived from `messages`. */
+  additionalArtifactUris: string[]
+  /** Canonical hash of the derived, additional, and merged URI sets. */
+  artifactIndexIntegrityHash: string
+  /** Versioned so a current record with a damaged reference index is never
+   * mistaken for one created before the index existed. */
+  artifactIndexVersion: number
   deletedAt?: number
   title?: string
   workspaceId: string
@@ -145,7 +155,11 @@ export class ConversationStore {
         title: conversation.title,
         workspaceId: conversation.workspaceId,
         messages,
-        artifactUris: deriveArtifactUris(messages),
+        // The legacy whole-history save path has no separate compaction
+        // ledger to recompute history artifacts from. Preserve the already
+        // verified extras rather than silently unpinning them when a caller
+        // appends ordinary chat messages through this compatibility API.
+        ...artifactReferenceIndex(messages, existing?.additionalArtifactUris),
         contentRevision: base.contentRevision + (messages.length > previousMessages.length ? 1 : 0),
         recordRevision: base.recordRevision + 1,
         updatedAt: now,
@@ -315,6 +329,17 @@ export class ConversationStore {
     deletionEpoch: number
     finalizationId: string
     messages: DurableChatMessage[]
+    /** Extra artifact URIs to pin into `artifactUris` beyond what
+     *  `deriveArtifactUris(messages)` finds by scanning message content —
+     *  closes the history-artifact gap (Task 21): a context-compaction
+     *  round's `fullArtifact` lives at `checkpoint.contextCompaction`, a
+     *  field entirely separate from `messages`, and a superseded round's
+     *  artifact isn't referenced by the live checkpoint at all once a later
+     *  round replaces it. Callers (run-finalizer.ts) pass the run's current
+     *  plus every superseded compaction artifact uri here so this
+     *  conversation's canonical `artifactUris` never drops a still-relevant
+     *  history artifact. */
+    additionalArtifactUris?: readonly string[]
   }): Promise<{ contentRevision: number }> {
     return this.withLock(input.conversationId, async () => {
       const now = this.now()
@@ -351,7 +376,7 @@ export class ConversationStore {
         ...record,
         contentRevision,
         messages: input.messages,
-        artifactUris: deriveArtifactUris(input.messages),
+        ...artifactReferenceIndex(input.messages, input.additionalArtifactUris),
         recordRevision: record.recordRevision + 1,
         activeRun: {
           ...record.activeRun!,
@@ -419,6 +444,49 @@ export class ConversationStore {
     })
   }
 
+  // --- artifact retention support ---------------------------------------
+
+  /**
+   * Every artifact URI still pinned by a canonical conversation reference —
+   * an active conversation's own `artifactUris`, plus a tombstoned
+   * conversation's `artifactUris` for as long as it remains within
+   * `tombstoneGraceMs` of its deletion (design §"Retention": "Explicit
+   * conversation deletion schedules associated run artifacts for deletion
+   * after the conversation's undo/grace window; its tombstone continues to
+   * pin the URIs during that window"). Retention (artifact-retention.ts /
+   * ArtifactStore.collectEligible via its injected `isArtifactReferenced`)
+   * calls this fresh immediately before deleting any bytes — the record is
+   * canonical; nothing here is a best-effort cached index.
+   */
+  async collectReferencedArtifactUris(now: number, tombstoneGraceMs: number): Promise<Set<string>> {
+    let files: string[]
+    try {
+      files = await fs.readdir(this.dir)
+    } catch (err) {
+      if (isFileNotFound(err)) return new Set()
+      throw err
+    }
+
+    const uris = new Set<string>()
+    for (const file of files) {
+      if (!file.endsWith(".json")) continue
+      const id = file.slice(0, -".json".length)
+      if (!isSafeId(id)) continue
+      // Retention may irreversibly remove bytes, so it cannot fold corrupt
+      // canonical records into "missing" like compatibility reads do.
+      const record = await this.withLock(id, () => this.readForRetention(id))
+      if (!record) continue
+      if (record.state === "active") {
+        for (const uri of record.artifactUris) uris.add(uri)
+        continue
+      }
+      if (record.deletedAt !== undefined && now - record.deletedAt < tombstoneGraceMs) {
+        for (const uri of record.artifactUris) uris.add(uri)
+      }
+    }
+    return uris
+  }
+
   // --- internals --------------------------------------------------------
 
   /** Reads the current record, migrating a legacy v1 record to V2 and
@@ -428,12 +496,78 @@ export class ConversationStore {
     const raw = await readJsonFile(this.filePath(id))
     if (raw === null) return undefined
     const v2 = tryParseV2(raw)
-    if (v2) return v2
+    if (v2) {
+      // V2 records written before the artifact-retention integrity contract
+      // had no separately durable additional set or hash. Only a raw record
+      // which demonstrably lacks those fields may take this compatibility
+      // migration. In particular, a present-but-invalid hash/index is
+      // corruption, not an upgrade opportunity: rewriting it here could
+      // erase history pins and authorize GC of still-referenced artifacts.
+      if (!hasValidArtifactReferenceIndex(v2)) {
+        if (
+          !hasUnversionedButValidArtifactReferenceIndex(v2) &&
+          !canMigrateLegacyArtifactReferenceIndex(raw)
+        ) {
+          throw new Error(`conversation ${id} has an incomplete artifact reference index`)
+        }
+        const upgraded: ConversationRecordV2 = {
+          ...v2,
+          ...artifactReferenceIndex(v2.messages, v2.artifactUris),
+          recordRevision: v2.recordRevision + 1,
+          updatedAt: this.now(),
+        }
+        await this.writeRecord(upgraded)
+        return upgraded
+      }
+      return v2
+    }
     const legacy = tryParseLegacy(raw)
     if (!legacy) return undefined
     const migrated = migrateLegacyRecord(legacy)
     await this.writeRecord(migrated)
     return migrated
+  }
+
+  /** Strict read used solely by destructive retention scans. Unlike normal
+   * mutation compatibility reads, JSON syntax errors and an incomplete V2
+   * reference index are not folded into "conversation missing": that would
+   * make an artifact referenced by a damaged canonical record eligible for
+   * irreversible GC. */
+  private async readForRetention(id: string): Promise<ConversationRecordV2 | undefined> {
+    let text: string
+    try {
+      text = await fs.readFile(this.filePath(id), "utf-8")
+    } catch (err) {
+      if (isFileNotFound(err)) return undefined
+      throw err
+    }
+    let raw: unknown
+    try {
+      raw = JSON.parse(text) as unknown
+    } catch (err) {
+      throw new Error(
+        `conversation ${id} is malformed and cannot be scanned for artifact retention`,
+        {
+          cause: err,
+        }
+      )
+    }
+    const v2 = tryParseV2(raw)
+    if (v2) {
+      const source = raw as Record<string, unknown>
+      if (
+        v2.id !== id ||
+        (!hasValidArtifactReferenceIndex(v2) &&
+          !hasUnversionedButValidArtifactReferenceIndex(v2)) ||
+        (source.state !== "active" && source.state !== "deleted")
+      ) {
+        throw new Error(`conversation ${id} has an incomplete artifact reference index`)
+      }
+      return v2
+    }
+    const legacy = tryParseLegacy(raw)
+    if (legacy) return migrateLegacyRecord(legacy)
+    throw new Error(`conversation ${id} has an unsupported structure for artifact retention`)
   }
 
   private async writeRecord(record: ConversationRecordV2): Promise<void> {
@@ -497,7 +631,7 @@ function emptyRecord(id: string, workspaceId: string, createdAt: number): Conver
     lastFencingToken: 0,
     activeRun: undefined,
     messages: [],
-    artifactUris: [],
+    ...artifactReferenceIndex([]),
     title: undefined,
     workspaceId,
     createdAt,
@@ -534,6 +668,12 @@ function tryParseV2(value: unknown): ConversationRecordV2 | undefined {
       : undefined,
     messages: v.messages as DurableChatMessage[],
     artifactUris: Array.isArray(v.artifactUris) ? (v.artifactUris as string[]) : [],
+    additionalArtifactUris: Array.isArray(v.additionalArtifactUris)
+      ? (v.additionalArtifactUris as string[])
+      : [],
+    artifactIndexIntegrityHash:
+      typeof v.artifactIndexIntegrityHash === "string" ? v.artifactIndexIntegrityHash : "",
+    artifactIndexVersion: typeof v.artifactIndexVersion === "number" ? v.artifactIndexVersion : 0,
     deletedAt: typeof v.deletedAt === "number" ? v.deletedAt : undefined,
     title: typeof v.title === "string" ? v.title : undefined,
     workspaceId:
@@ -571,7 +711,7 @@ function migrateLegacyRecord(legacy: StoredConversation): ConversationRecordV2 {
     lastFencingToken: 0,
     activeRun: undefined,
     messages,
-    artifactUris: deriveArtifactUris(messages),
+    ...artifactReferenceIndex(messages),
     title: legacy.title,
     workspaceId: legacy.workspaceId,
     createdAt: legacy.createdAt,
@@ -596,4 +736,82 @@ function safeId(id: string): string {
 
 function isFileNotFound(err: unknown): boolean {
   return Boolean(err && typeof err === "object" && (err as { code?: string }).code === "ENOENT")
+}
+
+function mergeArtifactUris(derived: readonly string[], additional?: readonly string[]): string[] {
+  return [...new Set([...derived, ...(additional ?? [])])].sort()
+}
+
+/** Produces the only artifact-reference index shape writers are allowed to
+ * persist. The extra list is reduced against the message-derived list, so
+ * the integrity hash has one canonical representation for every URI set. */
+function artifactReferenceIndex(
+  messages: readonly DurableChatMessage[],
+  additional?: readonly string[]
+): Pick<
+  ConversationRecordV2,
+  "artifactUris" | "additionalArtifactUris" | "artifactIndexIntegrityHash" | "artifactIndexVersion"
+> {
+  const derivedArtifactUris = deriveArtifactUris(messages)
+  const derived = new Set(derivedArtifactUris)
+  const additionalArtifactUris = [...new Set(additional ?? [])]
+    .filter((uri): uri is string => typeof uri === "string" && !derived.has(uri))
+    .sort()
+  const artifactUris = mergeArtifactUris(derivedArtifactUris, additionalArtifactUris)
+  return {
+    artifactUris,
+    additionalArtifactUris,
+    artifactIndexIntegrityHash: canonicalHash({
+      artifactUris,
+      derivedArtifactUris,
+      additionalArtifactUris,
+    }),
+    artifactIndexVersion: 1,
+  }
+}
+
+/** Strictly validates the hash and both components rather than merely
+ * trusting the merged side index. Any uncertainty is handled by the
+ * retention caller as a scan failure, which leaves artifacts pinned. */
+function hasValidArtifactReferenceIndex(record: ConversationRecordV2): boolean {
+  return record.artifactIndexVersion === 1 && hasArtifactReferenceIndexContent(record)
+}
+
+/** `artifactIndexVersion` was introduced after the hash itself. A record from
+ * that narrow transition period is safe to upgrade only after validating the
+ * full old index; any missing or corrupt field still fails closed. */
+function hasUnversionedButValidArtifactReferenceIndex(record: ConversationRecordV2): boolean {
+  return record.artifactIndexVersion === 0 && hasArtifactReferenceIndexContent(record)
+}
+
+function hasArtifactReferenceIndexContent(record: ConversationRecordV2): boolean {
+  if (
+    !record.artifactUris.every((uri) => typeof uri === "string") ||
+    !record.additionalArtifactUris.every((uri) => typeof uri === "string") ||
+    !record.artifactIndexIntegrityHash
+  ) {
+    return false
+  }
+  const expected = artifactReferenceIndex(record.messages, record.additionalArtifactUris)
+  return (
+    sameStringArray(record.artifactUris, expected.artifactUris) &&
+    sameStringArray(record.additionalArtifactUris, expected.additionalArtifactUris) &&
+    record.artifactIndexIntegrityHash === expected.artifactIndexIntegrityHash
+  )
+}
+
+/** A migration is allowed only for the precise legacy shape that predates the
+ * integrity contract. Partial records and invalid current records fail closed
+ * instead of being rewritten into a fresh, but potentially incomplete, hash. */
+function canMigrateLegacyArtifactReferenceIndex(raw: unknown): boolean {
+  if (!isRecord(raw)) return false
+  return (
+    !Object.hasOwn(raw, "artifactIndexVersion") &&
+    !Object.hasOwn(raw, "additionalArtifactUris") &&
+    !Object.hasOwn(raw, "artifactIndexIntegrityHash")
+  )
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
 }

@@ -1,17 +1,66 @@
-import type { ChatContentBlock } from "../providers/types"
-import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
+import type { AgentArtifactRef, AgentArtifactStore } from "../artifacts/artifact-types"
+import type { SummarizeResult } from "../context/context-compressor"
+import type { ChatContentBlock, ChatMessage } from "../providers/types"
+import type { AgentRunCheckpointV1, ModelBudgetAdmission } from "./checkpoint-schema"
 import type { ModelStepDeps } from "./model-step-runner"
-import { advanceModelStep } from "./model-step-runner"
+import { randomUUID } from "node:crypto"
+import { logger } from "../../logging"
+import {
+  admitModelAttempt,
+  forfeitModelAttempt,
+  settleModelAttempt,
+} from "../budget/model-admission"
+import { freeBalance, ROOT_ACCOUNT_ID } from "../budget/root-budget-ledger"
+import { ContextCompressor, SummarizeInfrastructureError } from "../context/context-compressor"
+import { estimateMessagesTokens, estimateTextTokens } from "../context/estimate-tokens"
+import {
+  buildCompactionRecord,
+  captureHistorySlice,
+  deriveHistoryArtifactOwner,
+  durableTailAfterCompaction,
+  projectCompactedMessages,
+} from "../context/history-artifact"
+import {
+  DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS,
+  summarizerRequestEstimateInput,
+  summarizeViaProvider,
+} from "../context/summarize-via-provider"
+import { assembleFromContextSnapshot } from "./context-snapshot"
+import { advanceModelStep, InsufficientEstimateError } from "./model-step-runner"
+
+const compressionLog = logger.child("context-compression")
 
 // Resumable outer driver (design §"Build a resumable driver that always
 // reloads the latest checkpoint and chooses one legal next action"). Owns
 // exactly one model step per call plus the nextStep advance — it does not
 // execute tool calls itself (see the ordered tool-batch ledger); a caller
 // drives the loop between model steps and tool batches, invoking this again
-// after a tool batch materializes.
+// after a tool batch materializes. It also owns context compression (Task
+// 20) as a third legal action, evaluated before the model step on every
+// call: reload the checkpoint, and if the frozen `contextCompression`
+// policy is enabled and the current model-facing projection exceeds its
+// threshold, perform ONLY the compression step this call (capture the
+// evicted durable slice as a history artifact, then commit the compaction
+// checkpoint) and return — never both a compression and a model step in the
+// same call, matching every other durable side effect in this file.
 
 export interface DurableAgentDriverDeps extends ModelStepDeps {
   maxSteps: number
+  /** Wires durable history-artifact capture for context compression (Task
+   *  20, design §"Context compression writes the evicted message slice to a
+   *  `history` artifact"). Safe to omit while every run's
+   *  `config.contextCompression.enabled` is false — compression never runs,
+   *  so this is never consulted. Once compression is enabled, this is
+   *  required unconditionally — `maybeCompressHistory` checks for it before
+   *  spending any summarizer budget, not only once an eviction actually
+   *  turns out to be needed (review fix: a misconfigured run must never
+   *  waste a real, non-refundable charge only to discover afterward there's
+   *  nowhere to durably capture the result). There is no safe smaller
+   *  inline fallback for "the conversation no longer fits", unlike a single
+   *  oversized tool result, so a missing store fails visibly rather than
+   *  silently skipping compression and dispatching an oversized request
+   *  anyway. */
+  artifactStore?: AgentArtifactStore
 }
 
 export interface RequestedToolCall {
@@ -28,6 +77,7 @@ export type DriverStepOutcome =
       toolCalls: RequestedToolCall[]
     }
   | { kind: "max_steps"; checkpoint: AgentRunCheckpointV1 }
+  | { kind: "compressed"; checkpoint: AgentRunCheckpointV1 }
 
 /** The conservative request estimator under-reserved a settled response.
  * The response is already durably charged; continuing would make a known
@@ -39,11 +89,26 @@ export class EstimatorIncompatibleError extends Error {
   }
 }
 
+/** Compression needed to evict durable content but had no way to durably
+ *  capture it first (no artifact store wired). Thrown instead of silently
+ *  either discarding the slice or dispatching an oversized request — design
+ *  §"Offload failure does not silently discard content ... returns a
+ *  visible infrastructure error before the next model step." Propagates
+ *  exactly like any other durable-step failure in this file (e.g. a budget
+ *  admission error): uncaught here, left for the caller to classify. */
+export class HistoryCompressionError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "HistoryCompressionError"
+  }
+}
+
 /**
- * Advances a durable run by exactly one model step. Always reloads the
- * latest checkpoint first — never trusts authority-bearing progress kept
- * only in a caller's stack locals — and rejects the provider call outright
- * (via model-step-runner) if any required checkpoint/ledger write fails.
+ * Advances a durable run by exactly one legal action — a compression step
+ * or a model step, never both. Always reloads the latest checkpoint first —
+ * never trusts authority-bearing progress kept only in a caller's stack
+ * locals — and rejects the provider call outright (via model-step-runner)
+ * if any required checkpoint/ledger write fails.
  */
 export async function advanceDurableRun(
   deps: DurableAgentDriverDeps,
@@ -54,6 +119,9 @@ export async function advanceDurableRun(
   if (loaded.checkpoint.nextStep >= deps.maxSteps) {
     return { kind: "max_steps", checkpoint: loaded.checkpoint }
   }
+
+  const compacted = await maybeCompressHistory(deps, loaded.checkpoint)
+  if (compacted) return { kind: "compressed", checkpoint: compacted }
 
   const result = await advanceModelStep(deps, runId)
   if (result.estimatorIncompatible) throw new EstimatorIncompatibleError(result.checkpoint)
@@ -78,4 +146,501 @@ function isToolUse(
   block: ChatContentBlock
 ): block is Extract<ChatContentBlock, { type: "tool_use" }> {
   return block.type === "tool_use"
+}
+
+/** Performs the compression step when (and only when) it's actually needed
+ *  this call, returning the committed checkpoint — or `undefined` when
+ *  compression is disabled, or enabled but the current projection is
+ *  already within budget. Never mutates `checkpoint.messages`: only
+ *  `contextCompaction` (and, transiently, `compressionAttempt`) change, per
+ *  this file's top-of-file note. */
+async function maybeCompressHistory(
+  deps: DurableAgentDriverDeps,
+  checkpointIn: AgentRunCheckpointV1
+): Promise<AgentRunCheckpointV1 | undefined> {
+  const policy = checkpointIn.config.contextCompression
+  if (!policy.enabled) return undefined
+
+  // Fail fast, before any budget is spent, not only once an eviction turns
+  // out to be needed (review fix): compression can only ever durably
+  // capture an eviction through an artifact store, so a misconfigured run
+  // (compression enabled, no store wired) must never waste a real,
+  // non-refundable summarizer charge only to discover afterward there's
+  // nowhere to put the result. `artifactStore` below is the narrowed,
+  // guaranteed-defined local every later use reads instead of
+  // `deps.artifactStore`.
+  if (!deps.artifactStore) {
+    throw new HistoryCompressionError(
+      `context compression is enabled for run ${checkpointIn.identity.runId} but no artifact ` +
+        `store is configured to durably capture an eviction`
+    )
+  }
+  const artifactStore = deps.artifactStore
+
+  // Reconcile a compression budget hold left "held" by a crashed prior
+  // attempt before doing anything else this call — see
+  // reconcileStuckCompressionAttempt's docstring.
+  let checkpoint = await reconcileStuckCompressionAttempt(deps, checkpointIn)
+  if (checkpoint.compressionAttempt?.admission.estimatorIncompatible) {
+    // The incompatible verdict is checkpointed with the settled compression
+    // admission, so a restart after `after_compression_settle_ledger` still
+    // follows the same quarantine/finalization path as the original pass.
+    throw new EstimatorIncompatibleError(checkpoint)
+  }
+
+  const runId = checkpoint.identity.runId
+  const rootRunId = checkpoint.identity.rootRunId
+  const accountId = budgetAccountIdFor(checkpoint)
+  const model = checkpoint.config.model
+
+  // Deliberately NOT model-step-runner.ts's outgoingRequestContext: that
+  // also injects transient workspace-instruction text into the last user
+  // message, which would replace that message with a new object and break
+  // ContextCompressor's reference-identity-based eviction diffing (see
+  // context-compressor.ts's computeEvicted). The compression decision only
+  // needs the real durable messages/compaction state — the small
+  // difference in estimated tokens from omitting the injected instruction
+  // text doesn't matter for a threshold gate (the real dispatch's own
+  // provider.estimateRequestUpperBound is what actually gates admission).
+  const { system } = assembleFromContextSnapshot(checkpoint.config.context)
+  const projected = projectCompactedMessages(checkpoint.messages, checkpoint.contextCompaction)
+  const threshold = Math.max(0, policy.thresholdTokens - policy.hardReserveTokens)
+
+  // Threaded across the nested `summarize` callback below so its own
+  // durable checkpoint writes (the compressionAttempt planned/held/settled/
+  // forfeited transitions) are always reflected here, even though
+  // ContextCompressor itself only ever sees the resulting summary text —
+  // it has no idea a durable side effect happened underneath it.
+  let latest = checkpoint
+
+  const compressor = new ContextCompressor({
+    thresholdTokens: threshold,
+    keepFraction: policy.keepRecentFraction,
+    summarize: async (older) => {
+      try {
+        const attempt = await runCompressionAttempt(deps, latest, {
+          model,
+          older,
+          runId,
+          rootRunId,
+          accountId,
+        })
+        latest = attempt.checkpoint
+        return attempt.summary
+      } catch (err) {
+        if (err instanceof CompressionAttemptFailure) {
+          latest = err.checkpoint
+          throw new SummarizeInfrastructureError("compression summarizer attempt failed", {
+            cause: err.cause,
+          })
+        }
+        // Anything else — including a `deps.fault?.()` crash-injection
+        // throw from inside runCompressionAttempt, which is never wrapped
+        // in CompressionAttemptFailure — must still propagate as an infra
+        // failure, never be swallowed into ContextCompressor.compress()'s
+        // "summarization declined, hard-trim instead" fallback (that path
+        // exists for a genuine summarizer content/API error, not for our
+        // own durable-step plumbing failing or a simulated crash). Wrapping
+        // it here guarantees compress()'s catch always unwraps and
+        // rethrows the original error rather than ever silently
+        // continuing. `latest` is deliberately left as-is: whatever
+        // mutation happened right before this throw is already safely on
+        // disk regardless, and nothing reads `latest` again once this
+        // throw propagates out of compress() uncaught.
+        throw new SummarizeInfrastructureError("compression attempt failed unexpectedly", {
+          cause: err,
+        })
+      }
+    },
+  })
+
+  const result = await compressor.compress(system, projected)
+  checkpoint = latest
+  if (checkpoint.compressionAttempt?.admission.estimatorIncompatible) {
+    throw new EstimatorIncompatibleError(checkpoint)
+  }
+  if (result.evicted.length === 0) {
+    // Usually a genuine no-op (the projection already fits). But
+    // ContextCompressor.compress() can also legitimately compute a
+    // non-empty, real reduction internally (hardTrim dropping interior
+    // "recent" content while pinning an already-summarized message at the
+    // front — see context-compressor.ts's computeEvicted) and still report
+    // `evicted: []`, because that shape can't be represented as the
+    // leading-prefix eviction this driver's artifact-mapping requires (see
+    // computeEvicted's own docstring). When that happens, compression
+    // silently declines to shrink the request for as long as the pattern
+    // holds — never lossy (nothing left the canonical `checkpoint.messages`
+    // in the first place), but otherwise invisible. Surface it here so an
+    // operator can tell the difference between "nothing to do" and "wanted
+    // to do something but couldn't represent it."
+    const estimate = estimateTextTokens(system) + estimateMessagesTokens(projected)
+    if (estimate > threshold) {
+      compressionLog.warn(
+        "context compression detected an over-threshold projection but could not represent " +
+          "a leading-prefix eviction this round (a preserved head with an evicted interior " +
+          "gap) — declining to compress; the request will dispatch at its current size",
+        // Field names deliberately avoid the substring "token" — the
+        // logger's redactFields() treats any key matching /token/i as a
+        // secret and replaces its value with "[redacted]" (see
+        // src/main/logging/redact.ts), which would make these plain token
+        // counts useless in the log output.
+        { runId, estimatedContextSize: estimate, compressionThreshold: threshold }
+      )
+    }
+    return undefined
+  }
+
+  // The active compaction's synthetic summary message (if any) is always
+  // the first element of `projected` and therefore always the first element
+  // of anything evicted from it — eviction only ever removes a leading
+  // prefix. It carries no messageId (it's not a durable message), so it's
+  // excluded before mapping the rest back to real DurableChatMessages by
+  // position. When nothing beyond that synthetic element was evicted this
+  // round, there is no new durable content to archive — skip rather than
+  // mint an empty artifact or claim a fresh capture that captured nothing.
+  const compactionActive = checkpoint.contextCompaction !== undefined
+  const realEvictedCount = result.evicted.length - (compactionActive ? 1 : 0)
+  if (realEvictedCount <= 0) return undefined
+
+  const tailDurable = durableTailAfterCompaction(checkpoint.messages, checkpoint.contextCompaction)
+  const evictedDurable = tailDurable.slice(0, realEvictedCount)
+
+  // Capture BEFORE committing the checkpoint (same ordering as
+  // tool-batch-runner.ts's tool-result offload): a crash between the two
+  // merely orphans the artifact — harmless pre-Task-21 — rather than ever
+  // letting a persisted checkpoint reference an evicted slice that was
+  // never actually captured. `artifactStore` is guaranteed defined here —
+  // see the fail-fast check at the top of this function.
+  const owner = deriveHistoryArtifactOwner(
+    checkpoint.identity,
+    checkpoint.config.authority.principal.actor
+  )
+  let artifactRef: AgentArtifactRef
+  try {
+    artifactRef = await captureHistorySlice(artifactStore, owner, runId, evictedDurable)
+  } catch (err) {
+    throw new HistoryCompressionError(
+      `history capture for run ${runId} failed; refusing to compact: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    )
+  }
+  // Compression is lossy only in the model-facing projection, never in the
+  // durable record. A quota/producer-limited capture returns a perfectly
+  // valid *incomplete* artifact ref rather than throwing; accepting it here
+  // would evict canonical history with no recoverable full slice. Require
+  // the exact source-byte contract and a real digest before touching the
+  // compaction checkpoint.
+  if (
+    !artifactRef.complete ||
+    artifactRef.sourceBytes !== artifactRef.capturedBytes ||
+    !/^[a-f0-9]{64}$/.test(artifactRef.sha256)
+  ) {
+    throw new HistoryCompressionError(
+      `history capture for run ${runId} was incomplete or unverifiable; refusing to compact`
+    )
+  }
+  await deps.fault?.("after_history_capture")
+
+  const record = buildCompactionRecord({
+    compactionId: randomUUID(),
+    evictedThroughMessageId: evictedDurable[evictedDurable.length - 1]!.messageId,
+    rawSummaryText: result.summaryText,
+    summarizerTokens: result.summarizerTokens,
+    artifact: artifactRef,
+    archivedMessageCount: evictedDurable.length,
+    now: deps.now(),
+  })
+
+  const committed = await deps.runStore.mutate(runId, checkpoint.revision, (cp) => {
+    // contextCompaction always supersedes in full (history-artifact.ts's
+    // top-of-file note) — the outgoing round's artifact uri would otherwise
+    // become unreferenced by anything in the live checkpoint the moment this
+    // mutation lands. Accumulate it here (deduped) so conversation-store's
+    // artifactUris (via run-finalizer.ts's historyArtifactUris) keeps it
+    // pinned for as long as this conversation exists, not just until the
+    // next compaction round.
+    const priorUri = cp.contextCompaction?.artifact.uri
+    const supersededCompactionArtifactUris = priorUri
+      ? [...new Set([...(cp.supersededCompactionArtifactUris ?? []), priorUri])]
+      : cp.supersededCompactionArtifactUris
+    return {
+      ...cp,
+      contextCompaction: record,
+      supersededCompactionArtifactUris,
+      updatedAt: deps.now(),
+    }
+  })
+  await deps.fault?.("after_compaction_checkpoint")
+  return committed
+}
+
+/** A run admits/settles against its own account: the root account for a run
+ *  that is its own root (interactive/background — identity.runId ===
+ *  rootRunId), or the child-task account reserved for it otherwise — same
+ *  rule as model-step-runner.ts's identically-named (unexported) helper,
+ *  duplicated here rather than imported to avoid depending on that file's
+ *  internals for a three-line derivation. */
+function budgetAccountIdFor(checkpoint: AgentRunCheckpointV1): string {
+  return checkpoint.identity.runId === checkpoint.identity.rootRunId
+    ? ROOT_ACCOUNT_ID
+    : checkpoint.identity.runId
+}
+
+// ---------------------------------------------------------------------------
+// Compression's own durable budget-attempt state machine (Issue 2 follow-up
+// review fix). Mirrors model-step-runner.ts's prepareAttempt/holdAttempt/
+// callProviderAndStage/settleAttempt/ensureForfeitedAndPrepareNext sequence,
+// scaled down for compression's simpler needs: a single mutable
+// `checkpoint.compressionAttempt` slot (never a per-step array — compression
+// isn't nextStep-numbered) and a two-state "held or not" resume model
+// instead of model-step-runner's finer prepared/held/dispatched/
+// unknown_response/response_staged distinctions, since a summarizer request
+// has no exactly-once side effect to protect (unlike a tool call) — the only
+// thing that must never happen is a silently leaked or double-charged hold.
+
+/** Internal-only signal from runCompressionAttempt's failure paths back to
+ *  maybeCompressHistory's `summarize` callback: carries the checkpoint
+ *  exactly as already reconciled (forfeited, where applicable) at the point
+ *  of failure, so the outer `latest` tracker never falls behind on a thrown
+ *  path. Never crosses this module's boundary — always caught and re-thrown
+ *  as `SummarizeInfrastructureError` before `ContextCompressor` ever sees
+ *  it, so its own `instanceof` unwrapping (`err.cause`) still surfaces the
+ *  real underlying error to callers. */
+class CompressionAttemptFailure extends Error {
+  constructor(
+    readonly checkpoint: AgentRunCheckpointV1,
+    readonly cause: unknown
+  ) {
+    super("compression attempt failed")
+  }
+}
+
+interface CompressionAttemptInput {
+  model: string
+  older: ChatMessage[]
+  runId: string
+  rootRunId: string
+  accountId: string
+}
+
+/** Detects a compression budget hold left "held" by a crashed prior attempt
+ *  and conservatively forfeits it before anything else this call does —
+ *  mirrors model-step-runner.ts's ensureForfeitedAndPrepareNext treatment of
+ *  a "dispatched"/"unknown_response" model attempt: once a hold reaches
+ *  "held", a provider dispatch may or may not have been attempted before
+ *  the crash, so charging the whole hold as consumed (never silently
+ *  releasing it, never blindly retrying into a possible double charge) is
+ *  the only safe assumption. A "planned" record is deliberately left
+ *  untouched here — `runCompressionAttempt` resumes it in place instead,
+ *  which is always safe (see that function's docstring): the ledger was
+ *  either never touched, or admitted under the exact same operationId
+ *  either way, so a retry is a harmless idempotent replay, never a second
+ *  charge. */
+async function reconcileStuckCompressionAttempt(
+  deps: DurableAgentDriverDeps,
+  checkpoint: AgentRunCheckpointV1
+): Promise<AgentRunCheckpointV1> {
+  const attempt = checkpoint.compressionAttempt
+  if (!attempt || attempt.admission.state !== "held") return checkpoint
+  // A crash can land after the durable budget settlement but before the
+  // checkpoint records `settled`. Inspect the idempotent ledger receipt
+  // first: forfeiting in that state would try to release a hold that no
+  // longer exists and permanently strand the run with BudgetOverRelease.
+  const ledger = await deps.budgetStore.load(checkpoint.identity.rootRunId)
+  const settled = ledger.operations[`settle:${attempt.admission.operationId}`]
+  if (
+    settled?.kind === "settle" &&
+    settled.accountId === attempt.admission.accountId &&
+    settled.attemptId === attempt.attemptId
+  ) {
+    const actualTokens = settled.consumedTokens ?? 0
+    const admission: ModelBudgetAdmission = {
+      ...attempt.admission,
+      state: "settled",
+      actualTokens,
+      estimatorIncompatible: actualTokens > attempt.admission.heldTokens,
+    }
+    return deps.runStore.mutate(checkpoint.identity.runId, checkpoint.revision, (cp) => ({
+      ...cp,
+      compressionAttempt: { attemptId: attempt.attemptId, admission },
+      updatedAt: deps.now(),
+    }))
+  }
+  return forfeitCompressionAttempt(deps, checkpoint, attempt.attemptId, attempt.admission)
+}
+
+/** Drives one compression-summarizer attempt through the same
+ *  planned -> held -> (dispatch) -> settled sequence a real model step
+ *  uses, resuming a durably "planned" attempt in place when one already
+ *  exists (idempotent-safe — see reconcileStuckCompressionAttempt) or
+ *  starting a fresh one otherwise. Every ledger/checkpoint transition is
+ *  awaited before the next begins, exactly like model-step-runner.ts's
+ *  advanceModelStep. Throws `CompressionAttemptFailure` — never a bare
+ *  error — on any failure, always carrying the checkpoint already left in a
+ *  consistent (forfeited, where applicable) state. */
+async function runCompressionAttempt(
+  deps: DurableAgentDriverDeps,
+  checkpoint: AgentRunCheckpointV1,
+  input: CompressionAttemptInput
+): Promise<{ checkpoint: AgentRunCheckpointV1; summary: SummarizeResult }> {
+  let cp = checkpoint
+  let attemptId: string
+  let admission: ModelBudgetAdmission
+
+  const existing = cp.compressionAttempt
+  if (existing && existing.admission.state === "planned") {
+    // Resume the SAME attempt in place — safe because admitModelAttempt is
+    // idempotent per operationId, and every value the admit call needs
+    // (operationId/accountId/attemptId/inputUpperBoundTokens/
+    // maxOutputTokens) is already durably frozen on this record, so a retry
+    // reproduces byte-identical admit parameters regardless of whether the
+    // crashed attempt's own ledger write actually landed.
+    attemptId = existing.attemptId
+    admission = existing.admission
+  } else {
+    attemptId = randomUUID()
+    const operationId = `compress:${input.runId}:${attemptId}`
+
+    const ledgerNow = await deps.budgetStore.load(input.rootRunId)
+    const account = ledgerNow.accounts[input.accountId]
+    const isUnlimited = account !== undefined && freeBalance(account) === undefined
+
+    const estimate = deps.provider.estimateRequestUpperBound?.(
+      summarizerRequestEstimateInput(input.model, input.older)
+    )
+    if (!estimate && !isUnlimited) {
+      throw new CompressionAttemptFailure(
+        cp,
+        new InsufficientEstimateError(
+          `provider ${deps.provider.id} cannot guarantee an upper bound for the summarizer request on run ${input.runId}`
+        )
+      )
+    }
+
+    admission = {
+      operationId,
+      accountId: input.accountId,
+      estimatorId: estimate?.estimatorId ?? "none",
+      estimatorVersion: estimate?.estimatorVersion ?? "0",
+      inputUpperBoundTokens: estimate?.inputUpperBoundTokens ?? 0,
+      maxOutputTokens: DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS,
+      heldTokens: 0,
+      state: "planned",
+    }
+    // Durable "planned" write — BEFORE the ledger is ever touched — so a
+    // crash before the ledger admit leaves nothing to reconcile (retrying
+    // from "planned" is always a safe idempotent replay; see above).
+    cp = await deps.runStore.mutate(cp.identity.runId, cp.revision, (c) => ({
+      ...c,
+      compressionAttempt: { attemptId, admission },
+    }))
+    await deps.fault?.("after_compression_prepared")
+  }
+
+  if (admission.state === "planned") {
+    const heldTokens = admission.inputUpperBoundTokens + admission.maxOutputTokens
+    try {
+      const ledgerNow = await deps.budgetStore.load(input.rootRunId)
+      const { ledger: heldLedger } = admitModelAttempt(ledgerNow, {
+        operationId: admission.operationId,
+        accountId: admission.accountId,
+        attemptId,
+        heldTokens,
+      })
+      await deps.budgetStore.mutate(input.rootRunId, ledgerNow.revision, () => heldLedger)
+    } catch (err) {
+      throw new CompressionAttemptFailure(cp, err)
+    }
+    await deps.fault?.("after_compression_hold_ledger")
+
+    admission = { ...admission, heldTokens, state: "held" }
+    // Durable "held" write — confirms the ledger admission succeeded. A
+    // crash between here and settle/forfeit is exactly what the next
+    // call's reconcileStuckCompressionAttempt detects and forfeits.
+    cp = await deps.runStore.mutate(cp.identity.runId, cp.revision, (c) => ({
+      ...c,
+      compressionAttempt: { attemptId, admission },
+    }))
+    await deps.fault?.("after_compression_hold")
+  }
+
+  // admission.state === "held" now, either just transitioned above or
+  // resumed directly from a durable "held" record — the latter never
+  // actually happens today, since reconcileStuckCompressionAttempt always
+  // forfeits a "held" record before this function is ever called again
+  // (kept as a defensive fallback, not a reachable path in the current
+  // caller).
+
+  let summary: SummarizeResult
+  try {
+    summary = await summarizeViaProvider(
+      deps.provider,
+      input.model,
+      input.older,
+      admission.maxOutputTokens
+    )
+  } catch (err) {
+    const forfeited = await forfeitCompressionAttempt(deps, cp, attemptId, admission)
+    throw new CompressionAttemptFailure(forfeited, err)
+  }
+  await deps.fault?.("after_compression_provider_call")
+
+  const actualTokens = summary.tokens
+  let estimatorIncompatible = false
+  try {
+    const ledgerNow = await deps.budgetStore.load(input.rootRunId)
+    const settled = settleModelAttempt(ledgerNow, {
+      operationId: `settle:${admission.operationId}`,
+      accountId: admission.accountId,
+      attemptId,
+      heldTokens: admission.heldTokens,
+      actualTokens,
+    })
+    estimatorIncompatible = settled.estimatorIncompatible
+    await deps.budgetStore.mutate(input.rootRunId, ledgerNow.revision, () => settled.ledger)
+  } catch (err) {
+    throw new CompressionAttemptFailure(cp, err)
+  }
+  await deps.fault?.("after_compression_settle_ledger")
+
+  admission = { ...admission, state: "settled", actualTokens, estimatorIncompatible }
+  cp = await deps.runStore.mutate(cp.identity.runId, cp.revision, (c) => ({
+    ...c,
+    compressionAttempt: { attemptId, admission },
+  }))
+  await deps.fault?.("after_compression_settle")
+
+  return { checkpoint: cp, summary }
+}
+
+/** Ledger forfeit + durable checkpoint write, in that order — mirrors
+ *  model-step-runner.ts's ensureForfeitedAndPrepareNext. Used both by
+ *  reconcileStuckCompressionAttempt (a stuck "held" record from a prior
+ *  call) and by runCompressionAttempt's own dispatch-failure path (the
+ *  provider call itself threw). */
+async function forfeitCompressionAttempt(
+  deps: DurableAgentDriverDeps,
+  checkpoint: AgentRunCheckpointV1,
+  attemptId: string,
+  admission: ModelBudgetAdmission
+): Promise<AgentRunCheckpointV1> {
+  const rootRunId = checkpoint.identity.rootRunId
+  const ledgerNow = await deps.budgetStore.load(rootRunId)
+  const { ledger: forfeitedLedger } = forfeitModelAttempt(ledgerNow, {
+    operationId: `forfeit:${admission.operationId}`,
+    accountId: admission.accountId,
+    attemptId,
+    heldTokens: admission.heldTokens,
+  })
+  await deps.budgetStore.mutate(rootRunId, ledgerNow.revision, () => forfeitedLedger)
+  await deps.fault?.("after_compression_forfeit_ledger")
+
+  const forfeitedAdmission: ModelBudgetAdmission = { ...admission, state: "forfeited" }
+  const next = await deps.runStore.mutate(checkpoint.identity.runId, checkpoint.revision, (c) => ({
+    ...c,
+    compressionAttempt: { attemptId, admission: forfeitedAdmission },
+  }))
+  await deps.fault?.("after_compression_forfeit_checkpoint")
+  return next
 }

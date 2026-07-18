@@ -6,6 +6,7 @@ import type { WorkspaceRoot } from "./execution/types"
 import type { McpServerConfig } from "./mcp-server-config-store"
 import { logger } from "../logging"
 import { projectModelVisibleTool } from "./guardrails/tool-metadata"
+import { boundNonStreamingToolResult } from "./tool-result-boundary"
 
 // MCP client side (P5, inbound): connect to external MCP servers over stdio and
 // surface their tools to the built-in agent. Each server's tools enter the
@@ -173,7 +174,7 @@ export class McpClientManager implements ToolHostSource {
       { name: toolName, arguments: toArguments(input) },
       { signal: options.signal }
     )
-    return toToolResult(result)
+    return boundNonStreamingToolResult(toToolResult(result))
   }
 
   private async connect(config: McpServerConfig): Promise<void> {

@@ -1,3 +1,4 @@
+import type { AgentArtifactStore } from "../artifacts/artifact-types"
 import type { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import type { EstimatorQuarantineStore } from "../estimator-quarantine-store"
 import type { ChatMessage, ChatProvider } from "../providers/types"
@@ -6,6 +7,7 @@ import type { AgentRunStore } from "../runs/agent-run-store"
 import type { RunFinalizerDeps } from "../runs/run-finalizer"
 import type { AiToolRegistry } from "../tool-registry"
 import { randomUUID } from "node:crypto"
+import { releaseArtifactRunResources } from "../artifacts/artifact-retention"
 import { DEFAULT_ANTHROPIC_MODEL } from "../providers/anthropic-provider"
 import { toChatMessages } from "../runs/durable-messages"
 import { runInteractiveTurn } from "../runs/interactive-run-driver"
@@ -37,6 +39,9 @@ export interface SubagentRunnerOptions {
   now?: () => number
   recordRun?: (trace: RunTrace) => void
   estimatorQuarantine?: EstimatorQuarantineStore
+  /** Recoverable artifact backend (Checkpoint B). Omitted in tests that
+   *  don't exercise artifact retention. */
+  artifactStore?: AgentArtifactStore
 }
 
 export class SubagentRunner {
@@ -87,6 +92,7 @@ export class SubagentRunner {
           },
           now: this.now,
           maxSteps: checkpoint.config.maxSteps,
+          artifactStore: this.options.artifactStore,
           signal: input.signal,
         },
         toolBatch: {
@@ -98,6 +104,9 @@ export class SubagentRunner {
             conversationId: checkpoint.identity.conversationId,
             workspaceId: checkpoint.identity.workspaceId,
           },
+          artifactCapture: this.options.artifactStore
+            ? { store: this.options.artifactStore }
+            : undefined,
           // Matches today's behavior exactly: SubagentRunner never passed an
           // `approve` hook to the old AgentRuntime, and AgentRuntime auto-
           // allows every call when one is absent — a subagent already runs
@@ -117,7 +126,10 @@ export class SubagentRunner {
         buildResourceReleasePlan: () => ({
           budgetOperationIds: [],
           skillPackageLeaseIds: [],
-          releaseArtifactRunPin: false,
+          // Every call here comes from finalizeTerminal
+          // (interactive-run-driver.ts) — always a genuine terminal outcome
+          // for this subagent run.
+          releaseArtifactRunPin: true,
           adoptionLeaseIds: [],
         }),
         quarantineEstimatorProfile: async (failedCheckpoint) => {
@@ -149,7 +161,8 @@ export class SubagentRunner {
     return {
       runStore: this.options.runStore,
       upsertTrace: this.options.upsertTrace,
-      releaseResources: async () => {},
+      releaseResources: (plan, context) =>
+        releaseArtifactRunResources(this.options.artifactStore, plan, context),
       now: this.now,
     }
   }

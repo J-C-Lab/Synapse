@@ -4,6 +4,7 @@ import { RunObservatoryPage } from "./run-observatory-page"
 
 const listRuns = vi.fn()
 const getRun = vi.fn()
+const getRunSnapshot = vi.fn()
 const listAiWorkspaces = vi.fn()
 const getConversation = vi.fn()
 const listRecoverableRuns = vi.fn()
@@ -14,6 +15,7 @@ vi.mock("@/lib/electron", () => ({
   isElectron: () => true,
   listRuns: (...args: unknown[]) => listRuns(...args),
   getRun: (...args: unknown[]) => getRun(...args),
+  getRunSnapshot: (...args: unknown[]) => getRunSnapshot(...args),
   listAiWorkspaces: (...args: unknown[]) => listAiWorkspaces(...args),
   getAiConversation: (...args: unknown[]) => getConversation(...args),
   listRecoverableRuns: (...args: unknown[]) => listRecoverableRuns(...args),
@@ -44,10 +46,14 @@ const enMessages: Record<string, string> = {
   "runObservatory.detailChildRuns": "Child runs",
   "runObservatory.detailToolCalls": "Tool calls",
   "runObservatory.detailPlan": "Plan",
+  "runObservatory.detailArtifacts": "Artifacts",
   "runObservatory.conversationGone": "This conversation no longer exists.",
   "runObservatory.parentUnavailable":
     "Parent run trace is unavailable. It may have aged out of retention or failed to persist.",
   "runObservatory.noChildRuns": "No child runs.",
+  "runObservatory.noArtifacts": "No artifacts.",
+  "runObservatory.artifactBytes": "bytes",
+  "runObservatory.artifactIncomplete": "incomplete ({{reason}})",
   "runObservatory.recoverableTitle": "Recoverable runs",
   "runObservatory.recoverableResume": "Resume",
   "runObservatory.recoverableAbandon": "Abandon",
@@ -90,12 +96,14 @@ const summaryB = {
 beforeEach(() => {
   listRuns.mockReset()
   getRun.mockReset()
+  getRunSnapshot.mockReset()
   listAiWorkspaces.mockReset()
   getConversation.mockReset()
   listRecoverableRuns.mockReset()
   resumeRun.mockReset()
   abandonRun.mockReset()
   listRuns.mockResolvedValue([summaryA, summaryB])
+  getRunSnapshot.mockResolvedValue(undefined)
   listAiWorkspaces.mockResolvedValue([{ id: "ws-1", name: "Project A", createdAt: 0 }])
   getConversation.mockResolvedValue({ id: "c1", workspaceId: "ws-1", messages: [], updatedAt: 0 })
   listRecoverableRuns.mockResolvedValue([])
@@ -193,6 +201,88 @@ describe("run observatory page", () => {
     await panel.findByText("interactive")
     const dashes = panel.getAllByText("—")
     expect(dashes.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it("shows 'No artifacts.' when the run snapshot has none", async () => {
+    getRun.mockResolvedValue({ ...summaryA, toolCalls: [] })
+    getRunSnapshot.mockResolvedValue({ artifacts: [] })
+    render(<RunObservatoryPage />)
+    fireEvent.click(await screen.findByText("run-a"))
+
+    expect(await screen.findByText("No artifacts.")).toBeInTheDocument()
+  })
+
+  it("lists each artifact from the run snapshot with its kind/mediaType/bytes", async () => {
+    getRun.mockResolvedValue({ ...summaryA, toolCalls: [] })
+    getRunSnapshot.mockResolvedValue({
+      artifacts: [
+        {
+          uri: "artifact://run/run-a/a1",
+          kind: "tool-result",
+          mediaType: "text/plain",
+          capturedBytes: 5000,
+          complete: true,
+        },
+      ],
+    })
+    render(<RunObservatoryPage />)
+    fireEvent.click(await screen.findByText("run-a"))
+
+    expect(await screen.findByText("artifact://run/run-a/a1")).toBeInTheDocument()
+    expect(screen.getByText(/tool-result · text\/plain · 5000 bytes/)).toBeInTheDocument()
+  })
+
+  it("marks an incomplete artifact with its truncation reason", async () => {
+    getRun.mockResolvedValue({ ...summaryA, toolCalls: [] })
+    getRunSnapshot.mockResolvedValue({
+      artifacts: [
+        {
+          uri: "artifact://run/run-a/a1",
+          kind: "history",
+          mediaType: "application/json",
+          capturedBytes: 100,
+          complete: false,
+          truncationReason: "artifact-limit",
+        },
+      ],
+    })
+    render(<RunObservatoryPage />)
+    fireEvent.click(await screen.findByText("run-a"))
+
+    // The i18n mock above doesn't interpolate {{reason}} — only assert the
+    // static "incomplete" marker renders at all.
+    expect(await screen.findByText(/incomplete/)).toBeInTheDocument()
+  })
+
+  it("clears the previous run's artifacts while a newly selected run's snapshot is still loading", async () => {
+    listRuns.mockImplementation(async (query?: { parentRunId?: string }) =>
+      query?.parentRunId ? [] : [summaryA, summaryB]
+    )
+    getRun.mockResolvedValue({ ...summaryA, toolCalls: [] })
+    getRunSnapshot.mockResolvedValueOnce({
+      artifacts: [
+        {
+          uri: "artifact://run/run-a/a1",
+          kind: "tool-result",
+          mediaType: "text/plain",
+          capturedBytes: 1,
+          complete: true,
+        },
+      ],
+    })
+    render(<RunObservatoryPage />)
+    fireEvent.click(await screen.findByText("run-a"))
+    await screen.findByText("artifact://run/run-a/a1")
+
+    let resolveSecond!: (value: { artifacts: never[] }) => void
+    getRunSnapshot.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSecond = resolve
+      })
+    )
+    fireEvent.click(await screen.findByText("run-b"))
+    expect(screen.queryByText("artifact://run/run-a/a1")).not.toBeInTheDocument()
+    resolveSecond({ artifacts: [] })
   })
 
   it("passes includeArchived so runs against archived workspaces still resolve a name", async () => {

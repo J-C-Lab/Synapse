@@ -1,5 +1,5 @@
 import type { InvocationRecoveryResult } from "../tools/invocation-recovery"
-import type { CommandRunResult } from "./command-runner"
+import type { CommandArtifactCapture, CommandRunResult } from "./command-runner"
 import type { WorkspacePolicy } from "./workspace-policy"
 import { COMMAND_RUNNER_ISOLATION, runCommand } from "./command-runner"
 
@@ -27,6 +27,10 @@ export interface ExecutionInvocationRequest {
   cwd?: string
   timeoutMs?: number
   signal?: AbortSignal
+  /** When present, the local backend captures stdout/stderr as durable
+   *  artifacts instead of the legacy in-memory preview (Task 18). Absent
+   *  when the caller has no run context to scope an artifact under. */
+  artifacts?: CommandArtifactCapture
 }
 
 export interface ExecutionBackend {
@@ -71,6 +75,7 @@ export function createLocalPolicyExecutionBackend(): ExecutionBackend {
           command: request.command,
           cwd: request.cwd,
           timeoutMs: request.timeoutMs,
+          artifacts: request.artifacts,
         },
         request.signal
       ),

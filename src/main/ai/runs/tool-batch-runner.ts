@@ -1,5 +1,10 @@
 import type { ToolCaller, ToolResult } from "@synapse/plugin-sdk"
 import type { RegisteredToolDescriptor } from "../../plugins/types"
+import type {
+  AgentArtifactRef,
+  AgentArtifactStore,
+  ArtifactOwnerContext,
+} from "../artifacts/artifact-types"
 import type { AiToolRegistry } from "../tool-registry"
 import type { AgentRunStore } from "./agent-run-store"
 import type { CanonicalJson } from "./canonical-json"
@@ -18,8 +23,14 @@ import type {
 } from "./durable-approval"
 import type { RunEventEmitter } from "./run-event-emitter"
 import { randomUUID } from "node:crypto"
-import { renderLabeledToolResult } from "../agent-runtime"
-import { invocationAdapterFor } from "../tool-registry"
+import { envelopeTierForToolResult } from "../agent-runtime"
+import { captureToolResultText } from "../artifacts/tool-result-capture"
+import { labelUntrustedContent } from "../guardrails/untrusted-content"
+import {
+  invocationAdapterFor,
+  isNonStreamingEmergencyCapMarker,
+  renderToolResultText,
+} from "../tool-registry"
 import { freezeToolAuthority, toolIdentityMatches } from "./authority-snapshot"
 import { canonicalHash } from "./canonical-json"
 import { decideDurableApproval } from "./durable-approval"
@@ -55,6 +66,23 @@ function resolveVerifiedDescriptor(
   return entry.descriptor
 }
 
+/** Derives the ArtifactOwnerContext a tool result's output would be
+ *  captured under, or `undefined` when there's no run to scope a durable
+ *  artifact under. Mirrors execution-tool-host.ts's buildArtifactCapture
+ *  derivation exactly (rootRunId: subagent runs never nest, so
+ *  `caller.parentRunId`, when set, already IS the root run id). */
+function artifactOwnerFromCaller(caller: ToolCaller): ArtifactOwnerContext | undefined {
+  if (!caller.runId) return undefined
+  return {
+    runId: caller.runId,
+    rootRunId: caller.parentRunId ?? caller.runId,
+    parentRunId: caller.parentRunId,
+    conversationId: caller.conversationId,
+    workspaceId: caller.workspaceId,
+    principal: caller.principal ?? { kind: "local-user" },
+  }
+}
+
 // Ordered multi-tool execution ledger (design §"Ordered `ToolBatchLedger`
 // with per-ordinal approval/execution/result state and atomic result-carrier
 // materialization"). Calls from one assistant message are processed strictly
@@ -85,6 +113,12 @@ export interface ToolBatchDeps {
   newId?: () => string
   /** Named crash-recovery test seams — never set in production. */
   fault?: (point: ToolBatchFaultPoint) => void
+  /** The offload-trigger threshold (Task 19: captureToolResultText's
+   *  captureThresholdChars) when `artifactCapture.captureThresholdChars`
+   *  isn't set more specifically. Pre-Task-19 this bounded a single leading
+   *  text slice directly; it now bounds when a result stops being kept
+   *  fully inline and starts being offloaded (or, with no artifactCapture
+   *  backend wired, bounded to a head+tail preview instead). */
   maxToolResultChars?: number
   /** Caller-supplied cancellation, forwarded into the tool invocation so a
    *  live cancel can interrupt a running call — matches AgentRuntime's
@@ -103,6 +137,20 @@ export interface ToolBatchDeps {
    *  (renderer projection), never awaited for correctness. Omitted by
    *  callers that don't need durable event history (most existing tests). */
   eventEmitter?: RunEventEmitter
+  /** Wires durable artifact offload for oversized tool results (Task 19,
+   *  tool-result-capture.ts). The owner context is derived fresh from
+   *  `deps.caller` for each call — never passed in directly — mirroring
+   *  execution-tool-host.ts's own buildArtifactCapture rule: no store, or a
+   *  caller with no runId, means no run to scope a durable artifact under.
+   *  Omitted ⇒ falls back to captureToolResultText's own no-backend path
+   *  (a bounded inline preview, `complete: false`, no artifact) for any
+   *  result above the offload threshold — the pre-Task-19 behavior. */
+  artifactCapture?: {
+    store: AgentArtifactStore
+    captureThresholdChars?: number
+    headPreviewChars?: number
+    tailPreviewChars?: number
+  }
 }
 
 export type ToolBatchOutcome =
@@ -545,19 +593,60 @@ async function executionPhase(
     executionError = err
   }
 
-  const rendered = executionError
-    ? {
-        text: executionError instanceof Error ? executionError.message : String(executionError),
-        isError: true,
-      }
-    : renderLabeledToolResult(toolResult!, call.fqName, {
-        maxToolResultChars: deps.maxToolResultChars,
-      })
-
-  const persistedResult: PersistedToolResult = {
-    isError: rendered.isError,
-    preview: rendered.text,
-    complete: true,
+  let persistedResult: PersistedToolResult
+  let fullArtifact: AgentArtifactRef | undefined
+  if (executionError) {
+    persistedResult = {
+      isError: true,
+      preview: executionError instanceof Error ? executionError.message : String(executionError),
+      complete: true,
+    }
+  } else {
+    // Capture BEFORE truncating (design §"Recoverable artifact backend"):
+    // the full rendered text is offloaded to a durable artifact first — an
+    // external side effect, exactly like Task 20's future history-artifact
+    // capture — and only once that settles does the checkpoint mutation
+    // below (the one that durably records this call's PersistedToolResult)
+    // get written. A crash between the two simply orphans the artifact
+    // (harmless pre-Task-21 — see this task's crash-safety note) rather
+    // than ever letting a persisted checkpoint reference bytes that don't
+    // exist on disk. The untrusted-content envelope is applied to the
+    // already-bounded preview text, same as before this task — never to
+    // the raw pre-capture text.
+    const rawText = renderToolResultText(toolResult!) || "(no output)"
+    const owner = artifactOwnerFromCaller(deps.caller)
+    const captureBackend =
+      deps.artifactCapture && owner ? { store: deps.artifactCapture.store, owner } : undefined
+    const captured = await captureToolResultText(rawText, captureBackend, {
+      captureThresholdChars: deps.artifactCapture?.captureThresholdChars ?? deps.maxToolResultChars,
+      headPreviewChars: deps.artifactCapture?.headPreviewChars,
+      tailPreviewChars: deps.artifactCapture?.tailPreviewChars,
+    })
+    const labeled = labelUntrustedContent(
+      `tool-result:${call.fqName}`,
+      captured.previewText,
+      envelopeTierForToolResult(call.fqName)
+    )
+    // A non-streaming adapter's own emergency cap (tool-registry.ts's
+    // applyNonStreamingEmergencyCap) already discarded real data BEFORE
+    // this text ever reached captureToolResultText — `captured.complete`
+    // only ever asks "did the artifact store capture every byte of the
+    // (already-truncated) text it was handed", which can easily be true
+    // even though the true tool output was never fully represented. Once
+    // that marker is present, `complete` must be forced false regardless
+    // of what the offload itself reports — the underlying artifact (if
+    // any) is still kept, since a bounded record of the truncated text is
+    // better than nothing, but it can never be reported as the whole
+    // story.
+    const emergencyCapped = isNonStreamingEmergencyCapMarker(toolResult!.structured)
+    persistedResult = {
+      isError: toolResult!.isError ?? false,
+      preview: labeled,
+      complete: emergencyCapped ? false : captured.complete,
+      artifact: captured.artifact,
+      ...(captured.offloadFailed ? { offloadFailureCode: "artifact-capture-failed" as const } : {}),
+    }
+    fullArtifact = captured.fullArtifact
   }
   const completedAt = deps.now()
 
@@ -577,7 +666,13 @@ async function executionPhase(
             }
           : a
       ),
-      resolution: { status: "resolved", reason: "executed", result: persistedResult, attemptId },
+      resolution: {
+        status: "resolved",
+        reason: "executed",
+        result: persistedResult,
+        attemptId,
+        fullArtifact,
+      },
     }))
   )
   deps.fault?.("after_attempt_completed")
@@ -589,6 +684,7 @@ async function executionPhase(
     attemptId,
     isError: persistedResult.isError,
     complete: persistedResult.complete,
+    artifact: persistedResult.artifact,
   })
 
   return { kind: "resolved", checkpoint }
@@ -625,7 +721,15 @@ async function recoverInterruptedAttempt(
   const conforms = call.replayGuarantee === "dedupe-and-result-replay"
 
   if (recovery.status === "prior-result" && conforms) {
-    const result = recovery.result as PersistedToolResult
+    const recovered = recovery.result as PersistedToolResult
+    // Recovery adapters can replay only the renderer-safe result summary;
+    // they cannot prove a host-owned full artifact ref. Do not persist a
+    // one-sided summary that materialization would subsequently drop and GC
+    // could collect. The bounded preview remains useful, explicitly marked
+    // incomplete rather than falsely advertising a durable artifact.
+    const result: PersistedToolResult = recovered.artifact
+      ? { ...recovered, artifact: undefined, complete: false }
+      : recovered
     const completedAt = deps.now()
     const checkpoint = await mutateCheckpoint(deps, runId, (cp) =>
       updateCall(cp, modelStep, ordinal, (c) => ({
@@ -649,6 +753,7 @@ async function recoverInterruptedAttempt(
       attemptId: latest.attemptId,
       isError: result.isError,
       complete: result.complete,
+      artifact: result.artifact,
     })
     return { kind: "resolved", checkpoint }
   }
@@ -703,6 +808,14 @@ async function materializeBatch(
         toolUseId: call.toolUseId,
         content: call.resolution.result.preview,
         isError: call.resolution.result.isError,
+        // The full ref (Task 19) — never the bounded PersistedToolResult
+        // summary — so the durable conversation preserves the exact
+        // pointer (useful plumbing for e.g. Task 20's future history
+        // -artifact work). read_artifact does NOT depend on this: it
+        // resolves a uri via AgentArtifactStore.resolve(runId, artifactId,
+        // caller), a by-id lookup that needs no checkpoint/message content
+        // at all — see artifact-tool-source.ts's top-of-file note.
+        artifact: call.resolution.fullArtifact,
       }
     })
 

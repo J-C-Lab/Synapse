@@ -188,7 +188,7 @@ function makeService(
         {
           runStore,
           upsertTrace: (i) => upsertRunTrace(tracesDir, i),
-          releaseResources: async () => {},
+          releaseResources: async () => ({ artifactRunPinReleased: false }),
           now: () => 5000,
         },
         runId,

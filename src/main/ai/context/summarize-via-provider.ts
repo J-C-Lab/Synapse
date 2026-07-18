@@ -1,25 +1,59 @@
-import type { ChatMessage, ChatProvider } from "../providers/types"
+import type { ChatMessage, ChatProvider, RequestEstimateInput } from "../providers/types"
 import type { SummarizeResult } from "./context-compressor"
-import { emptyUsage } from "../providers/types"
 
-const SUMMARIZE_SYSTEM =
+// One provider call summarizing the older slice into a compact recap. Pure
+// request-building + dispatch — no budget-ledger concerns at all. Durable
+// admission/settlement for this call is owned by durable-agent-driver.ts's
+// runCompressionAttempt (design §"Charge summarizer model requests through
+// the same admission/settlement contract"), mirroring how
+// model-step-runner.ts's callProviderAndStage is a pure provider call kept
+// separate from holdAttempt/settleAttempt's ledger bookkeeping.
+
+export const SUMMARIZE_SYSTEM =
   "Summarize the following conversation excerpt into a compact set of facts, decisions, and open threads; preserve names, IDs, and any state the assistant will need to continue."
 
-/** One provider call summarizing the older slice into a compact recap. */
+export const DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS = 1024
+
+/** The exact request shape a summarizer call is built from — reused for
+ *  both the pre-dispatch upper-bound estimate (`provider.
+ *  estimateRequestUpperBound`) and the real dispatch below, so admission is
+ *  never computed against a smaller payload than what's actually sent
+ *  (mirrors model-step-runner.ts's outgoingRequestContext discipline). */
+export function summarizerRequestEstimateInput(
+  model: string,
+  older: ChatMessage[],
+  maxOutputTokens: number = DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS
+): RequestEstimateInput {
+  return {
+    model,
+    systemText: SUMMARIZE_SYSTEM,
+    messages: summarizerRequestMessages(older),
+    tools: [],
+    maxOutputTokens,
+  }
+}
+
+function summarizerRequestMessages(older: ChatMessage[]): ChatMessage[] {
+  return [{ role: "user", content: [{ type: "text", text: renderMessages(older) }] }]
+}
+
+/** One provider call summarizing the older slice into a compact recap. No
+ *  budget admission/settlement here — the caller is responsible for that
+ *  (see this file's top-of-file note). */
 export async function summarizeViaProvider(
   provider: ChatProvider,
   model: string,
-  older: ChatMessage[]
+  older: ChatMessage[],
+  maxOutputTokens: number = DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS
 ): Promise<SummarizeResult> {
-  const text = renderMessages(older)
   let summary = ""
   let tokens = 0
   for await (const event of provider.stream({
     model,
     system: SUMMARIZE_SYSTEM,
-    messages: [{ role: "user", content: [{ type: "text", text }] }],
+    messages: summarizerRequestMessages(older),
     tools: [],
-    maxTokens: 1024,
+    maxTokens: maxOutputTokens,
   })) {
     if (event.type === "text") summary += event.text
     else {
@@ -48,6 +82,3 @@ function renderMessages(messages: ChatMessage[]): string {
     })
     .join("\n\n")
 }
-
-// Exported for tests that need empty usage shape.
-export { emptyUsage }

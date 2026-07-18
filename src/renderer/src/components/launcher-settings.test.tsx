@@ -158,6 +158,19 @@ function installElectronApi(settings: SynapseUserSettings): TestElectronApi {
     listRecoverableRuns: vi.fn().mockResolvedValue([]),
     resumeRun: vi.fn().mockResolvedValue({ ok: true }),
     abandonRun: vi.fn().mockResolvedValue(undefined),
+    getArtifactStatus: vi
+      .fn()
+      .mockResolvedValue({ status: "unavailable", code: "artifact_missing" }),
+    readArtifactPreview: vi
+      .fn()
+      .mockResolvedValue({ status: "unavailable", code: "artifact_missing" }),
+    collectArtifactGarbage: vi.fn().mockResolvedValue({
+      reconciledReservations: 0,
+      reclaimedReservedBytes: 0,
+      orphanedTempFilesRemoved: 0,
+      deletedArtifacts: 0,
+      deletedBytes: 0,
+    }),
     onRunEvent: vi.fn().mockReturnValue(() => {}),
     listWorkspaceRoots: vi.fn().mockResolvedValue([]),
     getMcpOnboardingAvailability: vi

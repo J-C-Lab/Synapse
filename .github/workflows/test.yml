@@ -21,7 +21,13 @@ concurrency:
 jobs:
   test:
     name: Test Suite
-    runs-on: ubuntu-latest
+    # The product line ships Windows only (see build-electron.yml's own
+    # windows-latest-only build and RELEASE_PROFILE in
+    # scripts/release-admission-gate.mjs) — run the suite on the same
+    # platform so OS-specific code paths (e.g. command-runner.ts's shell
+    # selection) are exercised the way they actually run in production,
+    # not on a Linux runner that never ships.
+    runs-on: windows-latest
 
     permissions:
       contents: read
@@ -63,6 +69,7 @@ jobs:
 
       - name: Generate coverage summary
         if: always()
+        shell: bash
         run: |
           echo "## Test Coverage Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

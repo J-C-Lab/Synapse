@@ -7,6 +7,8 @@ import type {
   RunFinalizationPhase,
 } from "@synapse/agent-protocol"
 import type { ToolAnnotations } from "@synapse/plugin-manifest"
+import type { AgentArtifactRef } from "../artifacts/artifact-types"
+import type { ContextCompactionRecord } from "../context/history-artifact"
 import type { PlanStep } from "../plan/plan-types"
 import type { TokenUsage } from "../providers/types"
 import type { RunTrace } from "../run-trace-store"
@@ -93,6 +95,10 @@ export interface PersistedToolResult {
   preview: string
   artifact?: AgentArtifactRefSummary
   complete: boolean
+  /** Typed durable explanation for an attempted artifact offload that
+   * failed. Kept separate from `isError`: the tool itself may have succeeded
+   * even when only its oversized output could not be captured. */
+  offloadFailureCode?: "artifact-capture-failed"
 }
 
 export type ToolExecutionAttemptState =
@@ -129,6 +135,21 @@ export type ToolCallResolution =
         | "user-marked-failed"
       result: PersistedToolResult
       attemptId?: string
+      /** The full artifact ref (including sha256) backing `result.artifact`,
+       *  present only when this call's output was offloaded to an artifact
+       *  (Task 19). Deliberately NOT part of `PersistedToolResult` — that
+       *  type is frozen to the renderer-safe `AgentArtifactRefSummary`
+       *  stub. This sibling field is the durable, restart-safe source
+       *  materializeBatch reads to populate
+       *  `ChatContentBlock.tool_result.artifact`, preserving the full
+       *  pointer in the durable conversation history (useful plumbing for
+       *  e.g. Task 20's future history-artifact work). Note this is NOT
+       *  what `read_artifact` resolves against — artifact-tool-source.ts
+       *  calls `AgentArtifactStore.resolve(runId, artifactId, caller)`
+       *  instead, a by-id lookup that needs neither this field nor any
+       *  checkpoint/message content at all (see that file's top-of-file
+       *  note). */
+      fullArtifact?: AgentArtifactRef
     }
 
 export interface ToolCallLedgerEntry {
@@ -190,6 +211,31 @@ export interface ModelStepLedger {
   step: number
   attempts: ModelRequestAttempt[]
   acceptedAttemptId?: string
+}
+
+/** Durable admission state for context compression's own summarizer
+ * request (Task 20 follow-up) — charges through the exact same
+ * `ModelBudgetAdmission` state machine (`planned`/`held`/`settled`/
+ * `forfeited`) a real model step uses, reusing the type as-is rather than
+ * inventing a parallel one. Unlike `ModelRequestAttempt`, this is not
+ * indexed by `step`/keyed into an array of attempts: compression isn't a
+ * `nextStep`-numbered model step, so there is only ever one active
+ * compression attempt at a time, tracked as a single mutable slot that each
+ * new attempt overwrites once the previous one reaches a terminal state
+ * (`settled`/`forfeited`). Written durably via `runStore.mutate` BEFORE the
+ * ledger hold is admitted (mirroring `model-step-runner.ts`'s
+ * prepareAttempt-before-holdAttempt ordering), so a crash between the
+ * ledger admit and this record's own "held" confirmation always leaves a
+ * durable trail `durable-agent-driver.ts`'s next call reconciles —
+ * forfeiting a stuck "held" attempt (the ambiguous "a provider dispatch
+ * may or may not have been attempted" case, mirroring
+ * `ensureForfeitedAndPrepareNext`'s conservative treatment of
+ * "dispatched"/"unknown_response") or safely resuming a "planned" attempt
+ * in place (idempotent admit retry, no ambiguity — the ledger was either
+ * never touched or admitted under the exact same operationId either way). */
+export interface CompressionBudgetAttempt {
+  attemptId: string
+  admission: ModelBudgetAdmission
 }
 
 /** Forward-declared here for the same reason as ModelCapabilityProfile — the
@@ -256,6 +302,38 @@ export interface AgentRunCheckpointV1 {
   modelSteps: ModelStepLedger[]
   toolBatches: ToolBatchLedger[]
   activatedSkills: SkillActivationSnapshot[]
+
+  /** The currently-active context-compression record (Task 20), or absent
+   * if compression has never triggered for this run. Deliberately outside
+   * `config`: policy (`config.contextCompression`) is immutable frozen
+   * config, but this is durable, mutable state a later step supersedes in
+   * full. Changes the model request *projection*
+   * (`projectCompactedMessages`) only — `messages` above remains the full,
+   * canonical, ever-growing V2 conversation. */
+  contextCompaction?: ContextCompactionRecord
+
+  /** Accumulates the `artifact.uri` of every PRIOR `contextCompaction` round
+   *  once a later round supersedes it (Task 21). `contextCompaction` always
+   *  supersedes in full — see history-artifact.ts's top-of-file note — so
+   *  once a second compaction round commits, the first round's artifact is
+   *  no longer referenced anywhere in `contextCompaction` itself, even
+   *  though its bytes must stay recoverable for as long as this
+   *  conversation exists. durable-agent-driver.ts appends the outgoing
+   *  round's uri here in the same checkpoint mutation that replaces
+   *  `contextCompaction`; run-finalizer.ts reads this (plus the current
+   *  `contextCompaction.artifact.uri`) into `commitRun`'s
+   *  `additionalArtifactUris` so conversation-store.ts's `artifactUris`
+   *  never drops a still-relevant history artifact just because a later
+   *  compaction round's checkpoint-side pointer moved on. Absent/empty
+   *  whenever compaction has never superseded a prior round. */
+  supersededCompactionArtifactUris?: string[]
+
+  /** The in-flight (or most recently completed) budget admission for
+   * context compression's own summarizer request — see
+   * CompressionBudgetAttempt's docstring. Absent whenever no compression
+   * attempt has ever run, or the most recent one already reached a
+   * terminal `settled`/`forfeited` state. */
+  compressionAttempt?: CompressionBudgetAttempt
 
   /** Monotonic, checkpointed debit ledger for the background trigger's
    * per-run tool allowance.  This is deliberately outside frozen config:
@@ -458,6 +536,89 @@ function isBoolean(value: unknown): value is boolean {
   return typeof value === "boolean"
 }
 
+const ARTIFACT_ID_PATTERN = /^[\w-]{1,128}$/
+const ARTIFACT_SHA256_PATTERN = /^[a-f0-9]{64}$/
+const KNOWN_ARTIFACT_KINDS = new Set([
+  "tool-result",
+  "command-stdout",
+  "command-stderr",
+  "history",
+  "media",
+  "child-result",
+  "skill-instructions",
+  "skill-asset",
+])
+const KNOWN_ARTIFACT_TRUNCATION_REASONS = new Set([
+  "artifact-limit",
+  "run-limit",
+  "global-limit",
+  "disk-reserve",
+  "producer-aborted",
+  "write-error",
+])
+
+/** Checkpoint artifact pointers are authority-bearing durable input: the
+ * renderer projection and finalizer derive URI retention pins from them
+ * before ArtifactStore gets a chance to compare a manifest. Keep this strict
+ * shared validator here rather than accepting arbitrary objects at every
+ * field site. */
+function isValidArtifactSummary(v: unknown): v is AgentArtifactRefSummary {
+  if (!isRecord(v)) return false
+  if (!isString(v.uri) || !isString(v.kind) || !KNOWN_ARTIFACT_KINDS.has(v.kind)) return false
+  if (!isString(v.mediaType) || v.mediaType.length === 0) return false
+  if (!isNonNegativeInteger(v.capturedBytes) || !isBoolean(v.complete)) return false
+  if (!/^artifact:\/\/run\/[\w-]{1,128}\/[\w-]{1,128}$/.test(v.uri)) return false
+  if (v.complete !== (v.truncationReason === undefined)) return false
+  return (
+    v.truncationReason === undefined ||
+    (isString(v.truncationReason) && KNOWN_ARTIFACT_TRUNCATION_REASONS.has(v.truncationReason))
+  )
+}
+
+function isValidArtifactRef(v: unknown): v is AgentArtifactRef {
+  if (!isValidArtifactSummary(v)) return false
+  if (!isRecord(v)) return false
+  if (!isString(v.runId) || !ARTIFACT_ID_PATTERN.test(v.runId)) return false
+  if (!isString(v.artifactId) || !ARTIFACT_ID_PATTERN.test(v.artifactId)) return false
+  if (v.uri !== `artifact://run/${v.runId}/${v.artifactId}`) return false
+  if (!isString(v.sha256) || !ARTIFACT_SHA256_PATTERN.test(v.sha256)) return false
+  if (!isNonNegativeInteger(v.createdAt)) return false
+  if (v.sourceBytes !== undefined) {
+    if (
+      typeof v.sourceBytes !== "number" ||
+      !isNonNegativeInteger(v.sourceBytes) ||
+      v.sourceBytes < v.capturedBytes
+    ) {
+      return false
+    }
+    if (v.complete && v.sourceBytes !== v.capturedBytes) return false
+  }
+  if (v.expiresAt !== undefined) {
+    if (
+      typeof v.expiresAt !== "number" ||
+      !isNonNegativeInteger(v.expiresAt) ||
+      v.expiresAt < (v.createdAt as number)
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
+function artifactSummaryMatchesRef(
+  summary: AgentArtifactRefSummary,
+  ref: AgentArtifactRef
+): boolean {
+  return (
+    summary.uri === ref.uri &&
+    summary.kind === ref.kind &&
+    summary.mediaType === ref.mediaType &&
+    summary.capturedBytes === ref.capturedBytes &&
+    summary.complete === ref.complete &&
+    summary.truncationReason === ref.truncationReason
+  )
+}
+
 function isStringArray(value: unknown): boolean {
   return Array.isArray(value) && value.every((v) => typeof v === "string")
 }
@@ -592,6 +753,12 @@ function hasCrossFieldInvariants(checkpoint: AgentRunCheckpointV1): boolean {
   }
 
   if (checkpoint.conversationCommit && !checkpoint.identity.conversationId) return false
+  if (
+    checkpoint.contextCompaction &&
+    !messages.has(checkpoint.contextCompaction.evictedThroughMessageId)
+  ) {
+    return false
+  }
   const finalization = checkpoint.finalization
   if (finalization) {
     if (
@@ -662,7 +829,28 @@ function hasValidShape(v: Record<string, unknown>): boolean {
     return false
   }
   if (v.finalization !== undefined && !isValidFinalizationLedger(v.finalization)) return false
+  if (v.contextCompaction !== undefined && !isValidContextCompaction(v.contextCompaction)) {
+    return false
+  }
+  if (
+    v.supersededCompactionArtifactUris !== undefined &&
+    !isStringArray(v.supersededCompactionArtifactUris)
+  ) {
+    return false
+  }
+  if (
+    v.compressionAttempt !== undefined &&
+    !isValidCompressionBudgetAttempt(v.compressionAttempt)
+  ) {
+    return false
+  }
   return true
+}
+
+function isValidCompressionBudgetAttempt(v: unknown): boolean {
+  if (!isRecord(v)) return false
+  if (!isString(v.attemptId)) return false
+  return isValidModelBudgetAdmission(v.admission)
 }
 
 function isValidIdentity(v: unknown): boolean {
@@ -829,7 +1017,8 @@ function isValidChatContentBlock(v: unknown): boolean {
     return (
       isString(v.toolUseId) &&
       isString(v.content) &&
-      (v.isError === undefined || isBoolean(v.isError))
+      (v.isError === undefined || isBoolean(v.isError)) &&
+      (v.artifact === undefined || isValidArtifactRef(v.artifact))
     )
   }
   return false
@@ -884,12 +1073,14 @@ function isValidToolApproval(v: unknown): boolean {
   return false
 }
 
-function isValidPersistedToolResult(v: unknown): boolean {
+function isValidPersistedToolResult(v: unknown): v is PersistedToolResult {
   if (!isRecord(v)) return false
   if (!isBoolean(v.isError) || !isString(v.preview) || !isBoolean(v.complete)) return false
-  // artifact is a forward-declared AgentArtifactRefSummary (Checkpoint B) —
-  // presence-only checked here; its own store validates deeper.
-  if (v.artifact !== undefined && !isRecord(v.artifact)) return false
+  if (v.artifact !== undefined && !isValidArtifactSummary(v.artifact)) return false
+  if (v.offloadFailureCode !== undefined && v.offloadFailureCode !== "artifact-capture-failed") {
+    return false
+  }
+  if (v.offloadFailureCode !== undefined && v.complete) return false
   return true
 }
 
@@ -926,11 +1117,27 @@ function isValidToolCallResolution(v: unknown): boolean {
   if (!isRecord(v)) return false
   if (v.status === "unresolved") return true
   if (v.status === "resolved") {
+    const hasSummary =
+      v.result !== undefined && isRecord(v.result) && v.result.artifact !== undefined
+    const hasFull = v.fullArtifact !== undefined
     return (
       isString(v.reason) &&
       KNOWN_RESOLUTION_REASONS.has(v.reason) &&
       isValidPersistedToolResult(v.result) &&
-      isOptionalString(v.attemptId)
+      isOptionalString(v.attemptId) &&
+      // A projection summary without the host-only full ref will be lost by
+      // materialization, leaving the conversation to claim an artifact that
+      // GC is free to delete. Require the pair in both directions instead of
+      // accepting a one-sided pointer from an old/forged checkpoint.
+      hasSummary === hasFull &&
+      (!hasFull ||
+        (isValidArtifactRef(v.fullArtifact) &&
+          v.fullArtifact.kind === "tool-result" &&
+          isValidArtifactSummary((v.result as PersistedToolResult).artifact) &&
+          artifactSummaryMatchesRef(
+            (v.result as PersistedToolResult).artifact!,
+            v.fullArtifact as AgentArtifactRef
+          )))
     )
   }
   return false
@@ -1006,9 +1213,7 @@ function isValidSkillActivation(v: unknown): boolean {
   if (!isString(v.trust) || !knownTrust.has(v.trust)) return false
   if (!isStringArray(v.effectiveToolNames)) return false
   if (!isString(v.packageLeaseId)) return false
-  // instructionsArtifact is a forward-declared AgentArtifactRefSummary
-  // (Checkpoint B) — presence-only checked here.
-  if (!isRecord(v.instructionsArtifact)) return false
+  if (!isValidArtifactSummary(v.instructionsArtifact)) return false
   if (!isFiniteNumber(v.activatedAt)) return false
   return true
 }
@@ -1068,6 +1273,24 @@ function isValidResourceReceipts(v: unknown): boolean {
     isBoolean(v.artifactRunPinReleased) &&
     isStringArray(v.adoptionLeaseIds)
   )
+}
+
+function isValidContextCompaction(v: unknown): boolean {
+  if (!isRecord(v)) return false
+  if (!isString(v.compactionId) || !isString(v.evictedThroughMessageId)) return false
+  if (!isString(v.summaryText)) return false
+  if (!isNonNegativeInteger(v.summarizerTokens)) return false
+  if (!isValidArtifactSummary(v.artifact)) return false
+  if (v.fullArtifact !== undefined && !isValidArtifactRef(v.fullArtifact)) return false
+  if (v.fullArtifact !== undefined && v.fullArtifact.kind !== "history") return false
+  if (
+    v.fullArtifact !== undefined &&
+    !artifactSummaryMatchesRef(v.artifact, v.fullArtifact as AgentArtifactRef)
+  ) {
+    return false
+  }
+  if (!isFiniteNumber(v.createdAt)) return false
+  return true
 }
 
 function isValidFinalizationLedger(v: unknown): boolean {

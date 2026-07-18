@@ -1,6 +1,16 @@
-import type { AgentRunEvent, AgentRunSnapshot, AgentRunSummary } from "@synapse/agent-protocol"
+import type {
+  AgentArtifactRefSummary,
+  AgentRunEvent,
+  AgentRunSnapshot,
+  AgentRunSummary,
+} from "@synapse/agent-protocol"
 import type { ToolPrincipal } from "@synapse/plugin-sdk"
 import type { IpcMain, IpcMainInvokeEvent } from "electron"
+import type {
+  AgentArtifactStore,
+  ArtifactCaller,
+  ArtifactReadErrorCode,
+} from "../ai/artifacts/artifact-types"
 import type { PlanStep, PlanStepStatus } from "../ai/plan/plan-types"
 import type { RunTrace, RunTraceErrorCategory } from "../ai/run-trace-store"
 import type {
@@ -9,6 +19,13 @@ import type {
 } from "../ai/runs/agent-run-recovery-service"
 import type { AgentRunStore } from "../ai/runs/agent-run-store"
 import type { RunEventStore } from "../ai/runs/run-event-store"
+import {
+  decodeForModel,
+  MAX_ARTIFACT_READ_BYTES,
+  parseArtifactUri,
+} from "../ai/artifacts/artifact-tool-source"
+import { ArtifactReadError } from "../ai/artifacts/artifact-types"
+import { toArtifactSummary } from "../ai/artifacts/tool-result-capture"
 import { getRunTrace, listRuns } from "../ai/run-trace-store"
 import {
   ConversationConflictUnresumableError,
@@ -258,6 +275,130 @@ export interface RunsDurableDeps {
    *  completing. Optional so callers that haven't wired origin-aware
    *  continuation yet keep the pre-existing status-flip-only behavior. */
   continueRun?: (runId: string) => void
+  /** Recoverable artifact backend (Checkpoint B). Backs the artifact
+   *  status/preview endpoints and the manual retention-sweep endpoint below
+   *  (Task 21). Omitted in tests that don't exercise artifacts — those three
+   *  channels simply aren't registered. */
+  artifactStore?: AgentArtifactStore
+}
+
+// ---------------------------------------------------------------------------
+// Artifact status / bounded preview (Task 21) — no precedent to extend: this
+// is the first IPC surface that lets the renderer ask about an
+// `artifact://...` uri at all. Mirrors artifact-tool-source.ts's
+// `read_artifact` tool exactly (same uri grammar, same per-call byte cap) so
+// the two access paths (model vs. renderer/human) never disagree about what
+// "a bounded read" means. Every rejection is the same closed
+// `ArtifactReadErrorCode` union `read_artifact` already surfaces — renderer
+// cards branch on `status: "unavailable"` + `code`, never on a thrown IPC
+// error, so a stale/expired/forbidden reference degrades into an explicit,
+// stable UI state instead of an unhandled rejection.
+
+export type ArtifactStatusResult =
+  | { status: "available"; summary: AgentArtifactRefSummary }
+  | { status: "unavailable"; code: ArtifactReadErrorCode }
+
+export interface ArtifactPreviewRange {
+  start?: number
+  end?: number
+}
+
+export type ArtifactPreviewResult =
+  | {
+      status: "available"
+      content: string
+      encoding: "utf-8" | "base64"
+      range: { start: number; end: number }
+      rangeClamped: boolean
+    }
+  | { status: "unavailable"; code: ArtifactReadErrorCode }
+
+/** The IPC layer is host-privileged and single-tenant (one local desktop
+ *  user): every artifact reachable from `getConversation`/`getRunSnapshot`
+ *  is already fully visible to this same renderer. Rather than duplicating
+ *  a second access policy here, the caller context is built to match the
+ *  artifact's own owning run — the same trivial "same run" branch
+ *  `checkArtifactAccess` already grants in artifact-access.ts — so this
+ *  never needs (or gets) any capability `read_artifact`'s real per-run
+ *  caller context doesn't also effectively have from inside that run. */
+function rendererCallerFor(runId: string): ArtifactCaller {
+  return { runId, rootRunId: runId, principal: { kind: "local-user" } }
+}
+
+export function normalizeArtifactUri(input: unknown): string {
+  return requireString(input, "uri")
+}
+
+export function normalizeArtifactPreviewQuery(input: unknown): {
+  uri: string
+  range?: ArtifactPreviewRange
+} {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("payload must be an object")
+  }
+  const v = input as Record<string, unknown>
+  const uri = requireString(v.uri, "uri")
+  if (v.range === undefined) return { uri }
+  if (!v.range || typeof v.range !== "object" || Array.isArray(v.range)) {
+    throw new Error("range must be an object")
+  }
+  const r = v.range as Record<string, unknown>
+  const start = r.start === undefined ? undefined : r.start
+  const end = r.end === undefined ? undefined : r.end
+  if (start !== undefined && (typeof start !== "number" || !Number.isInteger(start) || start < 0)) {
+    throw new Error("range.start must be a non-negative integer")
+  }
+  if (end !== undefined && (typeof end !== "number" || !Number.isInteger(end) || end < 0)) {
+    throw new Error("range.end must be a non-negative integer")
+  }
+  return { uri, range: { start: start as number | undefined, end: end as number | undefined } }
+}
+
+export async function getArtifactStatus(
+  store: AgentArtifactStore,
+  uri: string
+): Promise<ArtifactStatusResult> {
+  const parsed = parseArtifactUri(uri)
+  if (!parsed) return { status: "unavailable", code: "artifact_missing" }
+  try {
+    const ref = await store.resolve(
+      parsed.runId,
+      parsed.artifactId,
+      rendererCallerFor(parsed.runId)
+    )
+    return { status: "available", summary: toArtifactSummary(ref) }
+  } catch (err) {
+    if (err instanceof ArtifactReadError) return { status: "unavailable", code: err.code }
+    throw err
+  }
+}
+
+export async function readArtifactPreview(
+  store: AgentArtifactStore,
+  uri: string,
+  range?: ArtifactPreviewRange
+): Promise<ArtifactPreviewResult> {
+  const parsed = parseArtifactUri(uri)
+  if (!parsed) return { status: "unavailable", code: "artifact_missing" }
+  try {
+    const caller = rendererCallerFor(parsed.runId)
+    const ref = await store.resolve(parsed.runId, parsed.artifactId, caller)
+    const start = range?.start ?? 0
+    const requestedEnd = range?.end ?? Math.min(ref.capturedBytes, start + MAX_ARTIFACT_READ_BYTES)
+    const cappedEnd = Math.min(requestedEnd, ref.capturedBytes, start + MAX_ARTIFACT_READ_BYTES)
+    const bytes = await store.read(ref, { start, end: cappedEnd }, caller)
+    const decoded = decodeForModel(bytes, ref.mediaType)
+    return {
+      status: "available",
+      content: decoded.content,
+      encoding: decoded.encoding,
+      range: { start, end: cappedEnd },
+      rangeClamped: cappedEnd < requestedEnd,
+    }
+  } catch (err) {
+    if (err instanceof ArtifactReadError) return { status: "unavailable", code: err.code }
+    throw err
+  }
 }
 
 export interface RegisterRunsIpcOptions {
@@ -354,4 +495,47 @@ export function registerRunsIpc(
     guard(event)
     await durable.recovery.abandon(requireString(runId, "runId"))
   })
+
+  // Artifact status/preview/retention channels are only registered when an
+  // artifact store is actually wired — omitting them entirely (rather than
+  // registering a handler that always fails) matches every other optional
+  // dependency's pattern in this file (continueRun above).
+  if (durable.artifactStore) {
+    const artifactStore = durable.artifactStore
+
+    ipcMain.handle(
+      "runs:getArtifactStatus",
+      async (event, payload: unknown): Promise<ArtifactStatusResult> => {
+        guard(event)
+        return getArtifactStatus(artifactStore, normalizeArtifactUri(payload))
+      }
+    )
+
+    ipcMain.handle(
+      "runs:readArtifactPreview",
+      async (event, payload: unknown): Promise<ArtifactPreviewResult> => {
+        guard(event)
+        const query = normalizeArtifactPreviewQuery(payload)
+        return readArtifactPreview(artifactStore, query.uri, query.range)
+      }
+    )
+
+    // Manual maintenance trigger (Task 21) — no automatic scheduling exists
+    // anywhere in this codebase for any store (see this task's design-
+    // decision note); a renderer-triggered sweep is the minimum viable way
+    // to expose real retention deletion without inventing new scheduling
+    // infrastructure. A future scheduled-task system can call
+    // artifactStore.collectEligible() directly instead of through IPC.
+    //
+    // This channel is fully wired end-to-end (main + preload + renderer
+    // wrapper) but deliberately has no call site anywhere in the renderer UI
+    // yet — no button, menu item, or scheduler invokes it — mirroring how
+    // Task 20 shipped context compression fully wired but dormant
+    // (`enabled: false`) pending a later task turning it on. Wiring an
+    // automatic/UI trigger is intentionally deferred, not an oversight.
+    ipcMain.handle("runs:collectArtifactGarbage", async (event) => {
+      guard(event)
+      return artifactStore.collectEligible()
+    })
+  }
 }

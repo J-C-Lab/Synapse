@@ -7,6 +7,7 @@ import type {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+import { boundedMcpFetch } from "./bounded-mcp-transport"
 import { attachRootsCapability, notifyRootsChangedIfEnabled } from "./mcp-roots"
 
 // Production MCP client over HTTP. Prefers the modern Streamable HTTP transport
@@ -32,13 +33,15 @@ export const createHttpMcpClient: McpClientFactory = (
   return {
     connect: async () => {
       try {
-        await client.connect(new StreamableHTTPClientTransport(url, { requestInit }))
+        await client.connect(
+          new StreamableHTTPClientTransport(url, { requestInit, fetch: boundedMcpFetch })
+        )
       } catch {
         // Some servers only implement the older HTTP+SSE transport. Retry with
         // a fresh client so no partial Streamable-HTTP state leaks across.
         client = new Client(info, { capabilities: {} })
         attachRootsCapability(client, config, getExecutionWorkspaces)
-        await client.connect(new SSEClientTransport(url, { requestInit }))
+        await client.connect(new SSEClientTransport(url, { requestInit, fetch: boundedMcpFetch }))
       }
     },
     listTools: async () => {

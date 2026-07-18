@@ -6,6 +6,10 @@ import { createHash } from "node:crypto"
 import { logger } from "../logging"
 import { projectModelVisibleTool, warnOnce } from "./guardrails/tool-metadata"
 import { frozenProvenance } from "./runs/authority-snapshot"
+import {
+  boundNonStreamingToolResult,
+  NON_STREAMING_INGRESS_CAP_CHARS,
+} from "./tool-result-boundary"
 import { noneRecoveryAdapter } from "./tools/invocation-recovery"
 
 // Bridges the plugin tool surface to what a model can call. Plugin fqNames look
@@ -14,6 +18,30 @@ import { noneRecoveryAdapter } from "./tools/invocation-recovery"
 // keep sanitized readable names; third-party tools receive opaque aliases. The
 // reverse map routes all model calls back to the real fqName without putting an
 // alias table in plugin manifests.
+
+/**
+ * Hard emergency ceiling on a raw ToolResult's rendered text, applied right
+ * after a host/plugin/MCP adapter returns (Task 19's non-streaming-adapter
+ * rule). Unlike execution-tool-host.ts's command capture (Task 18), which
+ * streams stdout/stderr through a bounded tee as bytes arrive, every other
+ * tool adapter today hands back its ENTIRE result already resident in one JS
+ * string/object — there is no cooperative point to bound it before it
+ * exists in memory. This is the one choke point every such adapter passes
+ * through (AiToolRegistry.invoke, right after `this.host.invokeTool()`
+ * returns), so it is where an absurdly oversized result (a buggy/malicious
+ * plugin, a runaway MCP server) gets capped before it can reach
+ * JSON.stringify/canonicalHash/checkpoint writes downstream.
+ *
+ * Deliberately far above both the ~24_000-char model preview budget
+ * (context/tool-result-budget.ts) and tool-result-capture.ts's own default
+ * ~24_000-char offload-trigger threshold, so this cap virtually never binds
+ * for a legitimate tool result — those get handled correctly (and, when
+ * oversized, offloaded to an artifact) by tool-result-capture.ts downstream.
+ * It exists purely as the last-resort backstop for the pathological case
+ * that capture path was never designed to buffer safely in the first place.
+ */
+export const NON_STREAMING_EMERGENCY_CAP_CHARS = NON_STREAMING_INGRESS_CAP_CHARS
+export { MAX_NON_STREAMING_CONTENT_BLOCKS } from "./tool-result-boundary"
 
 /** The slice of PluginHost the AI tool registry depends on. */
 export interface ToolHostPort {
@@ -77,7 +105,8 @@ export class AiToolRegistry {
     })
     if (!projected.ok) throw new Error(`Tool ${safeName} is not model-visible: ${projected.reason}`)
 
-    return this.host.invokeTool(descriptor.fqName, input, options)
+    const result = await this.host.invokeTool(descriptor.fqName, input, options)
+    return applyNonStreamingEmergencyCap(result)
   }
 
   private refresh(): { schema: ProviderToolSchema; descriptor: RegisteredToolDescriptor }[] {
@@ -125,6 +154,70 @@ export function renderToolResultText(result: ToolResult): string {
     else if (block.type === "image") parts.push(`[image: ${block.path}]`)
   }
   return parts.join("\n")
+}
+
+/**
+ * Sentinel attached to a capped ToolResult's `structured` field (never to
+ * its `content`, which stays human-readable text) so a downstream consumer
+ * can detect "this text was already lossily truncated before anything else
+ * ever saw it" WITHOUT string-sniffing the human-readable notice embedded
+ * in `content`. tool-batch-runner.ts's executionPhase checks this before
+ * trusting whatever `complete` a later artifact capture of the (already
+ * -truncated) text reports — see isNonStreamingEmergencyCapMarker's doc
+ * comment for why that distinction matters.
+ *
+ * Safe to overwrite unconditionally: the branch that sets this always also
+ * replaces `content` wholesale (never spreads the original result), so
+ * there is never a legitimate tool-declared `structured` payload to
+ * clobber — this cap only ever fires for a result the host has already
+ * decided it cannot trust as-is.
+ */
+export interface NonStreamingEmergencyCapMarker {
+  synapseNonStreamingCapped: true
+  omittedChars: number
+}
+
+/**
+ * True when `value` is the marker `applyNonStreamingEmergencyCap` attaches
+ * to a capped ToolResult's `structured` field.
+ *
+ * Why this matters: tool-result-capture.ts's `captured.complete` only ever
+ * asks "did the artifact store capture every byte of the text it was
+ * handed" — it has no way to know that the text it was handed was itself
+ * already a lossy truncation of the tool's REAL output (the emergency cap
+ * fires before capture ever sees the original). Without this check, a
+ * capped-then-successfully-offloaded result would end up persisted as
+ * `complete: true`, silently implying the full tool output survived when
+ * real data was permanently discarded before capture ever ran.
+ */
+export function isNonStreamingEmergencyCapMarker(
+  value: unknown
+): value is NonStreamingEmergencyCapMarker {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>).synapseNonStreamingCapped === true &&
+    typeof (value as Record<string, unknown>).omittedChars === "number"
+  )
+}
+
+/**
+ * Applies the {@link NON_STREAMING_EMERGENCY_CAP_CHARS} ceiling to a raw
+ * ToolResult's rendered text. Below the cap, `result` is returned completely
+ * unchanged (same object) — this only ever rewrites content in the rare
+ * pathological case. When it does trigger, the result is collapsed to a
+ * single truncated text block, marked `isError: true` (a hard, host-level
+ * size limit is a policy violation the model must be told about explicitly
+ * — matching execution-tool-host.ts's own `output_limit_exceeded` precedent
+ * for run_command), and tagged with {@link NonStreamingEmergencyCapMarker}
+ * via `structured` so no downstream consumer can mistake a later,
+ * successful capture of this already-truncated text for a complete result.
+ */
+export function applyNonStreamingEmergencyCap(
+  result: ToolResult,
+  maxChars: number = NON_STREAMING_EMERGENCY_CAP_CHARS
+): ToolResult {
+  return boundNonStreamingToolResult(result, maxChars)
 }
 
 export function sanitizeToolName(fqName: string): string {

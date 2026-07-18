@@ -12,6 +12,7 @@ import type {
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
 import vm from "node:vm"
+import { boundNonStreamingToolResult } from "../ai/tool-result-boundary"
 import { logger } from "../logging"
 import { CapabilityDenied } from "./capability-gate"
 import { PermissionDenied } from "./permissions"
@@ -105,12 +106,161 @@ const eventHookScript = `
 
 const toolRequestKey = "__synapseToolRequest"
 const toolContextKey = "__synapseToolContext"
+const toolResultKey = "__synapseToolResult"
 const toolHookScript = `
 (() => {
   const request = globalThis.${toolRequestKey}
   const ctx = globalThis.${toolContextKey}
   const handler = module.exports.tools[request.toolName]
   return handler(request.input, ctx)
+})()
+`
+
+// A plugin can return an accessor or Proxy as its ToolResult. Inspecting that
+// object from the host would execute plugin code after the VM timeout has
+// ended. This second, synchronous VM script clones descriptor-backed data
+// before the object crosses the boundary, so proxy traps remain subject to
+// the same timeout as the hook itself.
+const toolResultSanitizerScript = `
+(() => {
+  const value = globalThis.${toolResultKey}
+  const maxNodes = 10000
+  const maxBlocks = 1024
+  let nodes = 0
+  const seen = new WeakSet()
+  const fail = (message) => { throw new Error(message) }
+  const ownConstructorName = (prototype) => {
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, "constructor")
+    return descriptor && "value" in descriptor && typeof descriptor.value === "function"
+      ? descriptor.value.name
+      : undefined
+  }
+  const plain = (item) => {
+    if (!item || typeof item !== "object") return false
+    const prototype = Object.getPrototypeOf(item)
+    if (Array.isArray(item)) {
+      const parent = prototype && Object.getPrototypeOf(prototype)
+      if (
+        !prototype ||
+        ownConstructorName(prototype) !== "Array" ||
+        !parent ||
+        ownConstructorName(parent) !== "Object" ||
+        Object.getPrototypeOf(parent) !== null
+      ) return false
+    } else if (
+      prototype !== null &&
+      (ownConstructorName(prototype) !== "Object" || Object.getPrototypeOf(prototype) !== null)
+    ) return false
+    for (let current = item; current; current = Object.getPrototypeOf(current)) {
+      if (Object.getOwnPropertyDescriptor(current, "toJSON")) return false
+    }
+    return true
+  }
+  const data = (item, key, required = true) => {
+    if (!plain(item)) fail("Plugin tool result contains a non-plain object")
+    const descriptor = Object.getOwnPropertyDescriptor(item, key)
+    if (!descriptor) {
+      if (required) fail("Plugin tool result is missing " + key)
+      return undefined
+    }
+    if (!("value" in descriptor)) fail("Plugin tool result property " + key + " must be data")
+    return descriptor.value
+  }
+  const cloneJson = (item, depth = 0) => {
+    nodes += 1
+    if (depth > 32 || nodes > maxNodes) fail("Plugin tool result JSON is too complex")
+    if (item === undefined || item === null || typeof item === "boolean" || typeof item === "string") return item
+    if (typeof item === "number") {
+      if (!Number.isFinite(item)) fail("Plugin tool result JSON contains a non-finite number")
+      return item
+    }
+    if (typeof item !== "object" || !plain(item) || seen.has(item)) {
+      fail("Plugin tool result JSON must be plain, acyclic data")
+    }
+    seen.add(item)
+    if (Array.isArray(item)) {
+      const length = data(item, "length")
+      if (!Number.isSafeInteger(length) || length < 0 || length > maxNodes) {
+        fail("Plugin tool result JSON array is too large")
+      }
+      const output = []
+      for (let index = 0; index < length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(item, String(index))
+        if (!descriptor) output.push(null)
+        else {
+          if (!("value" in descriptor)) fail("Plugin tool result JSON contains an accessor")
+          output.push(cloneJson(descriptor.value, depth + 1))
+        }
+      }
+      return output
+    }
+    const output = {}
+    let properties = 0
+    for (const key in item) {
+      properties += 1
+      if (properties > maxNodes) fail("Plugin tool result JSON object is too large")
+      const descriptor = Object.getOwnPropertyDescriptor(item, key)
+      if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) {
+        fail("Plugin tool result JSON contains an accessor")
+      }
+      Object.defineProperty(output, key, {
+        value: cloneJson(descriptor.value, depth + 1),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      })
+    }
+    return output
+  }
+  const cloneBlock = (block) => {
+    const type = data(block, "type")
+    if (typeof type !== "string") fail("Plugin tool result content blocks must have a string type")
+    if (type === "text") {
+      const text = data(block, "text")
+      if (typeof text !== "string") fail("Plugin text tool result must have string text")
+      return { type, text }
+    }
+    if (type === "json") return { type, json: cloneJson(data(block, "json")) }
+    if (type === "image") {
+      const path = data(block, "path")
+      const mimeType = data(block, "mimeType")
+      if (typeof path !== "string" || typeof mimeType !== "string") {
+        fail("Plugin image tool result must have string path and mimeType")
+      }
+      return { type, path, mimeType }
+    }
+    fail("Plugin tool result content block type is unsupported")
+  }
+  if (!plain(value)) fail("Plugin tool must return a plain ToolResult object")
+  const content = data(value, "content")
+  if (!Array.isArray(content) || !plain(content)) {
+    fail("Plugin tool result must include a plain content array")
+  }
+  const length = data(content, "length")
+  if (!Number.isSafeInteger(length) || length < 0 || length > maxBlocks) {
+    fail("Plugin tool result has too many content blocks")
+  }
+  const output = { content: [] }
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(content, String(index))
+    if (!descriptor || !("value" in descriptor)) {
+      fail("Plugin tool result content contains an accessor")
+    }
+    output.content.push(cloneBlock(descriptor.value))
+  }
+  const isError = Object.getOwnPropertyDescriptor(value, "isError")
+  if (isError) {
+    if (!("value" in isError) || typeof isError.value !== "boolean") {
+      fail("Plugin tool result isError must be boolean data")
+    }
+    output.isError = isError.value
+  }
+  const structured = Object.getOwnPropertyDescriptor(value, "structured")
+  if (structured) {
+    if (!("value" in structured)) fail("Plugin tool result structured must be data")
+    output.structured = cloneJson(structured.value)
+  }
+  return output
 })()
 `
 
@@ -128,6 +278,10 @@ const compiledEventHookScript = new vm.Script(eventHookScript, {
 
 const compiledToolHookScript = new vm.Script(toolHookScript, {
   filename: "synapse-plugin:tool-hook",
+})
+
+const compiledToolResultSanitizerScript = new vm.Script(toolResultSanitizerScript, {
+  filename: "synapse-plugin:tool-result-boundary",
 })
 
 // P0 isolation is a lightweight compatibility boundary. node:vm lets the host
@@ -286,6 +440,7 @@ export class PluginSandbox {
       controller.signal,
       linkAbortSignals(plugin.capabilityAbort.signal, request.options.signal)
     )
+    const deadlineAt = Date.now() + this.toolInvokeTimeoutMs
     const timer = setTimeout(() => {
       controller.abort(new PluginSandboxError(`Plugin tool exceeded ${this.toolInvokeTimeoutMs}ms`))
     }, this.toolInvokeTimeoutMs)
@@ -299,7 +454,7 @@ export class PluginSandbox {
     })
 
     try {
-      const result = await Promise.race([
+      const rawResult = await Promise.race([
         Promise.resolve(
           this.runToolHookInContext(
             plugin,
@@ -309,7 +464,17 @@ export class PluginSandbox {
         ),
         rejectWhenAborted(signal),
       ])
-      return normalizeToolResult(result)
+      // Clone in the plugin VM first so proxy/accessor traps stay within its
+      // synchronous timeout. The shared host boundary then takes its own
+      // descriptor-safe clone and applies the ingress cap before anything can
+      // reach registry/model/checkpoint code.
+      const validationTimeoutMs = deadlineAt - Date.now()
+      if (validationTimeoutMs <= 0) {
+        throw new PluginSandboxError(`Plugin tool exceeded ${this.toolInvokeTimeoutMs}ms`)
+      }
+      return boundNonStreamingToolResult(
+        this.cloneToolResultInContext(plugin, rawResult, validationTimeoutMs)
+      )
     } catch (err) {
       // Infrastructure (timeout/cancel/bad-shape) and policy (permission)
       // errors propagate; a fault inside the handler is surfaced to the model
@@ -518,6 +683,29 @@ export class PluginSandbox {
       delete sandboxGlobals[toolContextKey]
     }
   }
+
+  private cloneToolResultInContext(
+    plugin: LoadedPlugin,
+    result: unknown,
+    timeoutMs: number
+  ): ToolResult {
+    const sandboxGlobals = plugin.sandboxVm as Record<string, unknown>
+    sandboxGlobals[toolResultKey] = result
+    try {
+      return compiledToolResultSanitizerScript.runInContext(plugin.sandboxVm, {
+        timeout: timeoutMs,
+      }) as ToolResult
+    } catch (err) {
+      if (isVmTimeout(err)) {
+        throw new PluginSandboxError(`Plugin tool result validation exceeded ${timeoutMs}ms`)
+      }
+      throw new PluginSandboxError(
+        `Plugin tool result rejected at sandbox boundary: ${errorMessage(err)}`
+      )
+    } finally {
+      delete sandboxGlobals[toolResultKey]
+    }
+  }
 }
 
 function createSandboxGlobals(
@@ -638,26 +826,6 @@ function errorMessage(err: unknown): string {
     return (err as { message: string }).message
   }
   return String(err)
-}
-
-function normalizeToolResult(value: unknown): ToolResult {
-  if (!value || typeof value !== "object") {
-    throw new PluginSandboxError("Plugin tool must return a ToolResult object")
-  }
-  const content = (value as { content?: unknown }).content
-  if (!Array.isArray(content)) {
-    throw new PluginSandboxError("Plugin tool result must include a content array")
-  }
-  for (const block of content) {
-    if (
-      !block ||
-      typeof block !== "object" ||
-      typeof (block as { type?: unknown }).type !== "string"
-    ) {
-      throw new PluginSandboxError("Plugin tool result content blocks must have a string type")
-    }
-  }
-  return value as ToolResult
 }
 
 function normalizeActionPayload(payload: unknown): { actionId: string; payload: unknown } {

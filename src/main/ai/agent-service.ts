@@ -2,6 +2,7 @@ import type { AgentRunEvent } from "@synapse/agent-protocol"
 import type { AiSettingsStore, ToolResilienceSettings } from "./ai-settings-store"
 import type { ApprovalDecision } from "./approval-gate"
 import type { ApprovalStore } from "./approval-store"
+import type { AgentArtifactStore } from "./artifacts/artifact-types"
 import type { RootBudgetLedgerStore } from "./budget/root-budget-ledger"
 import type {
   ConversationStore,
@@ -16,7 +17,13 @@ import type { McpServerConfig, McpServerConfigStore } from "./mcp-server-config-
 import type { PlanStep } from "./plan/plan-types"
 import type { RunPlanRegistry } from "./plan/run-plan-registry"
 import type { ProviderDescriptor } from "./providers/catalog"
-import type { ChatProvider, ProviderToolSchema, TokenUsage } from "./providers/types"
+import type {
+  ChatContentBlock,
+  ChatMessage,
+  ChatProvider,
+  ProviderToolSchema,
+  TokenUsage,
+} from "./providers/types"
 import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "./run-trace-store"
 import type { AgentRunStore } from "./runs/agent-run-store"
 import type { AgentRunCheckpointV1 } from "./runs/checkpoint-schema"
@@ -30,6 +37,8 @@ import type { Workspace, WorkspaceStore } from "./workspace/workspace-store"
 import { randomUUID } from "node:crypto"
 import { logger } from "../logging"
 import { DEFAULT_TOOL_RESILIENCE } from "./ai-settings-store"
+import { releaseArtifactRunResources } from "./artifacts/artifact-retention"
+import { toArtifactSummary } from "./artifacts/tool-result-capture"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./providers/catalog"
 import { resolveModelCapabilityProfile } from "./providers/model-capability-profile"
@@ -78,6 +87,11 @@ export interface AgentServiceOptions {
   runStore: AgentRunStore
   /** Durable per-root-run token budget ledger. */
   budgetStore: RootBudgetLedgerStore
+  /** Recoverable artifact backend (Checkpoint B). Omitted in tests that
+   *  don't exercise artifact retention — a terminal finalization's
+   *  `releaseArtifactRunPin: true` plan simply becomes a safe no-op
+   *  (`resourceReceipts.artifactRunPinReleased: false`) without one wired. */
+  artifactStore?: AgentArtifactStore
   /** Durable append-only event journal — renderer-facing run projections
    *  (Task 15) read from this. */
   eventStore: RunEventStore
@@ -402,8 +416,12 @@ export class AgentService {
   ): Promise<(StoredConversation & { plan?: PlanStep[] }) | undefined> {
     const stored = await this.options.conversations.get(id)
     if (!stored) return undefined
+    const sanitized: StoredConversation = {
+      ...stored,
+      messages: sanitizeMessagesForRenderer(stored.messages),
+    }
     const plan = this.options.getLatestPlan?.(id)
-    return plan && plan.length > 0 ? { ...stored, plan } : stored
+    return plan && plan.length > 0 ? { ...sanitized, plan } : sanitized
   }
 
   listWorkspaces(options?: { includeArchived?: boolean }): Promise<Workspace[]> {
@@ -754,12 +772,21 @@ export class AgentService {
             },
             now: this.now,
             maxSteps: checkpoint.config.maxSteps,
+            artifactStore: this.options.artifactStore,
             onTextDelta: (delta) => textBatcher.push(delta),
             eventEmitter,
           },
           toolBatch: {
             tools: this.options.tools,
-            caller: { kind: "agent", conversationId, runId },
+            caller: {
+              kind: "agent",
+              conversationId,
+              runId,
+              workspaceId: checkpoint.identity.workspaceId,
+            },
+            artifactCapture: this.options.artifactStore
+              ? { store: this.options.artifactStore }
+              : undefined,
             resolver: (policyInput) =>
               this.resolveDurableApprovalPolicy(conversationId, policyInput),
             requestApproval: (approvalId, policyInput) =>
@@ -792,7 +819,11 @@ export class AgentService {
           buildResourceReleasePlan: () => ({
             budgetOperationIds: [],
             skillPackageLeaseIds: [],
-            releaseArtifactRunPin: false,
+            // buildResourceReleasePlan is only ever invoked from
+            // finalizeTerminal (interactive-run-driver.ts) — every call site
+            // is a genuine terminal outcome, never a non-terminal pause, so
+            // this run's artifact pin is always safe to release here.
+            releaseArtifactRunPin: true,
             adoptionLeaseIds: [],
           }),
           quarantineEstimatorProfile: async (failedCheckpoint) => {
@@ -839,7 +870,8 @@ export class AgentService {
       runStore: this.options.runStore,
       conversation: this.options.conversations,
       upsertTrace: this.options.upsertTrace,
-      releaseResources: async () => {},
+      releaseResources: (plan, context) =>
+        releaseArtifactRunResources(this.options.artifactStore, plan, context),
       now: this.now,
       eventEmitter,
     }
@@ -985,6 +1017,36 @@ export class AgentService {
       }
     }
   }
+}
+
+/** Strips a `tool_result` block's full host-only `artifact` ref (sha256,
+ *  runId, artifactId, createdAt — see AgentArtifactRef) down to the bounded
+ *  `AgentArtifactRefSummary` shape before a conversation ever crosses the
+ *  IPC boundary to the renderer (Task 21). `getConversation` is the one
+ *  place a durable `StoredConversation` (host-internal `ChatMessage[]`,
+ *  Task 19's full ref included) becomes renderer-facing; every other field
+ *  is already renderer-safe as-is. */
+function sanitizeMessagesForRenderer(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    content: message.content.map(sanitizeContentBlockForRenderer),
+  }))
+}
+
+function sanitizeContentBlockForRenderer(block: ChatContentBlock): ChatContentBlock {
+  if (block.type !== "tool_result" || !block.artifact) return block
+  // `ChatContentBlock` is the host-internal IR (artifact: full
+  // AgentArtifactRef, including sha256/runId/artifactId/createdAt); the
+  // bounded AgentArtifactRefSummary this produces is intentionally a
+  // narrower runtime shape — the whole point of sanitizing before this
+  // crosses the IPC boundary to the renderer. There is no distinct
+  // "renderer-safe StoredConversation" type in this codebase to return
+  // instead (unlike RendererRunTrace in ipc/runs.ts, which does have one)
+  // — introducing one is a reasonable follow-up a reviewer may want; this
+  // cast documents the deliberate, narrower runtime shape rather than
+  // hiding it behind a same-shaped-looking type.
+  const sanitized = { ...block, artifact: toArtifactSummary(block.artifact) }
+  return sanitized as unknown as ChatContentBlock
 }
 
 interface TextDeltaBatcher {

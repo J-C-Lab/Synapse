@@ -278,7 +278,7 @@ async function main(): Promise<void> {
           {
             runStore,
             upsertTrace: () => ({ revision: 1 }),
-            releaseResources: async () => {},
+            releaseResources: async () => ({ artifactRunPinReleased: false }),
             now: Date.now,
             fault: (point) => crashIfMatches(config, "finalizer", point),
           },

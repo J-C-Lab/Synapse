@@ -1,8 +1,9 @@
 import type { AgentRunSnapshot } from "@synapse/agent-protocol"
-import type { DisplayMessage } from "./chat-message-model"
+import type { DisplayMessage, ToolCard } from "./chat-message-model"
 import type { AiChatEvent, AiChatMessage } from "@/lib/electron"
 import { describe, expect, it } from "vitest"
 import {
+  applyArtifactAvailability,
   applyEvent,
   flushTextIntoBlocks,
   hydrateMessages,
@@ -91,6 +92,112 @@ describe("hydrateMessages", () => {
     const messages = hydrateMessages(stored)
     expect(messages).toHaveLength(1)
     expect(messages[0]?.role).toBe("assistant")
+  })
+
+  it("carries the bounded artifact summary from a tool_result onto its tool card", () => {
+    const stored: AiChatMessage[] = [
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "act", input: {} }] },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            toolUseId: "t1",
+            content: "preview...",
+            artifact: {
+              uri: "artifact://run/run-1/a1",
+              kind: "tool-result",
+              mediaType: "text/plain",
+              capturedBytes: 5000,
+              complete: false,
+              truncationReason: "artifact-limit",
+            },
+          },
+        ],
+      },
+    ]
+    const card = hydrateMessages(stored)[0]?.blocks[0] as ToolCard
+    expect(card.artifact).toEqual({
+      uri: "artifact://run/run-1/a1",
+      kind: "tool-result",
+      mediaType: "text/plain",
+      capturedBytes: 5000,
+      complete: false,
+      truncationReason: "artifact-limit",
+    })
+    expect(card.artifactAvailability).toBeUndefined()
+  })
+
+  it("leaves artifact undefined for a tool_result with no offloaded artifact", () => {
+    const stored: AiChatMessage[] = [
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "act", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", toolUseId: "t1", content: "ok" }] },
+    ]
+    const card = hydrateMessages(stored)[0]?.blocks[0] as ToolCard
+    expect(card.artifact).toBeUndefined()
+  })
+})
+
+describe("applyArtifactAvailability", () => {
+  function withArtifactCard(uri: string): DisplayMessage[] {
+    return [
+      {
+        id: "a1",
+        role: "assistant",
+        blocks: [
+          {
+            kind: "tool",
+            id: "t1",
+            name: "act",
+            input: {},
+            status: "success",
+            artifact: {
+              uri,
+              kind: "tool-result",
+              mediaType: "text/plain",
+              capturedBytes: 10,
+              complete: true,
+            },
+          },
+        ],
+      },
+    ]
+  }
+
+  it("sets availability on every card whose artifact.uri matches", () => {
+    const messages = withArtifactCard("artifact://run/run-1/a1")
+    const next = applyArtifactAvailability(messages, "artifact://run/run-1/a1", "available")
+    expect((next[0]?.blocks[0] as ToolCard).artifactAvailability).toBe("available")
+  })
+
+  it("leaves a card with a different artifact uri untouched", () => {
+    const messages = withArtifactCard("artifact://run/run-1/a1")
+    const next = applyArtifactAvailability(
+      messages,
+      "artifact://run/run-1/other",
+      "artifact_expired"
+    )
+    expect((next[0]?.blocks[0] as ToolCard).artifactAvailability).toBeUndefined()
+  })
+
+  it("leaves a text-only card untouched", () => {
+    const messages: DisplayMessage[] = [
+      { id: "a1", role: "assistant", blocks: [{ kind: "text", text: "hi" }] },
+    ]
+    expect(applyArtifactAvailability(messages, "artifact://run/run-1/a1", "available")).toEqual(
+      messages
+    )
+  })
+
+  it("is idempotent-safe to apply a terminal status a second time (never regresses to checking)", () => {
+    const messages = withArtifactCard("artifact://run/run-1/a1")
+    const first = applyArtifactAvailability(
+      messages,
+      "artifact://run/run-1/a1",
+      "artifact_forbidden"
+    )
+    const second = applyArtifactAvailability(first, "artifact://run/run-1/a1", "artifact_forbidden")
+    expect((second[0]?.blocks[0] as ToolCard).artifactAvailability).toBe("artifact_forbidden")
   })
 })
 
