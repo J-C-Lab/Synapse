@@ -70,14 +70,34 @@ separate them first.
 | --- | --- | --- | --- |
 | A | current runtime | durable run/recovery core | yes |
 | B | A | bounded artifacts and recovery-safe offload | yes |
-| C | A-B | fixed lifecycle kernel and full model profiles | yes |
-| D | A-C | local progressive skills | yes |
-| E | A-D | durable asynchronous child tasks | yes |
+| C | A-B | model profile limits frozen at run creation | yes |
+| D | C | local progressive skills (`SKILL.md` only) | yes |
+| E | C | conversation-owned durable async child tasks | yes |
 | F | later specs | marketplace skills and strong isolation | not in this plan |
 
 Within a checkpoint, tasks are ordered by dependency. New stores and types may
 land dormant; do not switch a production caller until its migration task and
 focused recovery tests pass.
+
+Checkpoints A and B shipped as PRs #58 and #59. C–E were replanned on
+2026-07-18 from 14 tasks to 5 — see each checkpoint's scope-revision note below
+and the design spec's "Scope revision" section for what was deferred and why.
+
+D and E both depend only on C, so they may run in parallel:
+
+```text
+C (Task 23)
+├── D (Task 24 → 25)
+└── E (Task 26 → 27)
+```
+
+Parallel execution is not conflict-free. D and E both add host tools
+(`tool-registry.ts`), both persist new checkpoint fields
+(`checkpoint-schema.ts`), both extend run projections
+(`run-projection.ts`), and both need composition-root wiring (`index.ts`). If
+they run on separate branches, land E's `checkpoint-schema.ts` and
+`tool-registry.ts` additions first and rebase D onto them; otherwise run D then
+E sequentially, which is simpler.
 
 Recommended PR slices keep review size bounded without weakening checkpoint
 gates:
@@ -89,12 +109,10 @@ gates:
 | A3 | 11-16 | finalization, recovery, caller migration, renderer and crash gate |
 | B1 | 17-19 | artifact store, command capture and tool offload |
 | B2 | 20-22 | history, retention/UI and artifact gate |
-| C | 23-25 | lifecycle/profile refactor and invariant gate |
-| D1 | 26-28 | immutable packages, catalog and activation leases |
-| D2 | 29-30 | skill UI/evals and restart gate |
-| E1 | 31-34 | task store, scheduler, budget, tools and ownership |
-| E2 | 35-36 | task projections/UI and concurrency gate |
-| Release | 37-38 | compatibility cleanup and release evidence |
+| C | 23 | profile resolution, frozen limits, illegal-combination rejection |
+| D | 24-25 | immutable packages, catalog, activation leases and frozen instructions |
+| E | 26-27 | task store, scheduler, budget, four tools and restart proof |
+| Release | 28-29 | compatibility cleanup and release evidence |
 
 The second design review's blocking findings map to executable work as follows:
 
@@ -103,10 +121,16 @@ The second design review's blocking findings map to executable work as follows:
 | comparable authority and exact workspace context | 2-3, 12 | 16 |
 | pre-dispatch provider budget admission | 6-7, 9 | 16 |
 | cross-store terminal finalization | 11-12 | 16 |
-| expiring/fenced child adoption | 34-35 | 36 |
 | explicit replay recovery API | 8, 10 | 16 |
-| activation-held skill package bytes | 28 | 30 |
 | conversation-pinned artifact references | 21 | 22 |
+| activation-held skill package bytes | 25 | 25 |
+| child budget non-oversubscription | 26 | 27 |
+
+The reviewed "expiring/fenced child adoption" contract no longer maps to work
+in this plan: the 2026-07-18 revision made a task belong to its conversation
+from creation, so there is no ownership handoff to fence. The underlying
+concern — a task must never be actionable by two owners at once — is satisfied
+by construction and covered by Task 27's cross-conversation denial test.
 
 ---
 
@@ -973,198 +997,137 @@ Commit: `test(agent): prove checkpoint B artifact bounds`
 
 ---
 
-## Checkpoint C — lifecycle kernel and model profiles
 
-### Task 23: Extract the fixed typed lifecycle kernel
+## Checkpoint C — frozen model profile limits
 
-**Files:**
+> **Scope revision (2026-07-18).** Checkpoints C–E were replanned from 14 tasks
+> to 5 after Checkpoints A and B shipped. The original Task 23 ("extract the
+> fixed typed lifecycle kernel") is **dropped**: `durable-agent-driver.ts`
+> already executes a fixed, typed, order-checked sequence that the A/B crash
+> matrix proves, so extracting a formal ten-stage abstraction would add no
+> product capability and no security guarantee. Much of the original Task 24 is
+> already shipped — `ModelCapabilityProfile`, provider defaults, the
+> conservative unknown fallback, `isEligibleForFiniteBudget`, and the frozen
+> `FrozenRunConfigV1.contextCompression` block all landed during A/B. What
+> remains is the wiring below. See the design spec's "Scope revision" section
+> for the full deferral list.
 
-- Create: `src/main/ai/lifecycle/lifecycle-types.ts`
-- Create: `src/main/ai/lifecycle/lifecycle-kernel.ts`
-- Create: `src/main/ai/lifecycle/lifecycle-kernel.test.ts`
-- Create: `src/main/ai/lifecycle/mandatory-stages.ts`
-- Create: `src/main/ai/lifecycle/mandatory-stages.test.ts`
-- Modify: `src/main/ai/runs/durable-agent-driver.ts`
-- Modify: `src/main/ai/runs/durable-agent-driver.test.ts`
-
-- [ ] Define typed phase contexts/patches for before run/model/approval/tool,
-  after model/approval/tool/run, with explicit criticality.
-- [ ] Install the ten fixed stage groups from the spec in one host-owned
-  assembly function. Security and durability stages are mandatory and
-  order-checked.
-- [ ] Prevent context/profile/skill stages from mutating principal, workspace,
-  approvals, or authority. Patches are validated values, not shared-object
-  mutation.
-- [ ] Move already-tested durable operations behind stages without changing
-  checkpoint/event ordering. Keep fault point names stable so the A/B crash
-  suites continue to apply.
-- [ ] Do not export a generic plugin middleware registration API.
-- [ ] Test omission, duplication, reordering, illegal field mutation, failure
-  propagation, and identical request/tool trajectories before and after the
-  refactor.
-
-Run:
-
-```powershell
-pnpm test src/main/ai/lifecycle/lifecycle-kernel.test.ts src/main/ai/lifecycle/mandatory-stages.test.ts
-pnpm test src/main/ai/runs/durable-agent-driver.test.ts
-pnpm typecheck
-```
-
-Commit: `refactor(agent): assemble fixed typed lifecycle stages`
-
-### Task 24: Complete model profile resolution and profile-driven context policy
+### Task 23: Resolve and freeze model profile limits at run creation
 
 **Files:**
 
 - Modify: `src/main/ai/providers/model-capability-profile.ts`
 - Modify: `src/main/ai/providers/model-capability-profile.test.ts`
-- Modify: `src/main/ai/providers/catalog.ts`
-- Modify: `src/main/ai/providers/catalog.test.ts`
-- Modify: `src/main/ai/ai-settings-store.ts`
-- Modify: `src/main/ai/ai-settings-store.test.ts`
-- Modify: `src/main/ai/context/context-compressor.ts`
-- Modify: `src/main/ai/context/context-compressor.test.ts`
-- Modify: `src/main/ai/runs/context-snapshot.ts`
+- Modify: `src/main/ai/runs/interactive-run-setup.ts`
+- Modify: `src/main/ai/runs/interactive-run-setup.test.ts`
+- Modify: `src/main/ai/runs/background-run-setup.ts`
+- Modify: `src/main/ai/runs/subagent-run-setup.ts`
+- Modify: `src/main/ai/agent-service.ts`
+- Modify: `src/main/ai/runs/durable-agent-driver.test.ts`
 
-- [ ] Implement exact model, ordered pattern, provider default, and
-  conservative unknown fallback precedence.
-- [ ] Add context window, default/max output, prompt-cache/tool/media feature
-  flags, context-compression policy, and token estimator identity/version to
-  the profile schema.
-- [ ] Resolve and freeze all numeric/profile values at run creation. Settings
-  changes affect new runs only.
-- [ ] Derive compression threshold and hard reserve from the frozen profile;
-  reject impossible max-output/context combinations before dispatch.
-- [ ] Make unsupported toggles inert and visible rather than silently
-  forwarding them to a provider.
-- [ ] Test exact/pattern/default/fallback precedence, frozen-value recovery,
-  unknown finite-budget refusal, and no profile-driven authority expansion.
-
-Run:
-
-```powershell
-pnpm test src/main/ai/providers/model-capability-profile.test.ts src/main/ai/providers/catalog.test.ts
-pnpm test src/main/ai/ai-settings-store.test.ts src/main/ai/context/context-compressor.test.ts
-pnpm typecheck
-```
-
-Commit: `feat(ai): drive durable runs from frozen model profiles`
-
-### Task 25: Pass the Checkpoint C invariant gate
-
-**Files:**
-
-- Create: `src/main/ai/lifecycle/lifecycle-security-invariants.test.ts`
-- Modify: `src/main/ai/caller-parity.test.ts`
-- Modify: eval fixtures only where the profile schema requires explicit fields
-
-- [ ] Prove no stage/profile can remove capability, approval, workspace,
-  provenance, audit, untrusted-envelope, checkpoint, admission, or finalization
-  enforcement.
-- [ ] Replay representative scripted-provider trajectories and compare
-  messages, tools, approvals, artifacts, and terminal outcomes with the
-  pre-kernel fixtures.
-- [ ] Run the full A/B crash matrix after the refactor.
-- [ ] Record profile ids/estimator versions and invariant-suite output in the
-  Checkpoint C PR.
+- [ ] Resolve the profile from `(providerId, model)` at run creation and derive
+  `maxOutputTokens`, `thresholdTokens`, `keepRecentFraction`, and
+  `hardReserveTokens` from it. Today `interactive-run-setup` accepts
+  `maxOutputTokens` as a raw caller input and every production setup hardcodes
+  `hardReserveTokens: 0`; the frozen config must come from the resolved profile
+  instead of from unchecked call-site numbers.
+- [ ] Decide and document `hardReserveTokens` semantics, then wire it for real.
+  Task 20's review flagged `effectiveThreshold = thresholdTokens -
+  hardReserveTokens` as an unverified interpretation that no production path
+  exercised; this task either confirms it or replaces it, and no longer leaves
+  a live config field pinned at zero.
+- [ ] Keep provider-default resolution plus the conservative unknown-model
+  fallback exactly as they are. **Do not** add an exact/ordered-pattern rule
+  system unless a currently supported model genuinely needs distinct limits.
+- [ ] Reject impossible combinations before any provider dispatch, as a typed
+  run-creation failure: requested max output at or above the context window,
+  a compression threshold at or below the hard reserve, or a profile whose
+  estimator cannot bound a finite-budget run
+  (`isEligibleForFiniteBudget` already encodes the last rule — enforce it at
+  creation rather than at first dispatch).
+- [ ] Preserve the frozen-value guarantee: a settings change affects new runs
+  only, and a recovered run keeps the values frozen into its checkpoint.
+- [ ] Test representative recovery non-drift and profile-cannot-widen-authority
+  only. Do not re-run the full Checkpoint A/B historical matrix here; the
+  existing crash-matrix suite is the regression gate.
 
 Run:
 
 ```powershell
-pnpm test src/main/ai/lifecycle/*.test.ts
-pnpm test src/main/ai/caller-parity.test.ts src/main/ai/guardrails/*.test.ts
+pnpm test src/main/ai/providers/model-capability-profile.test.ts
+pnpm test src/main/ai/runs/interactive-run-setup.test.ts src/main/ai/runs/durable-agent-driver.test.ts
 pnpm test src/main/ai/runs/__integration__/durable-run-restart.test.ts
-pnpm eval
 pnpm typecheck
-pnpm lint
 ```
 
-Commit: `test(agent): lock lifecycle and profile invariants`
+Commit: `feat(ai): freeze resolved model profile limits at run creation`
 
 ---
 
 ## Checkpoint D — local progressive skills
 
-### Task 26: Implement immutable SkillPackageStore ingestion
+> **Scope revision (2026-07-18).** Five tasks compressed to two. Deferred out of
+> this checkpoint: lazy asset loading (v1 is `SKILL.md` only), plugin-contributed
+> skill sources, a dedicated skill management UI, the preferred-source conflict
+> setting, and the standalone skill gate task. The security properties are **not**
+> deferred: skill content is untrusted third-party/workspace content, so
+> zero-execution-on-discovery and untrusted-envelope treatment of skill
+> instructions remain required below.
+
+### Task 24: Add the minimal local skill catalog and immutable package store
 
 **Files:**
 
 - Create: `src/main/ai/skills/skill-types.ts`
-- Create: `src/main/ai/skills/skill-package-store.ts`
-- Create: `src/main/ai/skills/skill-package-store.test.ts`
-- Create: `src/main/ai/skills/skill-package-parser.ts`
-- Create: `src/main/ai/skills/skill-package-parser.test.ts`
 - Create: `src/main/ai/skills/skill-paths.ts`
 - Create: `src/main/ai/skills/skill-paths.test.ts`
-
-- [ ] Define separate content-addressed `SkillPackageRef`, source/trust kinds,
-  descriptors, canonical manifests, package leases, and activation snapshots.
-  A package ref never contains a run id.
-- [ ] Parse bounded `SKILL.md` frontmatter with YAML aliases/custom tags
-  disabled. Enforce the spec's file size/count/path/name/description/asset
-  limits before ingestion.
-- [ ] Build a canonical sorted manifest of relative path, length, and SHA-256;
-  hash and atomically ingest exact package bytes. Descriptors point only at an
-  immutable package ref, never mutable source files.
-- [ ] Enforce package-store aggregate quota and shared disk reserve. Count temp
-  validation data and discard it atomically on failure.
-- [ ] Reject absolute/traversal/reserved/device paths, case-fold collisions,
-  symlink/junction escape, duplicate manifest entries, unsupported tags, and
-  decompression/alias bombs.
-- [ ] Test source edit creates a new package hash while the old bytes remain
-  readable and unchanged.
-
-Run:
-
-```powershell
-pnpm test src/main/ai/skills/skill-package-parser.test.ts
-pnpm test src/main/ai/skills/skill-package-store.test.ts src/main/ai/skills/skill-paths.test.ts
-pnpm typecheck
-```
-
-Commit: `feat(skills): ingest immutable local skill packages`
-
-### Task 27: Add bounded discovery, catalog conflicts, and base-prompt projection
-
-**Files:**
-
+- Create: `src/main/ai/skills/skill-package-parser.ts`
+- Create: `src/main/ai/skills/skill-package-parser.test.ts`
+- Create: `src/main/ai/skills/skill-package-store.ts`
+- Create: `src/main/ai/skills/skill-package-store.test.ts`
 - Create: `src/main/ai/skills/skill-discovery.ts`
 - Create: `src/main/ai/skills/skill-discovery.test.ts`
 - Create: `src/main/ai/skills/skill-catalog.ts`
 - Create: `src/main/ai/skills/skill-catalog.test.ts`
-- Create: `src/main/ai/skills/skill-tool-source.ts`
-- Create: `src/main/ai/skills/skill-tool-source.test.ts`
 - Modify: `src/main/ai/runs/context-snapshot.ts`
+- Modify: `src/main/ai/runs/context-snapshot.test.ts`
 - Modify: `src/main/index.ts`
 
-- [ ] Discover only explicit built-in, user, bound-workspace, and installed
-  plugin skill roots. Do not recursively scan arbitrary workspace/disk roots.
-- [ ] Assign source-stable ids, source/trust labels, and catalog revision. An
-  identical name from another source is a visible conflict; source ordering
-  affects recommendation rank but never silently overwrites.
-- [ ] Add an explicit preferred-source setting for resolving recommendation
-  conflicts while retaining all descriptors for diagnostics.
+- [ ] Discover only two explicit roots: the user skill directory and the bound
+  workspace skill directory. Do not recursively scan arbitrary disk roots and
+  do not read plugin contributions in v1.
+- [ ] Parse `SKILL.md` only. Bound the file size and frontmatter, disable YAML
+  aliases and custom tags, and enforce name/description/path limits before
+  ingestion.
+- [ ] Build a canonical sorted manifest of relative path, length, and SHA-256;
+  hash and atomically ingest the exact bytes into a content-addressed store. A
+  descriptor points only at an immutable package ref, never at a mutable source
+  file. Editing a source file produces a new package hash while the old bytes
+  stay readable and unchanged.
+- [ ] Assign source-stable skill ids. The same frontmatter name from two sources
+  coexists as two distinct ids and is surfaced as a visible conflict; do not
+  build a preferred-source setting.
 - [ ] Project only bounded catalog metadata into fresh-run context: id, name,
-  description, source, trust, and recommended tools. Do not eagerly inject full
-  instructions.
-- [ ] Register host-owned discovery/list/activation tool descriptors without
-  granting any capability or executing package content.
-- [ ] Test source precedence, conflict diagnostics, workspace rebinding,
-  package removal, plugin update, prompt-size bound, and zero execution during
-  discovery/install.
+  description, source, trust. Never inject full instructions eagerly.
+- [ ] Execute no package content at any point during discovery, parsing, or
+  ingestion. Add an explicit non-execution test — a `SKILL.md` whose body would
+  run code if evaluated must be ingested as inert bytes.
+- [ ] Reject absolute/traversal/reserved/device paths, case-fold collisions,
+  symlink and Windows junction escape, duplicate manifest entries, and
+  decompression/alias bombs.
 
 Run:
 
 ```powershell
-pnpm test src/main/ai/skills/skill-discovery.test.ts src/main/ai/skills/skill-catalog.test.ts
-pnpm test src/main/ai/skills/skill-tool-source.test.ts src/main/ai/runs/context-snapshot.test.ts
+pnpm test src/main/ai/skills/skill-package-parser.test.ts src/main/ai/skills/skill-paths.test.ts
+pnpm test src/main/ai/skills/skill-package-store.test.ts src/main/ai/skills/skill-discovery.test.ts
+pnpm test src/main/ai/skills/skill-catalog.test.ts src/main/ai/runs/context-snapshot.test.ts
 pnpm typecheck
 ```
 
-Commit: `feat(skills): add explicit local skill catalog`
+Commit: `feat(skills): add minimal local skill catalog`
 
-### Task 28: Implement durable skill activation, package leases, and lazy assets
+### Task 25: Activate skills with durable frozen instructions
 
 **Files:**
 
@@ -1172,121 +1135,70 @@ Commit: `feat(skills): add explicit local skill catalog`
 - Create: `src/main/ai/skills/skill-activation.test.ts`
 - Create: `src/main/ai/skills/skill-package-leases.ts`
 - Create: `src/main/ai/skills/skill-package-leases.test.ts`
-- Create: `src/main/ai/skills/skill-assets.ts`
-- Create: `src/main/ai/skills/skill-assets.test.ts`
-- Modify: `src/main/ai/lifecycle/mandatory-stages.ts`
+- Create: `src/main/ai/skills/skill-tool-source.ts`
+- Create: `src/main/ai/skills/skill-tool-source.test.ts`
 - Modify: `src/main/ai/runs/checkpoint-schema.ts`
+- Modify: `src/main/ai/runs/checkpoint-schema.test.ts`
+- Modify: `src/main/ai/runs/model-step-runner.ts`
+- Modify: `src/main/ai/runs/model-step-runner.test.ts`
 - Modify: `src/main/ai/runs/run-finalizer.ts`
-- Modify: `src/main/ai/artifacts/artifact-retention.ts`
+- Modify: `src/main/ai/runs/run-finalizer.test.ts`
+- Modify: `src/main/index.ts`
 
-- [ ] Activation verifies the immutable package, acquires a durable package
-  lease by stable operation id, captures exact instructions as a run artifact,
-  computes effective tools, and checkpoints `SkillActivationSnapshot` before
-  injecting any instruction.
-- [ ] Compute effective tools as run-visible intersection `allowedTools` and
-  caller policy. Missing `allowedTools` leaves visibility unchanged; no skill
-  can grant a tool.
-- [ ] Rebuild active instruction context from the captured run artifact and
-  frozen tool list on recovery, never from discovery or current source bytes.
-- [ ] Reconcile acquired-without-checkpoint leases and checkpoint-with-missing
-  leases. Uninstall removes catalog refs but package GC must retain every
-  active/recoverable lease.
-- [ ] Copy assets lazily from the leased verified package into run artifacts,
-  preserving package/path/hash metadata and artifact quotas.
-- [ ] Release package leases only in terminal finalization's resource phase.
-  Test uninstall before first asset read, crash around lease/checkpoint,
-  recovery after source edit, missing/corrupt package, and terminal cleanup.
-
-Run:
-
-```powershell
-pnpm test src/main/ai/skills/skill-activation.test.ts
-pnpm test src/main/ai/skills/skill-package-leases.test.ts src/main/ai/skills/skill-assets.test.ts
-pnpm test src/main/ai/runs/run-finalizer.test.ts src/main/ai/artifacts/artifact-retention.test.ts
-pnpm typecheck
-```
-
-Commit: `feat(skills): activate skills with durable package leases`
-
-### Task 29: Add skill events, diagnostics, UI, and security evals
-
-**Files:**
-
-- Modify: `packages/agent-protocol/src/events.ts`
-- Modify: `src/main/ai/runs/run-projection.ts`
-- Modify: `src/main/ipc/ai.ts`
-- Modify: `src/preload/index.ts`
-- Modify: `src/preload/index.d.ts`
-- Modify: `src/renderer/src/lib/electron.ts`
-- Create: `src/renderer/src/components/skill-catalog.tsx`
-- Create: `src/renderer/src/components/skill-catalog.test.tsx`
-- Create: `src/renderer/src/components/active-skill-card.tsx`
-- Create: `src/renderer/src/components/active-skill-card.test.tsx`
-- Modify: `src/renderer/src/components/pages/chat-page.tsx`
-- Modify: `src/renderer/src/components/pages/run-observatory-page.tsx`
-- Modify: `src/renderer/src/i18n/messages/en.json`
-- Modify: `src/renderer/src/i18n/messages/zh-CN.json`
-- Create: `src/main/ai/eval/skills-injection.eval.ts`
-
-- [ ] Emit bounded catalog/activation/asset/lease/conflict events and show
-  source, trust, package hash, effective tools, and active status without raw
-  instruction content in the observatory.
-- [ ] Let users inspect conflicts and choose a preferred source. Activation
-  remains a run action, distinct from installing/discovering a package.
-- [ ] Show that scripts are inert assets; execution is only through the
-  existing approved/audited execution tool.
-- [ ] Add prompt-injection fixtures for workspace/third-party skills that try
-  to suppress approval, widen workspace, request secrets, or relabel untrusted
-  data. Existing security stages must win.
-- [ ] Compare catalog-only, eager-load experimental fixture, and no-skill token
-  cost/task success. Do not ship eager-load behavior.
+- [ ] Register two host-owned tools, `skill:core/list_skills` and
+  `skill:core/activate_skill`, through the normal registry/provenance/audit
+  path. They grant no capability and declare `replayGuarantee: "none"`.
+- [ ] On activation, capture the instructions into a `skill-instructions` run
+  artifact and take a package lease **before** writing the checkpoint that
+  references them, mirroring the capture-then-commit ordering Tasks 19 and 20
+  already established. A crash between the two orphans an artifact; it must
+  never leave a checkpoint pointing at bytes that do not exist.
+- [ ] Populate the existing `SkillActivationSnapshot` and
+  `resourceReleasePlan.skillPackageLeaseIds` fields already present in
+  `checkpoint-schema.ts` rather than adding a parallel structure.
+- [ ] Rebuild active-skill instructions for every subsequent model request from
+  the activation artifact. Never re-read the source file after activation.
+- [ ] Compute the effective tool set as an intersection that can only **narrow**
+  the run's visible tools. A skill must never add a tool or widen capability,
+  principal, workspace, or approval scope. Test this explicitly.
+- [ ] Carry skill instructions as untrusted content through the existing
+  envelope path used for workspace instructions and tool output. Skill text is
+  third-party/workspace-authored and is never host-trusted.
+- [ ] Release package leases in `run-finalizer`'s `resources_released` phase so
+  an uninstall or package GC cannot remove bytes an active or recoverable run
+  still depends on.
+- [ ] Test that editing or deleting the source file after activation leaves a
+  recovered run using the original frozen instructions.
 
 Run:
 
 ```powershell
-pnpm test src/renderer/src/components/skill-catalog.test.tsx src/renderer/src/components/active-skill-card.test.tsx
-pnpm test src/main/ai/skills/*.test.ts
-pnpm eval -- skills-injection
-pnpm typecheck
-pnpm lint
-```
-
-Commit: `feat(skills): surface progressive skill activation safely`
-
-### Task 30: Pass the Checkpoint D skill gate
-
-**Files:**
-
-- Create: `src/main/ai/skills/__integration__/skill-recovery.test.ts`
-- Modify: `e2e/durable-agent-recovery.spec.ts`
-
-- [ ] Restart after package ingestion, lease acquisition, instruction capture,
-  activation checkpoint, first asset copy, uninstall, and terminal release.
-- [ ] Prove recovered model request bytes/effective tools never change after
-  edit/update/uninstall.
-- [ ] Prove a package cannot escape quotas/paths, execute an install hook,
-  bypass approval, grant a tool, or disappear before a lazy read.
-- [ ] Run all Checkpoint A-C crash/security/invariant suites and record the
-  exact evaluated package hashes.
-
-Run:
-
-```powershell
-pnpm test src/main/ai/skills/**/*.test.ts
+pnpm test src/main/ai/skills/skill-activation.test.ts src/main/ai/skills/skill-package-leases.test.ts
+pnpm test src/main/ai/skills/skill-tool-source.test.ts src/main/ai/runs/model-step-runner.test.ts
+pnpm test src/main/ai/runs/run-finalizer.test.ts src/main/ai/runs/checkpoint-schema.test.ts
 pnpm test src/main/ai/runs/__integration__/durable-run-restart.test.ts
-pnpm eval
-pnpm test:e2e --grep "skill recovery"
 pnpm typecheck
-pnpm lint
 ```
 
-Commit: `test(skills): prove checkpoint D progressive skill invariants`
+Commit: `feat(skills): activate skills with frozen durable instructions`
 
 ---
 
-## Checkpoint E — durable asynchronous child tasks
+## Checkpoint E — conversation-owned async child tasks
 
-### Task 31: Implement ChildTaskStore and bounded local scheduler
+> **Scope revision (2026-07-18).** Six tasks compressed to two, enabled by one
+> load-bearing simplification: **an async task belongs to its conversation from
+> creation.** That removes the entire detach/adopt/release subsystem —
+> `ChildTaskOwnership`'s attached/detached union, owner epochs, adoption leases,
+> fencing tokens, and the attached-parent wait protocol — because there is never
+> an ownership handoff to fence. The original exit gate's "cannot terminal with
+> an attached orphan" is then satisfied by construction: a run terminalizing
+> orphans nothing, since tasks hang off the conversation, not the run. Also
+> deferred: `update_subagent_task`, per-task run history, and the standalone
+> concurrency gate task. Budget non-oversubscription and cross-conversation
+> denial are **invariants, not features**, and remain required below.
+
+### Task 26: Add the durable async child-task kernel
 
 **Files:**
 
@@ -1295,233 +1207,93 @@ Commit: `test(skills): prove checkpoint D progressive skill invariants`
 - Create: `src/main/ai/tasks/child-task-store.test.ts`
 - Create: `src/main/ai/tasks/child-task-scheduler.ts`
 - Create: `src/main/ai/tasks/child-task-scheduler.test.ts`
-- Create: `src/main/ai/tasks/child-task-runner.ts`
-- Create: `src/main/ai/tasks/child-task-runner.test.ts`
+- Modify: `src/main/ai/runs/subagent-run-setup.ts`
+- Modify: `src/main/ai/runs/run-recovery-orchestrator.ts`
+- Modify: `src/main/ai/runs/run-recovery-orchestrator.test.ts`
+- Modify: `src/main/index.ts`
 
-- [ ] Implement the task status transition table, revision CAS, stable task
-  id/current run id/history, frozen authority, workspace, finite budget,
-  ownership, result artifact, and timestamps.
-- [ ] Enforce one current run per task, no nesting in v1, maximum three active
-  tasks per root, and a bounded global worker pool.
-- [ ] Queue over the durable driver; persist running/cancel/update state before
-  sending live process signals.
-- [ ] On update of a running task, durably cancel and terminalize the old child
-  before appending history and installing a new current run.
-- [ ] Produce a bounded child-result artifact and event summary. Do not expose
-  the child's entire checkpoint to parent/model by default.
-- [ ] Test queue fairness, concurrency limits, restart, cancellation, update
-  history, scheduler shutdown, no nesting, and parent/sibling result access.
-
-Run:
-
-```powershell
-pnpm test src/main/ai/tasks/child-task-store.test.ts
-pnpm test src/main/ai/tasks/child-task-scheduler.test.ts src/main/ai/tasks/child-task-runner.test.ts
-pnpm typecheck
-```
-
-Commit: `feat(agent): add durable child task store and scheduler`
-
-### Task 32: Add recoverable child budget allocation transactions
-
-**Files:**
-
-- Modify: `src/main/ai/budget/root-budget-ledger.ts`
-- Modify: `src/main/ai/budget/root-budget-ledger.test.ts`
-- Create: `src/main/ai/tasks/child-budget-allocation.ts`
-- Create: `src/main/ai/tasks/child-budget-allocation.test.ts`
-- Modify: `src/main/ai/runs/agent-run-recovery-service.ts`
-- Modify: `src/main/ai/runs/agent-run-recovery-service.test.ts`
-
-- [ ] Add idempotent reserve/activate/release child-account operations under
-  root-ledger revision CAS.
-- [ ] Implement the two-sided transaction: create `allocating` account with
-  operation id, persist matching child record, then activate account before
-  queueing.
-- [ ] Reconcile orphan allocating accounts, child records with missing/mismatched
-  accounts, and crashes around activation/release conservatively.
-- [ ] Parent free balance subtracts unspent child reservations and its own
-  admission holds. Child requests consume only their finite account.
-- [ ] Unlimited roots still require a positive finite child reservation under
-  a product hard maximum.
-- [ ] Preserve root ledgers after root finalization until every task/account is
-  terminal and closed.
-- [ ] Test one parent plus three concurrent children cannot oversubscribe, all
-  operation retries are idempotent, and update from a later adopter reserves
-  from the new root only after the previous run is terminal.
+- [ ] Define `ChildTaskRecord` with a `conversationId` owner fixed at creation.
+  Do not implement an ownership union, owner epoch, adoption lease, or fencing
+  token.
+- [ ] Allow only interactive runs that have a conversation to create tasks. A
+  background run without a conversation cannot start one.
+- [ ] Give each task exactly one child run. Do not implement update or run
+  history.
+- [ ] Reserve a finite child budget account per task through the existing
+  `reserveChildAccount`/`reconcileAbandonedChildAccount` ledger operations. A
+  task that cannot obtain a finite bound fails closed rather than running
+  unbudgeted.
+- [ ] Enforce bounded concurrency: at most three active tasks per root run plus
+  a global worker cap. Queue beyond that.
+- [ ] Reuse the existing durable subagent run path so each child keeps
+  least-privilege tool intersection, workspace binding, and principal lineage.
+- [ ] Implement cancel, and recover `queued`/`running` tasks at startup through
+  the existing recovery orchestrator. Terminal states and results stay
+  queryable after restart.
 
 Run:
 
 ```powershell
-pnpm test src/main/ai/tasks/child-budget-allocation.test.ts
-pnpm test src/main/ai/budget/root-budget-ledger.test.ts src/main/ai/runs/agent-run-recovery-service.test.ts
+pnpm test src/main/ai/tasks/child-task-store.test.ts src/main/ai/tasks/child-task-scheduler.test.ts
+pnpm test src/main/ai/runs/run-recovery-orchestrator.test.ts
+pnpm test src/main/ai/budget/root-budget-ledger.test.ts
 pnpm typecheck
 ```
 
-Commit: `feat(agent): partition child budgets durably`
+Commit: `feat(agent): add durable async child-task kernel`
 
-### Task 33: Add the eight async child-task tools
+### Task 27: Expose async child tasks and prove restart
 
 **Files:**
 
 - Create: `src/main/ai/tasks/child-task-tool-source.ts`
 - Create: `src/main/ai/tasks/child-task-tool-source.test.ts`
-- Modify: `src/main/ai/composite-tool-host.ts`
-- Modify: `src/main/ai/composite-tool-host.test.ts`
-- Modify: `src/main/index.ts`
-- Modify: `src/main/ai/guardrails/tool-metadata.test.ts`
+- Create: `src/main/ai/tasks/__integration__/child-task-restart.test.ts`
+- Modify: `src/main/ai/runs/run-projection.ts`
+- Modify: `src/main/ai/runs/run-projection.test.ts`
+- Modify: `src/main/ipc/runs.ts`
+- Modify: `src/main/ipc/runs.test.ts`
+- Modify: `src/preload/index.ts`
+- Modify: `src/preload/index.d.ts`
+- Modify: `src/renderer/src/lib/electron.ts`
+- Modify: `src/renderer/src/components/pages/run-observatory-page.tsx`
+- Modify: `src/renderer/src/i18n/messages/en.json`
+- Modify: `src/renderer/src/i18n/messages/zh-CN.json`
 
-- [ ] Register distinct host tools: start, check, update, cancel, list, detach,
-  adopt, and release. Keep synchronous `spawn_subagent` unchanged.
-- [ ] Validate every input and expected task revision before mutation. Return
-  bounded summaries/artifact refs, not raw checkpoints.
-- [ ] Start with read-only child tool intersection by default. Explicit
-  allowlists can only narrow parent-visible tools and all normal capability,
-  approval, workspace, audit, resilience, and skill restrictions still apply.
-- [ ] Mark detach as a separately approved action. Background/no-conversation
-  callers cannot detach.
-- [ ] Identify task/parent/root lineage on child approval prompts and all tool
-  audit/events.
-- [ ] Test tool schema sanitization, no nesting, allowed-tool intersection,
-  revision conflicts, cancellation/update ordering, result access, and current
-  synchronous-tool compatibility.
+- [ ] Register exactly four tools: `start`, `check`, `list`, and `cancel`. Do
+  not add detach, adopt, release, or update.
+- [ ] `start` returns a task id; a later turn in the same conversation can
+  `list`, `check`, and `cancel` by that id.
+- [ ] Populate the already-defined `AgentChildTaskSummary`,
+  `ChildTaskUpdatedEvent`, and `AgentRunSnapshot.childTasks` structures and the
+  existing renderer reducer rather than inventing new projection types.
+- [ ] Show task status and a result link in the run observatory using existing
+  bounded metadata conventions. Do not build a dedicated task management UI.
+- [ ] Test that a caller in another conversation cannot read, check, or cancel
+  the task.
+- [ ] Test that several children cannot oversubscribe one root budget.
+- [ ] Add one real restart integration test: `queued` and `running` tasks
+  survive a restart and remain cancellable, and a completed task's result stays
+  readable afterwards.
 
 Run:
 
 ```powershell
 pnpm test src/main/ai/tasks/child-task-tool-source.test.ts
-pnpm test src/main/ai/composite-tool-host.test.ts src/main/ai/guardrails/tool-metadata.test.ts
-pnpm test src/main/ai/subagent/subagent-tool-source.test.ts
-pnpm typecheck
-```
-
-Commit: `feat(agent): expose durable async child task tools`
-
-### Task 34: Implement attached/detached ownership and fenced adoption leases
-
-**Files:**
-
-- Create: `src/main/ai/tasks/child-task-ownership.ts`
-- Create: `src/main/ai/tasks/child-task-ownership.test.ts`
-- Modify: `src/main/ai/tasks/child-task-store.ts`
-- Modify: `src/main/ai/tasks/child-task-store.test.ts`
-- Modify: `src/main/ai/runs/run-finalizer.ts`
-- Modify: `src/main/ai/runs/run-finalizer.test.ts`
-- Modify: `src/main/ai/runs/authority-snapshot.ts`
-- Modify: `src/main/ai/conversation-store.ts`
-
-- [ ] Attached parents may work but cannot terminal with a non-terminal child;
-  they must wait, cancel, or durably detach. Parent cancellation cascades.
-- [ ] Detach only from an interactive live conversation. Freeze conversation,
-  workspace, principal, full authority, owner epoch, and existing budget root.
-- [ ] Adopt only after checking active/non-tombstoned conversation,
-  workspace/principal equality, concrete authority equal-or-narrower, and
-  expected owner epoch.
-- [ ] Issue a single live adoption lease with id, adopter run, monotonically
-  increasing fencing token, and expiry. Renew/release/actions require task
-  revision, epoch, lease id, adopter, and token.
-- [ ] Expiry reconciliation clears the lease and increments owner epoch so a
-  stale adopter cannot act. A later run may adopt again.
-- [ ] Treat a live adoption lease as attached for terminal rules. Adopter
-  cancellation releases the lease by default and does not kill detached work
-  unless task cancellation was separately requested.
-- [ ] Finalization verifies/releases every adoption lease owned by the run
-  before resources-released. Test concurrent adoption winner, R2 expiry/R3
-  adoption, stale R2 actions, adopter terminal/cancel, and tombstone races.
-
-Run:
-
-```powershell
-pnpm test src/main/ai/tasks/child-task-ownership.test.ts src/main/ai/tasks/child-task-store.test.ts
-pnpm test src/main/ai/runs/run-finalizer.test.ts src/main/ai/runs/authority-snapshot.test.ts
-pnpm test src/main/ai/conversation-store.test.ts
-pnpm typecheck
-```
-
-Commit: `feat(agent): fence detached child task adoption`
-
-### Task 35: Add child projections, approvals, ownership UI, and recovery
-
-**Files:**
-
-- Modify: `packages/agent-protocol/src/events.ts`
-- Modify: `packages/agent-protocol/src/snapshots.ts`
-- Modify: `src/main/ai/runs/run-projection.ts`
-- Modify: `src/main/ipc/runs.ts`
-- Modify: `src/preload/index.ts`
-- Modify: `src/preload/index.d.ts`
-- Modify: `src/renderer/src/lib/electron.ts`
-- Create: `src/renderer/src/components/child-task-card.tsx`
-- Create: `src/renderer/src/components/child-task-card.test.tsx`
-- Modify: `src/renderer/src/components/pages/chat-page.tsx`
-- Modify: `src/renderer/src/components/pages/run-observatory-page.tsx`
-- Modify: `src/renderer/src/components/pages/run-observatory-page.test.tsx`
-- Modify: `src/renderer/src/i18n/messages/en.json`
-- Modify: `src/renderer/src/i18n/messages/zh-CN.json`
-
-- [ ] Emit child status/budget/ownership/adoption-lease events with bounded
-  summaries. Project parent/root/current/history linkage in the observatory.
-- [ ] Show pending child approvals with lineage and let authorized users check,
-  cancel, detach, adopt, release, and read result refs through typed IPC.
-- [ ] Disable stale UI actions by revision/owner epoch/lease token; surface
-  conflict and expired lease as typed states, then refresh snapshot.
-- [ ] On startup, restore queued/running/waiting/suspended tasks only after root
-  budget/account, owner lease, child checkpoint, and parent finalization
-  reconciliation.
-- [ ] Do not automatically wake/re-enter a completed parent model loop in v1.
-- [ ] Test renderer reload, concurrent adoption UI, approval resumption,
-  terminal parent, detached completion, expired lease, and task result access.
-
-Run:
-
-```powershell
-pnpm test src/renderer/src/components/child-task-card.test.tsx
+pnpm test src/main/ai/tasks/__integration__/child-task-restart.test.ts
+pnpm test src/main/ai/runs/run-projection.test.ts src/main/ipc/runs.test.ts
 pnpm test src/renderer/src/components/pages/run-observatory-page.test.tsx
-pnpm test src/main/ai/tasks/*.test.ts src/main/ipc/runs.test.ts
-pnpm typecheck
-```
-
-Commit: `feat(renderer): expose durable child task ownership`
-
-### Task 36: Pass the Checkpoint E concurrency and restart gate
-
-**Files:**
-
-- Create: `src/main/ai/tasks/__integration__/child-task-restart.test.ts`
-- Modify: `e2e/durable-agent-recovery.spec.ts`
-- Modify: CI workflow files
-
-- [ ] Run a root plus three children under forced allocation/admission/
-  settlement/release races and prove aggregate balance never oversubscribes.
-- [ ] Restart at every task status, allocation side, approval state, update
-  handoff, detach, adopt/renew/release, adopter finalization, and task result
-  capture boundary.
-- [ ] Prove attached parents cannot terminal orphaned, detached tasks remain
-  conversation-owned, and one live adoption lease exists at most at a time.
-- [ ] Prove R3 can adopt after R2 releases/expires and every stale R2 mutation
-  is fenced out.
-- [ ] Run all A-D crash, artifact, lifecycle, skill, and security suites.
-- [ ] Record scheduler limits, budget ledger snapshots, tested fault points,
-  and manual Electron restart evidence in the Checkpoint E PR.
-
-Run:
-
-```powershell
-pnpm test src/main/ai/tasks/**/*.test.ts
-pnpm test src/main/ai/runs/__integration__/durable-run-restart.test.ts
-pnpm test src/main/ai/artifacts/**/*.test.ts src/main/ai/skills/**/*.test.ts
-pnpm test:e2e --grep "child task recovery"
 pnpm typecheck
 pnpm lint
 ```
 
-Commit: `test(agent): prove checkpoint E child task durability`
+Commit: `feat(agent): expose async child tasks with restart proof`
 
 ---
 
 ## Final integration, migration cleanup, and release evidence
 
-### Task 37: Remove compatibility paths only after every consumer migrates
+### Task 28: Remove compatibility paths only after every consumer migrates
 
 **Files:**
 
@@ -1555,7 +1327,7 @@ pnpm typecheck
 
 Commit: `refactor(agent): retire durable harness compatibility paths`
 
-### Task 38: Full verification and release rehearsal
+### Task 29: Full verification and release rehearsal
 
 **Files:**
 
@@ -1566,14 +1338,15 @@ Commit: `refactor(agent): retire durable harness compatibility paths`
 - [ ] Run all build, type, lint, unit, eval, and Electron E2E commands below on
   a clean worktree.
 - [ ] Perform a Windows Electron rehearsal: interactive multi-tool run,
-  approval pending, command artifact capture, active skill, attached and
-  detached child; terminate main at selected fault points and relaunch.
+  approval pending, command artifact capture, active skill, and a
+  conversation-owned async child task; terminate main at selected fault points
+  and relaunch.
 - [ ] Record exact commit, OS/filesystem, Node/pnpm/Electron versions, provider
   fixtures/profile ids, hard quotas, fault-point matrix, pass/fail output, and
   screenshots/log correlation ids in the evidence document.
 - [ ] Verify observability includes run/event/approval/invocation/task/artifact
   ids, checkpoint/finalization revisions, admission outcome, artifact
-  completeness, recovery disposition, child ownership, and isolation level
+  completeness, recovery disposition, owning conversation, and isolation level
   without payload/secret leakage.
 - [ ] Confirm Checkpoint F remains explicitly parked; do not claim local-policy
   is isolated and do not expose marketplace skills.
@@ -1612,12 +1385,17 @@ The programme is ready to release only when all of the following are true:
   unknown responses forfeit worst case and retries cannot double-release.
 - [ ] Artifacts are bounded by all four limits, use bounded memory/backpressure,
   report completeness precisely, and remain pinned while referenced.
-- [ ] Lifecycle/profile/skill stages cannot widen principal, capabilities,
-  workspace, visible tools, approval decisions, or secrets.
-- [ ] Skill activation is package-immutable, checkpointed before injection,
-  leased through recovery, and unable to execute scripts on discovery/install.
-- [ ] Child reservations cannot oversubscribe the root; attached/detached/
-  adoption-lease rules prevent orphaning and stale adopters are fenced.
+- [ ] Resolved model profiles and skill activation cannot widen principal,
+  capabilities, workspace, visible tools, approval decisions, or secrets, and
+  an impossible profile combination fails at run creation rather than at
+  dispatch.
+- [ ] Skill activation is package-immutable, artifact-captured and leased before
+  the instructions reach any model request, restored from the artifact rather
+  than the source after recovery, treated as untrusted content, and unable to
+  execute anything on discovery or install.
+- [ ] Child reservations cannot oversubscribe the root, every task carries a
+  finite budget, and a task is actionable only from the conversation that owns
+  it.
 - [ ] Renderer reload is snapshot-plus-cursor correct and all IPC/preload types
   come from the shared protocol rather than a drifting duplicate union.
 - [ ] Existing security, workspace, metadata, approval, provenance, audit,
@@ -1627,6 +1405,8 @@ The programme is ready to release only when all of the following are true:
 
 ## Explicitly deferred
 
+Parked before the programme started:
+
 - A concrete Windows Sandbox/Hyper-V/container/microVM/remote execution
   provider and any claim of strong isolation.
 - Marketplace skill packaging, publisher trust, signing/attestation, install,
@@ -1634,3 +1414,21 @@ The programme is ready to release only when all of the following are true:
 - Remote Agent Protocol as a child-task adapter.
 - Automatic parent-model wake-up when an asynchronous child finishes.
 - Public third-party lifecycle middleware.
+
+Deferred by the 2026-07-18 C–E scope revision:
+
+- The formal ten-stage lifecycle kernel and its generic stage/patch
+  abstraction. `durable-agent-driver.ts` already runs a fixed, typed,
+  order-checked sequence proven by the A/B crash matrix; a formal extraction
+  adds no capability and no guarantee.
+- Exact/ordered-pattern model profile rules. Provider defaults plus the
+  conservative unknown fallback stand until a supported model needs distinct
+  limits.
+- Skill lazy asset loading, plugin-contributed skill sources, a dedicated skill
+  management UI, the preferred-source conflict setting, and the broad skill
+  eval matrix. `SKILL.md` is the whole v1 package format.
+- Child task `update`, per-task run history, detach, adopt, release, owner
+  epochs, adoption leases, fencing tokens, and the attached-parent wait
+  protocol — all made unnecessary by conversation ownership at creation.
+- Standalone checkpoint gate tasks (originally 25, 30, and 36). Their required
+  proofs are folded into the implementing tasks.
