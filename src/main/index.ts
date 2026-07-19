@@ -1222,8 +1222,8 @@ async function createAgentService(): Promise<AgentService> {
   agentRunRecoveryService = new AgentRunRecoveryService({
     runStore: agentRunStore,
     now: Date.now,
-    finalize: (runId, input) =>
-      finalizeRun(
+    finalize: async (runId, input) => {
+      const finalized = await finalizeRun(
         {
           runStore: agentRunStore,
           conversation: conversations,
@@ -1236,7 +1236,26 @@ async function createAgentService(): Promise<AgentService> {
         },
         runId,
         input
-      ),
+      )
+      // abandon() (and resume()'s mark_failed path) reach a real terminal
+      // checkpoint through this finalize() call WITHOUT ever going through
+      // continueBackgroundOrSubagentRun's onTerminal hook — the only other
+      // place a ChildTaskRecord gets reconciled. Without this, a child task
+      // abandoned via the existing human-review recovery panel (e.g. a
+      // crash classified requires_review: unknown-tool-outcome) would stay
+      // "running" forever in ChildTaskStore, permanently leaking its
+      // concurrency slot on every future recoverAtStartup() scan. Best-
+      // effort: a bookkeeping failure here must never make an otherwise-
+      // successful abandon/resume appear to fail. Harmless no-op for every
+      // checkpoint that isn't a child task's run.
+      await childTaskScheduler.handleRunTerminal(finalized).catch((err) => {
+        logger.child("runs").warn("failed to reconcile child task after recovery finalize", {
+          runId,
+          err,
+        })
+      })
+      return finalized
+    },
     buildAbandonTrace: (checkpoint) => buildTraceFromCheckpoint(checkpoint, "aborted"),
     buildFailureTrace: (checkpoint) => buildTraceFromCheckpoint(checkpoint, "error"),
     buildAbandonResourcePlan: (checkpoint) => ({

@@ -10,9 +10,11 @@ import { InsufficientBudgetError, RootBudgetLedgerStore } from "../budget/root-b
 import { ConversationStore } from "../conversation-store"
 import { emptyUsage } from "../providers/types"
 import { upsertRunTrace } from "../run-trace-store"
+import { AgentRunRecoveryService } from "../runs/agent-run-recovery-service"
 import { AgentRunStore } from "../runs/agent-run-store"
 import { setupInteractiveRun } from "../runs/interactive-run-setup"
 import { RunEventStore } from "../runs/run-event-store"
+import { finalizeRun } from "../runs/run-finalizer"
 import {
   autoResumeRecoverableRuns,
   continueBackgroundOrSubagentRun,
@@ -170,6 +172,39 @@ function makeControllableProvider(): {
     },
   }
   return { provider, release: (text = "done") => release(text) }
+}
+
+/** A provider that hangs forever on its FIRST call only (never resolves or
+ *  rejects — standing in for a process that crashed mid tool-call, whose
+ *  in-flight dispatch is simply abandoned/orphaned rather than cleanly
+ *  aborted) and behaves normally on every later call. Lets one test drive
+ *  a first task into a permanently-stuck "running" state while a second
+ *  task, admitted afterward once a slot frees, completes for real — proving
+ *  the freed slot was actually usable, not just decremented on paper. */
+function makeOnceHangingProvider(): { provider: ChatProvider; entered: Promise<void> } {
+  let callCount = 0
+  let markEntered!: () => void
+  const entered = new Promise<void>((resolve) => {
+    markEntered = resolve
+  })
+  const neverSettles = new Promise<never>(() => {})
+  const provider: ChatProvider = {
+    id: "fake",
+    async *stream() {
+      callCount += 1
+      if (callCount === 1) {
+        markEntered()
+        await neverSettles
+      }
+      yield {
+        type: "message" as const,
+        message: { role: "assistant" as const, content: [{ type: "text" as const, text: "done" }] },
+        usage: emptyUsage(),
+        stopReason: "end_turn" as const,
+      }
+    },
+  }
+  return { provider, entered }
 }
 
 async function seedInteractiveRun(
@@ -744,5 +779,102 @@ describe("startup double-dispatch race (spec review fix)", () => {
 
     const finalCheckpoint = await runStore.load(currentRunId)
     expect(finalCheckpoint.ok && finalCheckpoint.checkpoint.status).toBe("completed")
+  })
+})
+
+describe("reconciliation via AgentRunRecoveryService.abandon() (code-quality review fix)", () => {
+  it("updates the ChildTaskRecord and frees the concurrency slot when a running task is abandoned through the human-review recovery path", async () => {
+    await seedInteractiveRun("origin-1", "c1")
+
+    // A cap of 1 means "second" stays genuinely queued behind "first" —
+    // the scenario this test needs to prove the freed slot is real, not
+    // just decremented on paper.
+    const { provider: onceHangingProvider, entered } = makeOnceHangingProvider()
+    const scheduler = makeScheduler(
+      { limits: { maxActivePerRoot: 1, maxActiveGlobal: 6 } },
+      { buildProvider: async () => onceHangingProvider }
+    )
+    const first = await scheduler.start(taskInput({ instruction: "first" }))
+    const second = await scheduler.start(taskInput({ instruction: "second" }))
+    // Wait for the FIRST dispatch to genuinely reach its (permanently stuck)
+    // provider call — deterministic, not a timing guess (see
+    // makeHangingProvider's identical `entered` rationale above). This
+    // stands in for a process that crashed mid tool-call and never came
+    // back: the in-flight dispatch is simply abandoned, not cleanly
+    // resolved, exactly like a real crash leaves nothing to signal.
+    await entered
+    expect((await taskStore.get(first.taskId)).status).toBe("running")
+    expect((await taskStore.get(second.taskId)).status).toBe("queued")
+
+    // A real AgentRunRecoveryService, wired the same way index.ts wires it
+    // in production: finalize() drives the checkpoint through the normal
+    // six-phase protocol AND reconciles the ChildTaskRecord via
+    // handleRunTerminal — the fix under test. abandon() itself never
+    // consults the recovery classification (requires_review/blocked) at
+    // all — it only requires a non-terminal checkpoint — so this exercises
+    // the exact code path a human clicking "abandon" on a
+    // requires_review: unknown-tool-outcome run in the existing recovery
+    // panel would hit, without needing to separately fabricate that
+    // classification.
+    const recoveryService = new AgentRunRecoveryService({
+      runStore,
+      now: () => 9000,
+      buildClassifierInput: async (checkpoint) => ({
+        currentAuthority: checkpoint.config.authority,
+        now: 9000,
+      }),
+      finalize: async (runId, input) => {
+        const finalized = await finalizeRun(
+          {
+            runStore,
+            upsertTrace: (i) => upsertRunTrace(runsDir, i),
+            releaseResources: async () => ({ artifactRunPinReleased: false }),
+            now: () => 9000,
+          },
+          runId,
+          input
+        )
+        await scheduler.handleRunTerminal(finalized)
+        return finalized
+      },
+      buildAbandonTrace: (checkpoint) => ({
+        runId: checkpoint.identity.runId,
+        origin: checkpoint.identity.origin,
+        startedAt: checkpoint.createdAt,
+        endedAt: 9000,
+        outcome: "aborted",
+        toolCalls: [],
+      }),
+      buildFailureTrace: (checkpoint) => ({
+        runId: checkpoint.identity.runId,
+        origin: checkpoint.identity.origin,
+        startedAt: checkpoint.createdAt,
+        endedAt: 9000,
+        outcome: "error",
+        toolCalls: [],
+      }),
+      buildAbandonResourcePlan: () => ({
+        budgetOperationIds: [],
+        skillPackageLeaseIds: [],
+        releaseArtifactRunPin: false,
+        adoptionLeaseIds: [],
+      }),
+    })
+
+    const firstRunId = (await taskStore.get(first.taskId)).currentRunId
+    await recoveryService.abandon(firstRunId)
+
+    // The ChildTaskRecord reflects the terminal outcome — not left stuck at
+    // "running" forever the way it did before this fix.
+    const abandonedRecord = await taskStore.get(first.taskId)
+    expect(abandonedRecord.status).toBe("cancelled")
+    const abandonedCheckpoint = await runStore.load(firstRunId)
+    expect(abandonedCheckpoint.ok && abandonedCheckpoint.checkpoint.status).toBe("cancelled")
+
+    // The freed slot is real: "second" — previously blocked by the cap —
+    // now gets admitted and actually completes (using the SAME provider,
+    // now past its one-time hang, so this can only succeed if a real slot
+    // opened up).
+    await waitUntil(async () => (await taskStore.get(second.taskId)).status === "succeeded")
   })
 })

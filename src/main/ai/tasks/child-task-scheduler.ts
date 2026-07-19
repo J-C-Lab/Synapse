@@ -285,12 +285,26 @@ export class ChildTaskScheduler {
    *  its own separate ledger) and dispatches the `queued` backlog — the one
    *  bucket nothing else will ever drive — respecting the same cap a live
    *  start() would, through the same deduped dispatchRun every other path
-   *  uses. */
+   *  uses.
+   *
+   *  Defensive cross-check: a `running` record's checkpoint is loaded and
+   *  compared against its actual status before being trusted as active.
+   *  handleRunTerminal is the primary fix for reconciling a checkpoint
+   *  finalized outside the normal dispatch path (e.g. a human abandoning a
+   *  crashed child task through the existing recovery panel), but this
+   *  catches anything that primary fix ever misses — a record whose
+   *  checkpoint already reached a real terminal state never counts against
+   *  the concurrency cap, regardless of how it got there. */
   async recoverAtStartup(): Promise<void> {
     const nonTerminal = await this.deps.store.scan({ status: ["queued", "running"] })
     const running = nonTerminal.filter((record) => record.status === "running")
     const queued = nonTerminal.filter((record) => record.status === "queued")
     for (const record of running) {
+      const loaded = await this.deps.runStore.load(record.currentRunId).catch(() => undefined)
+      if (loaded?.ok && isTerminalRunStatus(loaded.checkpoint.status)) {
+        await this.handleRunTerminal(loaded.checkpoint).catch(() => {})
+        continue
+      }
       this.perRootActive.set(record.rootRunId, (this.perRootActive.get(record.rootRunId) ?? 0) + 1)
       this.globalActive += 1
       this.slotHolders.add(record.currentRunId)
