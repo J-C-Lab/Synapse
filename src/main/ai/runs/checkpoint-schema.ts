@@ -1256,6 +1256,13 @@ function isValidSkillActivation(v: unknown): boolean {
   if (!isStringArray(v.effectiveToolNames)) return false
   if (!isString(v.packageLeaseId)) return false
   if (!isValidArtifactSummary(v.instructionsArtifact)) return false
+  // Mirrors isValidContextCompaction's fullArtifact.kind check: an
+  // activation's artifact pointer must specifically be a captured
+  // skill-instructions ref, never merely any known artifact kind — a
+  // checkpoint referencing e.g. a tool-result artifact here would let
+  // recovery rebuild "instructions" from bytes that were never validated as
+  // such.
+  if ((v.instructionsArtifact as { kind?: unknown }).kind !== "skill-instructions") return false
   if (!isFiniteNumber(v.activatedAt)) return false
   return true
 }

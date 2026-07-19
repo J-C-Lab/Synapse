@@ -1,6 +1,12 @@
 import type { AgentRunEvent } from "@synapse/agent-protocol"
-import type { ChatProvider, ProviderRequest, ProviderStreamEvent } from "../providers/types"
-import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
+import type {
+  ChatProvider,
+  ProviderRequest,
+  ProviderStreamEvent,
+  ProviderToolSchema,
+} from "../providers/types"
+import type { FrozenToolAuthority } from "./authority-snapshot"
+import type { AgentRunCheckpointV1, SkillActivationSnapshot } from "./checkpoint-schema"
 import type { ModelStepDeps, ModelStepFaultPoint } from "./model-step-runner"
 import type { RunEventEmitter } from "./run-event-emitter"
 import { promises as fs } from "node:fs"
@@ -15,6 +21,7 @@ import {
   RootBudgetLedgerStore,
 } from "../budget/root-budget-ledger"
 import { AgentRunStore } from "./agent-run-store"
+import { canonicalHash } from "./canonical-json"
 import { sealCheckpointIntegrity } from "./checkpoint-schema"
 import { advanceModelStep, InsufficientEstimateError } from "./model-step-runner"
 
@@ -157,6 +164,57 @@ function baseDeps(
   }
 }
 
+/** A live provider tool schema paired with the exact frozen authority entry
+ *  that matches it (modelSchemaHash computed the same way
+ *  authority-snapshot.ts's freezeToolAuthority does) — for tests that need
+ *  frozenModelTools to actually keep a tool rather than filter it out. */
+function toolFixture(
+  fqName: string,
+  safeName: string
+): { schema: ProviderToolSchema; authority: FrozenToolAuthority } {
+  const schema: ProviderToolSchema = {
+    name: safeName,
+    description: `does ${safeName}`,
+    inputSchema: { type: "object" },
+  }
+  const authority: FrozenToolAuthority = {
+    fqName,
+    safeName,
+    provenance: "host",
+    ownerId: "synapse-host",
+    ownerVersion: "0.2.0",
+    modelSchemaHash: canonicalHash(schema as unknown as Parameters<typeof canonicalHash>[0]),
+    annotationsHash: "h",
+    invocationAdapterId: "host-tool",
+    invocationAdapterVersion: "1",
+    replayGuarantee: "none",
+  }
+  return { schema, authority }
+}
+
+function fixtureSkillActivation(
+  overrides: Partial<SkillActivationSnapshot> = {}
+): SkillActivationSnapshot {
+  return {
+    activationId: "act-1",
+    skillId: "user:my-skill",
+    packageHash: "p".repeat(64),
+    instructionsHash: "h".repeat(64),
+    trust: "user-authored",
+    effectiveToolNames: [],
+    packageLeaseId: "lease-1",
+    instructionsArtifact: {
+      uri: "artifact://run/run-skill/art-1",
+      kind: "skill-instructions",
+      mediaType: "text/markdown; charset=utf-8",
+      capturedBytes: 10,
+      complete: true,
+    },
+    activatedAt: 1,
+    ...overrides,
+  }
+}
+
 describe("advanceModelStep — happy path", () => {
   it("drives prepared -> held -> dispatched -> response_staged -> budget_settled and debits the ledger", async () => {
     const runId = "run-1"
@@ -283,6 +341,91 @@ describe("advanceModelStep — workspace-instruction context injection", () => {
 
   it("sends messages unchanged when there are no workspace instructions", async () => {
     const runId = "run-ctx-2"
+    await seedRun(runId, 10_000)
+    const provider = fakeProvider({ inputTokens: 5, outputTokens: 5 })
+    await advanceModelStep(baseDeps(provider), runId)
+    expect(provider.calls[0]!.messages[0]?.content).toEqual([{ type: "text", text: "hi" }])
+  })
+})
+
+describe("advanceModelStep — active-skill instruction injection (Task 25)", () => {
+  it("resolves activeSkillInstructions once and folds it into the same untrusted envelope as workspace instructions", async () => {
+    const runId = "run-skill-ctx-1"
+    const checkpoint = minimalCheckpoint(runId, 10_000)
+    checkpoint.activatedSkills = [fixtureSkillActivation()]
+    await runStore.create(sealCheckpointIntegrity(checkpoint))
+    await budgetStore.create(createRootBudgetLedger(runId, 10_000))
+
+    const resolvedFor: AgentRunCheckpointV1[] = []
+    const provider = fakeProvider({ inputTokens: 5, outputTokens: 5 })
+    const deps: ModelStepDeps = {
+      ...baseDeps(provider),
+      activeSkillInstructions: async (cp) => {
+        resolvedFor.push(cp)
+        return "<untrusted-skill>do the skill workflow</untrusted-skill>"
+      },
+    }
+
+    await advanceModelStep(deps, runId)
+
+    expect(provider.calls).toHaveLength(1)
+    const sentMessages = provider.calls[0]!.messages
+    expect(sentMessages[0]?.content[0]).toEqual({
+      type: "text",
+      text: "<untrusted-skill>do the skill workflow</untrusted-skill>",
+    })
+    expect(sentMessages[0]?.content[1]).toEqual({ type: "text", text: "hi" })
+    // Resolved exactly once for the whole step (prepare + dispatch share it),
+    // not once per internal transition.
+    expect(resolvedFor).toHaveLength(1)
+
+    // Never persisted into the durable checkpoint.
+    const stored = await runStore.load(runId)
+    expect(stored.ok && stored.checkpoint.messages[0]?.message.content).toEqual([
+      { type: "text", text: "hi" },
+    ])
+  })
+
+  it("combines workspace-instruction text and skill-instruction text into one envelope block", async () => {
+    const runId = "run-skill-ctx-2"
+    const checkpoint = minimalCheckpoint(runId, 10_000)
+    checkpoint.activatedSkills = [fixtureSkillActivation()]
+    checkpoint.config.context = {
+      schemaVersion: 1,
+      baseSystemPrompt: { normalizedText: "You are helpful.", sha256: "h" },
+      workspaceInstructions: [
+        {
+          rootId: "root-1",
+          sourcePath: "workspace:root-1/AGENTS.md",
+          sourceKind: "workspace-instruction",
+          trust: "untrusted-workspace-instruction",
+          normalizedText: "<untrusted>workspace guidance</untrusted>",
+          sha256: "h2",
+        },
+      ],
+      skillCatalog: [],
+      skillCatalogHash: "h3",
+      aggregateHash: "h3",
+    }
+    await runStore.create(sealCheckpointIntegrity(checkpoint))
+    await budgetStore.create(createRootBudgetLedger(runId, 10_000))
+
+    const provider = fakeProvider({ inputTokens: 5, outputTokens: 5 })
+    const deps: ModelStepDeps = {
+      ...baseDeps(provider),
+      activeSkillInstructions: async () => "<untrusted-skill>skill guidance</untrusted-skill>",
+    }
+    await advanceModelStep(deps, runId)
+
+    const firstBlock = provider.calls[0]!.messages[0]?.content[0]
+    expect(firstBlock?.type).toBe("text")
+    const text = firstBlock!.type === "text" ? firstBlock.text : ""
+    expect(text).toContain("<untrusted>workspace guidance</untrusted>")
+    expect(text).toContain("<untrusted-skill>skill guidance</untrusted-skill>")
+  })
+
+  it("never calls activeSkillInstructions when it is not wired", async () => {
+    const runId = "run-skill-ctx-3"
     await seedRun(runId, 10_000)
     const provider = fakeProvider({ inputTokens: 5, outputTokens: 5 })
     await advanceModelStep(baseDeps(provider), runId)
@@ -431,6 +574,76 @@ describe("advanceModelStep — frozen tool catalog enforcement at dispatch (P1-5
 
     expect(result.kind).toBe("settled")
     expect(provider.calls).toHaveLength(1)
+  })
+})
+
+describe("advanceModelStep — active-skill tool narrowing (Task 25)", () => {
+  it("narrows the dispatched tool set to an active skill's effectiveToolNames", async () => {
+    const runId = "run-skill-narrow-1"
+    const toolA = toolFixture("execution:core/tool_a", "tool_a")
+    const toolB = toolFixture("execution:core/tool_b", "tool_b")
+    const checkpoint = minimalCheckpoint(runId, 10_000)
+    checkpoint.config.authority.tools = [toolA.authority, toolB.authority]
+    checkpoint.activatedSkills = [
+      fixtureSkillActivation({ effectiveToolNames: ["execution:core/tool_a"] }),
+    ]
+    await runStore.create(sealCheckpointIntegrity(checkpoint))
+    await budgetStore.create(createRootBudgetLedger(runId, 10_000))
+
+    const provider = fakeProvider({ inputTokens: 20, outputTokens: 10 })
+    const deps: ModelStepDeps = {
+      ...baseDeps(provider),
+      tools: () => [toolA.schema, toolB.schema],
+    }
+
+    await advanceModelStep(deps, runId)
+
+    expect(provider.calls).toHaveLength(1)
+    expect(provider.calls[0]!.tools.map((t) => t.name)).toEqual(["tool_a"])
+  })
+
+  it("never adds a tool an active skill names that was not already run-visible", async () => {
+    const runId = "run-skill-narrow-2"
+    const toolA = toolFixture("execution:core/tool_a", "tool_a")
+    const checkpoint = minimalCheckpoint(runId, 10_000)
+    // Only tool_a is frozen into this run's authority — tool_never_visible
+    // was never part of it, even though the (fabricated, as if a corrupted
+    // or forged checkpoint) activation below names it.
+    checkpoint.config.authority.tools = [toolA.authority]
+    checkpoint.activatedSkills = [
+      fixtureSkillActivation({
+        effectiveToolNames: ["execution:core/tool_a", "execution:core/tool_never_visible"],
+      }),
+    ]
+    await runStore.create(sealCheckpointIntegrity(checkpoint))
+    await budgetStore.create(createRootBudgetLedger(runId, 10_000))
+
+    const provider = fakeProvider({ inputTokens: 20, outputTokens: 10 })
+    const deps: ModelStepDeps = { ...baseDeps(provider), tools: () => [toolA.schema] }
+
+    await advanceModelStep(deps, runId)
+
+    expect(provider.calls[0]!.tools.map((t) => t.name)).toEqual(["tool_a"])
+  })
+
+  it("applies no narrowing at all when no skill is active", async () => {
+    const runId = "run-skill-narrow-3"
+    const toolA = toolFixture("execution:core/tool_a", "tool_a")
+    const toolB = toolFixture("execution:core/tool_b", "tool_b")
+    const checkpoint = minimalCheckpoint(runId, 10_000)
+    checkpoint.config.authority.tools = [toolA.authority, toolB.authority]
+    await runStore.create(sealCheckpointIntegrity(checkpoint))
+    await budgetStore.create(createRootBudgetLedger(runId, 10_000))
+
+    const provider = fakeProvider({ inputTokens: 20, outputTokens: 10 })
+    const deps: ModelStepDeps = {
+      ...baseDeps(provider),
+      tools: () => [toolA.schema, toolB.schema],
+    }
+
+    await advanceModelStep(deps, runId)
+
+    expect(provider.calls[0]!.tools.map((t) => t.name).sort()).toEqual(["tool_a", "tool_b"])
   })
 })
 

@@ -140,6 +140,11 @@ export interface PluginHostOptions {
    *  can release its artifact run pin. Omitted in tests that don't exercise
    *  artifact retention. */
   artifactStore?: import("../ai/artifacts/artifact-types").AgentArtifactStore
+  /** Durable skill-package lease ledger (Task 25) — threaded to
+   *  BackgroundAgentRunner so a trigger-woken agent's terminal finalization
+   *  can release any skill-package leases it acquired. Omitted in tests
+   *  that don't exercise skill activation. */
+  skillPackageLeases?: import("../ai/skills/skill-package-leases").SkillPackageLeaseStore
   workspaceRoots: Pick<WorkspaceRootStore, "listForWorkspace">
   workspaces?: Pick<WorkspaceStore, "get" | "exists" | "isActive" | "isArchived">
   /** The interactive path's own MemoryToolSource/ExecutionToolHostSource
@@ -592,6 +597,7 @@ export class PluginHost {
       workspaceRoots: this.options.workspaceRoots,
       estimatorQuarantine: this.options.estimatorQuarantine?.(),
       artifactStore: this.options.artifactStore,
+      skillPackageLeases: this.options.skillPackageLeases,
     })
     await runner.run({
       pluginId: request.pluginId,

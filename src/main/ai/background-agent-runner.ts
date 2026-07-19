@@ -7,6 +7,7 @@ import type { ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
 import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "./run-trace-store"
 import type { AgentRunStore } from "./runs/agent-run-store"
 import type { RunFinalizerDeps } from "./runs/run-finalizer"
+import type { SkillPackageLeaseStore } from "./skills/skill-package-leases"
 import type { ToolHostPort } from "./tool-registry"
 import type { WorkspaceRootStore } from "./workspace/workspace-root-store"
 import {
@@ -25,6 +26,8 @@ import { setupBackgroundRun } from "./runs/background-run-setup"
 import { toChatMessages } from "./runs/durable-messages"
 import { runInteractiveTurn } from "./runs/interactive-run-driver"
 import { finalizeRun } from "./runs/run-finalizer"
+import { activeSkillInstructionsReader } from "./skills/skill-activation"
+import { releaseSkillPackageLeases } from "./skills/skill-package-leases"
 import { AiToolRegistry } from "./tool-registry"
 
 export interface BackgroundAgentRunInput {
@@ -63,6 +66,9 @@ export interface BackgroundAgentRunnerOptions {
   /** Recoverable artifact backend (Checkpoint B). Omitted in tests that
    *  don't exercise artifact retention. */
   artifactStore?: AgentArtifactStore
+  /** Durable skill-package lease ledger (Task 25). Omitted in tests that
+   *  don't exercise skill activation. */
+  skillPackageLeases?: SkillPackageLeaseStore
 }
 
 export class BackgroundAgentRunner {
@@ -154,6 +160,7 @@ export class BackgroundAgentRunner {
             now: this.now,
             maxSteps: checkpoint.config.maxSteps,
             artifactStore: this.options.artifactStore,
+            activeSkillInstructions: activeSkillInstructionsReader(this.options.artifactStore),
             signal: controller.signal,
           },
           toolBatch: {
@@ -207,9 +214,9 @@ export class BackgroundAgentRunner {
           signal: controller.signal,
           finalize: (runId, finalizeInput) =>
             finalizeRun(this.finalizerDeps(), runId, finalizeInput),
-          buildResourceReleasePlan: () => ({
+          buildResourceReleasePlan: (cp) => ({
             budgetOperationIds: [],
-            skillPackageLeaseIds: [],
+            skillPackageLeaseIds: cp.activatedSkills.map((a) => a.packageLeaseId),
             // Every call here comes from finalizeTerminal
             // (interactive-run-driver.ts) — always a genuine terminal
             // outcome for this background run.
@@ -255,6 +262,8 @@ export class BackgroundAgentRunner {
       upsertTrace: this.options.upsertTrace,
       releaseResources: (plan, context) =>
         releaseArtifactRunResources(this.options.artifactStore, plan, context),
+      releaseSkillPackageLeases: (leaseIds) =>
+        releaseSkillPackageLeases(this.options.skillPackageLeases, leaseIds),
       now: this.now,
     }
   }

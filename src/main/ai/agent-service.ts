@@ -30,6 +30,7 @@ import type { AgentRunCheckpointV1 } from "./runs/checkpoint-schema"
 import type { DurableApprovalPolicyInput } from "./runs/durable-approval"
 import type { RunEventStore } from "./runs/run-event-store"
 import type { RunFinalizerDeps } from "./runs/run-finalizer"
+import type { SkillPackageLeaseStore } from "./skills/skill-package-leases"
 import type { ToolStatSnapshot } from "./tool-circuit-breaker"
 import type { AiToolRegistry } from "./tool-registry"
 import type { WorkspaceRootStore } from "./workspace/workspace-root-store"
@@ -47,6 +48,8 @@ import { runInteractiveTurn } from "./runs/interactive-run-driver"
 import { setupInteractiveRun } from "./runs/interactive-run-setup"
 import { createRunEventEmitter } from "./runs/run-event-emitter"
 import { finalizeRun } from "./runs/run-finalizer"
+import { activeSkillInstructionsReader } from "./skills/skill-activation"
+import { releaseSkillPackageLeases } from "./skills/skill-package-leases"
 import { DEFAULT_WORKSPACE } from "./workspace/workspace-store"
 
 // Assembles the AI pieces (credentials + provider catalog + tools + runtime +
@@ -92,6 +95,10 @@ export interface AgentServiceOptions {
    *  `releaseArtifactRunPin: true` plan simply becomes a safe no-op
    *  (`resourceReceipts.artifactRunPinReleased: false`) without one wired. */
   artifactStore?: AgentArtifactStore
+  /** Durable skill-package lease ledger (Task 25). Omitted in tests that
+   *  don't exercise skill activation — a terminal finalization's
+   *  `skillPackageLeaseIds` plan simply becomes a safe no-op release. */
+  skillPackageLeases?: SkillPackageLeaseStore
   /** Durable append-only event journal — renderer-facing run projections
    *  (Task 15) read from this. */
   eventStore: RunEventStore
@@ -776,6 +783,7 @@ export class AgentService {
             now: this.now,
             maxSteps: checkpoint.config.maxSteps,
             artifactStore: this.options.artifactStore,
+            activeSkillInstructions: activeSkillInstructionsReader(this.options.artifactStore),
             onTextDelta: (delta) => textBatcher.push(delta),
             eventEmitter,
           },
@@ -819,9 +827,9 @@ export class AgentService {
           },
           signal: controller.signal,
           finalize: (rid, input) => finalizeRun(this.finalizerDeps(eventEmitter), rid, input),
-          buildResourceReleasePlan: () => ({
+          buildResourceReleasePlan: (cp) => ({
             budgetOperationIds: [],
-            skillPackageLeaseIds: [],
+            skillPackageLeaseIds: cp.activatedSkills.map((a) => a.packageLeaseId),
             // buildResourceReleasePlan is only ever invoked from
             // finalizeTerminal (interactive-run-driver.ts) — every call site
             // is a genuine terminal outcome, never a non-terminal pause, so
@@ -875,6 +883,8 @@ export class AgentService {
       upsertTrace: this.options.upsertTrace,
       releaseResources: (plan, context) =>
         releaseArtifactRunResources(this.options.artifactStore, plan, context),
+      releaseSkillPackageLeases: (leaseIds) =>
+        releaseSkillPackageLeases(this.options.skillPackageLeases, leaseIds),
       now: this.now,
       eventEmitter,
     }

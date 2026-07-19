@@ -4,12 +4,15 @@ import type { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import type { EstimatorQuarantineStore } from "../estimator-quarantine-store"
 import type { ChatProvider } from "../providers/types"
 import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "../run-trace-store"
+import type { SkillPackageLeaseStore } from "../skills/skill-package-leases"
 import type { ToolHostPort } from "../tool-registry"
 import type { AgentRunRecoveryService } from "./agent-run-recovery-service"
 import type { AgentRunStore } from "./agent-run-store"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
 import type { RunEventStore } from "./run-event-store"
 import { releaseArtifactRunResources } from "../artifacts/artifact-retention"
+import { activeSkillInstructionsReader } from "../skills/skill-activation"
+import { releaseSkillPackageLeases } from "../skills/skill-package-leases"
 import { AiToolRegistry } from "../tool-registry"
 import { StaleRevisionError } from "./agent-run-store"
 import { freezeToolAuthority, toolIdentityMatches } from "./authority-snapshot"
@@ -113,6 +116,9 @@ export interface GenericRunContinuationDeps {
   /** Recoverable artifact backend (Checkpoint B). Omitted in tests that
    *  don't exercise artifact retention. */
   artifactStore?: AgentArtifactStore
+  /** Durable skill-package lease ledger (Task 25). Omitted in tests that
+   *  don't exercise skill activation. */
+  skillPackageLeases?: SkillPackageLeaseStore
 }
 
 /** Re-drives an interrupted background-agent or subagent checkpoint to
@@ -220,6 +226,7 @@ export async function continueBackgroundOrSubagentRun(
           now,
           maxSteps: checkpoint.config.maxSteps,
           artifactStore: deps.artifactStore,
+          activeSkillInstructions: activeSkillInstructionsReader(deps.artifactStore),
           eventEmitter,
         },
         toolBatch: {
@@ -276,14 +283,16 @@ export async function continueBackgroundOrSubagentRun(
               upsertTrace: deps.upsertTrace,
               releaseResources: (plan, context) =>
                 releaseArtifactRunResources(deps.artifactStore, plan, context),
+              releaseSkillPackageLeases: (leaseIds) =>
+                releaseSkillPackageLeases(deps.skillPackageLeases, leaseIds),
               now,
             },
             rid,
             input
           ),
-        buildResourceReleasePlan: () => ({
+        buildResourceReleasePlan: (cp) => ({
           budgetOperationIds: [],
-          skillPackageLeaseIds: [],
+          skillPackageLeaseIds: cp.activatedSkills.map((a) => a.packageLeaseId),
           // Every call here comes from finalizeTerminal
           // (interactive-run-driver.ts) — always a genuine terminal outcome
           // for this resumed background/subagent run.

@@ -95,7 +95,14 @@ import {
   autoResumeRecoverableRuns,
   continueBackgroundOrSubagentRun,
 } from "./ai/runs/run-recovery-orchestrator"
+import { buildSkillCatalog } from "./ai/skills/skill-catalog"
+import {
+  releaseSkillPackageLeases,
+  skillPackageLeasesFilePath,
+  SkillPackageLeaseStore,
+} from "./ai/skills/skill-package-leases"
 import { skillPackagesRoot, SkillPackageStore } from "./ai/skills/skill-package-store"
+import { SKILL_FQ_PREFIX, SkillToolSource } from "./ai/skills/skill-tool-source"
 import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
@@ -360,12 +367,51 @@ const artifactStore = new ArtifactStore(artifactsRoot(app.getPath("userData")), 
 })
 // The immutable, content-addressed skill package store (Task 24, design
 // §"Progressive skill runtime"). Mirrors artifactStore's construction above:
-// one store per app run, rooted under userData. Not yet threaded into a
-// live discovery/activation call path by this task — Task 25 (activation)
-// and whichever run-setup wiring first needs a real catalog are the
-// consumers that will call discoverSkills()/buildSkillCatalog() against
-// this instance.
+// one store per app run, rooted under userData.
 const skillPackageStore = new SkillPackageStore(skillPackagesRoot(app.getPath("userData")))
+// Durable skill-package lease ledger (Task 25) — one store per app run,
+// mirroring skillPackageStore's construction. Threaded into every finalizer
+// wiring site below (interactive/background/subagent/recovery) so a
+// terminal run releases whatever leases it acquired via activate_skill.
+const skillPackageLeaseStore = new SkillPackageLeaseStore(
+  skillPackageLeasesFilePath(app.getPath("userData"))
+)
+// v1 discovery root: only the user's own skill directory. A bound-workspace
+// skill root is deliberately not wired here yet — the same gap
+// context-snapshot.ts's `skillCatalog` param already has (nothing populates
+// it from a real run-setup call site today either); wiring a per-workspace
+// root is future work, not a regression introduced by this task. Live
+// discovery is bounded/cheap (skill-package-store.ts's own note: "expected
+// to hold at most a few dozen small packages"), so re-running it on every
+// list_skills/activate_skill call is intentional rather than caching a
+// possibly-stale snapshot.
+const skillsUserRoot = path.join(app.getPath("userData"), "skills")
+const resolveSkillCatalog = () =>
+  buildSkillCatalog([{ source: "user", rootDir: skillsUserRoot }], skillPackageStore)
+const skillToolSource = new SkillToolSource({
+  resolveCatalog: resolveSkillCatalog,
+  packageStore: skillPackageStore,
+  leaseStore: skillPackageLeaseStore,
+  artifactStore,
+  runStore: agentRunStore,
+  now: Date.now,
+})
+/** Every packageLeaseId any checkpoint on disk still references — the
+ *  startup-reconciliation input skillPackageLeaseStore.reconcileStartup()
+ *  needs (see its call site's comment). Scans every run unconditionally
+ *  (no status/finalization filter): a lease belonging to an already-
+ *  terminal, fully-released run is simply absent from both this set and
+ *  the ledger, so including or excluding it changes nothing. */
+async function liveSkillPackageLeaseIds(): Promise<Set<string>> {
+  const ids = new Set<string>()
+  for (const entry of await agentRunStore.scan({})) {
+    if (!entry.result.ok) continue
+    for (const activation of entry.result.checkpoint.activatedSkills) {
+      ids.add(activation.packageLeaseId)
+    }
+  }
+  return ids
+}
 let accountService: MarketplaceAccountService
 let marketplaceTokens: MarketplaceTokenStore | undefined
 // External MCP servers feeding tools to the built-in agent (P5). Held at module
@@ -960,6 +1006,7 @@ function initPluginHost(): PluginHost {
     budgetStore: agentBudgetStore,
     upsertTrace: (input) => upsertRunTrace(runTraceDir(userDataDir), input),
     artifactStore,
+    skillPackageLeases: skillPackageLeaseStore,
     workspaceRoots: workspaceRootStore,
     workspaces,
     reservedAccelerators: () => [launcher.getSettings().hotkey],
@@ -1098,6 +1145,7 @@ async function createAgentService(): Promise<AgentService> {
         recordRun,
         estimatorQuarantine,
         artifactStore,
+        skillPackageLeases: skillPackageLeaseStore,
       }).run(inp)
     },
   })
@@ -1127,6 +1175,7 @@ async function createAgentService(): Promise<AgentService> {
       artifactSource,
       planSource,
       subagentSource,
+      skillToolSource,
       asFallbackSource(
         plugins,
         (fqName) =>
@@ -1136,7 +1185,8 @@ async function createAgentService(): Promise<AgentService> {
           fqName.startsWith(EXECUTION_FQ_PREFIX) ||
           fqName.startsWith(ARTIFACT_FQ_PREFIX) ||
           fqName.startsWith(PLAN_FQ_PREFIX) ||
-          fqName.startsWith(SUBAGENT_FQ_PREFIX)
+          fqName.startsWith(SUBAGENT_FQ_PREFIX) ||
+          fqName.startsWith(SKILL_FQ_PREFIX)
       ),
       manager,
       memoryToolSource,
@@ -1176,6 +1226,8 @@ async function createAgentService(): Promise<AgentService> {
           upsertTrace: (upsertInput) => upsertRunTrace(runsDir, upsertInput),
           releaseResources: (plan, context) =>
             releaseArtifactRunResources(artifactStore, plan, context),
+          releaseSkillPackageLeases: (leaseIds) =>
+            releaseSkillPackageLeases(skillPackageLeaseStore, leaseIds),
           now: Date.now,
         },
         runId,
@@ -1183,9 +1235,9 @@ async function createAgentService(): Promise<AgentService> {
       ),
     buildAbandonTrace: (checkpoint) => buildTraceFromCheckpoint(checkpoint, "aborted"),
     buildFailureTrace: (checkpoint) => buildTraceFromCheckpoint(checkpoint, "error"),
-    buildAbandonResourcePlan: () => ({
+    buildAbandonResourcePlan: (checkpoint) => ({
       budgetOperationIds: [],
-      skillPackageLeaseIds: [],
+      skillPackageLeaseIds: checkpoint.activatedSkills.map((a) => a.packageLeaseId),
       // abandon() drives the exact same finalization protocol as a normal
       // completion, with desired status "cancelled" — always a genuine
       // terminal outcome for this run.
@@ -1307,6 +1359,7 @@ async function createAgentService(): Promise<AgentService> {
       }),
     conversations,
     artifactStore,
+    skillPackageLeases: skillPackageLeaseStore,
     workspaces: new WorkspaceStore(path.join(userDataDir, "ai")),
     providers: defaultProviderCatalog(),
     settings: aiSettings,
@@ -1376,6 +1429,7 @@ async function createAgentService(): Promise<AgentService> {
               onEvent: broadcastRunEvent,
               estimatorQuarantine,
               artifactStore,
+              skillPackageLeases: skillPackageLeaseStore,
               buildProvider: async (providerId) => {
                 const apiKey = await credentials.get(providerId)
                 if (!apiKey) throw new AgentMissingKeyError()
@@ -1643,10 +1697,20 @@ if (isMcpStdioMode) {
       await artifactStore.reconcileStartup()
       // Skill packages are ingested via an atomic stage-then-rename (Task
       // 24); the only crash-recoverable debris is a `.tmp-*` staging
-      // directory a prior process never finished renaming away. No live
-      // discovery/activation path exists yet to race this, so it is safe to
-      // run unconditionally at startup, same as artifactStore above.
+      // directory a prior process never finished renaming away. Safe to run
+      // unconditionally at startup, before any driver/GC starts, same as
+      // artifactStore above.
       await skillPackageStore.reconcileStartup()
+      // Releases any skill-package lease left behind by a crash between
+      // activate_skill's lease acquisition and its checkpoint commit (Task
+      // 25, design §"Progressive disclosure": "an acquired lease without a
+      // matching activation is released after reconciliation"). The live
+      // set is every packageLeaseId still referenced by any checkpoint on
+      // disk — a lease belonging to a fully-finalized run is already absent
+      // from the ledger (run-finalizer.ts's resources_released phase
+      // removed it), so including it here is a harmless no-op, not a
+      // correctness requirement to exclude it.
+      await skillPackageLeaseStore.reconcileStartup(await liveSkillPackageLeaseIds())
       plugins = initPluginHost()
       app.on("browser-window-created", (_, win) => {
         bindCapabilityPromptLifecycle(win)

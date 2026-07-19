@@ -407,7 +407,95 @@ describe("finalizeRun — artifact run pin release and history-artifact referenc
     // fake tracks call count, which is fine to be >= 1.
     expect(pinReleases.length).toBeGreaterThanOrEqual(1)
   })
+})
 
+describe("finalizeRun — skill-package lease release (Task 25)", () => {
+  it("releases every skill-package lease named in the plan during resources_released", async () => {
+    const runId = "run-skill-lease-release"
+    await seedRun(runId, { conversationCommit: undefined })
+    const { fn: releaseResources } = makeReleaseResources()
+    const releasedLeaseIds: string[] = []
+    const releaseSkillPackageLeases = vi.fn(async (leaseIds: readonly string[]) => {
+      releasedLeaseIds.push(...leaseIds)
+    })
+
+    const checkpoint = await finalizeRun(
+      baseDeps({ releaseResources, releaseSkillPackageLeases }),
+      runId,
+      {
+        desiredStatus: "completed",
+        stopReason: "end_turn",
+        trace: trace(runId),
+        resourceReleasePlan: releasePlan({ skillPackageLeaseIds: ["lease-1", "lease-2"] }),
+      }
+    )
+
+    expect(releaseSkillPackageLeases).toHaveBeenCalledWith(["lease-1", "lease-2"])
+    expect(releasedLeaseIds).toEqual(["lease-1", "lease-2"])
+    // The receipt mirrors the plan (same convention as budgetOperationIds/
+    // adoptionLeaseIds today), independent of the live release call.
+    expect(checkpoint.finalization?.resourceReceipts?.skillPackageLeaseIds).toEqual([
+      "lease-1",
+      "lease-2",
+    ])
+  })
+
+  it("tolerates releaseSkillPackageLeases being omitted (no skill runtime wired)", async () => {
+    const runId = "run-skill-lease-omitted"
+    await seedRun(runId, { conversationCommit: undefined })
+    const { fn: releaseResources } = makeReleaseResources()
+
+    const checkpoint = await finalizeRun(baseDeps({ releaseResources }), runId, {
+      desiredStatus: "completed",
+      stopReason: "end_turn",
+      trace: trace(runId),
+      resourceReleasePlan: releasePlan({ skillPackageLeaseIds: ["lease-1"] }),
+    })
+
+    expect(checkpoint.status).toBe("completed")
+    expect(checkpoint.finalization?.resourceReceipts?.skillPackageLeaseIds).toEqual(["lease-1"])
+  })
+
+  it("resumes cleanly and calls releaseSkillPackageLeases again (idempotently) after a crash injected around resource release", async () => {
+    const runId = "run-skill-lease-crash"
+    await seedRun(runId, { conversationCommit: undefined })
+    const { fn: releaseResources } = makeReleaseResources()
+    const released = new Set<string>()
+    const releaseSkillPackageLeases = vi.fn(async (leaseIds: readonly string[]) => {
+      for (const id of leaseIds) released.add(id)
+    })
+
+    let crashedOnce = false
+    const deps = baseDeps({
+      releaseResources,
+      releaseSkillPackageLeases,
+      fault: (point) => {
+        if (!crashedOnce && point === "before_resource_release") {
+          crashedOnce = true
+          throw new Error("simulated crash before resource release")
+        }
+      },
+    })
+    const input: FinalizeRunInput = {
+      desiredStatus: "completed",
+      stopReason: "end_turn",
+      trace: trace(runId),
+      resourceReleasePlan: releasePlan({ skillPackageLeaseIds: ["lease-1"] }),
+    }
+
+    await expect(finalizeRun(deps, runId, input)).rejects.toThrow(/simulated crash/)
+
+    const checkpoint = await finalizeRun(
+      baseDeps({ releaseResources, releaseSkillPackageLeases }),
+      runId,
+      input
+    )
+    expect(checkpoint.status).toBe("completed")
+    expect(released.has("lease-1")).toBe(true)
+  })
+})
+
+describe("finalizeRun — artifact run pin release and history-artifact references continued (Task 21)", () => {
   it("commits history-artifact uris (current compaction + superseded rounds) into the conversation's artifactUris", async () => {
     const runId = "run-history-artifacts"
     const conversationId = "conv-history-artifacts"
