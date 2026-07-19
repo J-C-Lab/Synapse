@@ -105,6 +105,8 @@ import { skillPackagesRoot, SkillPackageStore } from "./ai/skills/skill-package-
 import { SKILL_FQ_PREFIX, SkillToolSource } from "./ai/skills/skill-tool-source"
 import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
+import { ChildTaskScheduler } from "./ai/tasks/child-task-scheduler"
+import { ChildTaskStore } from "./ai/tasks/child-task-store"
 import { AiToolRegistry } from "./ai/tool-registry"
 import { migrateAgentShellRoots } from "./ai/workspace/workspace-migration"
 import { WorkspaceRootStore } from "./ai/workspace/workspace-root-store"
@@ -301,6 +303,8 @@ let approvalRegistry!: ApprovalRegistry
 let lan: LanService
 let agent: AgentService
 let agentRunRecoveryService: AgentRunRecoveryService
+let childTaskStore: ChildTaskStore
+let childTaskScheduler: ChildTaskScheduler
 let estimatorQuarantine: EstimatorQuarantineStore | undefined
 let sharedMemoryTools: MemoryToolSource | undefined
 let sharedExecutionTools: ExecutionToolHostSource | undefined
@@ -1379,6 +1383,45 @@ async function createAgentService(): Promise<AgentService> {
   emitPlanForRun = (runId, steps) => agentService.emitPlanForRun(runId, steps)
   makeSubagentProvider = () => agentService.createBackgroundAgentProvider()
 
+  // Resolves a checkpoint's own frozen providerId to a live provider — never
+  // today's live-settings provider, matching continueBackgroundOrSubagentRun's
+  // own resume contract (a resume replays what the run already committed to).
+  // Shared between continueAnyRun's generic background/subagent branch below
+  // and the async child-task scheduler (Task 26), which drives every child
+  // run through that exact same generic path.
+  const buildProviderForRun = async (providerId: string): Promise<ChatProvider> => {
+    const apiKey = await credentials.get(providerId)
+    if (!apiKey) throw new AgentMissingKeyError()
+    const descriptor = defaultProviderCatalog().find((p) => p.id === providerId)
+    if (!descriptor) throw new Error(`Unknown provider: ${providerId}`)
+    return descriptor.create(apiKey)
+  }
+
+  // Durable async child-task kernel (Task 26, design §"Durable async child
+  // tasks"). One store/scheduler per app run, mirroring skillPackageStore's
+  // construction above. The scheduler reuses agentRunStore/agentBudgetStore
+  // (the same shared CAS-locked instances every other run origin uses) and
+  // drives every child run through continueBackgroundOrSubagentRun — the
+  // exact same generic resume path continueAnyRun's background/subagent
+  // branch below already uses, never a separate detached-execution runner.
+  childTaskStore = new ChildTaskStore(path.join(userDataDir, "ai", "child-tasks"))
+  childTaskScheduler = new ChildTaskScheduler({
+    store: childTaskStore,
+    runStore: agentRunStore,
+    budgetStore: agentBudgetStore,
+    eventStore: agentEventStore,
+    upsertTrace: (input) => upsertRunTrace(runsDir, input),
+    recordRun,
+    tools: resilientToolHost,
+    buildProvider: buildProviderForRun,
+    artifactStore,
+    skillPackageLeases: skillPackageLeaseStore,
+    estimatorQuarantine,
+    onEvent: broadcastRunEvent,
+    onDispatchError: (taskId, err) =>
+      logger.child("runs").warn("child task dispatch failed", { taskId, err }),
+  })
+
   continueAnyRun = (runId: string): Promise<void> => {
     const existing = continuingAnyRuns.get(runId)
     if (existing) return existing.ownership
@@ -1418,28 +1461,36 @@ async function createAgentService(): Promise<AgentService> {
           // barrier for background/subagent runs, which have no conversation
           // lease. Never allow a second Resume to start another driver.
           establishOwnership()
-          await continueBackgroundOrSubagentRun(
-            {
-              runStore: agentRunStore,
-              budgetStore: agentBudgetStore,
-              eventStore: agentEventStore,
-              upsertTrace: (input) => upsertRunTrace(runsDir, input),
-              recordRun,
-              tools: resilientToolHost,
-              onEvent: broadcastRunEvent,
-              estimatorQuarantine,
-              artifactStore,
-              skillPackageLeases: skillPackageLeaseStore,
-              buildProvider: async (providerId) => {
-                const apiKey = await credentials.get(providerId)
-                if (!apiKey) throw new AgentMissingKeyError()
-                const descriptor = defaultProviderCatalog().find((p) => p.id === providerId)
-                if (!descriptor) throw new Error(`Unknown provider: ${providerId}`)
-                return descriptor.create(apiKey)
+          // Registered before the drive starts (not inside the scheduler,
+          // which has no idea this generic path exists) so a child task
+          // resumed here — rather than via the scheduler's own dispatch —
+          // is still reachable by ChildTaskScheduler.cancel(); onTerminal is
+          // a harmless no-op for every checkpoint that isn't a child task's
+          // run (ChildTaskStore.findByRunId returns undefined for those).
+          const controller = new AbortController()
+          childTaskScheduler.registerLiveController(runId, controller)
+          try {
+            await continueBackgroundOrSubagentRun(
+              {
+                runStore: agentRunStore,
+                budgetStore: agentBudgetStore,
+                eventStore: agentEventStore,
+                upsertTrace: (input) => upsertRunTrace(runsDir, input),
+                recordRun,
+                tools: resilientToolHost,
+                onEvent: broadcastRunEvent,
+                estimatorQuarantine,
+                artifactStore,
+                skillPackageLeases: skillPackageLeaseStore,
+                buildProvider: buildProviderForRun,
+                onTerminal: (cp) => childTaskScheduler.handleRunTerminal(cp),
               },
-            },
-            checkpoint
-          )
+              checkpoint,
+              controller.signal
+            )
+          } finally {
+            childTaskScheduler.unregisterLiveController(runId)
+          }
         }
       } catch (err) {
         rejectOwnership(err)
@@ -1483,6 +1534,21 @@ async function createAgentService(): Promise<AgentService> {
       return []
     },
   })
+
+  // Scheduler-level startup recovery (Task 26): the generic scan above
+  // already resumes every non-terminal "automatic" checkpoint, including a
+  // child task's `running` checkpoint — that's checkpoint-level recovery,
+  // needing zero child-task-specific code. What it never touches is a
+  // `queued` task, whose checkpoint exists (frozen authority/budget already
+  // reserved) but was never actually dispatched before a crash; nothing
+  // else will ever drive it, so the scheduler must. Also rebuilds this
+  // process's in-process concurrency bookkeeping from durable
+  // ChildTaskRecord status so a live start() shortly after restart still
+  // respects the per-root/global cap. Fire-and-forget, same rationale as
+  // the scan above: app readiness never waits on child-task completion.
+  void childTaskScheduler
+    .recoverAtStartup()
+    .catch((err) => logger.child("runs").warn("failed to recover child tasks at startup", { err }))
 
   return agentService
 }

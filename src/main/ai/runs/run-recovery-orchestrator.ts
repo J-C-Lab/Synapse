@@ -119,6 +119,16 @@ export interface GenericRunContinuationDeps {
   /** Durable skill-package lease ledger (Task 25). Omitted in tests that
    *  don't exercise skill activation. */
   skillPackageLeases?: SkillPackageLeaseStore
+  /** Fired once this call's driven run reaches a real terminal checkpoint
+   *  state (never for a `suspended_unknown_tool_outcome`, which is not
+   *  terminal) — whether the checkpoint was freshly dispatched or resumed
+   *  after a crash. Generic on purpose: this module has no concept of a
+   *  child task. The async child-task scheduler (Task 26) is the intended
+   *  consumer — it uses this single hook to update a `ChildTaskRecord`'s
+   *  status and free its concurrency slot regardless of whether the run was
+   *  driven by its own dispatch or by the startup recovery scan. Absent for
+   *  every other caller. */
+  onTerminal?: (checkpoint: AgentRunCheckpointV1) => void | Promise<void>
 }
 
 /** Re-drives an interrupted background-agent or subagent checkpoint to
@@ -127,7 +137,14 @@ export interface GenericRunContinuationDeps {
  *  credential, corrupt checkpoint), which the caller logs. */
 export async function continueBackgroundOrSubagentRun(
   deps: GenericRunContinuationDeps,
-  initialCheckpoint: AgentRunCheckpointV1
+  initialCheckpoint: AgentRunCheckpointV1,
+  /** Additional external cancellation source, OR'd with this function's own
+   *  internal (deadline-derived) controller — same pattern
+   *  BackgroundAgentRunner.run() uses for its caller-supplied `input.signal`.
+   *  The async child-task scheduler (Task 26) uses this to cancel a task it
+   *  is actively driving in this same process; absent for every other
+   *  caller (the startup recovery scan has nothing else to OR in). */
+  externalSignal?: AbortSignal
 ): Promise<void> {
   const now = deps.now ?? Date.now
   let checkpoint = initialCheckpoint
@@ -179,11 +196,15 @@ export async function continueBackgroundOrSubagentRun(
       ? undefined
       : Math.max(0, checkpoint.config.deadlineAt - now())
   const controller = new AbortController()
+  const abortFromExternal = () => controller.abort()
+  externalSignal?.addEventListener("abort", abortFromExternal, { once: true })
   // The normal recovery path classifies an expired migrated deadline before
   // dispatching here. Keep this synchronous abort as the defensive boundary
   // for any direct caller: setTimeout(0) is too late to prevent first-turn
-  // work from observing a live signal.
-  if (remainingTimeoutMs === 0) controller.abort()
+  // work from observing a live signal. An already-aborted external signal
+  // (e.g. a task cancelled before this process ever dispatched it) gets the
+  // same synchronous treatment, for the same reason.
+  if (remainingTimeoutMs === 0 || externalSignal?.aborted) controller.abort()
   const timeout =
     remainingTimeoutMs === undefined || remainingTimeoutMs === 0
       ? undefined
@@ -308,7 +329,14 @@ export async function continueBackgroundOrSubagentRun(
 
     const trace = outcome.checkpoint.finalization?.trace
     if (trace) deps.recordRun?.(trace)
+    // `suspended_unknown_tool_outcome` is not terminal — the checkpoint
+    // needs a further resume, which a later call drives (or the normal
+    // requires-review recovery path, if the crash left something the
+    // driver itself cannot reconcile). Only a real "finalized" outcome ever
+    // reaches a terminal checkpoint status.
+    if (outcome.kind === "finalized") await deps.onTerminal?.(outcome.checkpoint)
   } finally {
     if (timeout) clearTimeout(timeout)
+    externalSignal?.removeEventListener("abort", abortFromExternal)
   }
 }
