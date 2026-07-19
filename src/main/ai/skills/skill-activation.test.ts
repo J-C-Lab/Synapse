@@ -339,12 +339,41 @@ describe("activateSkill", () => {
     await fs.rm(path.join(root, "mutable-skill"), { recursive: true, force: true })
 
     const after = await buildActiveSkillInstructionContextText(h.artifactStore, result.checkpoint)
-    // The envelope's nonce is random per call (untrusted-content.ts), so
-    // compare the underlying instruction body rather than the exact string.
-    const stripNonce = (s: string) => s.replace(/untrusted-[0-9a-f]+/g, "untrusted-NONCE")
-    expect(stripNonce(after)).toBe(stripNonce(before))
+    // The envelope's nonce is seeded deterministically from activationId
+    // (bug fix: a fresh random nonce per call would change requestHash on
+    // every resumed advanceModelStep call — see untrusted-content.ts's
+    // nonceSeed option), so the two calls must be byte-for-byte identical,
+    // not merely identical modulo the nonce.
+    expect(after).toBe(before)
     expect(after).toContain("Do the mutable-skill workflow.")
     expect(after).not.toContain("completely different body")
+  })
+
+  it("labels the same activation's instructions with a stable nonce across repeated calls", async () => {
+    const h = await newHarness()
+    const root = await tempDir("synapse-skill-src-")
+    await writeSkill(root, "stable-nonce-skill")
+    const descriptor = await resolveDescriptor(h, root, "stable-nonce-skill")
+    const checkpoint = await h.runStore.create(minimalCheckpoint("run-stable-nonce"))
+
+    const result = await activateSkill(
+      {
+        packageStore: h.packageStore,
+        leaseStore: h.leaseStore,
+        artifactStore: h.artifactStore,
+        runStore: h.runStore,
+        now: h.now,
+        newId: h.newId,
+      },
+      { runId: checkpoint.identity.runId, descriptor }
+    )
+    expect(result.kind).toBe("activated")
+
+    const first = await buildActiveSkillInstructionContextText(h.artifactStore, result.checkpoint)
+    const second = await buildActiveSkillInstructionContextText(h.artifactStore, result.checkpoint)
+    const third = await buildActiveSkillInstructionContextText(h.artifactStore, result.checkpoint)
+    expect(second).toBe(first)
+    expect(third).toBe(first)
   })
 })
 

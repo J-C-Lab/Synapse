@@ -259,7 +259,21 @@ function envelopeTierForSkillTrust(trust: SkillTrust): EnvelopeTier {
  *  source file (design: "Recovery reads that run artifact ... it never
  *  rediscovers the current source file"). Returns "" when no skill is
  *  active, so a caller can unconditionally concatenate it with any other
- *  untrusted context text. */
+ *  untrusted context text.
+ *
+ *  Called fresh on every `advanceModelStep` (activatedSkills is durable run
+ *  state that accrues mid-run, not part of the frozen context snapshot —
+ *  see model-step-runner.ts's ModelStepDeps.activeSkillInstructions), so the
+ *  labeled text must be byte-identical across every call for the same
+ *  activation, including after a crash-resume: `outgoingRequestContext`
+ *  folds this text into `requestHash`, and a resumed call re-hashing a
+ *  differently-labeled (but otherwise unchanged) skill text would trip
+ *  callProviderAndStage's frozen-tool-catalog drift check
+ *  (ToolCatalogDriftError) on a run where nothing actually changed. Each
+ *  activation's own `activationId` — stable and durably persisted at
+ *  activation time — seeds a deterministic nonce (labelUntrustedContent's
+ *  `nonceSeed` option) instead of the default random one, so re-labeling the
+ *  same frozen bytes always produces the same wrapped text. */
 export async function buildActiveSkillInstructionContextText(
   artifactStore: AgentArtifactStore,
   checkpoint: AgentRunCheckpointV1
@@ -285,7 +299,8 @@ export async function buildActiveSkillInstructionContextText(
       labelUntrustedContent(
         `skill:${activation.skillId}`,
         text,
-        envelopeTierForSkillTrust(activation.trust)
+        envelopeTierForSkillTrust(activation.trust),
+        { nonceSeed: activation.activationId }
       )
     )
   }

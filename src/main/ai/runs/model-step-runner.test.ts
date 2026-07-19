@@ -13,6 +13,7 @@ import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { ArtifactStore } from "../artifacts/artifact-store"
 import {
   createRootBudgetLedger,
   freeBalance,
@@ -20,6 +21,7 @@ import {
   ROOT_ACCOUNT_ID,
   RootBudgetLedgerStore,
 } from "../budget/root-budget-ledger"
+import { buildActiveSkillInstructionContextText } from "../skills/skill-activation"
 import { AgentRunStore } from "./agent-run-store"
 import { canonicalHash } from "./canonical-json"
 import { sealCheckpointIntegrity } from "./checkpoint-schema"
@@ -28,11 +30,13 @@ import { advanceModelStep, InsufficientEstimateError } from "./model-step-runner
 let dir: string
 let runStore: AgentRunStore
 let budgetStore: RootBudgetLedgerStore
+let artifactStore: ArtifactStore
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(join(tmpdir(), "synapse-model-step-"))
   runStore = new AgentRunStore(join(dir, "runs"))
   budgetStore = new RootBudgetLedgerStore(join(dir, "budget"))
+  artifactStore = new ArtifactStore(join(dir, "artifacts"))
 })
 
 afterEach(async () => {
@@ -213,6 +217,40 @@ function fixtureSkillActivation(
     activatedAt: 1,
     ...overrides,
   }
+}
+
+/** Captures real bytes into `artifactStore` under `runId` and returns a
+ *  `SkillActivationSnapshot` whose `instructionsArtifact` genuinely resolves
+ *  — for tests that exercise the real `buildActiveSkillInstructionContextText`
+ *  (not a fake `activeSkillInstructions` stub), since that's the function
+ *  the crash-resume nonce-stability bug lives in. */
+async function fixtureSkillActivationWithRealArtifact(
+  runId: string,
+  text: string,
+  overrides: Partial<SkillActivationSnapshot> = {}
+): Promise<SkillActivationSnapshot> {
+  const bytes = new TextEncoder().encode(text)
+  const ref = await artifactStore.capture(
+    bytes,
+    {
+      runId,
+      owner: { runId, rootRunId: runId, principal: { kind: "local-user" } },
+      kind: "skill-instructions",
+      mediaType: "text/markdown; charset=utf-8",
+      sourceBytes: bytes.byteLength,
+    },
+    { abort: () => {} }
+  )
+  return fixtureSkillActivation({
+    instructionsArtifact: {
+      uri: ref.uri,
+      kind: ref.kind,
+      mediaType: ref.mediaType,
+      capturedBytes: ref.capturedBytes,
+      complete: ref.complete,
+    },
+    ...overrides,
+  })
 }
 
 describe("advanceModelStep — happy path", () => {
@@ -430,6 +468,81 @@ describe("advanceModelStep — active-skill instruction injection (Task 25)", ()
     const provider = fakeProvider({ inputTokens: 5, outputTokens: 5 })
     await advanceModelStep(baseDeps(provider), runId)
     expect(provider.calls[0]!.messages[0]?.content).toEqual([{ type: "text", text: "hi" }])
+  })
+})
+
+describe("advanceModelStep — active-skill instruction stability across crash-resume (bug fix)", () => {
+  // Regression test for: labelUntrustedContent picking a fresh random nonce
+  // on every advanceModelStep call meant the skill-instruction envelope's
+  // bytes (and therefore requestHash) differed between the pre-crash
+  // "prepare" call and the post-crash "dispatch" call for the exact same
+  // step, tripping callProviderAndStage's frozen-tool-catalog drift check
+  // (ToolCatalogDriftError) even though nothing about the tools or the
+  // skill actually changed. Fixed by seeding labelUntrustedContent's nonce
+  // deterministically from the activation's own (stable, durable)
+  // activationId — see untrusted-content.ts's nonceSeed option and
+  // skill-activation.ts's buildActiveSkillInstructionContextText.
+  it("never throws ToolCatalogDriftError when resuming after a crash right after prepare with an active skill", async () => {
+    const runId = "run-skill-crash-resume"
+    const activation = await fixtureSkillActivationWithRealArtifact(
+      runId,
+      "do the skill workflow, step by step"
+    )
+    const checkpoint = minimalCheckpoint(runId, 10_000)
+    checkpoint.activatedSkills = [activation]
+    await runStore.create(sealCheckpointIntegrity(checkpoint))
+    await budgetStore.create(createRootBudgetLedger(runId, 10_000))
+
+    const provider = fakeProvider({ inputTokens: 20, outputTokens: 10 })
+    const deps: ModelStepDeps = {
+      ...baseDeps(provider, (point) => {
+        if (point === "after_prepare") throw new Error("simulated crash right after prepare")
+      }),
+      activeSkillInstructions: (cp) => buildActiveSkillInstructionContextText(artifactStore, cp),
+    }
+
+    await expect(advanceModelStep(deps, runId)).rejects.toThrow("simulated crash")
+    expect(provider.calls).toHaveLength(0)
+
+    const midCheckpoint = await runStore.load(runId)
+    const prepareRequestHash =
+      midCheckpoint.ok && midCheckpoint.checkpoint.modelSteps[0]?.attempts[0]?.requestHash
+    expect(prepareRequestHash).toBeTruthy()
+
+    // Resume (simulating a fresh process) — activeSkillInstructions is
+    // resolved fresh again here, exactly as it would be on a real restart.
+    const resumeDeps: ModelStepDeps = {
+      ...baseDeps(provider),
+      activeSkillInstructions: (cp) => buildActiveSkillInstructionContextText(artifactStore, cp),
+    }
+    const result = await advanceModelStep(resumeDeps, runId)
+
+    expect(result.kind).toBe("settled")
+    expect(provider.calls).toHaveLength(1)
+    // The exact same attempt (and its requestHash) carried through resume —
+    // never re-prepared, and dispatch's own re-hash matched it (no
+    // ToolCatalogDriftError was thrown along the way, or the assertion
+    // above would already have failed).
+    const finalAttempt = result.checkpoint.modelSteps[0]!.attempts[0]!
+    expect(finalAttempt.requestHash).toBe(prepareRequestHash)
+    expect(finalAttempt.state).toBe("budget_settled")
+  })
+
+  it("resolves activeSkillInstructions to byte-identical text before and after a simulated restart", async () => {
+    const runId = "run-skill-crash-nonce"
+    const activation = await fixtureSkillActivationWithRealArtifact(
+      runId,
+      "frozen instructions for the nonce-stability check"
+    )
+    const checkpoint = minimalCheckpoint(runId)
+    checkpoint.activatedSkills = [activation]
+    const sealed = sealCheckpointIntegrity(checkpoint)
+
+    const before = await buildActiveSkillInstructionContextText(artifactStore, sealed)
+    // A fresh call — as a resumed process would make, with no shared
+    // in-memory state — must resolve to the exact same labeled text.
+    const after = await buildActiveSkillInstructionContextText(artifactStore, sealed)
+    expect(after).toBe(before)
   })
 })
 
