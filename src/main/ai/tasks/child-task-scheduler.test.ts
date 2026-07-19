@@ -1,3 +1,5 @@
+import type { ChatProvider } from "../providers/types"
+import type { AgentRunCheckpointV1 } from "../runs/checkpoint-schema"
 import type { ToolHostPort } from "../tool-registry"
 import type { ChildTaskSchedulerDeps, StartChildTaskInput } from "./child-task-scheduler"
 import { promises as fs } from "node:fs"
@@ -11,6 +13,11 @@ import { upsertRunTrace } from "../run-trace-store"
 import { AgentRunStore } from "../runs/agent-run-store"
 import { setupInteractiveRun } from "../runs/interactive-run-setup"
 import { RunEventStore } from "../runs/run-event-store"
+import {
+  autoResumeRecoverableRuns,
+  continueBackgroundOrSubagentRun,
+} from "../runs/run-recovery-orchestrator"
+import { setupSubagentRun } from "../runs/subagent-run-setup"
 import { AiToolRegistry } from "../tool-registry"
 import { ChildTaskScheduler } from "./child-task-scheduler"
 import { ChildTaskStore } from "./child-task-store"
@@ -97,9 +104,7 @@ function fakeProvider(text = "done") {
 
 /** A provider whose stream() never resolves on its own — reacts to the
  *  request's abort signal exactly like a real provider must (design
- *  §"Implementations must honour req.signal"), and can also be force-
- *  rejected directly for tests that just need to abandon a dispatch
- *  without going through cancel()/abort. `reject` is captured
+ *  §"Implementations must honour req.signal"). `reject` is captured
  *  synchronously (the Promise executor runs immediately), so there is no
  *  race between constructing this and a caller reaching for `reject`. */
 function makeHangingProvider(): {
@@ -123,6 +128,34 @@ function makeHangingProvider(): {
     },
   }
   return { provider, reject }
+}
+
+/** A provider whose stream() blocks until explicitly released, then
+ *  completes normally (end_turn) — unlike makeHangingProvider (which only
+ *  ever errors out), this lets a test hold a dispatch open just long enough
+ *  to deterministically observe a downstream effect (e.g. a sibling task
+ *  staying genuinely "queued") before letting it succeed for real. */
+function makeControllableProvider(): {
+  provider: ChatProvider
+  release: (text?: string) => void
+} {
+  let release!: (text: string) => void
+  const gate = new Promise<string>((resolve) => {
+    release = resolve
+  })
+  const provider = {
+    id: "fake",
+    async *stream() {
+      const text = await gate
+      yield {
+        type: "message" as const,
+        message: { role: "assistant" as const, content: [{ type: "text" as const, text }] },
+        usage: emptyUsage(),
+        stopReason: "end_turn" as const,
+      }
+    },
+  }
+  return { provider, release: (text = "done") => release(text) }
 }
 
 async function seedInteractiveRun(
@@ -166,20 +199,89 @@ async function seedInteractiveRun(
   )
 }
 
-function makeScheduler(overrides: Partial<ChildTaskSchedulerDeps> = {}): ChildTaskScheduler {
+/** Test-only stand-in for index.ts's `continueAnyRun`: a per-runId
+ *  in-flight dedup map wrapping a real continueBackgroundOrSubagentRun call.
+ *  This is deliberately the SAME shape production wiring uses — the
+ *  scheduler must never build its own continueBackgroundOrSubagentRun call
+ *  (see child-task-scheduler.ts's top-of-file note), so exercising it
+ *  through anything else would test a fiction. `scheduler` is filled in
+ *  after construction (mirroring index.ts's own forward-reference from
+ *  continueAnyRun's closure to the childTaskScheduler it wires into). */
+function makeDispatchRun(
+  options: {
+    tools?: ToolHostPort
+    buildProvider?: () => Promise<ChatProvider>
+  } = {}
+): {
+  dispatchRun: (runId: string) => Promise<void>
+  bindScheduler: (s: ChildTaskScheduler) => void
+  dispatchCount: () => number
+} {
+  let scheduler: ChildTaskScheduler | undefined
+  let count = 0
+  const inFlight = new Map<string, Promise<void>>()
+  const dispatchRun = (runId: string): Promise<void> => {
+    const existing = inFlight.get(runId)
+    if (existing) return existing
+    const promise = (async () => {
+      const loaded = await runStore.load(runId)
+      if (!loaded.ok) return
+      count += 1
+      const cancelledChildTask = await taskStore.findByRunId(runId)
+      const controller = new AbortController()
+      if (cancelledChildTask?.status === "cancelled") controller.abort()
+      scheduler!.registerLiveController(runId, controller)
+      try {
+        await continueBackgroundOrSubagentRun(
+          {
+            runStore,
+            budgetStore,
+            eventStore,
+            upsertTrace: (input) => upsertRunTrace(runsDir, input),
+            tools: options.tools ?? fakeHost(),
+            buildProvider: async () =>
+              options.buildProvider ? options.buildProvider() : fakeProvider(),
+            onTerminal: (cp) => scheduler!.handleRunTerminal(cp),
+          },
+          loaded.checkpoint as AgentRunCheckpointV1,
+          controller.signal
+        )
+      } finally {
+        scheduler!.unregisterLiveController(runId)
+      }
+    })()
+    const tracked = promise.finally(() => {
+      if (inFlight.get(runId) === tracked) inFlight.delete(runId)
+    })
+    inFlight.set(runId, tracked)
+    return tracked
+  }
+  return {
+    dispatchRun,
+    bindScheduler: (s) => {
+      scheduler = s
+    },
+    dispatchCount: () => count,
+  }
+}
+
+function makeScheduler(
+  overrides: Partial<ChildTaskSchedulerDeps> = {},
+  dispatchOptions: Parameters<typeof makeDispatchRun>[0] = {}
+): ChildTaskScheduler {
+  const { dispatchRun, bindScheduler } = makeDispatchRun(dispatchOptions)
   const deps: ChildTaskSchedulerDeps = {
     store: taskStore,
     runStore,
     budgetStore,
-    eventStore,
-    upsertTrace: (input) => upsertRunTrace(runsDir, input),
-    tools: fakeHost(),
-    buildProvider: async () => fakeProvider(),
+    dispatchRun,
     now: () => 2000,
     newId: () => nextId("id"),
     ...overrides,
   }
-  return new ChildTaskScheduler(deps)
+  const scheduler = new ChildTaskScheduler(deps)
+  bindScheduler(scheduler)
+  return scheduler
 }
 
 function taskInput(overrides: Partial<StartChildTaskInput> = {}): StartChildTaskInput {
@@ -270,10 +372,8 @@ describe("childTaskScheduler.start", () => {
 
   it("captures the child's final text as a child-result artifact when an artifact store is supplied", async () => {
     await seedInteractiveRun("origin-1", "c1")
-    const captured: unknown[] = []
     const artifactStore = {
-      capture: vi.fn(async (bytes: Uint8Array | AsyncIterable<Uint8Array>, metadata: unknown) => {
-        captured.push(metadata)
+      capture: vi.fn(async (bytes: Uint8Array | AsyncIterable<Uint8Array>, _metadata: unknown) => {
         const byteLength = bytes instanceof Uint8Array ? bytes.byteLength : 0
         return {
           uri: `artifact://run/r/a1` as const,
@@ -366,9 +466,20 @@ describe("childTaskScheduler bounded concurrency", () => {
 describe("childTaskScheduler.cancel", () => {
   it("cancels a queued task (never dispatched) and finalizes its checkpoint as cancelled", async () => {
     await seedInteractiveRun("origin-1", "c1")
-    const scheduler = makeScheduler({ limits: { maxActivePerRoot: 1, maxActiveGlobal: 6 } })
+    // "first" holds the only slot open (via a controllable, not-yet-resolved
+    // provider) for as long as this test needs — without that, "first" can
+    // race to completion and free its slot before this test ever gets to
+    // cancel "second", letting pumpQueue() auto-promote "second" out of
+    // "queued" first and turning this into a flaky test of a completely
+    // different scenario.
+    const { provider: controllableProvider, release } = makeControllableProvider()
+    const scheduler = makeScheduler(
+      { limits: { maxActivePerRoot: 1, maxActiveGlobal: 6 } },
+      { buildProvider: async () => controllableProvider }
+    )
     const first = await scheduler.start(taskInput({ instruction: "first" }))
     const second = await scheduler.start(taskInput({ instruction: "second" }))
+    await waitUntil(async () => (await taskStore.get(first.taskId)).status === "running")
     expect((await taskStore.get(second.taskId)).status).toBe("queued")
 
     await scheduler.cancel(second.taskId)
@@ -381,7 +492,8 @@ describe("childTaskScheduler.cancel", () => {
     })
 
     // Cancelling the queued task must not consume its concurrency slot —
-    // the first task (already running) should still complete normally.
+    // releasing "first" now should let it complete normally.
+    release()
     await waitUntil(async () => (await taskStore.get(first.taskId)).status === "succeeded")
   })
 
@@ -391,7 +503,7 @@ describe("childTaskScheduler.cancel", () => {
     // observe the task still "running" before cancelling it; it reacts to
     // the abort signal exactly like a real provider must.
     const { provider: hangingProvider } = makeHangingProvider()
-    const scheduler = makeScheduler({ buildProvider: async () => hangingProvider })
+    const scheduler = makeScheduler({}, { buildProvider: async () => hangingProvider })
     const { taskId } = await scheduler.start(taskInput())
 
     await waitUntil(async () => (await taskStore.get(taskId)).status === "running")
@@ -450,10 +562,10 @@ describe("childTaskScheduler.recoverAtStartup", () => {
     // dispatch that is genuinely still in flight (as if the process were
     // about to crash), not one that cleanly errors out.
     const { provider: hangingProvider } = makeHangingProvider()
-    const crashedProcess = makeScheduler({
-      buildProvider: async () => hangingProvider,
-      limits: { maxActivePerRoot: 1, maxActiveGlobal: 6 },
-    })
+    const crashedProcess = makeScheduler(
+      { limits: { maxActivePerRoot: 1, maxActiveGlobal: 6 } },
+      { buildProvider: async () => hangingProvider }
+    )
     const leftRunning = await crashedProcess.start(taskInput())
     await waitUntil(async () => (await taskStore.get(leftRunning.taskId)).status === "running")
 
@@ -481,7 +593,7 @@ describe("childTaskScheduler.handleRunTerminal (generic-path integration)", () =
     // Deliberately never resolved/rejected — see the identical rationale in
     // the recoverAtStartup bookkeeping test above.
     const { provider: hangingProvider } = makeHangingProvider()
-    const owningScheduler = makeScheduler({ buildProvider: async () => hangingProvider })
+    const owningScheduler = makeScheduler({}, { buildProvider: async () => hangingProvider })
     const { taskId } = await owningScheduler.start(taskInput())
     const record = await taskStore.get(taskId)
     // The original (still in-flight, permanently stuck) dispatch keeps
@@ -506,7 +618,6 @@ describe("childTaskScheduler.handleRunTerminal (generic-path integration)", () =
     if (!loaded.ok) return
 
     const observer = makeScheduler()
-    const { continueBackgroundOrSubagentRun } = await import("../runs/run-recovery-orchestrator")
     await continueBackgroundOrSubagentRun(
       {
         runStore,
@@ -522,5 +633,106 @@ describe("childTaskScheduler.handleRunTerminal (generic-path integration)", () =
 
     const final = await taskStore.get(taskId)
     expect(final.status).toBe("succeeded")
+  })
+})
+
+describe("startup double-dispatch race (spec review fix)", () => {
+  it("drives a queued child task's checkpoint exactly once even when the generic recovery scan and the scheduler's own recoverAtStartup race for it", async () => {
+    await seedInteractiveRun("origin-1", "c1")
+
+    // One shared dedup'd dispatchRun — standing in for index.ts's single
+    // continueAnyRun, which BOTH the generic autoResumeRecoverableRuns scan
+    // and the scheduler's own recoverAtStartup() route through in
+    // production. If this scheduler ever called continueBackgroundOrSubagentRun
+    // directly instead, dispatchCount would be 2 here — that was the exact
+    // gap a spec review of the original implementation caught.
+    const { dispatchRun, bindScheduler, dispatchCount } = makeDispatchRun()
+    const scheduler = new ChildTaskScheduler({
+      store: taskStore,
+      runStore,
+      budgetStore,
+      dispatchRun,
+      now: () => 2000,
+      newId: () => nextId("id"),
+    })
+    bindScheduler(scheduler)
+
+    // A "queued, never dispatched" ChildTaskRecord constructed directly
+    // (bypassing start()'s own auto-admission) — exactly what a crashed
+    // process leaves behind: checkpoint already created and budget-reserved,
+    // task record still "queued". This checkpoint is a fresh, zero-step,
+    // matching-authority subagent checkpoint — indistinguishable, at the
+    // checkpoint level, from one genuinely in flight, which is precisely why
+    // the generic scan's classifier alone cannot skip it.
+    const currentRunId = nextId("child")
+    const checkpoint = await setupSubagentRun(
+      { runStore, budgetStore, tools: new AiToolRegistry(fakeHost()), now: () => 2000 },
+      {
+        runId: currentRunId,
+        parentRunId: "origin-1",
+        instruction: "count them",
+        providerId: "anthropic",
+        model: "claude-x",
+        maxOutputTokens: 4096,
+        maxSteps: 3,
+      }
+    )
+    const origin = await runStore.load("origin-1")
+    if (!origin.ok) throw new Error("origin-1 checkpoint missing")
+    const taskId = "task-under-test"
+    await taskStore.create({
+      schemaVersion: 1,
+      revision: 0,
+      taskId,
+      conversationId: "c1",
+      originRunId: "origin-1",
+      // The ORIGIN's own rootRunId (matching ChildTaskScheduler.start()'s
+      // real behavior) — not checkpoint.identity.rootRunId, which for this
+      // unlimited-budget origin is the child's own self-referential ledger
+      // key (see child-task-scheduler.ts's identical note in start()).
+      rootRunId: origin.checkpoint.identity.rootRunId,
+      currentRunId,
+      name: "n",
+      description: "d",
+      status: "queued",
+      budgetAccountId: currentRunId,
+      allocationOperationId: `reserve-subagent:${currentRunId}`,
+      createdAt: 2000,
+      updatedAt: 2000,
+    })
+
+    // Both startup mechanisms race for the SAME runId, fired without either
+    // awaiting the other first — exactly how index.ts triggers them
+    // (autoResumeRecoverableRuns via a fire-and-forget void call, and
+    // childTaskScheduler.recoverAtStartup() likewise).
+    const generic = autoResumeRecoverableRuns({
+      recovery: {
+        listRecoverable: async () => [
+          {
+            runId: currentRunId,
+            rootRunId: checkpoint.identity.rootRunId,
+            origin: "subagent" as const,
+            status: "running" as const,
+            recovery: { kind: "automatic" as const },
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        resume: async () => {},
+        abandon: async () => {},
+      },
+      runStore,
+      continueRun: async (cp) => {
+        await dispatchRun(cp.identity.runId)
+      },
+    })
+    const schedulerRecovery = scheduler.recoverAtStartup()
+    await Promise.all([generic, schedulerRecovery])
+
+    await waitUntil(async () => (await taskStore.get(taskId)).status === "succeeded")
+    expect(dispatchCount()).toBe(1)
+
+    const finalCheckpoint = await runStore.load(currentRunId)
+    expect(finalCheckpoint.ok && finalCheckpoint.checkpoint.status).toBe("completed")
   })
 })

@@ -74,6 +74,14 @@ export interface ChildTaskRecord {
   taskId: string
   conversationId: string
   originRunId: string
+  /** The ORIGIN interactive run's own `identity.rootRunId` — the grouping
+   *  key ChildTaskScheduler's per-root concurrency cap uses. Deliberately
+   *  NOT this task's own child checkpoint's `identity.rootRunId`: an
+   *  unlimited-budget origin gives each child its own independent,
+   *  self-keyed budget ledger (see subagent-run-setup.ts's
+   *  `ensureBudgetAccount`), which would make every sibling task its own
+   *  unique "root" and silently defeat the cap for the common
+   *  unlimited-budget case. */
   rootRunId: string
   currentRunId: string
   name: string

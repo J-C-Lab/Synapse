@@ -1399,25 +1399,30 @@ async function createAgentService(): Promise<AgentService> {
 
   // Durable async child-task kernel (Task 26, design §"Durable async child
   // tasks"). One store/scheduler per app run, mirroring skillPackageStore's
-  // construction above. The scheduler reuses agentRunStore/agentBudgetStore
-  // (the same shared CAS-locked instances every other run origin uses) and
-  // drives every child run through continueBackgroundOrSubagentRun — the
-  // exact same generic resume path continueAnyRun's background/subagent
-  // branch below already uses, never a separate detached-execution runner.
+  // construction above.
+  //
+  // dispatchRun is deliberately `continueAnyRun` itself (assigned below,
+  // referenced here only through this closure so construction order doesn't
+  // matter) — NOT a direct continueBackgroundOrSubagentRun call. This closes
+  // a real startup double-dispatch race a spec review caught: index.ts's
+  // generic autoResumeRecoverableRuns scan drives ANY non-terminal
+  // automatic-recovery subagent checkpoint unconditionally, including a
+  // `queued` child task's — nothing at the checkpoint level distinguishes
+  // "never dispatched" from "genuinely in flight". Without a shared dedup,
+  // that scan and childTaskScheduler.recoverAtStartup() could both start an
+  // independent drive of the same runId, and the checkpoint store's per-runId
+  // CAS mutex only bounds the damage (one loses with a StaleRevisionError on
+  // its first write) — it doesn't stop the loser's tool calls already
+  // in-flight before that write. Routing every dispatch through
+  // continueAnyRun's existing continuingAnyRuns map means whichever caller
+  // reaches it first is the only one that ever drives it.
   childTaskStore = new ChildTaskStore(path.join(userDataDir, "ai", "child-tasks"))
   childTaskScheduler = new ChildTaskScheduler({
     store: childTaskStore,
     runStore: agentRunStore,
     budgetStore: agentBudgetStore,
-    eventStore: agentEventStore,
-    upsertTrace: (input) => upsertRunTrace(runsDir, input),
-    recordRun,
-    tools: resilientToolHost,
-    buildProvider: buildProviderForRun,
+    dispatchRun: (runId) => continueAnyRun(runId),
     artifactStore,
-    skillPackageLeases: skillPackageLeaseStore,
-    estimatorQuarantine,
-    onEvent: broadcastRunEvent,
     onDispatchError: (taskId, err) =>
       logger.child("runs").warn("child task dispatch failed", { taskId, err }),
   })
@@ -1461,13 +1466,21 @@ async function createAgentService(): Promise<AgentService> {
           // barrier for background/subagent runs, which have no conversation
           // lease. Never allow a second Resume to start another driver.
           establishOwnership()
+          // A task already durably cancelled (ChildTaskScheduler.cancel())
+          // but never dispatched must not take a real model/tool step just
+          // because this shared dedup path happens to be the one that ends
+          // up driving it — pre-abort so it finalizes to "cancelled" on its
+          // very first loop check instead. Harmless (and cheap: one local
+          // scan) for every checkpoint that isn't a child task's run.
+          const cancelledChildTask = await childTaskStore.findByRunId(runId)
+          const controller = new AbortController()
+          if (cancelledChildTask?.status === "cancelled") controller.abort()
           // Registered before the drive starts (not inside the scheduler,
           // which has no idea this generic path exists) so a child task
           // resumed here — rather than via the scheduler's own dispatch —
           // is still reachable by ChildTaskScheduler.cancel(); onTerminal is
           // a harmless no-op for every checkpoint that isn't a child task's
           // run (ChildTaskStore.findByRunId returns undefined for those).
-          const controller = new AbortController()
           childTaskScheduler.registerLiveController(runId, controller)
           try {
             await continueBackgroundOrSubagentRun(
