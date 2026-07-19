@@ -76,12 +76,9 @@ export interface ChildTaskRecord {
   originRunId: string
   /** The ORIGIN interactive run's own `identity.rootRunId` — the grouping
    *  key ChildTaskScheduler's per-root concurrency cap uses. Deliberately
-   *  NOT this task's own child checkpoint's `identity.rootRunId`: an
-   *  unlimited-budget origin gives each child its own independent,
-   *  self-keyed budget ledger (see subagent-run-setup.ts's
-   *  `ensureBudgetAccount`), which would make every sibling task its own
-   *  unique "root" and silently defeat the cap for the common
-   *  unlimited-budget case. */
+   *  sourced from the trusted origin checkpoint rather than duplicated from
+   *  task input. It also remains the sibling fairness grouping if a future
+   *  setup path gives a child a distinct execution root. */
   rootRunId: string
   currentRunId: string
   name: string
@@ -94,6 +91,12 @@ export interface ChildTaskRecord {
    *  "failed"/"cancelled" tasks (nothing trustworthy to hand back) and for
    *  every non-terminal status. */
   resultArtifact?: AgentArtifactRef
+  /** A successfully generated result captured before the child run releases
+   *  its artifact pin during finalization. It is promoted atomically to
+   *  `resultArtifact` once the checkpoint is terminal. This short-lived
+   *  durable reference closes the finalization/GC crash window without
+   *  retaining any other child-run artifacts. */
+  pendingResultArtifact?: AgentArtifactRef
   createdAt: number
   updatedAt: number
 }
@@ -155,7 +158,15 @@ export function isValidChildTaskRecord(value: unknown): value is ChildTaskRecord
   if (!isNonEmptyString(value.budgetAccountId)) return false
   if (!isNonEmptyString(value.allocationOperationId)) return false
   if (value.resultArtifact !== undefined && !isValidArtifactRef(value.resultArtifact)) return false
+  if (
+    value.pendingResultArtifact !== undefined &&
+    !isValidArtifactRef(value.pendingResultArtifact)
+  ) {
+    return false
+  }
+  if (value.resultArtifact !== undefined && value.pendingResultArtifact !== undefined) return false
   if (value.status !== "succeeded" && value.resultArtifact !== undefined) return false
+  if (value.status !== "running" && value.pendingResultArtifact !== undefined) return false
   if (!isNonNegativeInteger(value.createdAt) || !isNonNegativeInteger(value.updatedAt)) return false
   return true
 }

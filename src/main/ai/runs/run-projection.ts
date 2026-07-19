@@ -1,11 +1,13 @@
 import type {
   AgentArtifactRefSummary,
+  AgentChildTaskSummary,
   AgentRunMessageSummary,
   AgentRunModelStepSummary,
   AgentRunSnapshot,
   AgentRunSummary,
   AgentRunToolCallSummary,
 } from "@synapse/agent-protocol"
+import type { ChildTaskRecord } from "../tasks/child-task-types"
 import type { AgentRunCheckpointV1, ToolCallLedgerEntry } from "./checkpoint-schema"
 
 // Pure projections from the host-only AgentRunCheckpointV1 into the
@@ -32,7 +34,8 @@ export function toAgentRunSummary(checkpoint: AgentRunCheckpointV1): AgentRunSum
  *  to unit test. */
 export function toAgentRunSnapshot(
   checkpoint: AgentRunCheckpointV1,
-  lastSequence: number
+  lastSequence: number,
+  childTasks: readonly ChildTaskRecord[] = []
 ): AgentRunSnapshot {
   return {
     identity: checkpoint.identity,
@@ -43,15 +46,42 @@ export function toAgentRunSnapshot(
     updatedAt: checkpoint.updatedAt,
     plan: checkpoint.plan,
     pendingApprovalIds: pendingApprovalIds(checkpoint),
-    // Checkpoint A has no rich child-task ledger — only a single optional
-    // activeChildTaskId. Stays empty until a later checkpoint adds one;
-    // this function's shape is already forward-compatible with it.
-    childTasks: [],
+    childTasks: childTasks.map(toAgentChildTaskSummary),
     artifacts: artifactSummaries(checkpoint),
     messages: messageSummaries(checkpoint),
     toolCalls: toolCallSummaries(checkpoint),
     currentModelStep: currentModelStepSummary(checkpoint),
     finalizationPhase: checkpoint.finalization?.phase,
+  }
+}
+
+/** Bounded task metadata shared by the observatory snapshot and the
+ * ChildTaskUpdatedEvent. The task id itself remains host/tool-facing; the
+ * renderer navigates through the child run id already present in the shared
+ * protocol rather than gaining a second task-management API. */
+export function toAgentChildTaskSummary(record: ChildTaskRecord): AgentChildTaskSummary {
+  return {
+    childRunId: record.currentRunId,
+    status: childTaskRunStatus(record.status),
+    ...(record.name ? { label: record.name.slice(0, 500) } : {}),
+  }
+}
+
+function childTaskRunStatus(status: ChildTaskRecord["status"]): AgentChildTaskSummary["status"] {
+  switch (status) {
+    // A queued task has a fully-created child checkpoint but has not received
+    // a worker slot yet. `created` is the shared protocol's closest precise
+    // lifecycle projection; reporting it as `running` would hide queueing.
+    case "queued":
+      return "created"
+    case "running":
+      return "running"
+    case "succeeded":
+      return "completed"
+    case "failed":
+      return "failed"
+    case "cancelled":
+      return "cancelled"
   }
 }
 

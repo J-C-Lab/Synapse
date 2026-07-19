@@ -19,6 +19,8 @@ import type {
 } from "../ai/runs/agent-run-recovery-service"
 import type { AgentRunStore } from "../ai/runs/agent-run-store"
 import type { RunEventStore } from "../ai/runs/run-event-store"
+import type { ChildTaskScheduler } from "../ai/tasks/child-task-scheduler"
+import type { ChildTaskStore } from "../ai/tasks/child-task-store"
 import {
   decodeForModel,
   MAX_ARTIFACT_READ_BYTES,
@@ -280,6 +282,14 @@ export interface RunsDurableDeps {
    *  (Task 21). Omitted in tests that don't exercise artifacts — those three
    *  channels simply aren't registered. */
   artifactStore?: AgentArtifactStore
+  /** Durable conversation-owned child-task records. Snapshot projection only
+   * exposes tasks created by the requested parent run; ownership remains on
+   * the host side and the renderer receives the protocol's bounded summary. */
+  childTaskStore?: ChildTaskStore
+  /** Queued child tasks may only be resumed through this bounded scheduler;
+   *  the generic `continueRun` path is safe for running children but would
+   *  otherwise bypass per-root/global admission. */
+  childTaskScheduler?: Pick<ChildTaskScheduler, "admitQueuedRunForResume">
 }
 
 // ---------------------------------------------------------------------------
@@ -452,7 +462,14 @@ export function registerRunsIpc(
       if (!result.ok) return undefined
       const events = await durable.eventStore.readAll(id)
       const lastSequence = events.length > 0 ? events[events.length - 1]!.sequence : 0
-      return toAgentRunSnapshot(result.checkpoint, lastSequence)
+      const conversationId = result.checkpoint.identity.conversationId
+      const childTasks =
+        durable.childTaskStore && conversationId
+          ? (await durable.childTaskStore.listForConversation(conversationId)).filter(
+              (task) => task.originRunId === result.checkpoint.identity.runId
+            )
+          : []
+      return toAgentRunSnapshot(result.checkpoint, lastSequence, childTasks)
     }
   )
 
@@ -474,7 +491,19 @@ export function registerRunsIpc(
     guard(event)
     const query = normalizeResumeQuery(payload)
     try {
+      const childTask = await durable.childTaskStore?.findByRunId(query.runId)
       await durable.recovery.resume(query.runId, query.decision)
+      if (childTask?.status === "queued") {
+        if (!durable.childTaskScheduler) {
+          throw new Error("queued child task resume requires ChildTaskScheduler")
+        }
+        // recovery.resume() restores/reclassifies the durable checkpoint,
+        // but only the scheduler may claim a concurrency slot and actually
+        // dispatch a queued child. If a concurrent admission changed it to
+        // running already, that admission owns the continuation instead.
+        await durable.childTaskScheduler.admitQueuedRunForResume(query.runId)
+        return { ok: true }
+      }
       durable.continueRun?.(query.runId)
       return { ok: true }
     } catch (err) {

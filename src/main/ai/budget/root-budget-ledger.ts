@@ -21,6 +21,10 @@ export interface RootBudgetAccount {
   /** Root-only: tokens carved out for child-task accounts (already excluded
    *  from the root's own free balance). Always 0 on a child account. */
   reservedTokens: number
+  /** True only for the durable asynchronous child-task creation protocol.
+   *  Synchronous subagents can use the same finite-account mechanics, but
+   *  must never be mistaken for orphaned scheduler tasks at startup. */
+  durableChildTask?: boolean
 }
 
 export interface BudgetOperationReceipt {
@@ -115,6 +119,7 @@ export interface ReserveChildAccountInput {
   accountId: string
   taskId: string
   totalTokens: number
+  durableChildTask?: boolean
 }
 
 /**
@@ -157,6 +162,7 @@ export function reserveChildAccount(
       [input.accountId]: {
         kind: "child-task",
         taskId: input.taskId,
+        durableChildTask: input.durableChildTask,
         totalTokens: input.totalTokens,
         heldTokens: 0,
         consumedTokens: 0,
@@ -333,6 +339,51 @@ export class RootBudgetLedgerStore {
     }
   }
 
+  /** Reconciles reservations from the durable async child-task creation
+   * protocol that reached the ledger but never produced a ChildTaskRecord.
+   * The predicate is deliberately supplied by the scheduler, which owns the
+   * record/checkpoint relationship; synchronous subagent accounts are marked
+   * differently and are never considered here. */
+  async reconcileOrphanedDurableChildTasks(
+    hasTaskRecord: (runId: string) => Promise<boolean>
+  ): Promise<string[]> {
+    let rootIds: string[]
+    try {
+      rootIds = await fs.readdir(this.baseDir)
+    } catch (err) {
+      if (isNotFound(err)) return []
+      throw err
+    }
+    const reconciledRunIds: string[] = []
+    for (const rootRunId of rootIds.filter(isSafeRootRunId)) {
+      for (;;) {
+        let ledger: RootBudgetLedgerV1
+        try {
+          ledger = await this.load(rootRunId)
+        } catch (err) {
+          if (err instanceof RootBudgetLedgerNotFoundError) break
+          throw err
+        }
+        const runId = await findOrphanedDurableChildTask(ledger, hasTaskRecord)
+        if (!runId) break
+        const reconciled = reconcileAbandonedChildAccount(ledger, {
+          operationId: `reconcile-orphan-durable-child:${runId}`,
+          runId,
+        })
+        if (!reconciled.reconciled) break
+        try {
+          await this.mutate(rootRunId, ledger.revision, () => reconciled.ledger)
+          reconciledRunIds.push(runId)
+          continue
+        } catch (err) {
+          if (err instanceof StaleLedgerRevisionError) continue
+          throw err
+        }
+      }
+    }
+    return reconciledRunIds
+  }
+
   private async readRaw(rootRunId: string): Promise<unknown | null> {
     try {
       return JSON.parse(await fs.readFile(this.ledgerPath(rootRunId), "utf-8")) as unknown
@@ -364,6 +415,23 @@ export class RootBudgetLedgerStore {
     )
     return run
   }
+}
+
+async function findOrphanedDurableChildTask(
+  ledger: RootBudgetLedgerV1,
+  hasTaskRecord: (runId: string) => Promise<boolean>
+): Promise<string | undefined> {
+  for (const [runId, account] of Object.entries(ledger.accounts)) {
+    if (
+      account.kind !== "child-task" ||
+      account.durableChildTask !== true ||
+      account.taskId !== runId
+    ) {
+      continue
+    }
+    if (!(await hasTaskRecord(runId))) return runId
+  }
+  return undefined
 }
 
 function isNotFound(err: unknown): boolean {

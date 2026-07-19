@@ -255,8 +255,23 @@ function artifactCallerFrom(caller: ToolCaller): ArtifactCaller | undefined {
     parentRunId: caller.parentRunId,
     conversationId: caller.conversationId,
     workspaceId: caller.workspaceId,
-    principal: caller.principal ?? { kind: "local-user" },
+    principal: artifactPrincipal(caller),
   }
+}
+
+function artifactPrincipal(caller: ToolCaller): ArtifactCaller["principal"] {
+  if (caller.principal) return caller.principal
+  // ToolCaller historically defaults an omitted principal to local-user for
+  // generic tool policy. Artifact access additionally needs to distinguish
+  // a later interactive turn from a subagent/background invocation: only
+  // the former may consume an explicit conversation-scoped child-result
+  // grant. Keep same-run reads intact while failing closed for incomplete
+  // subagent lineage.
+  if (caller.kind === "agent" || caller.kind === "user") return { kind: "local-user" }
+  if (caller.kind === "subagent" && caller.parentRunId) {
+    return { kind: "subagent", parentRunId: caller.parentRunId }
+  }
+  return { kind: "internal-agent" }
 }
 
 function parseInput(

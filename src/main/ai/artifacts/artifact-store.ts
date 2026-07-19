@@ -100,6 +100,9 @@ interface ArtifactManifestV1 {
   ref: AgentArtifactRef
   owner: ArtifactOwnerContext
   delegateToRunIds: string[]
+  /** Optional for manifests written before conversation-scoped delegation
+   *  existed. New captures always persist an explicit array. */
+  delegateToConversationIds?: string[]
 }
 
 const KNOWN_KINDS: ReadonlySet<string> = new Set([
@@ -181,6 +184,12 @@ function isValidManifest(v: unknown): v is ArtifactManifestV1 {
   if (!isValidRef(v.ref)) return false
   if (!isValidOwnerContext(v.owner)) return false
   if (!Array.isArray(v.delegateToRunIds) || !v.delegateToRunIds.every(isString)) return false
+  if (
+    v.delegateToConversationIds !== undefined &&
+    (!Array.isArray(v.delegateToConversationIds) || !v.delegateToConversationIds.every(isString))
+  ) {
+    return false
+  }
   return true
 }
 
@@ -231,6 +240,7 @@ export function estimateManifestReserveBytes(metadata: ArtifactMetadata): number
     ref: draftRef,
     owner: metadata.owner,
     delegateToRunIds: [...(metadata.delegateToRunIds ?? [])],
+    delegateToConversationIds: [...(metadata.delegateToConversationIds ?? [])],
   }
   return Buffer.byteLength(`${JSON.stringify(draftManifest, null, 2)}\n`, "utf-8")
 }
@@ -483,6 +493,7 @@ export class ArtifactStore implements AgentArtifactStore {
       ref,
       owner: metadata.owner,
       delegateToRunIds: [...(metadata.delegateToRunIds ?? [])],
+      delegateToConversationIds: [...(metadata.delegateToConversationIds ?? [])],
     }
 
     try {
@@ -961,7 +972,14 @@ export class ArtifactStore implements AgentArtifactStore {
     caller: ArtifactCaller
   ): Promise<AgentArtifactRef> {
     const manifest = await this.loadManifestById(runId, artifactId)
-    if (!checkArtifactAccess(manifest.owner, manifest.delegateToRunIds, caller)) {
+    if (
+      !checkArtifactAccess(
+        manifest.owner,
+        manifest.delegateToRunIds,
+        caller,
+        manifest.delegateToConversationIds ?? []
+      )
+    ) {
       throw new ArtifactReadError(
         "artifact_forbidden",
         `caller run ${caller.runId} may not read artifact ${manifest.ref.uri}`
@@ -998,7 +1016,14 @@ export class ArtifactStore implements AgentArtifactStore {
       )
     }
 
-    if (!checkArtifactAccess(manifest.owner, manifest.delegateToRunIds, caller)) {
+    if (
+      !checkArtifactAccess(
+        manifest.owner,
+        manifest.delegateToRunIds,
+        caller,
+        manifest.delegateToConversationIds ?? []
+      )
+    ) {
       throw new ArtifactReadError(
         "artifact_forbidden",
         `caller run ${caller.runId} may not read artifact ${ref.uri}`

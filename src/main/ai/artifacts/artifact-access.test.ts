@@ -87,6 +87,66 @@ describe("checkArtifactAccess — siblings and strangers", () => {
 })
 
 describe("checkArtifactAccess — conversation/workspace/principal visibility", () => {
+  it("allows an explicitly delegated child result from a later local interactive run in the same conversation", () => {
+    const childOwned = owner({
+      runId: "child-1",
+      rootRunId: "old-root",
+      parentRunId: "old-parent",
+      conversationId: "conv-a",
+      workspaceId: "ws-a",
+      principal: { kind: "subagent", parentRunId: "old-parent" },
+    })
+    const laterInteractiveCaller = caller({
+      runId: "later-interactive",
+      rootRunId: "later-interactive",
+      conversationId: "conv-a",
+      workspaceId: "ws-a",
+      principal: { kind: "local-user" },
+    })
+
+    expect(checkArtifactAccess(childOwned, [], laterInteractiveCaller, ["conv-a"])).toBe(true)
+  })
+
+  it("does not let a conversation grant escape its conversation or local interactive principal", () => {
+    const childOwned = owner({
+      runId: "child-1",
+      rootRunId: "old-root",
+      parentRunId: "old-parent",
+      conversationId: "conv-a",
+      workspaceId: "ws-a",
+      principal: { kind: "subagent", parentRunId: "old-parent" },
+    })
+    expect(
+      checkArtifactAccess(
+        childOwned,
+        [],
+        caller({
+          runId: "other-conversation",
+          rootRunId: "other-conversation",
+          conversationId: "conv-b",
+          workspaceId: "ws-a",
+          principal: { kind: "local-user" },
+        }),
+        ["conv-a"]
+      )
+    ).toBe(false)
+    expect(
+      checkArtifactAccess(
+        childOwned,
+        [],
+        caller({
+          runId: "child-sibling",
+          rootRunId: "old-root",
+          parentRunId: "old-parent",
+          conversationId: "conv-a",
+          workspaceId: "ws-a",
+          principal: { kind: "subagent", parentRunId: "old-parent" },
+        }),
+        ["conv-a"]
+      )
+    ).toBe(false)
+  })
+
   it("denies a delegated parent when the conversationId differs", () => {
     const childOwned = owner({
       runId: "child-1",

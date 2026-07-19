@@ -174,39 +174,6 @@ function makeControllableProvider(): {
   return { provider, release: (text = "done") => release(text) }
 }
 
-/** A provider that hangs forever on its FIRST call only (never resolves or
- *  rejects — standing in for a process that crashed mid tool-call, whose
- *  in-flight dispatch is simply abandoned/orphaned rather than cleanly
- *  aborted) and behaves normally on every later call. Lets one test drive
- *  a first task into a permanently-stuck "running" state while a second
- *  task, admitted afterward once a slot frees, completes for real — proving
- *  the freed slot was actually usable, not just decremented on paper. */
-function makeOnceHangingProvider(): { provider: ChatProvider; entered: Promise<void> } {
-  let callCount = 0
-  let markEntered!: () => void
-  const entered = new Promise<void>((resolve) => {
-    markEntered = resolve
-  })
-  const neverSettles = new Promise<never>(() => {})
-  const provider: ChatProvider = {
-    id: "fake",
-    async *stream() {
-      callCount += 1
-      if (callCount === 1) {
-        markEntered()
-        await neverSettles
-      }
-      yield {
-        type: "message" as const,
-        message: { role: "assistant" as const, content: [{ type: "text" as const, text: "done" }] },
-        usage: emptyUsage(),
-        stopReason: "end_turn" as const,
-      }
-    },
-  }
-  return { provider, entered }
-}
-
 async function seedInteractiveRun(
   runId: string,
   conversationId: string,
@@ -344,6 +311,7 @@ function taskInput(overrides: Partial<StartChildTaskInput> = {}): StartChildTask
     model: "claude-x",
     maxOutputTokens: 4096,
     maxSteps: 3,
+    budgetTokens: 32_768,
     ...overrides,
   }
 }
@@ -458,18 +426,16 @@ describe("childTaskScheduler.start", () => {
   })
 
   it("fails closed and never persists a task record when the budget reservation is insufficient", async () => {
-    // A subagent's reservation is always the parent's whole runBudgetTokens
-    // (see subagent-run-setup.ts's ensureBudgetAccount) — a tiny 10-token
-    // parent budget backs exactly one child; a second child on the same
-    // origin/root cannot get a second 10-token reservation out of an
-    // already-exhausted root free balance.
+    // Each durable child reserves its own explicit finite account from the
+    // parent root. A tiny 10-token root backs exactly one 10-token child;
+    // a sibling cannot overbook the already-exhausted free balance.
     await seedInteractiveRun("origin-1", "c1", 10)
     const scheduler = makeScheduler()
-    const first = await scheduler.start(taskInput({ instruction: "first" }))
+    const first = await scheduler.start(taskInput({ instruction: "first", budgetTokens: 10 }))
 
-    await expect(scheduler.start(taskInput({ instruction: "second" }))).rejects.toBeInstanceOf(
-      InsufficientBudgetError
-    )
+    await expect(
+      scheduler.start(taskInput({ instruction: "second", budgetTokens: 10 }))
+    ).rejects.toBeInstanceOf(InsufficientBudgetError)
     const tasks = await taskStore.scan()
     expect(tasks.map((t) => t.taskId)).toEqual([first.taskId])
 
@@ -477,6 +443,87 @@ describe("childTaskScheduler.start", () => {
     // so afterEach's directory cleanup never races an in-flight checkpoint
     // write from this test's own background dispatch.
     await waitUntil(async () => (await taskStore.get(first.taskId)).status === "succeeded")
+  })
+
+  it("releases a completed child's unused reservation so a later child can be admitted", async () => {
+    await seedInteractiveRun("origin-1", "c1", 100)
+    const { provider: controllableProvider, release } = makeControllableProvider()
+    const scheduler = makeScheduler({}, { buildProvider: async () => controllableProvider })
+    const first = await scheduler.start(
+      taskInput({ instruction: "first", maxOutputTokens: 64, budgetTokens: 100 })
+    )
+    await waitUntil(async () => (await taskStore.get(first.taskId)).status === "running")
+
+    // The full root cap is reserved by the active first child, even before
+    // it spends any model tokens.
+    await expect(
+      scheduler.start(taskInput({ instruction: "second", maxOutputTokens: 64, budgetTokens: 100 }))
+    ).rejects.toBeInstanceOf(InsufficientBudgetError)
+
+    release("first done")
+    await waitUntil(async () => (await taskStore.get(first.taskId)).status === "succeeded")
+    const firstRecord = await taskStore.get(first.taskId)
+    await waitUntil(async () => {
+      const ledger = await budgetStore.load("origin-1")
+      return ledger.accounts[firstRecord.currentRunId] === undefined
+    })
+    const releasedLedger = await budgetStore.load("origin-1")
+    expect(releasedLedger.accounts[firstRecord.currentRunId]).toBeUndefined()
+    expect(releasedLedger.accounts.root?.reservedTokens).toBe(0)
+
+    await expect(
+      scheduler.start(taskInput({ instruction: "second", maxOutputTokens: 64, budgetTokens: 100 }))
+    ).resolves.toEqual(expect.objectContaining({ taskId: expect.any(String) }))
+  })
+
+  it("releases a failed child's reservation without erasing its accounted consumption", async () => {
+    await seedInteractiveRun("origin-1", "c1", 100)
+    // Finalize a durably admitted child through the same terminal hook an
+    // actual failed model run reaches. This keeps the test focused on the
+    // scheduler's release/reconciliation contract rather than provider
+    // retry policy.
+    const scheduler = new ChildTaskScheduler({
+      store: taskStore,
+      runStore,
+      budgetStore,
+      dispatchRun: async () => {},
+    })
+    const { taskId } = await scheduler.start(taskInput({ maxOutputTokens: 64, budgetTokens: 100 }))
+    await waitUntil(async () => (await taskStore.get(taskId)).status === "running")
+    const record = await taskStore.get(taskId)
+    const failed = await finalizeRun(
+      {
+        runStore,
+        upsertTrace: (input) => upsertRunTrace(runsDir, input),
+        releaseResources: async () => ({ artifactRunPinReleased: false }),
+        now: () => 3000,
+      },
+      record.currentRunId,
+      {
+        desiredStatus: "failed",
+        stopReason: "provider_error",
+        trace: {
+          runId: record.currentRunId,
+          origin: "subagent",
+          startedAt: 1000,
+          endedAt: 3000,
+          outcome: "error",
+          toolCalls: [],
+        },
+        resourceReleasePlan: {
+          budgetOperationIds: [],
+          skillPackageLeaseIds: [],
+          releaseArtifactRunPin: false,
+          adoptionLeaseIds: [],
+        },
+      }
+    )
+    await scheduler.handleRunTerminal(failed)
+    expect((await taskStore.get(taskId)).status).toBe("failed")
+    const ledger = await budgetStore.load("origin-1")
+    expect(ledger.accounts[record.currentRunId]).toBeUndefined()
+    expect(ledger.accounts.root?.reservedTokens).toBe(0)
+    expect(ledger.accounts.root?.consumedTokens).toBeGreaterThanOrEqual(0)
   })
 })
 
@@ -510,6 +557,30 @@ describe("childTaskScheduler bounded concurrency", () => {
     await waitUntil(async () => (await taskStore.get(first.taskId)).status === "succeeded")
     await waitUntil(async () => (await taskStore.get(second.taskId)).status === "succeeded")
   })
+
+  it("manual queued-run admission waits for an occupied cap and dispatches once that slot releases", async () => {
+    await seedInteractiveRun("origin-1", "c1")
+    const { provider: controllableProvider, release } = makeControllableProvider()
+    const scheduler = makeScheduler(
+      { limits: { maxActivePerRoot: 1, maxActiveGlobal: 1 } },
+      { buildProvider: async () => controllableProvider }
+    )
+    const first = await scheduler.start(taskInput({ instruction: "slot holder" }))
+    const second = await scheduler.start(taskInput({ instruction: "manual resume target" }))
+    await waitUntil(async () => (await taskStore.get(first.taskId)).status === "running")
+    const queued = await taskStore.get(second.taskId)
+    expect(queued.status).toBe("queued")
+
+    // This is the exact scheduler method runs:resume invokes after durable
+    // recovery. It must not begin the model run while the first task owns
+    // the sole global/per-root slot.
+    await expect(scheduler.admitQueuedRunForResume(queued.currentRunId)).resolves.toBe(true)
+    expect((await taskStore.get(second.taskId)).status).toBe("queued")
+
+    release("slot released")
+    await waitUntil(async () => (await taskStore.get(first.taskId)).status === "succeeded")
+    await waitUntil(async () => (await taskStore.get(second.taskId)).status === "succeeded")
+  })
 })
 
 describe("childTaskScheduler.cancel", () => {
@@ -539,6 +610,12 @@ describe("childTaskScheduler.cancel", () => {
       const cp = await runStore.load(cancelledRecord.currentRunId)
       return cp.ok && cp.checkpoint.status === "cancelled"
     })
+    await waitUntil(async () => {
+      const ledger = await budgetStore.load("origin-1")
+      return ledger.accounts[cancelledRecord.currentRunId] === undefined
+    })
+    const ledgerAfterQueuedCancel = await budgetStore.load("origin-1")
+    expect(ledgerAfterQueuedCancel.accounts[cancelledRecord.currentRunId]).toBeUndefined()
 
     // Cancelling the queued task must not consume its concurrency slot —
     // releasing "first" now should let it complete normally.
@@ -627,36 +704,137 @@ describe("childTaskScheduler.recoverAtStartup", () => {
     const extra = await restarted.start(taskInput({ instruction: "extra" }))
     expect((await taskStore.get(extra.taskId)).status).toBe("queued")
   })
+
+  it("does not discard a live task or its reservation when checkpoint loading has an I/O failure", async () => {
+    await seedInteractiveRun("origin-1", "c1", 100)
+    // Durable setup has completed; only the original process's dispatch is
+    // absent. This models a restart whose storage momentarily returns EIO
+    // for an otherwise intact child checkpoint.
+    const beforeRestart = new ChildTaskScheduler({
+      store: taskStore,
+      runStore,
+      budgetStore,
+      dispatchRun: async () => {},
+    })
+    const { taskId } = await beforeRestart.start(taskInput({ budgetTokens: 100 }))
+    await waitUntil(async () => (await taskStore.get(taskId)).status === "running")
+    const record = await taskStore.get(taskId)
+    const ledgerBefore = await budgetStore.load("origin-1")
+
+    const ioFailure = Object.assign(new Error("simulated EIO while reading checkpoint"), {
+      code: "EIO",
+    })
+    const originalLoad = runStore.load.bind(runStore)
+    const load = vi.spyOn(runStore, "load").mockImplementation(async (runId) => {
+      if (runId === record.currentRunId) throw ioFailure
+      return originalLoad(runId)
+    })
+    const restarted = new ChildTaskScheduler({
+      store: taskStore,
+      runStore,
+      budgetStore,
+      dispatchRun: async () => {},
+    })
+
+    try {
+      await expect(restarted.recoverAtStartup()).rejects.toBe(ioFailure)
+    } finally {
+      load.mockRestore()
+    }
+
+    // The failed startup pass did not confuse a transient read failure with
+    // a missing/corrupt checkpoint. Generic recovery will be held back by
+    // the propagated error, and its later retry sees the untouched record
+    // and finite child reservation.
+    expect((await taskStore.get(taskId)).status).toBe("running")
+    expect(await budgetStore.load("origin-1")).toEqual(ledgerBefore)
+  })
+
+  it("keeps queued work out of generic restart recovery and below the global cap across roots", async () => {
+    await seedInteractiveRun("origin-1", "c1")
+    await seedInteractiveRun("origin-2", "c2")
+    const limits = { maxActivePerRoot: 1, maxActiveGlobal: 1 }
+    // Process #1 reserves both children but only admits the first global
+    // slot. Its no-op dispatcher models a crash immediately after admission.
+    const beforeRestart = new ChildTaskScheduler({
+      store: taskStore,
+      runStore,
+      budgetStore,
+      dispatchRun: async () => {},
+      limits,
+    })
+    const first = await beforeRestart.start(taskInput({ originRunId: "origin-1" }))
+    const second = await beforeRestart.start(taskInput({ originRunId: "origin-2" }))
+    await waitUntil(async () => (await taskStore.get(first.taskId)).status === "running")
+    expect((await taskStore.get(second.taskId)).status).toBe("queued")
+
+    // Process #2 reconstructs the occupied global slot before generic
+    // recovery. It can neither admit the cross-root queued record nor let
+    // the generic scan do so behind the scheduler's back.
+    const afterRestart = new ChildTaskScheduler({
+      store: taskStore,
+      runStore,
+      budgetStore,
+      dispatchRun: async () => {},
+      limits,
+    })
+    await afterRestart.recoverAtStartup()
+    expect((await taskStore.get(first.taskId)).status).toBe("running")
+    expect((await taskStore.get(second.taskId)).status).toBe("queued")
+
+    const genericDispatches: string[] = []
+    await autoResumeRecoverableRuns({
+      recovery: {
+        listRecoverable: async () => {
+          const records = await taskStore.scan()
+          const summaries = []
+          for (const record of records) {
+            if (record.status === "queued") continue
+            const loaded = await runStore.load(record.currentRunId)
+            if (!loaded.ok) continue
+            summaries.push({
+              runId: record.currentRunId,
+              rootRunId: loaded.checkpoint.identity.rootRunId,
+              origin: "subagent" as const,
+              status: "running" as const,
+              recovery: { kind: "automatic" as const },
+              createdAt: record.createdAt,
+              updatedAt: record.updatedAt,
+            })
+          }
+          return summaries
+        },
+        resume: async () => {},
+        abandon: async () => {},
+      },
+      runStore,
+      continueRun: async (checkpoint) => {
+        genericDispatches.push(checkpoint.identity.runId)
+      },
+    })
+    expect(genericDispatches).toEqual([(await taskStore.get(first.taskId)).currentRunId])
+
+    const third = await afterRestart.start(taskInput({ originRunId: "origin-1" }))
+    expect((await taskStore.get(third.taskId)).status).toBe("queued")
+  })
 })
 
 describe("childTaskScheduler.handleRunTerminal (generic-path integration)", () => {
   it("updates a task's status when its checkpoint is driven by a caller other than this scheduler's own dispatch", async () => {
     await seedInteractiveRun("origin-1", "c1")
-    // A scheduler with a hanging provider stands in for "a task left running
-    // by a previous process" — we never let its own dispatch reach
-    // completion; instead we drive the SAME checkpoint through a second,
-    // independent continueBackgroundOrSubagentRun call (standing in for
-    // index.ts's generic startup-recovery dispatch) with a FRESH scheduler
-    // instance's handleRunTerminal wired as onTerminal, and confirm it
-    // updates the record even though that scheduler never called start().
-    // Deliberately never resolved/rejected — see the identical rationale in
-    // the recoverAtStartup bookkeeping test above.
-    const { provider: hangingProvider, entered } = makeHangingProvider()
-    const owningScheduler = makeScheduler({}, { buildProvider: async () => hangingProvider })
+    // A no-op dispatcher stands in for a process that died immediately after
+    // durable admission. There is no surviving in-flight model request in
+    // this process; a fresh generic recovery driver below is therefore the
+    // sole continuation owner, precisely matching a real restart.
+    const owningScheduler = new ChildTaskScheduler({
+      store: taskStore,
+      runStore,
+      budgetStore,
+      dispatchRun: async () => {},
+    })
     const { taskId } = await owningScheduler.start(taskInput())
+    await waitUntil(async () => (await taskStore.get(taskId)).status === "running")
     const record = await taskStore.get(taskId)
-    // `entered` resolves the instant the original (still in-flight,
-    // permanently stuck) dispatch's stream() call actually starts running —
-    // by design (§"every model request is admitted before dispatch") its
-    // admission-hold write to the checkpoint is durably committed strictly
-    // before that call happens, so this is a deterministic "the checkpoint
-    // will never be mutated again by this dispatch" signal. A revision-
-    // stability poll instead (checking for no change across one short gap)
-    // is NOT reliable under heavy parallel-suite load: a writer merely
-    // scheduled out for a few ms looks identical to one genuinely stuck,
-    // and grabbing the checkpoint on that false signal raced this test's own
-    // second independent driver against the first one's still-pending write.
-    await entered
 
     const loaded = await runStore.load(record.currentRunId)
     expect(loaded.ok).toBe(true)
@@ -681,16 +859,14 @@ describe("childTaskScheduler.handleRunTerminal (generic-path integration)", () =
   })
 })
 
-describe("startup double-dispatch race (spec review fix)", () => {
-  it("drives a queued child task's checkpoint exactly once even when the generic recovery scan and the scheduler's own recoverAtStartup race for it", async () => {
+describe("startup queued-admission gate (spec review fix)", () => {
+  it("keeps a queued child out of generic recovery so only the capped scheduler dispatches it", async () => {
     await seedInteractiveRun("origin-1", "c1")
 
-    // One shared dedup'd dispatchRun — standing in for index.ts's single
-    // continueAnyRun, which BOTH the generic autoResumeRecoverableRuns scan
-    // and the scheduler's own recoverAtStartup() route through in
-    // production. If this scheduler ever called continueBackgroundOrSubagentRun
-    // directly instead, dispatchCount would be 2 here — that was the exact
-    // gap a spec review of the original implementation caught.
+    // One shared dedup'd dispatchRun — standing in for index.ts's
+    // continueAnyRun. The generic scan is deliberately filtered below: a
+    // durable `queued` record has not claimed a child-task slot and must not
+    // get an uncapped generic continuation during startup.
     const { dispatchRun, bindScheduler, dispatchCount } = makeDispatchRun()
     const scheduler = new ChildTaskScheduler({
       store: taskStore,
@@ -746,23 +922,26 @@ describe("startup double-dispatch race (spec review fix)", () => {
       updatedAt: 2000,
     })
 
-    // Both startup mechanisms race for the SAME runId, fired without either
-    // awaiting the other first — exactly how index.ts triggers them
-    // (autoResumeRecoverableRuns via a fire-and-forget void call, and
-    // childTaskScheduler.recoverAtStartup() likewise).
-    const generic = autoResumeRecoverableRuns({
+    // First prove the generic scan cannot dispatch a still-queued child.
+    // Then perform the scheduler restart recovery, which is the only path
+    // permitted to claim a slot and drive it.
+    await autoResumeRecoverableRuns({
       recovery: {
-        listRecoverable: async () => [
-          {
-            runId: currentRunId,
-            rootRunId: checkpoint.identity.rootRunId,
-            origin: "subagent" as const,
-            status: "running" as const,
-            recovery: { kind: "automatic" as const },
-            createdAt: 1,
-            updatedAt: 1,
-          },
-        ],
+        listRecoverable: async () => {
+          const child = await taskStore.findByRunId(currentRunId)
+          if (child?.status === "queued") return []
+          return [
+            {
+              runId: currentRunId,
+              rootRunId: checkpoint.identity.rootRunId,
+              origin: "subagent" as const,
+              status: "running" as const,
+              recovery: { kind: "automatic" as const },
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          ]
+        },
         resume: async () => {},
         abandon: async () => {},
       },
@@ -771,8 +950,8 @@ describe("startup double-dispatch race (spec review fix)", () => {
         await dispatchRun(cp.identity.runId)
       },
     })
-    const schedulerRecovery = scheduler.recoverAtStartup()
-    await Promise.all([generic, schedulerRecovery])
+    expect(dispatchCount()).toBe(0)
+    await scheduler.recoverAtStartup()
 
     await waitUntil(async () => (await taskStore.get(taskId)).status === "succeeded")
     expect(dispatchCount()).toBe(1)
@@ -786,23 +965,41 @@ describe("reconciliation via AgentRunRecoveryService.abandon() (code-quality rev
   it("updates the ChildTaskRecord and frees the concurrency slot when a running task is abandoned through the human-review recovery path", async () => {
     await seedInteractiveRun("origin-1", "c1")
 
-    // A cap of 1 means "second" stays genuinely queued behind "first" —
-    // the scenario this test needs to prove the freed slot is real, not
-    // just decremented on paper.
-    const { provider: onceHangingProvider, entered } = makeOnceHangingProvider()
-    const scheduler = makeScheduler(
-      { limits: { maxActivePerRoot: 1, maxActiveGlobal: 6 } },
-      { buildProvider: async () => onceHangingProvider }
-    )
+    // A cap of 1 means "second" stays genuinely queued behind "first".
+    // The first dispatch is intentionally a durable-startup crash seam: it
+    // establishes `running`/slot state but does no model work. The second is
+    // a real continuation, so success proves abandonment actually released
+    // a usable slot rather than merely changing the record on paper.
+    let scheduler!: ChildTaskScheduler
+    let dispatches = 0
+    const dispatchRun = async (runId: string): Promise<void> => {
+      dispatches += 1
+      if (dispatches === 1) return
+      const loaded = await runStore.load(runId)
+      if (!loaded.ok) return
+      await continueBackgroundOrSubagentRun(
+        {
+          runStore,
+          budgetStore,
+          eventStore,
+          upsertTrace: (input) => upsertRunTrace(runsDir, input),
+          tools: fakeHost(),
+          buildProvider: async () => fakeProvider(),
+          onTerminal: (checkpoint) => scheduler.handleRunTerminal(checkpoint),
+        },
+        loaded.checkpoint
+      )
+    }
+    scheduler = new ChildTaskScheduler({
+      store: taskStore,
+      runStore,
+      budgetStore,
+      dispatchRun,
+      limits: { maxActivePerRoot: 1, maxActiveGlobal: 6 },
+    })
     const first = await scheduler.start(taskInput({ instruction: "first" }))
     const second = await scheduler.start(taskInput({ instruction: "second" }))
-    // Wait for the FIRST dispatch to genuinely reach its (permanently stuck)
-    // provider call — deterministic, not a timing guess (see
-    // makeHangingProvider's identical `entered` rationale above). This
-    // stands in for a process that crashed mid tool-call and never came
-    // back: the in-flight dispatch is simply abandoned, not cleanly
-    // resolved, exactly like a real crash leaves nothing to signal.
-    await entered
+    await waitUntil(async () => (await taskStore.get(first.taskId)).status === "running")
     expect((await taskStore.get(first.taskId)).status).toBe("running")
     expect((await taskStore.get(second.taskId)).status).toBe("queued")
 
@@ -872,9 +1069,7 @@ describe("reconciliation via AgentRunRecoveryService.abandon() (code-quality rev
     expect(abandonedCheckpoint.ok && abandonedCheckpoint.checkpoint.status).toBe("cancelled")
 
     // The freed slot is real: "second" — previously blocked by the cap —
-    // now gets admitted and actually completes (using the SAME provider,
-    // now past its one-time hang, so this can only succeed if a real slot
-    // opened up).
+    // now gets admitted and its real continuation completes.
     await waitUntil(async () => (await taskStore.get(second.taskId)).status === "succeeded")
   })
 })

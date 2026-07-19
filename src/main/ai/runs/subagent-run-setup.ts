@@ -16,13 +16,12 @@ import { toDurableMessages } from "./durable-messages"
 // starts from. A subagent has no independent tool authority or workspace
 // context of its own — it inherits both from the parent run that spawned it
 // (subagent-tool-source.ts already builds the intersected tool registry;
-// this only freezes it). Its budget is either carved out of the parent's
-// own root ledger (a finite child-task account, actually enforced against
-// the shared free balance) or, when the parent itself is unlimited,
-// a fresh independent unlimited root ledger of its own: reserveChildAccount
-// requires a concrete totalTokens, so there is no way to carve an unlimited
-// child out of a finite-or-unlimited root, and none is needed — an
-// unlimited parent has no scarcity to enforce in the first place.
+// this only freezes it). The historical synchronous path gives an
+// unlimited parent an independent unlimited child root, but durable async
+// child tasks pass `childRunBudgetTokens` and are ALWAYS carved from the
+// parent's root ledger, even when that root is unlimited. That creates a
+// real finite account cap instead of accidentally treating an unbounded
+// parent as permission for an unbounded child.
 
 /** Subagents execute a delegated slice — no further planning or delegation. */
 export const SUBAGENT_SYSTEM_PROMPT =
@@ -35,6 +34,9 @@ export interface SubagentRunSetupDeps {
   tools: AiToolRegistry
   now: () => number
   newId?: () => string
+  /** Named creation-transaction crash seam used only by durable restart
+   * tests. Production leaves it undefined. */
+  fault?: (point: "after_child_account_reserved" | "after_checkpoint_created") => void
 }
 
 export interface SubagentRunSetupInput {
@@ -45,6 +47,12 @@ export interface SubagentRunSetupInput {
   model: string
   maxOutputTokens: number
   maxSteps: number
+  /**
+   * A finite account cap used by durable async child tasks. The existing
+   * synchronous compatibility path leaves this absent and retains its
+   * historical parent-budget behaviour.
+   */
+  childRunBudgetTokens?: number
 }
 
 /** The child may use a provider/model selected after its parent began. This
@@ -81,7 +89,7 @@ export async function setupSubagentRun(
     // Subagents never compress — see the frozen contextCompression block
     // below.
     compressionEnabled: false,
-    runBudgetTokens: parent.config.runBudgetTokens,
+    runBudgetTokens: input.childRunBudgetTokens ?? parent.config.runBudgetTokens,
   })
 
   const rootRunId = await ensureBudgetAccount(deps, input, parent)
@@ -123,7 +131,7 @@ export async function setupSubagentRun(
       model: input.model,
       resolvedProfile,
       maxOutputTokens: limits.maxOutputTokens,
-      runBudgetTokens: parent.config.runBudgetTokens,
+      runBudgetTokens: input.childRunBudgetTokens ?? parent.config.runBudgetTokens,
       maxSteps: input.maxSteps,
       contextCompression: limits.contextCompression,
       workspaceBinding: parent.config.workspaceBinding,
@@ -143,7 +151,9 @@ export async function setupSubagentRun(
     activatedSkills: [],
   }
 
-  return deps.runStore.create(checkpoint)
+  const created = await deps.runStore.create(checkpoint)
+  deps.fault?.("after_checkpoint_created")
+  return created
 }
 
 async function ensureBudgetAccount(
@@ -151,8 +161,8 @@ async function ensureBudgetAccount(
   input: SubagentRunSetupInput,
   parent: AgentRunCheckpointV1
 ): Promise<string> {
-  const parentRunBudgetTokens = parent.config.runBudgetTokens
-  if (parentRunBudgetTokens === undefined) {
+  const childRunBudgetTokens = input.childRunBudgetTokens ?? parent.config.runBudgetTokens
+  if (childRunBudgetTokens === undefined) {
     await deps.budgetStore.create(createRootBudgetLedger(input.runId, undefined))
     return input.runId
   }
@@ -163,8 +173,10 @@ async function ensureBudgetAccount(
     operationId: `reserve-subagent:${input.runId}`,
     accountId: input.runId,
     taskId: input.runId,
-    totalTokens: parentRunBudgetTokens,
+    totalTokens: childRunBudgetTokens,
+    durableChildTask: input.childRunBudgetTokens !== undefined,
   })
   await deps.budgetStore.mutate(rootRunId, ledgerNow.revision, () => reserved)
+  deps.fault?.("after_child_account_reserved")
   return rootRunId
 }

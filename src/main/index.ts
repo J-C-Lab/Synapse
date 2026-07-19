@@ -89,8 +89,10 @@ import { backgroundPrincipal } from "./ai/runs/background-run-setup"
 import { buildTraceFromCheckpoint } from "./ai/runs/interactive-run-driver"
 import { rootSetHashFor } from "./ai/runs/interactive-run-setup"
 import { rebuildRecoveryAuthority } from "./ai/runs/recovery-authority"
+import { createRunEventEmitter } from "./ai/runs/run-event-emitter"
 import { RunEventStore } from "./ai/runs/run-event-store"
 import { finalizeRun } from "./ai/runs/run-finalizer"
+import { toAgentChildTaskSummary } from "./ai/runs/run-projection"
 import {
   autoResumeRecoverableRuns,
   continueBackgroundOrSubagentRun,
@@ -107,6 +109,7 @@ import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
 import { ChildTaskScheduler } from "./ai/tasks/child-task-scheduler"
 import { ChildTaskStore } from "./ai/tasks/child-task-store"
+import { ChildTaskToolSource } from "./ai/tasks/child-task-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
 import { migrateAgentShellRoots } from "./ai/workspace/workspace-migration"
 import { WorkspaceRootStore } from "./ai/workspace/workspace-root-store"
@@ -366,7 +369,18 @@ const artifactStore = new ArtifactStore(artifactsRoot(app.getPath("userData")), 
       Date.now(),
       CONVERSATION_ARTIFACT_GRACE_MS
     )
-    return referenced.has(uri)
+    if (referenced.has(uri)) return true
+    // A succeeded durable child task exposes its result through the task
+    // record rather than necessarily through a conversation message. Scan
+    // the small task store on every candidate's just-in-time GC check so the
+    // record is a canonical retention root. Include the pre-finalization
+    // pending ref as well: finalization releases the run pin after this ref
+    // is durable, and a crash before terminal promotion must not create a
+    // reclaimable-result window. No other child-run artifact is retained.
+    const childTasks = await childTaskStore.scan()
+    return childTasks.some(
+      (task) => task.resultArtifact?.uri === uri || task.pendingResultArtifact?.uri === uri
+    )
   },
 })
 // The immutable, content-addressed skill package store (Task 24, design
@@ -604,6 +618,8 @@ function registerIpc(): void {
       recovery: agentRunRecoveryService,
       continueRun: (runId) => continueAnyRun(runId),
       artifactStore,
+      childTaskStore,
+      childTaskScheduler,
     },
     { isTrustedSender: isTrustedIpcSender }
   )
@@ -1153,6 +1169,11 @@ async function createAgentService(): Promise<AgentService> {
       }).run(inp)
     },
   })
+  const childTaskSource = new ChildTaskToolSource({
+    scheduler: () => childTaskScheduler,
+    runStore: agentRunStore,
+    parentTools: () => agentTools,
+  })
 
   // The model sees one flat tool list: local plugin tools, external MCP tools
   // (`mcp:<id>/<tool>`), built-in memory tools (`memory:…`), and optionally
@@ -1179,6 +1200,7 @@ async function createAgentService(): Promise<AgentService> {
       artifactSource,
       planSource,
       subagentSource,
+      childTaskSource,
       skillToolSource,
       asFallbackSource(
         plugins,
@@ -1444,6 +1466,20 @@ async function createAgentService(): Promise<AgentService> {
     artifactStore,
     onDispatchError: (taskId, err) =>
       logger.child("runs").warn("child task dispatch failed", { taskId, err }),
+    onTaskUpdated: async (task) => {
+      const emitter = await createRunEventEmitter(
+        agentEventStore,
+        {
+          runId: task.originRunId,
+          rootRunId: task.rootRunId,
+          conversationId: task.conversationId,
+        },
+        Date.now,
+        undefined,
+        broadcastRunEvent
+      )
+      await emitter.emit({ type: "child_task_updated", child: toAgentChildTaskSummary(task) })
+    },
   })
 
   continueAnyRun = (runId: string): Promise<void> => {
@@ -1513,6 +1549,8 @@ async function createAgentService(): Promise<AgentService> {
                 onEvent: broadcastRunEvent,
                 estimatorQuarantine,
                 artifactStore,
+                beforeFinalize: (checkpoint, input) =>
+                  childTaskScheduler.prepareResultBeforeFinalization(checkpoint, input),
                 skillPackageLeases: skillPackageLeaseStore,
                 buildProvider: buildProviderForRun,
                 onTerminal: (cp) => childTaskScheduler.handleRunTerminal(cp),
@@ -1543,6 +1581,16 @@ async function createAgentService(): Promise<AgentService> {
     return ownership
   }
 
+  // Rehydrate/admit child tasks first. This synchronously reconstructs every
+  // running slot and changes only scheduler-admitted queued tasks to running
+  // before the generic scan is allowed to inspect them. The generic scan
+  // below explicitly excludes still-queued child tasks, so a checkpoint that
+  // has never owned a scheduler slot cannot bypass either child-task cap.
+  const childTaskStartupRecovery = childTaskScheduler.recoverAtStartup()
+  void childTaskStartupRecovery.catch((err) =>
+    logger.child("runs").warn("failed to recover child tasks at startup", { err })
+  )
+
   // Kick off the startup recovery scan now, without blocking app readiness on
   // it — chat() internally awaits this same promise before starting any new
   // turn, so a stale/terminalizing conversation lease from a prior process
@@ -1554,8 +1602,30 @@ async function createAgentService(): Promise<AgentService> {
   // for this (fast) dispatch phase, never for the continuations it kicks off.
   void agentService.reconcileRunsAtStartup({
     listRecoverable: async () => {
+      await childTaskStartupRecovery
       await autoResumeRecoverableRuns({
-        recovery: agentRunRecoveryService,
+        recovery: {
+          // A queued child checkpoint is deliberately durable before it is
+          // dispatched, but only ChildTaskScheduler may admit it. Letting
+          // this generic automatic-recovery scan resume it would make it a
+          // second, uncapped admission path. Running child tasks remain here
+          // and continue through the shared per-run ownership map.
+          listRecoverable: async () => {
+            const summaries = await agentRunRecoveryService.listRecoverable()
+            const eligible = []
+            for (const summary of summaries) {
+              if (summary.origin !== "subagent") {
+                eligible.push(summary)
+                continue
+              }
+              const child = await childTaskStore.findByRunId(summary.runId)
+              if (child?.status !== "queued") eligible.push(summary)
+            }
+            return eligible
+          },
+          resume: (runId) => agentRunRecoveryService.resume(runId),
+          abandon: (runId) => agentRunRecoveryService.abandon(runId),
+        },
         runStore: agentRunStore,
         continueRun: async (checkpoint) => {
           await continueAnyRun(checkpoint.identity.runId)
@@ -1566,21 +1636,6 @@ async function createAgentService(): Promise<AgentService> {
       return []
     },
   })
-
-  // Scheduler-level startup recovery (Task 26): the generic scan above
-  // already resumes every non-terminal "automatic" checkpoint, including a
-  // child task's `running` checkpoint — that's checkpoint-level recovery,
-  // needing zero child-task-specific code. What it never touches is a
-  // `queued` task, whose checkpoint exists (frozen authority/budget already
-  // reserved) but was never actually dispatched before a crash; nothing
-  // else will ever drive it, so the scheduler must. Also rebuilds this
-  // process's in-process concurrency bookkeeping from durable
-  // ChildTaskRecord status so a live start() shortly after restart still
-  // respects the per-root/global cap. Fire-and-forget, same rationale as
-  // the scan above: app readiness never waits on child-task completion.
-  void childTaskScheduler
-    .recoverAtStartup()
-    .catch((err) => logger.child("runs").warn("failed to recover child tasks at startup", { err }))
 
   return agentService
 }

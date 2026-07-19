@@ -2,13 +2,21 @@
 // Kept in the preload package so the renderer and the preload always
 // agree on the contract.
 
-import type { AgentRunEvent, AgentRunSnapshot, AgentRunSummary } from "@synapse/agent-protocol"
+import type {
+  AgentChildTaskSummary,
+  AgentRunEvent,
+  AgentRunSnapshot,
+  AgentRunSummary,
+} from "@synapse/agent-protocol"
 
 export {}
 
 declare global {
   type LauncherAppKind = "win32" | "uwp" | "url" | "macos"
   type SynapseFloatingBallFeature = "appLauncher"
+  /** Bounded child-task metadata carried by AgentRunSnapshot.childTasks.
+   * No child task management endpoint is exposed to the renderer. */
+  type SynapseChildTaskSummary = AgentChildTaskSummary
 
   interface LauncherAppEntry {
     id: string

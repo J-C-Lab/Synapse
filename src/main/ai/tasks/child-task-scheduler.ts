@@ -1,11 +1,17 @@
 import type { AgentArtifactRef, AgentArtifactStore } from "../artifacts/artifact-types"
 import type { ChatMessage } from "../providers/types"
 import type { AgentRunStore } from "../runs/agent-run-store"
-import type { AgentRunCheckpointV1 } from "../runs/checkpoint-schema"
+import type { AgentRunCheckpointV1, CheckpointValidationResult } from "../runs/checkpoint-schema"
+import type { FinalizeRunInput } from "../runs/run-finalizer"
 import type { ChildTaskStore } from "./child-task-store"
 import type { ChildTaskRecord, ChildTaskStatus } from "./child-task-types"
 import { randomUUID } from "node:crypto"
 import { isTerminalRunStatus } from "@synapse/agent-protocol"
+import {
+  reconcileAbandonedChildAccount,
+  StaleLedgerRevisionError,
+} from "../budget/root-budget-ledger"
+import { RunNotFoundError } from "../runs/agent-run-store"
 import { toChatMessages } from "../runs/durable-messages"
 import { setupSubagentRun } from "../runs/subagent-run-setup"
 import {
@@ -29,29 +35,21 @@ import { isTerminalChildTaskStatus } from "./child-task-types"
 // is why `ChildTaskRecord` needs no separate replay spec (instruction,
 // provider, tool list, ...) of its own: the checkpoint is that spec. A
 // `queued` task's checkpoint therefore already exists but has never been
-// driven — nothing else will ever drive it, so `recoverAtStartup()` must.
-// A `running` task's checkpoint was already being driven before a crash;
-// the existing generic autoResumeRecoverableRuns/continueAnyRun startup
-// scan (index.ts) already resumes every non-terminal automatic-recovery
-// `origin: "subagent"` checkpoint unconditionally — so recoverAtStartup()
-// only needs to recompute this scheduler's own in-process slot bookkeeping
-// for those (never re-dispatch them itself), so a *live* start() call made
-// shortly after restart correctly queues behind whatever is already active
-// rather than double-admitting past the cap.
+// driven — index.ts excludes still-queued ChildTaskRecords from generic
+// recovery, so only `recoverAtStartup()` may admit it. A `running` task's
+// checkpoint was already being driven before a crash; the generic
+// autoResumeRecoverableRuns/continueAnyRun startup scan resumes that
+// checkpoint after scheduler recovery has rebuilt its slot bookkeeping. A
+// live start() shortly after restart therefore queues behind durable active
+// work rather than double-admitting past the cap.
 //
 // CRITICAL invariant (fixed after spec review found a real gap): this
 // scheduler must NEVER call continueBackgroundOrSubagentRun directly. Doing
 // so would let it drive a checkpoint fully independently of index.ts's
-// generic autoResumeRecoverableRuns startup scan, which ALSO drives any
-// non-terminal automatic-recovery subagent checkpoint — including a
-// `queued` child task's, since a fresh, zero-step, matching-authority
-// checkpoint classifies as `automatic` with nothing to distinguish it from
-// one that is genuinely already in flight. Two independent drivers racing
-// to dispatch the same runId at startup is a real double-tool-execution
-// risk, not merely a wasted duplicate call: the checkpoint store's per-runId
-// CAS mutex only bounds the damage (one loses with a StaleRevisionError on
-// its first write), it does not prevent whatever the losing driver already
-// executed before that write.
+// generic autoResumeRecoverableRuns startup scan. The index filter prevents
+// a still-queued task from reaching that generic path, while every admitted
+// task shares continueAnyRun's ownership map; both halves are required to
+// prevent a restart race from executing work twice or bypassing a cap.
 //
 // The fix: every real drive of a child's checkpoint — fresh admission,
 // startup-recovery dispatch of the `queued` backlog, and a forced
@@ -106,6 +104,9 @@ export interface StartChildTaskInput {
   model: string
   maxOutputTokens: number
   maxSteps: number
+  /** A finite child-account cap. This remains finite even when the root
+   * interactive run itself has no configured upper bound. */
+  budgetTokens: number
 }
 
 export interface ChildTaskSchedulerDeps {
@@ -130,6 +131,9 @@ export interface ChildTaskSchedulerDeps {
    *  internally, so this is realistically never the "happy path", but nothing
    *  here may let such a rejection propagate and wedge the scheduler. */
   onDispatchError?: (taskId: string, err: unknown) => void
+  /** Observes already-durable task-record transitions for parent-run event
+   * projections. Observer failure must not affect scheduling authority. */
+  onTaskUpdated?: (record: ChildTaskRecord) => void | Promise<void>
   limits?: Partial<ChildTaskSchedulerLimits>
 }
 
@@ -145,6 +149,10 @@ export class ChildTaskScheduler {
   private globalActive = 0
   private readonly perRootActive = new Map<string, number>()
   private readonly pendingQueue: PendingEntry[] = []
+  /** Tasks that have already claimed an in-process admission attempt but
+   *  have not yet durably transitioned from queued to running. This closes
+   *  repeated manual-resume clicks racing that small CAS window. */
+  private readonly admittingTaskIds = new Set<string>()
   /** runId -> the controller currently driving it. Populated externally by
    *  index.ts around every continueAnyRun call for a background/subagent
    *  checkpoint (this scheduler never constructs its own), so cancel() can
@@ -210,6 +218,7 @@ export class ChildTaskScheduler {
         model: input.model,
         maxOutputTokens: input.maxOutputTokens,
         maxSteps: input.maxSteps,
+        childRunBudgetTokens: input.budgetTokens,
       }
     )
 
@@ -220,15 +229,9 @@ export class ChildTaskScheduler {
       taskId,
       conversationId: checkpoint.identity.conversationId!,
       originRunId: input.originRunId,
-      // Deliberately the ORIGIN run's own rootRunId, not the child
-      // checkpoint's — setupSubagentRun/ensureBudgetAccount gives an
-      // unlimited-budget parent's child its own independent, self-keyed
-      // root ledger (checkpoint.identity.rootRunId === currentRunId in that
-      // case), which would make every sibling task its own unique "root"
-      // and silently defeat the per-root-run concurrency cap for the
-      // common unlimited-parent case. The concurrency cap's "root run" is a
-      // per-conversation/run-tree fairness grouping, orthogonal to whichever
-      // budget ledger a given child happens to draw from.
+      // The trusted origin root is both the shared budget ledger for this
+      // finite async account and the per-run-tree fairness grouping. Keep
+      // the record explicit instead of trusting any caller-supplied root.
       rootRunId: origin.checkpoint.identity.rootRunId,
       currentRunId,
       name: input.name,
@@ -240,6 +243,7 @@ export class ChildTaskScheduler {
       updatedAt: createdAt,
     }
     await this.deps.store.create(record)
+    await this.notifyTaskUpdated(record)
     this.tryAdmitOrEnqueue(taskId, record.rootRunId)
     return { taskId }
   }
@@ -253,6 +257,7 @@ export class ChildTaskScheduler {
   async cancel(taskId: string): Promise<void> {
     const record = await this.markCancelledIfPossible(taskId)
     if (record.status !== "cancelled") return // already succeeded/failed by the time we tried
+    await this.notifyTaskUpdated(record)
 
     if (this.abortIfLive(record.currentRunId)) return // a live driver (ours or the generic path) will finalize it
 
@@ -277,10 +282,8 @@ export class ChildTaskScheduler {
     }
   }
 
-  /** Called once at startup, after the generic autoResumeRecoverableRuns
-   *  scan has been wired to resume every non-terminal checkpoint (including
-   *  this scheduler's `running` child tasks) — see this file's top-of-file
-   *  note for the full checkpoint-level/scheduler-level split. Rebuilds
+  /** Called once at startup before the generic autoResumeRecoverableRuns
+   *  scan is allowed to inspect child checkpoints. Rebuilds
    *  in-process slot bookkeeping from durable ChildTaskRecord status (never
    *  its own separate ledger) and dispatches the `queued` backlog — the one
    *  bucket nothing else will ever drive — respecting the same cap a live
@@ -296,11 +299,12 @@ export class ChildTaskScheduler {
    *  checkpoint already reached a real terminal state never counts against
    *  the concurrency cap, regardless of how it got there. */
   async recoverAtStartup(): Promise<void> {
+    await this.reconcileCreationOrphans()
     const nonTerminal = await this.deps.store.scan({ status: ["queued", "running"] })
     const running = nonTerminal.filter((record) => record.status === "running")
     const queued = nonTerminal.filter((record) => record.status === "queued")
     for (const record of running) {
-      const loaded = await this.deps.runStore.load(record.currentRunId).catch(() => undefined)
+      const loaded = await this.deps.runStore.load(record.currentRunId)
       if (loaded?.ok && isTerminalRunStatus(loaded.checkpoint.status)) {
         await this.handleRunTerminal(loaded.checkpoint).catch(() => {})
         continue
@@ -329,6 +333,17 @@ export class ChildTaskScheduler {
     this.liveControllers.delete(runId)
   }
 
+  /** Routes a manually resumed queued checkpoint through the same bounded
+   *  admission queue as a freshly created task. Returns false for an
+   *  unknown/non-queued task so callers can retain normal running-run resume
+   *  behavior without accidentally dispatching a queued child themselves. */
+  async admitQueuedRunForResume(runId: string): Promise<boolean> {
+    const record = await this.deps.store.findByRunId(runId)
+    if (!record || record.status !== "queued") return false
+    this.tryAdmitOrEnqueue(record.taskId, record.rootRunId)
+    return true
+  }
+
   /** The onTerminal hook wired (by index.ts) into every
    *  continueBackgroundOrSubagentRun call `continueAnyRun` makes — harmless
    *  no-op for a checkpoint that isn't a child task's run (findByRunId
@@ -345,25 +360,84 @@ export class ChildTaskScheduler {
       if (nextStatus) {
         const resultArtifact =
           nextStatus === "succeeded"
-            ? await this.captureResult(record, checkpoint).catch(() => undefined)
+            ? (record.pendingResultArtifact ??
+              (await this.captureResult(record, checkpoint).catch(() => undefined)))
             : undefined
-        await this.casMutate(record.taskId, (r) => ({
+        const updated = await this.casMutate(record.taskId, (r) => ({
           ...r,
           status: nextStatus,
           resultArtifact,
+          pendingResultArtifact: undefined,
           updatedAt: this.now(),
         }))
+        await this.notifyTaskUpdated(updated)
       }
+    }
+    // The child's finite reservation belongs to the root ledger until the
+    // checkpoint reaches a real terminal state. Reconcile it only here (not
+    // at cancel-decision time), so an in-flight driver can still settle its
+    // final debit. This is idempotent and therefore also repairs records
+    // whose status was already durably set by a proactive cancellation.
+    try {
+      await this.releaseTerminalBudget(record)
+    } catch (err) {
+      // A terminal checkpoint remains authoritative even if its accounting
+      // projection cannot be persisted right now. Report it without turning
+      // completion into a failed driver or leaking the concurrency slot.
+      this.deps.onDispatchError?.(record.taskId, err)
     }
     if (this.slotHolders.delete(runId)) this.releaseSlotAndPump(record.rootRunId)
   }
 
+  /** Captures a successful result and stores a durable pending reference
+   * before run finalization releases that run's artifact pin. The final
+   * terminal transition promotes it to `resultArtifact`; if a crash lands
+   * between the two writes, GC still sees this reference and cannot reclaim
+   * a result a later conversation turn must read. */
+  async prepareResultBeforeFinalization(
+    checkpoint: AgentRunCheckpointV1,
+    finalization: Pick<FinalizeRunInput, "desiredStatus">
+  ): Promise<void> {
+    if (checkpoint.identity.origin !== "subagent" || finalization.desiredStatus !== "completed")
+      return
+    const record = await this.deps.store.findByRunId(checkpoint.identity.runId)
+    if (
+      !record ||
+      record.status !== "running" ||
+      record.pendingResultArtifact ||
+      record.resultArtifact
+    )
+      return
+    const resultArtifact = await this.captureResult(record, checkpoint)
+    if (!resultArtifact) return
+    const updated = await this.casMutate(record.taskId, (current) => {
+      if (
+        current.status !== "running" ||
+        current.pendingResultArtifact !== undefined ||
+        current.resultArtifact !== undefined
+      ) {
+        return current
+      }
+      return { ...current, pendingResultArtifact: resultArtifact, updatedAt: this.now() }
+    })
+    if (updated.pendingResultArtifact?.uri === resultArtifact.uri) {
+      await this.notifyTaskUpdated(updated)
+    }
+  }
+
   private tryAdmitOrEnqueue(taskId: string, rootRunId: string): void {
+    if (
+      this.admittingTaskIds.has(taskId) ||
+      this.pendingQueue.some((entry) => entry.taskId === taskId)
+    ) {
+      return
+    }
     const rootCount = this.perRootActive.get(rootRunId) ?? 0
     if (
       this.globalActive < this.limits.maxActiveGlobal &&
       rootCount < this.limits.maxActivePerRoot
     ) {
+      this.admittingTaskIds.add(taskId)
       this.perRootActive.set(rootRunId, rootCount + 1)
       this.globalActive += 1
       void this.admitAndDispatch(taskId, rootRunId).catch((err) => {
@@ -387,10 +461,12 @@ export class ChildTaskScheduler {
     try {
       record = await this.deps.store.get(taskId)
     } catch (err) {
+      this.admittingTaskIds.delete(taskId)
       this.releaseSlotAndPump(rootRunId)
       throw err
     }
     if (isTerminalChildTaskStatus(record.status)) {
+      this.admittingTaskIds.delete(taskId)
       this.releaseSlotAndPump(rootRunId)
       return
     }
@@ -401,7 +477,10 @@ export class ChildTaskScheduler {
         status: "running",
         updatedAt: this.now(),
       }))
+      this.admittingTaskIds.delete(taskId)
+      await this.notifyTaskUpdated(running)
     } catch (err) {
+      this.admittingTaskIds.delete(taskId)
       this.releaseSlotAndPump(rootRunId)
       // Either cancelled between our get() and this mutate() (illegal
       // transition), or some other in-process caller (e.g. a concurrent
@@ -453,6 +532,7 @@ export class ChildTaskScheduler {
         continue
       }
       this.pendingQueue.splice(i, 1)
+      this.admittingTaskIds.add(entry.taskId)
       this.perRootActive.set(entry.rootRunId, rootCount + 1)
       this.globalActive += 1
       void this.admitAndDispatch(entry.taskId, entry.rootRunId).catch((err) => {
@@ -464,8 +544,9 @@ export class ChildTaskScheduler {
   }
 
   private removeFromPendingQueue(taskId: string): void {
-    const index = this.pendingQueue.findIndex((entry) => entry.taskId === taskId)
-    if (index !== -1) this.pendingQueue.splice(index, 1)
+    for (let index = this.pendingQueue.length - 1; index >= 0; index -= 1) {
+      if (this.pendingQueue[index]?.taskId === taskId) this.pendingQueue.splice(index, 1)
+    }
   }
 
   private abortIfLive(runId: string): boolean {
@@ -507,6 +588,16 @@ export class ChildTaskScheduler {
     }
   }
 
+  private async notifyTaskUpdated(record: ChildTaskRecord): Promise<void> {
+    try {
+      await this.deps.onTaskUpdated?.(record)
+    } catch (err) {
+      // Task records are authoritative. A renderer/event projection failure
+      // must never turn a committed task transition into a failed operation.
+      this.deps.onDispatchError?.(record.taskId, err)
+    }
+  }
+
   private async captureResult(
     record: ChildTaskRecord,
     checkpoint: AgentRunCheckpointV1
@@ -529,11 +620,87 @@ export class ChildTaskScheduler {
         kind: "child-result",
         mediaType: "text/plain; charset=utf-8",
         sourceBytes: bytes.byteLength,
+        delegateToConversationIds: [record.conversationId],
       },
       // A plain in-memory Uint8Array capture has nothing live to cancel —
       // same rationale as history-artifact.ts's identical no-op abort.
       { abort: () => {} }
     )
+  }
+
+  private async releaseTerminalBudget(record: ChildTaskRecord): Promise<void> {
+    for (;;) {
+      const ledger = await this.deps.budgetStore.load(record.rootRunId)
+      const reconciled = reconcileAbandonedChildAccount(ledger, {
+        operationId: `release-child-task:${record.currentRunId}`,
+        runId: record.currentRunId,
+      })
+      if (!reconciled.reconciled) return
+      try {
+        await this.deps.budgetStore.mutate(
+          record.rootRunId,
+          ledger.revision,
+          () => reconciled.ledger
+        )
+        return
+      } catch (err) {
+        if (err instanceof StaleLedgerRevisionError) continue
+        this.deps.onDispatchError?.(record.taskId, err)
+        return
+      }
+    }
+  }
+
+  /** Repairs the three-write creation protocol before generic recovery can
+   * inspect subagent checkpoints: reserve ledger → checkpoint → task record.
+   * A crash after either of the first two writes must neither leak budget nor
+   * leave an unowned checkpoint for generic auto-resume to execute. */
+  private async reconcileCreationOrphans(): Promise<void> {
+    const records = await this.deps.store.scan()
+    const representedRunIds = new Set(records.map((record) => record.currentRunId))
+
+    // A record without a usable checkpoint cannot ever be driven. Mark it
+    // terminal and release its finite account; a crash between these writes
+    // is harmless because the terminal-record pass below retries release.
+    for (const record of records) {
+      if (isTerminalChildTaskStatus(record.status)) {
+        await this.releaseTerminalBudget(record)
+        continue
+      }
+      const loaded = await this.loadForCreationReconciliation(record.currentRunId)
+      if (loaded?.ok) continue
+      const failed = await this.casMutate(record.taskId, (current) => {
+        if (isTerminalChildTaskStatus(current.status)) return current
+        return { ...current, status: "failed", updatedAt: this.now() }
+      })
+      await this.notifyTaskUpdated(failed)
+      await this.releaseTerminalBudget(failed)
+    }
+
+    await this.deps.budgetStore.reconcileOrphanedDurableChildTasks(async (runId) => {
+      if (representedRunIds.has(runId)) return true
+      // Preserve evidence rather than deleting bytes, but remove this
+      // unowned checkpoint from AgentRunStore before generic auto recovery
+      // starts. A repeat after a crash is idempotent (discard is a no-op once
+      // the source directory has moved aside).
+      await this.deps.runStore.discard(runId)
+      return false
+    })
+  }
+
+  /** A missing checkpoint (or one that validated as unusable) is a durable
+   * inconsistency that startup can reconcile. Transport/filesystem errors
+   * are not evidence of absence: propagate them so generic recovery cannot
+   * race an intact checkpoint while this task's record/account is discarded. */
+  private async loadForCreationReconciliation(
+    runId: string
+  ): Promise<CheckpointValidationResult | undefined> {
+    try {
+      return await this.deps.runStore.load(runId)
+    } catch (err) {
+      if (err instanceof RunNotFoundError) return undefined
+      throw err
+    }
   }
 }
 

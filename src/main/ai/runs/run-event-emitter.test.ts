@@ -86,6 +86,57 @@ describe("createRunEventEmitter", () => {
     expect(events.map((e) => e.sequence)).toEqual([1, 2, 3])
   })
 
+  it("re-syncs when an asynchronous child-task projection appends between driver events", async () => {
+    const emitter = await createRunEventEmitter(
+      store,
+      { runId: "run-child", rootRunId: "run-child", conversationId: "conv-1" },
+      () => 1000
+    )
+    await emitter.emit({ type: "run_started", origin: "interactive" })
+    await store.append("run-child", {
+      schemaVersion: 1,
+      eventId: "child-event",
+      runId: "run-child",
+      rootRunId: "run-child",
+      conversationId: "conv-1",
+      sequence: 2,
+      timestamp: 1001,
+      persisted: true,
+      type: "child_task_updated",
+      child: { childRunId: "child-1", status: "running", label: "Research" },
+    })
+
+    await emitter.emit({ type: "run_completed", outcome: "completed" })
+    expect((await store.readAll("run-child")).map((event) => event.sequence)).toEqual([1, 2, 3])
+  })
+
+  it("persists every concurrent child-task update emitted by short-lived emitters", async () => {
+    const emitters = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        createRunEventEmitter(
+          store,
+          { runId: "parent-run", rootRunId: "parent-run", conversationId: "conv-1" },
+          () => 1000
+        )
+      )
+    )
+
+    await Promise.all(
+      emitters.map((emitter, index) =>
+        emitter.emit({
+          type: "child_task_updated",
+          child: { childRunId: `child-${index}`, status: "running", label: `Task ${index}` },
+        })
+      )
+    )
+
+    const events = await store.readAll("parent-run")
+    expect(events).toHaveLength(20)
+    expect(events.map((event) => event.sequence)).toEqual(
+      Array.from({ length: 20 }, (_, index) => index + 1)
+    )
+  })
+
   it("does not let a projection append failure stop the driver, and reuses the sequence", async () => {
     const append = vi
       .fn<(runId: string, event: AgentRunEvent) => Promise<void>>()

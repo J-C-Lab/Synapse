@@ -46,6 +46,27 @@ export interface RunEventEmitter {
   emit: (input: RunEventInput) => Promise<void>
 }
 
+// More than one driver may observe the same durable run. In particular a
+// resumed parent driver and the child-task scheduler can both publish to the
+// parent's journal. Keep that serialization process-wide rather than on an
+// individual emitter, because scheduler lifecycle notifications deliberately
+// use short-lived emitters.
+const appendTails = new Map<string, Promise<void>>()
+
+function serializeAppend<T>(runId: string, operation: () => Promise<T>): Promise<T> {
+  const prior = appendTails.get(runId) ?? Promise.resolve()
+  const queued = prior.then(operation, operation)
+  const settled = queued.then(
+    () => undefined,
+    () => undefined
+  )
+  appendTails.set(runId, settled)
+  void settled.then(() => {
+    if (appendTails.get(runId) === settled) appendTails.delete(runId)
+  })
+  return queued
+}
+
 export async function createRunEventEmitter(
   store: Pick<RunEventStore, "readAll" | "append">,
   identity: RunEventIdentity,
@@ -72,34 +93,45 @@ export async function createRunEventEmitter(
 
   return {
     async emit(input: RunEventInput): Promise<void> {
-      const nextSequence = sequence + 1
-      const event = {
-        ...input,
-        schemaVersion: 1,
-        eventId: newId(),
-        runId: identity.runId,
-        rootRunId: identity.rootRunId,
-        parentRunId: identity.parentRunId,
-        conversationId: identity.conversationId,
-        sequence: nextSequence,
-        timestamp: now(),
-        persisted: true,
-      } as AgentRunEvent
-      try {
-        await store.append(identity.runId, event)
-      } catch {
-        // The checkpoint is authoritative. A diagnostic/projection write
-        // failure must never stop a model/tool/finalization driver, and the
-        // sequence is deliberately not consumed so its next successful
-        // append remains contiguous.
-        return
-      }
-      sequence = nextSequence
-      try {
-        onEvent?.(event)
-      } catch {
-        // A broadcast-side failure must never surface as a driver failure.
-      }
+      // The event journal is observational: a storage failure must never
+      // break the checkpoint-authoritative driver. Serializing all emitters
+      // for a run means normal concurrent lifecycle updates cannot race on a
+      // sequence number and silently disappear after an arbitrary retry cap.
+      await serializeAppend(identity.runId, async () => {
+        let durableSequence = sequence
+        try {
+          const latest = await store.readAll(identity.runId)
+          durableSequence = latest.length > 0 ? latest[latest.length - 1]!.sequence : 0
+        } catch {
+          // Fall back to this emitter's last successful write. append below
+          // remains the durable boundary and its failure is still harmless.
+        }
+        const nextSequence = Math.max(sequence, durableSequence) + 1
+        const event = {
+          ...input,
+          schemaVersion: 1,
+          eventId: newId(),
+          runId: identity.runId,
+          rootRunId: identity.rootRunId,
+          parentRunId: identity.parentRunId,
+          conversationId: identity.conversationId,
+          sequence: nextSequence,
+          timestamp: now(),
+          persisted: true,
+        } as AgentRunEvent
+        try {
+          await store.append(identity.runId, event)
+          sequence = nextSequence
+          try {
+            onEvent?.(event)
+          } catch {
+            // A broadcast-side failure must never surface as a driver failure.
+          }
+        } catch {
+          // The checkpoint is authoritative. A diagnostic/projection write
+          // failure must never stop a model/tool/finalization driver.
+        }
+      })
     },
   }
 }

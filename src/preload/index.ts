@@ -1,3 +1,4 @@
+import type { AgentRunSnapshot } from "@synapse/agent-protocol"
 import type { IpcRendererEvent } from "electron"
 import { contextBridge, ipcRenderer, webUtils } from "electron"
 
@@ -204,7 +205,10 @@ const electronAPI = {
   unarchiveAiWorkspace: (id: string) => ipcRenderer.invoke("ai:unarchive-workspace", { id }),
   listRuns: (query?: { parentRunId?: string }) => ipcRenderer.invoke("runs:list", query),
   getRun: (runId: string) => ipcRenderer.invoke("runs:get", runId),
-  getRunSnapshot: (runId: string) => ipcRenderer.invoke("runs:getSnapshot", runId),
+  // Includes the bounded `childTasks` projection; this remains the existing
+  // read-only run snapshot surface rather than a renderer task-management API.
+  getRunSnapshot: (runId: string): Promise<AgentRunSnapshot | undefined> =>
+    ipcRenderer.invoke("runs:getSnapshot", runId),
   getRunEventsSince: (runId: string, afterSequence: number) =>
     ipcRenderer.invoke("runs:getEventsSince", { runId, afterSequence }),
   listRecoverableRuns: () => ipcRenderer.invoke("runs:listRecoverable"),

@@ -10,6 +10,7 @@ import type { AgentRunRecoveryService } from "./agent-run-recovery-service"
 import type { AgentRunStore } from "./agent-run-store"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
 import type { RunEventStore } from "./run-event-store"
+import type { FinalizeRunInput } from "./run-finalizer"
 import { releaseArtifactRunResources } from "../artifacts/artifact-retention"
 import { activeSkillInstructionsReader } from "../skills/skill-activation"
 import { releaseSkillPackageLeases } from "../skills/skill-package-leases"
@@ -129,6 +130,14 @@ export interface GenericRunContinuationDeps {
    *  driven by its own dispatch or by the startup recovery scan. Absent for
    *  every other caller. */
   onTerminal?: (checkpoint: AgentRunCheckpointV1) => void | Promise<void>
+  /** Runs after a successful terminal outcome is known but before
+   * finalizeRun releases the artifact pin. Durable child-task result capture
+   * uses this seam to persist its retention reference before GC can observe
+   * the run as releasable. */
+  beforeFinalize?: (
+    checkpoint: AgentRunCheckpointV1,
+    input: FinalizeRunInput
+  ) => void | Promise<void>
 }
 
 /** Re-drives an interrupted background-agent or subagent checkpoint to
@@ -297,8 +306,10 @@ export async function continueBackgroundOrSubagentRun(
           eventEmitter,
         },
         signal: controller.signal,
-        finalize: (rid, input) =>
-          finalizeRun(
+        finalize: async (rid, input) => {
+          const before = await deps.runStore.load(rid)
+          if (before.ok) await deps.beforeFinalize?.(before.checkpoint, input)
+          return finalizeRun(
             {
               runStore: deps.runStore,
               upsertTrace: deps.upsertTrace,
@@ -310,7 +321,8 @@ export async function continueBackgroundOrSubagentRun(
             },
             rid,
             input
-          ),
+          )
+        },
         buildResourceReleasePlan: (cp) => ({
           budgetOperationIds: [],
           skillPackageLeaseIds: cp.activatedSkills.map((a) => a.packageLeaseId),

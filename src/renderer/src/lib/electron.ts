@@ -679,6 +679,9 @@ export async function listAiWorkspaces(options?: {
 
 export type RunSummary = SynapseRunSummary
 export type RunDetail = SynapseRunDetail
+/** Renderer-safe snapshot projection only; task mutation remains model-tool
+ * scoped in the main process. */
+export type ChildTaskSummary = SynapseChildTaskSummary
 
 export async function listRuns(query?: { parentRunId?: string }): Promise<RunSummary[]> {
   return api().listRuns(query)
