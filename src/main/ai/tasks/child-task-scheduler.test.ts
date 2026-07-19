@@ -110,14 +110,28 @@ function fakeProvider(text = "done") {
 function makeHangingProvider(): {
   provider: { id: string; stream: (req?: { signal?: AbortSignal }) => AsyncGenerator<never> }
   reject: (err: unknown) => void
+  /** Resolves the instant stream()'s (lazy) generator body actually starts
+   *  running — a deterministic "the dispatch has genuinely reached the
+   *  provider call and is now stuck" signal. Prefer this over polling for
+   *  checkpoint-revision stability: under heavy parallel-suite load, "no
+   *  change across one short poll gap" can be a false positive (the writer
+   *  merely got scheduled out, not actually blocked yet), which raced a
+   *  second independent driver against the first one's still-pending write
+   *  in exactly the scenario this fixture exists to test. */
+  entered: Promise<void>
 } {
   let reject!: (err: unknown) => void
   const gate = new Promise<never>((_resolve, rej) => {
     reject = rej
   })
+  let markEntered!: () => void
+  const entered = new Promise<void>((resolve) => {
+    markEntered = resolve
+  })
   const provider = {
     id: "fake",
     async *stream(req?: { signal?: AbortSignal }): AsyncGenerator<never> {
+      markEntered()
       // The signal may already be aborted by the time this (lazy) generator
       // body actually starts running — check synchronously before also
       // listening for a later abort, or an already-fired event would be
@@ -127,7 +141,7 @@ function makeHangingProvider(): {
       await gate
     },
   }
-  return { provider, reject }
+  return { provider, reject, entered }
 }
 
 /** A provider whose stream() blocks until explicitly released, then
@@ -592,26 +606,22 @@ describe("childTaskScheduler.handleRunTerminal (generic-path integration)", () =
     // updates the record even though that scheduler never called start().
     // Deliberately never resolved/rejected — see the identical rationale in
     // the recoverAtStartup bookkeeping test above.
-    const { provider: hangingProvider } = makeHangingProvider()
+    const { provider: hangingProvider, entered } = makeHangingProvider()
     const owningScheduler = makeScheduler({}, { buildProvider: async () => hangingProvider })
     const { taskId } = await owningScheduler.start(taskInput())
     const record = await taskStore.get(taskId)
-    // The original (still in-flight, permanently stuck) dispatch keeps
-    // writing admission-hold bookkeeping to the checkpoint right up until
-    // it actually reaches the hanging provider call, after which nothing
-    // further ever mutates it again. Wait for the revision to stop moving
-    // — a stronger, race-free signal than any single field, since it can't
-    // be observed "true" a half-write early the way e.g. modelSteps.length
-    // can.
-    let previousRevision: number | undefined
-    await waitUntil(async () => {
-      const cp = await runStore.load(record.currentRunId)
-      if (!cp.ok) return false
-      const stable =
-        cp.checkpoint.revision === previousRevision && cp.checkpoint.modelSteps.length > 0
-      previousRevision = cp.checkpoint.revision
-      return stable
-    })
+    // `entered` resolves the instant the original (still in-flight,
+    // permanently stuck) dispatch's stream() call actually starts running —
+    // by design (§"every model request is admitted before dispatch") its
+    // admission-hold write to the checkpoint is durably committed strictly
+    // before that call happens, so this is a deterministic "the checkpoint
+    // will never be mutated again by this dispatch" signal. A revision-
+    // stability poll instead (checking for no change across one short gap)
+    // is NOT reliable under heavy parallel-suite load: a writer merely
+    // scheduled out for a few ms looks identical to one genuinely stuck,
+    // and grabbing the checkpoint on that false signal raced this test's own
+    // second independent driver against the first one's still-pending write.
+    await entered
 
     const loaded = await runStore.load(record.currentRunId)
     expect(loaded.ok).toBe(true)
