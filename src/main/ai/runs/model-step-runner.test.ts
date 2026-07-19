@@ -22,6 +22,7 @@ import {
   RootBudgetLedgerStore,
 } from "../budget/root-budget-ledger"
 import { buildActiveSkillInstructionContextText } from "../skills/skill-activation"
+import { ACTIVATE_SKILL_FQ, LIST_SKILLS_FQ } from "../skills/skill-tool-source"
 import { AgentRunStore } from "./agent-run-store"
 import { canonicalHash } from "./canonical-json"
 import { sealCheckpointIntegrity } from "./checkpoint-schema"
@@ -757,6 +758,42 @@ describe("advanceModelStep — active-skill tool narrowing (Task 25)", () => {
     await advanceModelStep(deps, runId)
 
     expect(provider.calls[0]!.tools.map((t) => t.name).sort()).toEqual(["tool_a", "tool_b"])
+  })
+
+  it("never narrows away skill:core/list_skills or skill:core/activate_skill, even when the active skill's allowedTools doesn't name them (review fix)", async () => {
+    const runId = "run-skill-narrow-meta"
+    const toolA = toolFixture("execution:core/tool_a", "tool_a")
+    const listSkills = toolFixture(LIST_SKILLS_FQ, "list_skills")
+    const activateSkillTool = toolFixture(ACTIVATE_SKILL_FQ, "activate_skill")
+    const checkpoint = minimalCheckpoint(runId, 10_000)
+    checkpoint.config.authority.tools = [
+      toolA.authority,
+      listSkills.authority,
+      activateSkillTool.authority,
+    ]
+    // A tightly-scoped skill whose own allowed-tools names only its own
+    // domain tool — never skill:core/list_skills or skill:core/
+    // activate_skill, since nothing requires a skill author to think of
+    // that. Without the exemption this would strand the run: no way to
+    // list or activate any other skill for the rest of it.
+    checkpoint.activatedSkills = [
+      fixtureSkillActivation({ effectiveToolNames: ["execution:core/tool_a"] }),
+    ]
+    await runStore.create(sealCheckpointIntegrity(checkpoint))
+    await budgetStore.create(createRootBudgetLedger(runId, 10_000))
+
+    const provider = fakeProvider({ inputTokens: 20, outputTokens: 10 })
+    const deps: ModelStepDeps = {
+      ...baseDeps(provider),
+      tools: () => [toolA.schema, listSkills.schema, activateSkillTool.schema],
+    }
+
+    await advanceModelStep(deps, runId)
+
+    expect(provider.calls).toHaveLength(1)
+    expect(provider.calls[0]!.tools.map((t) => t.name).sort()).toEqual(
+      ["activate_skill", "list_skills", "tool_a"].sort()
+    )
   })
 })
 

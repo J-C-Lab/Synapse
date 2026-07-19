@@ -274,6 +274,31 @@ describe("activateSkill", () => {
     expect(result.activation.effectiveToolNames).not.toContain("tool_not_visible")
   })
 
+  it("narrows to zero tools for a real skill declaring an explicit allowed-tools: [] (review fix)", async () => {
+    const h = await newHarness()
+    const root = await tempDir("synapse-skill-src-")
+    await writeSkill(root, "zero-tools-skill", { allowedTools: [] })
+    const descriptor = await resolveDescriptor(h, root, "zero-tools-skill")
+    const tools = [frozenTool("execution:core/tool_a", "tool_a")]
+    const checkpoint = await h.runStore.create(minimalCheckpoint("run-zero-tools", tools))
+
+    const result = await activateSkill(
+      {
+        packageStore: h.packageStore,
+        leaseStore: h.leaseStore,
+        artifactStore: h.artifactStore,
+        runStore: h.runStore,
+        now: h.now,
+        newId: h.newId,
+      },
+      { runId: checkpoint.identity.runId, descriptor }
+    )
+
+    expect(result.kind).toBe("activated")
+    expect(descriptor.allowedTools).toEqual([])
+    expect(result.activation.effectiveToolNames).toEqual([])
+  })
+
   it("releases the lease it just acquired when instructions capture fails", async () => {
     const h = await newHarness()
     const root = await tempDir("synapse-skill-src-")
@@ -408,6 +433,16 @@ describe("computeEffectiveToolNames", () => {
 
   it("returns an empty list when allowedTools matches nothing visible", () => {
     expect(computeEffectiveToolNames(tools, ["tool_never_visible"])).toEqual([])
+  })
+
+  it("narrows to nothing for an explicit allowed-tools: [] — distinct from an omitted field (review fix)", () => {
+    // Task 24's frontmatter parser distinguishes omitted (undefined) from
+    // explicitly empty ([]) — collapsing the two here would silently grant
+    // full, unrestricted access to a skill author who wrote `allowed-tools:
+    // []` specifically to mean "this skill needs zero additional tools."
+    expect(computeEffectiveToolNames(tools, [])).toEqual([])
+    // Only an omitted field (undefined) keeps the full run-visible set.
+    expect(computeEffectiveToolNames(tools, undefined)).not.toEqual([])
   })
 })
 

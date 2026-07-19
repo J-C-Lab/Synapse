@@ -210,7 +210,19 @@ export function computeEffectiveToolNames(
   runVisibleTools: readonly FrozenToolAuthority[],
   allowedTools: readonly string[] | undefined
 ): string[] {
-  if (!allowedTools || allowedTools.length === 0) {
+  // Only an OMITTED field means "no restriction" (design: "If allowedTools
+  // is absent, activation does not change tool visibility"). An explicit
+  // `allowed-tools: []` is a deliberately different, distinguishable input
+  // — Task 24's frontmatter parser (optionalStringArray) already returns
+  // `undefined` for an omitted field and `[]` for an explicitly empty one,
+  // never collapsing the two — so a skill author who writes `allowed-tools:
+  // []` to mean "this skill needs no additional tools" must get exactly
+  // that (an empty effective set for its own contribution), never silently
+  // upgraded to unrestricted access. Safe even as the sole active skill:
+  // skill-tool-source.ts's SKILL_META_TOOL_FQ_NAMES exemption keeps
+  // list_skills/activate_skill visible regardless, so the run is never
+  // stranded.
+  if (allowedTools === undefined) {
     return runVisibleTools.map((tool) => tool.fqName)
   }
   const allowedSet = new Set(allowedTools)

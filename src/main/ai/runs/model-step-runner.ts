@@ -22,6 +22,7 @@ import { projectCompactedMessages } from "../context/history-artifact"
 import { streamWithDeadlines } from "../provider-stream-deadlines"
 import { addUsage, emptyUsage, totalTokens } from "../providers/types"
 import { activeSkillEffectiveToolNames } from "../skills/skill-activation"
+import { SKILL_META_TOOL_FQ_NAMES } from "../skills/skill-tool-source"
 import { canonicalHash } from "./canonical-json"
 import { assembleFromContextSnapshot } from "./context-snapshot"
 
@@ -623,7 +624,17 @@ function requestHashFor(
  * `effectiveToolNames` is itself computed as an intersection with the run's
  * frozen tool set at activation time, so this second filter is redundant-
  * but-safe when nothing is active, and strictly narrowing when something
- * is. */
+ * is.
+ *
+ * `skill:core/list_skills` and `skill:core/activate_skill` are exempt from
+ * this narrowing (skill-tool-source.ts's `SKILL_META_TOOL_FQ_NAMES`) —
+ * review fix: nothing requires a skill author's own `allowed-tools` list to
+ * name them, so a tightly-scoped skill's own narrowing could otherwise
+ * strand the run, unable to list or activate any other skill (or even walk
+ * back the mistake) for the rest of it. The exemption only ever restores
+ * visibility of a tool already in `checkpoint.config.authority.tools` —
+ * the `frozen` lookup above still gates every tool on that, so this can
+ * never add a tool beyond the run's frozen ceiling. */
 function frozenModelTools(
   checkpoint: AgentRunCheckpointV1,
   liveTools: ProviderToolSchema[]
@@ -637,6 +648,10 @@ function frozenModelTools(
     if (!frozen || frozen.modelSchemaHash !== canonicalHash(tool as unknown as CanonicalJson)) {
       return false
     }
-    return skillNarrowedFqNames === undefined || skillNarrowedFqNames.has(frozen.fqName)
+    return (
+      skillNarrowedFqNames === undefined ||
+      SKILL_META_TOOL_FQ_NAMES.has(frozen.fqName) ||
+      skillNarrowedFqNames.has(frozen.fqName)
+    )
   })
 }

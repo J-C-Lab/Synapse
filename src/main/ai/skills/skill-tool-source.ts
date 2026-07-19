@@ -28,6 +28,25 @@ const SKILL_PLUGIN_ID = "skill:core"
 export const LIST_SKILLS_FQ = `${SKILL_PLUGIN_ID}/list_skills`
 export const ACTIVATE_SKILL_FQ = `${SKILL_PLUGIN_ID}/activate_skill`
 
+/** Never subject to skill-narrowing (model-step-runner.ts's
+ *  frozenModelTools). These two are the ONLY entry point back to "list or
+ *  activate a different skill" — if a narrowly-scoped skill's own
+ *  `allowed-tools` list doesn't happen to name them (nothing requires a
+ *  skill author to; a tightly-scoped skill naming only its own domain
+ *  tools is the natural thing to write), losing them to the very next
+ *  model request would permanently strand the run: unable to list or
+ *  activate any other skill for the rest of it, and unable to undo the
+ *  mistake. Exempting them mirrors how they are already exempt from the
+ *  capability-grant model (`capabilities: []` above): narrowing which
+ *  tools are visible must never remove the one path back to managing that
+ *  visibility. This only ever restores visibility of a tool the run's
+ *  frozen authority already grants; it can never add a tool beyond that
+ *  ceiling. */
+export const SKILL_META_TOOL_FQ_NAMES: ReadonlySet<string> = new Set([
+  LIST_SKILLS_FQ,
+  ACTIVATE_SKILL_FQ,
+])
+
 export interface SkillToolSourceOptions {
   /** Live catalog resolution — re-discovers every call (Task 24's discovery
    *  is bounded/cheap; see skill-package-store.ts's own quota-scan note).
