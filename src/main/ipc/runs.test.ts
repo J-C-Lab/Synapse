@@ -14,6 +14,7 @@ import { sealCheckpointIntegrity } from "../ai/runs/checkpoint-schema"
 import { RunEventStore } from "../ai/runs/run-event-store"
 import { ChildTaskStore } from "../ai/tasks/child-task-store"
 import {
+  ExternalMcpRunRecoveryControlError,
   getArtifactStatus,
   normalizeArtifactPreviewQuery,
   normalizeArtifactUri,
@@ -289,11 +290,11 @@ describe("registerRunsIpc — durable endpoints", () => {
     await fs.rm(dir, { recursive: true, force: true })
   })
 
-  function minimalCheckpoint(runId: string) {
+  function minimalCheckpoint(runId: string, origin: "interactive" | "mcp" = "interactive") {
     return sealCheckpointIntegrity({
       schemaVersion: 1 as const,
       revision: 0,
-      identity: { runId, rootRunId: runId, origin: "interactive" as const, conversationId: "c1" },
+      identity: { runId, rootRunId: runId, origin, conversationId: "c1" },
       status: "running" as const,
       recovery: { kind: "automatic" as const },
       createdAt: 1,
@@ -362,7 +363,7 @@ describe("registerRunsIpc — durable endpoints", () => {
   }
 
   function fakeRecovery(overrides: {
-    listRecoverable?: () => Promise<unknown[]>
+    listRecoverable?: (options?: { excludeOrigins?: readonly string[] }) => Promise<unknown[]>
     resume?: (runId: string, decision?: RecoveryDecision) => Promise<void>
     abandon?: (runId: string) => Promise<void>
   }) {
@@ -486,16 +487,42 @@ describe("registerRunsIpc — durable endpoints", () => {
     expect((events as { type: string }[]).map((e) => e.type)).toEqual(["run_completed"])
   })
 
-  it("runs:listRecoverable delegates to the recovery service", async () => {
-    const ipcMain = register(fakeRecovery({ listRecoverable: async () => [{ runId: "r1" }] }))
+  it("runs:listRecoverable excludes externally owned MCP checkpoints", async () => {
+    let received: { excludeOrigins?: readonly string[] } | undefined
+    const ipcMain = register(
+      fakeRecovery({
+        listRecoverable: async (options) => {
+          received = options
+          return [{ runId: "r1" }]
+        },
+      })
+    )
     const result = await ipcMain.handlers.get("runs:listRecoverable")?.({})
     expect(result).toEqual([{ runId: "r1" }])
+    expect(received).toEqual({ excludeOrigins: ["mcp"] })
   })
 
   it("runs:resume returns ok:true on success", async () => {
     const ipcMain = register(fakeRecovery({}))
     const result = await ipcMain.handlers.get("runs:resume")?.({}, { runId: "r1" })
     expect(result).toEqual({ ok: true })
+  })
+
+  it("runs:resume rejects an externally owned MCP checkpoint before recovery", async () => {
+    await runStore.create(minimalCheckpoint("mcp-run", "mcp"))
+    const resumed: string[] = []
+    const ipcMain = register(
+      fakeRecovery({
+        resume: async (runId) => {
+          resumed.push(runId)
+        },
+      })
+    )
+
+    await expect(
+      ipcMain.handlers.get("runs:resume")?.({}, { runId: "mcp-run" })
+    ).rejects.toBeInstanceOf(ExternalMcpRunRecoveryControlError)
+    expect(resumed).toEqual([])
   })
 
   it("runs:resume routes a queued child through scheduler admission without generic continuation", async () => {
@@ -639,6 +666,23 @@ describe("registerRunsIpc — durable endpoints", () => {
     )
     await ipcMain.handlers.get("runs:abandon")?.({}, "r1")
     expect(calledWith).toBe("r1")
+  })
+
+  it("runs:abandon rejects an externally owned MCP checkpoint before recovery", async () => {
+    await runStore.create(minimalCheckpoint("mcp-run", "mcp"))
+    const abandoned: string[] = []
+    const ipcMain = register(
+      fakeRecovery({
+        abandon: async (runId) => {
+          abandoned.push(runId)
+        },
+      })
+    )
+
+    await expect(ipcMain.handlers.get("runs:abandon")?.({}, "mcp-run")).rejects.toBeInstanceOf(
+      ExternalMcpRunRecoveryControlError
+    )
+    expect(abandoned).toEqual([])
   })
 
   it("does not register artifact channels when no artifact store is wired", () => {

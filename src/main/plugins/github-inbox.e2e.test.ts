@@ -96,7 +96,6 @@ describe("github inbox plugin", () => {
         prompt: async () => ({ allow: true }),
       },
       backgroundAgentProvider: async () => ({ provider, model: "fake-model" }),
-      recordRun: runRecorded,
     })
     const sandboxDispatch = vi.spyOn(host.sandbox, "dispatchTrigger")
 

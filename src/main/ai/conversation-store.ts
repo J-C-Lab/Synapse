@@ -13,8 +13,9 @@ import { deriveArtifactUris, toChatMessages, toDurableMessages } from "./runs/du
 // atomic-json-store helper only serializes the physical write, not the
 // read-validate-write sequence a lease/CAS operation needs.
 //
-// `get`/`save`/`delete`/`list` are the pre-existing compatibility projection
-// — every current caller (AgentService et al.) keeps working unchanged.
+// `get`/`save`/`delete`/`list` are the historical compatibility projection.
+// Production turn setup uses `create`/`createIfMissing` plus the lease API;
+// `save` remains only for importing and reading old conversation shapes.
 // `acquireRunLease`/`renewRunLease`/`commitRun`/`releaseRunLease`/`tombstone`
 // are the new durable-run API; nothing calls them yet (that lands with the
 // interactive-chat migration).
@@ -134,6 +135,41 @@ export class ConversationStore {
     const record = await this.withLock(id, () => this.readForMutation(id))
     if (!record || record.state !== "active") return undefined
     return toStoredConversation(record)
+  }
+
+  /** Creates an empty V2 record. This is the production-safe replacement for
+   * the legacy whole-history `save` path used when starting a new chat. */
+  async create(input: {
+    id: string
+    workspaceId: string
+    title?: string
+    createdAt?: number
+  }): Promise<StoredConversation> {
+    return this.withLock(input.id, async () => {
+      const existing = await this.readForMutation(input.id)
+      if (existing?.state === "deleted") throw new ConversationTombstonedError(input.id)
+      if (existing) return toStoredConversation(existing)
+      const now = this.now()
+      const record = {
+        ...emptyRecord(input.id, input.workspaceId, input.createdAt ?? now),
+        title: input.title,
+        updatedAt: now,
+      }
+      await this.writeRecord(record)
+      return toStoredConversation(record)
+    })
+  }
+
+  /** Atomically returns an existing record or creates a fresh empty V2
+   * record. `chat()` uses this so a first message never relies on the legacy
+   * whole-history writer and two concurrent starts cannot overwrite each
+   * other. */
+  async createIfMissing(input: {
+    id: string
+    workspaceId: string
+    createdAt?: number
+  }): Promise<StoredConversation> {
+    return this.create(input)
   }
 
   /** Create or replace a conversation, stamping `updatedAt`. Bypasses the
@@ -489,9 +525,10 @@ export class ConversationStore {
 
   // --- internals --------------------------------------------------------
 
-  /** Reads the current record, migrating a legacy v1 record to V2 and
-   *  persisting that migration immediately so message ids stabilize. Callers
-   *  must already hold this conversation's lock (see `withLock`). */
+  /** Reads a record into its current in-memory representation. Legacy V1
+   * records are deliberately not rewritten here: historical readers remain
+   * read-only, while the caller's first real mutation persists the complete
+   * V2 record atomically under the same lock. */
   private async readForMutation(id: string): Promise<ConversationRecordV2 | undefined> {
     const raw = await readJsonFile(this.filePath(id))
     if (raw === null) return undefined
@@ -523,9 +560,7 @@ export class ConversationStore {
     }
     const legacy = tryParseLegacy(raw)
     if (!legacy) return undefined
-    const migrated = migrateLegacyRecord(legacy)
-    await this.writeRecord(migrated)
-    return migrated
+    return migrateLegacyRecord(legacy)
   }
 
   /** Strict read used solely by destructive retention scans. Unlike normal

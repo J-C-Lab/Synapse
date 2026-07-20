@@ -1,6 +1,6 @@
-import type { AgentRunSnapshot } from "@synapse/agent-protocol"
+import type { AgentRunEvent, AgentRunSnapshot } from "@synapse/agent-protocol"
 import type { DisplayMessage, ToolCard } from "./chat-message-model"
-import type { AiChatEvent, AiChatMessage } from "@/lib/electron"
+import type { AiChatMessage } from "@/lib/electron"
 import { describe, expect, it } from "vitest"
 import {
   applyArtifactAvailability,
@@ -202,14 +202,29 @@ describe("applyArtifactAvailability", () => {
 })
 
 const CONVERSATION_ID = "c1"
+const RUN_ID = "run-1"
+
+function runEvent(input: Record<string, unknown>): AgentRunEvent {
+  return {
+    schemaVersion: 1,
+    eventId: crypto.randomUUID(),
+    runId: RUN_ID,
+    rootRunId: RUN_ID,
+    conversationId: CONVERSATION_ID,
+    sequence: 1,
+    timestamp: 1,
+    persisted: input.type !== "text_delta",
+    ...input,
+  } as AgentRunEvent
+}
 
 /** Mirrors chat-page.tsx's handleEvent sequencing: text deltas accumulate, everything else flushes them first. */
-function replay(messages: DisplayMessage[], events: AiChatEvent[]): DisplayMessage[] {
+function replay(messages: DisplayMessage[], events: AgentRunEvent[]): DisplayMessage[] {
   let pending = ""
   let state = messages
   for (const event of events) {
-    if (event.type === "text") {
-      pending += event.delta
+    if (event.type === "text_delta") {
+      pending += event.text
       continue
     }
     const lastIndex = state.length - 1
@@ -234,37 +249,45 @@ function startingState(): DisplayMessage[] {
 
 describe("live-streaming event ordering", () => {
   it("interleaves text and tool blocks in the order events actually arrive across multiple agent-loop steps", () => {
-    const events: AiChatEvent[] = [
-      { type: "text", conversationId: CONVERSATION_ID, delta: "checking the repo" },
-      {
-        type: "tool_call",
-        conversationId: CONVERSATION_ID,
-        id: "t1",
-        name: "list_files",
-        input: {},
-      },
-      { type: "tool_result", conversationId: CONVERSATION_ID, id: "t1", isError: false },
-      { type: "text", conversationId: CONVERSATION_ID, delta: "found it, reading now" },
-      {
-        type: "tool_call",
-        conversationId: CONVERSATION_ID,
-        id: "t2",
-        name: "read_file",
-        input: {},
-      },
-      { type: "tool_result", conversationId: CONVERSATION_ID, id: "t2", isError: false },
-      { type: "text", conversationId: CONVERSATION_ID, delta: "done" },
-      {
-        type: "done",
-        conversationId: CONVERSATION_ID,
-        stopReason: "end_turn",
-        usage: {
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheCreationInputTokens: 0,
-          cacheReadInputTokens: 0,
-        },
-      },
+    const events: AgentRunEvent[] = [
+      runEvent({ type: "text_delta", text: "checking the repo" }),
+      runEvent({
+        type: "tool_requested",
+        modelStep: 0,
+        ordinal: 0,
+        assistantMessageId: "a1",
+        toolUseId: "t1",
+        safeName: "list_files",
+        fqName: "list_files",
+      }),
+      runEvent({
+        type: "tool_completed",
+        ordinal: 0,
+        toolUseId: "t1",
+        attemptId: "a1",
+        isError: false,
+        complete: true,
+      }),
+      runEvent({ type: "text_delta", text: "found it, reading now" }),
+      runEvent({
+        type: "tool_requested",
+        modelStep: 1,
+        ordinal: 1,
+        assistantMessageId: "a2",
+        toolUseId: "t2",
+        safeName: "read_file",
+        fqName: "read_file",
+      }),
+      runEvent({
+        type: "tool_completed",
+        ordinal: 1,
+        toolUseId: "t2",
+        attemptId: "a2",
+        isError: false,
+        complete: true,
+      }),
+      runEvent({ type: "text_delta", text: "done" }),
+      runEvent({ type: "run_completed", outcome: "completed" }),
     ]
 
     const result = replay(startingState(), events)
@@ -280,15 +303,24 @@ describe("live-streaming event ordering", () => {
   })
 
   it("marks the right tool block as errored without disturbing block order", () => {
-    const events: AiChatEvent[] = [
-      {
-        type: "tool_call",
-        conversationId: CONVERSATION_ID,
-        id: "t1",
-        name: "run_command",
-        input: {},
-      },
-      { type: "tool_result", conversationId: CONVERSATION_ID, id: "t1", isError: true },
+    const events: AgentRunEvent[] = [
+      runEvent({
+        type: "tool_requested",
+        modelStep: 0,
+        ordinal: 0,
+        assistantMessageId: "a1",
+        toolUseId: "t1",
+        safeName: "run_command",
+        fqName: "run_command",
+      }),
+      runEvent({
+        type: "tool_completed",
+        ordinal: 0,
+        toolUseId: "t1",
+        attemptId: "a1",
+        isError: true,
+        complete: true,
+      }),
     ]
     const result = replay(startingState(), events)
     expect(result[1]?.blocks).toEqual([
@@ -297,9 +329,9 @@ describe("live-streaming event ordering", () => {
   })
 
   it("appends an error as a new paragraph after existing text, not glued onto it", () => {
-    const events: AiChatEvent[] = [
-      { type: "text", conversationId: CONVERSATION_ID, delta: "working on it" },
-      { type: "error", conversationId: CONVERSATION_ID, message: "connection lost" },
+    const events: AgentRunEvent[] = [
+      runEvent({ type: "text_delta", text: "working on it" }),
+      runEvent({ type: "run_failed", outcome: "failed", reason: "connection lost" }),
     ]
     const result = replay(startingState(), events)
     expect(result[1]?.blocks).toEqual([
@@ -334,13 +366,18 @@ describe("durable snapshot rehydration", () => {
 
   it("rehydrates an in-flight tool card exactly once across a snapshot and duplicate live event", () => {
     const restored = mergeDurableRunSnapshot(startingState(), snapshot)
-    const afterDuplicate = applyEvent(restored, {
-      type: "tool_call",
-      conversationId: CONVERSATION_ID,
-      id: "tool-1",
-      name: "read_file",
-      input: { path: "secret" },
-    })
+    const afterDuplicate = applyEvent(
+      restored,
+      runEvent({
+        type: "tool_requested",
+        modelStep: 0,
+        ordinal: 0,
+        assistantMessageId: "a1",
+        toolUseId: "tool-1",
+        safeName: "read_file",
+        fqName: "read_file",
+      })
+    )
 
     const cards = afterDuplicate.flatMap((message) =>
       message.blocks.filter((block) => block.kind === "tool" && block.id === "tool-1")

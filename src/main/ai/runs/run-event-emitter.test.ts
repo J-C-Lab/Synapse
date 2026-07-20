@@ -1,4 +1,5 @@
 import type { AgentRunEvent } from "@synapse/agent-protocol"
+import type { RunEventInput } from "./run-event-emitter"
 import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -137,7 +138,7 @@ describe("createRunEventEmitter", () => {
     )
   })
 
-  it("does not let a projection append failure stop the driver, and reuses the sequence", async () => {
+  it("does not let a projection append failure stop lifecycle emission, and reuses the sequence", async () => {
     const append = vi
       .fn<(runId: string, event: AgentRunEvent) => Promise<void>>()
       .mockRejectedValueOnce(new Error("disk unavailable"))
@@ -151,12 +152,43 @@ describe("createRunEventEmitter", () => {
       onEvent
     )
 
-    await expect(emitter.emit({ type: "text_delta", text: "first" })).resolves.toBeUndefined()
-    await expect(emitter.emit({ type: "text_delta", text: "second" })).resolves.toBeUndefined()
+    await expect(
+      emitter.emit({ type: "run_started", origin: "interactive" })
+    ).resolves.toBeUndefined()
+    await expect(
+      emitter.emit({ type: "run_started", origin: "interactive" })
+    ).resolves.toBeUndefined()
 
     expect(append.mock.calls.map(([, event]) => event.sequence)).toEqual([1, 1])
     expect(onEvent).toHaveBeenCalledTimes(1)
-    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ text: "second", sequence: 1 }))
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "run_started", sequence: 1 })
+    )
+  })
+
+  it("routes an untyped text delta to the live broadcaster without appending it", async () => {
+    const append = vi
+      .fn<(runId: string, event: AgentRunEvent) => Promise<void>>()
+      .mockResolvedValue(undefined)
+    const onEvent = vi.fn()
+    const emitter = await createRunEventEmitter(
+      { readAll: async () => [], append },
+      { runId: "run-live", rootRunId: "run-live" },
+      () => 10,
+      () => "event-id",
+      onEvent
+    )
+
+    await emitter.emit({ type: "text_delta", text: "live only" } as unknown as RunEventInput)
+
+    expect(append).not.toHaveBeenCalled()
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "text_delta",
+        text: "live only",
+        persisted: false,
+      })
+    )
   })
 
   it("starts the driver when the prior observational journal cannot be read", async () => {

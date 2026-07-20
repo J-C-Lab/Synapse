@@ -109,7 +109,6 @@ describe("downloadsOrganizer", () => {
         approve: async () => ({ allow: true }),
         prompt: async () => ({ allow: true }),
       },
-      recordRun: runRecorded,
     })
 
     await host.init()

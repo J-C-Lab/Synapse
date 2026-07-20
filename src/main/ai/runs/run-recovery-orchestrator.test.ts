@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import { ConversationStore } from "../conversation-store"
 import { emptyUsage } from "../providers/types"
-import { upsertRunTrace } from "../run-trace-store"
+import { getRunTrace, upsertRunTrace } from "../run-trace-store"
 import { AiToolRegistry } from "../tool-registry"
 import { AgentRunStore } from "./agent-run-store"
 import { setupBackgroundRun } from "./background-run-setup"
@@ -31,7 +31,7 @@ beforeEach(async () => {
   runStore = new AgentRunStore(runsDir)
   budgetStore = new RootBudgetLedgerStore(join(dir, "budget"))
   eventStore = new RunEventStore(join(dir, "events"))
-  upsertTrace = (input) => upsertRunTrace(runsDir, input)
+  upsertTrace = (input) => upsertRunTrace(join(dir, "traces"), input)
 })
 
 afterEach(async () => {
@@ -170,7 +170,7 @@ describe("continueBackgroundOrSubagentRun", () => {
     expect(final.ok && final.checkpoint.status).toBe("cancelled")
   })
 
-  it("drives a freshly-created (interrupted before its first step) subagent checkpoint to completion", async () => {
+  it("drives a freshly-created subagent checkpoint through continuation and durable completion", async () => {
     await seedParentRun("parent-1")
     const host = fakeHost()
     const checkpoint = await setupSubagentRun(
@@ -187,22 +187,23 @@ describe("continueBackgroundOrSubagentRun", () => {
     )
     expect(checkpoint.modelSteps).toHaveLength(0)
 
-    const recorded: import("../run-trace-store").RunTrace[] = []
     await continueBackgroundOrSubagentRun(
       {
         runStore,
         budgetStore,
         eventStore,
         upsertTrace,
-        recordRun: (t) => recorded.push(t),
         tools: host,
         buildProvider: async () => fakeProvider("done"),
       },
       checkpoint
     )
 
-    expect(recorded).toHaveLength(1)
-    expect(recorded[0]).toMatchObject({ runId: "child-1", origin: "subagent", outcome: "end_turn" })
+    expect(getRunTrace(join(dir, "traces"), "child-1")).toMatchObject({
+      runId: "child-1",
+      origin: "subagent",
+      outcome: "end_turn",
+    })
 
     const final = await runStore.load("child-1")
     expect(final.ok).toBe(true)

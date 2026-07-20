@@ -601,7 +601,6 @@ export type AiConversationSummary = SynapseAiConversationSummary
 export type AiWorkspace = SynapseAiWorkspace
 export type AiConversation = SynapseAiConversation
 export type AiChatMessage = SynapseAiChatMessage
-export type AiChatEvent = SynapseAiChatEvent
 export type AiTokenUsage = SynapseAiTokenUsage
 export type AiRememberScope = SynapseAiRememberScope
 export type McpServerConfig = SynapseMcpServerConfig
@@ -841,10 +840,6 @@ export async function approveAiTool(
   remember?: AiRememberScope
 ): Promise<void> {
   await api().approveAiTool(approvalId, allow, remember)
-}
-
-export function onAiChatEvent(handler: (event: AiChatEvent) => void): () => void {
-  return api().onAiChatEvent(handler)
 }
 
 export async function listAiAllowedTools(): Promise<string[]> {

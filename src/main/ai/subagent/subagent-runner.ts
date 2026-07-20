@@ -2,7 +2,7 @@ import type { AgentArtifactStore } from "../artifacts/artifact-types"
 import type { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import type { EstimatorQuarantineStore } from "../estimator-quarantine-store"
 import type { ChatMessage, ChatProvider } from "../providers/types"
-import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "../run-trace-store"
+import type { TraceUpsertInput, TraceUpsertReceipt } from "../run-trace-store"
 import type { AgentRunStore } from "../runs/agent-run-store"
 import type { RunFinalizerDeps } from "../runs/run-finalizer"
 import type { SkillPackageLeaseStore } from "../skills/skill-package-leases"
@@ -40,7 +40,6 @@ export interface SubagentRunnerOptions {
   upsertTrace: (input: TraceUpsertInput) => TraceUpsertReceipt
   model?: string
   now?: () => number
-  recordRun?: (trace: RunTrace) => void
   estimatorQuarantine?: EstimatorQuarantineStore
   /** Recoverable artifact backend (Checkpoint B). Omitted in tests that
    *  don't exercise artifact retention. */
@@ -147,9 +146,6 @@ export class SubagentRunner {
       },
       childRunId
     )
-
-    const trace = outcome.checkpoint.finalization?.trace
-    if (trace) this.options.recordRun?.(trace)
 
     if (outcome.kind === "suspended_unknown_tool_outcome") {
       // Unreachable for a single-process subagent run — see the identical

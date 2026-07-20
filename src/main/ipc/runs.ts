@@ -266,6 +266,15 @@ export type ResumeRunResult =
   | { ok: false; reason: "decision_required"; reviewReason: string }
   | { ok: false; reason: "conversation_conflict_unresumable" }
 
+export class ExternalMcpRunRecoveryControlError extends Error {
+  constructor(runId: string) {
+    super(
+      `external MCP run ${runId} is owned by its stdio process and cannot be controlled by GUI recovery`
+    )
+    this.name = "ExternalMcpRunRecoveryControlError"
+  }
+}
+
 export interface RunsDurableDeps {
   runStore: AgentRunStore
   eventStore: RunEventStore
@@ -290,6 +299,26 @@ export interface RunsDurableDeps {
    *  the generic `continueRun` path is safe for running children but would
    *  otherwise bypass per-root/global admission. */
   childTaskScheduler?: Pick<ChildTaskScheduler, "admitQueuedRunForResume">
+}
+
+/** GUI recovery has no cross-process MCP owner lease. Inspect the durable
+ * identity before any recovery service mutation and fail closed for external
+ * MCP; only the stdio process may prove an owner stale/dead and finalize it. */
+async function assertGuiMayControlRecovery(runStore: AgentRunStore, runId: string): Promise<void> {
+  let loaded: Awaited<ReturnType<AgentRunStore["load"]>>
+  try {
+    loaded = await runStore.load(runId)
+  } catch (err) {
+    // Preserve existing recovery-service behavior for a missing run (which
+    // will report its own typed/not-found outcome), while still inspecting
+    // every extant checkpoint before control reaches resume/abandon.
+    if (err instanceof RunNotFoundError) return
+    throw err
+  }
+  if (!loaded.ok) throw new Error(`cannot control unreadable run ${runId}`)
+  if (loaded.checkpoint.identity.origin === "mcp") {
+    throw new ExternalMcpRunRecoveryControlError(runId)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -484,13 +513,14 @@ export function registerRunsIpc(
 
   ipcMain.handle("runs:listRecoverable", async (event): Promise<AgentRunSummary[]> => {
     guard(event)
-    return durable.recovery.listRecoverable()
+    return durable.recovery.listRecoverable({ excludeOrigins: ["mcp"] })
   })
 
   ipcMain.handle("runs:resume", async (event, payload: unknown): Promise<ResumeRunResult> => {
     guard(event)
     const query = normalizeResumeQuery(payload)
     try {
+      await assertGuiMayControlRecovery(durable.runStore, query.runId)
       const childTask = await durable.childTaskStore?.findByRunId(query.runId)
       await durable.recovery.resume(query.runId, query.decision)
       if (childTask?.status === "queued") {
@@ -522,7 +552,9 @@ export function registerRunsIpc(
 
   ipcMain.handle("runs:abandon", async (event, runId: unknown): Promise<void> => {
     guard(event)
-    await durable.recovery.abandon(requireString(runId, "runId"))
+    const id = requireString(runId, "runId")
+    await assertGuiMayControlRecovery(durable.runStore, id)
+    await durable.recovery.abandon(id)
   })
 
   // Artifact status/preview/retention channels are only registered when an

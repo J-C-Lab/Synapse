@@ -524,26 +524,6 @@ declare global {
     plan?: Array<{ title: string; status: "pending" | "in_progress" | "completed" }>
   }
 
-  type SynapseAiChatEvent =
-    | { type: "text"; conversationId: string; delta: string }
-    | { type: "tool_call"; conversationId: string; id: string; name: string; input: unknown }
-    | { type: "tool_result"; conversationId: string; id: string; isError: boolean }
-    | {
-        type: "approval_request"
-        conversationId: string
-        approvalId: string
-        toolName: string
-        input: unknown
-      }
-    | { type: "done"; conversationId: string; stopReason: string; usage: SynapseAiTokenUsage }
-    | { type: "error"; conversationId: string; message: string }
-    | {
-        type: "plan"
-        conversationId: string
-        runId: string
-        steps: Array<{ title: string; status: "pending" | "in_progress" | "completed" }>
-      }
-
   type SynapseAiRememberScope = "once" | "conversation" | "always"
 
   interface SynapseMemoryEntry {
@@ -968,7 +948,6 @@ declare global {
       }) => Promise<SynapseMemoryIngestResult>
       deleteMemory: (id: string) => Promise<boolean>
       deleteMemorySource: (source: string) => Promise<number>
-      onAiChatEvent: (handler: (event: SynapseAiChatEvent) => void) => () => void
       getUpdateStatus: () => Promise<SynapseUpdateState>
       checkForUpdates: () => Promise<void>
       downloadUpdate: () => Promise<void>

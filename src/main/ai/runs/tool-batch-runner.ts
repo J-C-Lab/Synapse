@@ -444,6 +444,18 @@ async function approvalPhase(
 
   if (call.approval.status === "pending") {
     const approvalId = call.approval.approvalId
+    // A resumed driver has no new checkpoint mutation to announce, but it
+    // must still republish the existing pending decision through the shared
+    // protocol so a freshly attached renderer can submit it. This is an
+    // observational replay of durable state, never a fabricated checkpoint.
+    await deps.eventEmitter?.emit({
+      type: "approval_pending",
+      approvalId,
+      modelStep,
+      ordinal,
+      toolUseId: call.toolUseId,
+      safeName: call.safeName,
+    })
     const decided = await deps.requestApproval(approvalId, policyInput(call))
     checkpoint = await mutateCheckpoint(deps, runId, (cp) =>
       updateCall(cp, modelStep, ordinal, (c) => ({

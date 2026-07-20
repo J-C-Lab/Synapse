@@ -73,11 +73,14 @@ export interface AgentRunRecoveryServiceDeps {
 export class AgentRunRecoveryService {
   constructor(private readonly deps: AgentRunRecoveryServiceDeps) {}
 
-  /** Scans every non-terminal or incomplete-finalization checkpoint,
-   * reclassifies it, persists the disposition, and returns a summary row per
-   * run. Even an unreadable checkpoint gets a blocked row keyed by its safe
-   * directory runId, so it can be diagnosed and explicitly abandoned. */
-  async listRecoverable(): Promise<AgentRunSummary[]> {
+  /** Origin filtering happens before migration/classification so a caller
+   * that does not own an origin can observe neither a disposition write nor
+   * a terminalization side effect for it. */
+  async listRecoverable(
+    options: {
+      excludeOrigins?: readonly AgentRunCheckpointV1["identity"]["origin"][]
+    } = {}
+  ): Promise<AgentRunSummary[]> {
     const entries = await this.deps.runStore.scan()
     const summaries: AgentRunSummary[] = []
 
@@ -101,6 +104,7 @@ export class AgentRunRecoveryService {
         continue
       }
       let checkpoint = entry.result.checkpoint
+      if (options.excludeOrigins?.includes(checkpoint.identity.origin)) continue
       if (isTerminalRunStatus(checkpoint.status) && checkpoint.finalization?.phase === "complete") {
         continue
       }

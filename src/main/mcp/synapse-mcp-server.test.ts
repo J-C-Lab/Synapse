@@ -1,5 +1,4 @@
 import type { MemoryEntry } from "../ai/memory/memory-store"
-import type { RunTrace } from "../ai/run-trace-store"
 import type { ToolHostPort } from "../ai/tool-registry"
 import type { RegisteredToolDescriptor } from "../plugins/types"
 import type { MemoryResourcePort } from "./synapse-mcp-server"
@@ -298,11 +297,9 @@ describe("synapseMcpToolService", () => {
     }
   })
 
-  it("opens a run and records an mcp trace with an external-mcp principal", async () => {
-    const traces: RunTrace[] = []
+  it("binds external MCP identity to the invoked tool caller", async () => {
     const h = host([descriptor("com.example.safe/greet", { readOnlyHint: true })])
     const service = new SynapseMcpToolService(h, {
-      recordRun: (trace) => traces.push(trace),
       workspaceId: "ws-external",
       clientId: "claude-desktop",
       ...admittedFor("ws-external"),
@@ -310,14 +307,6 @@ describe("synapseMcpToolService", () => {
 
     await service.callTool(SAFE_GREET_NAME, { name: "Ada" })
 
-    expect(traces).toHaveLength(1)
-    expect(traces[0]).toMatchObject({
-      origin: "mcp",
-      principal: { kind: "external-mcp", clientId: "claude-desktop" },
-      workspaceId: "ws-external",
-      outcome: "end_turn",
-    })
-    expect(traces[0].toolCalls[0]).toMatchObject({ name: "com.example.safe/greet", ok: true })
     expect(h.invokeTool).toHaveBeenCalledWith(
       "com.example.safe/greet",
       { name: "Ada" },
@@ -439,30 +428,6 @@ describe("synapseMcpToolService resources", () => {
     await expect(service.readResource("not-a-synapse-uri")).rejects.toThrow()
   })
 
-  it("records an mcp RunTrace for both listResources and readResource", async () => {
-    const traces: RunTrace[] = []
-    const service = new SynapseMcpToolService(host([]), {
-      ...admittedFor("ws-external"),
-      recordRun: (trace) => traces.push(trace),
-      workspaceId: "ws-external",
-      clientId: "claude-desktop",
-      memory: fakeMemory([memoryEntry({ id: "m1" })]),
-    })
-
-    await service.listResources()
-    await service.readResource("synapse://memory/m1")
-
-    expect(traces).toHaveLength(2)
-    for (const t of traces) {
-      expect(t).toMatchObject({
-        origin: "mcp",
-        principal: { kind: "external-mcp", clientId: "claude-desktop" },
-        workspaceId: "ws-external",
-        outcome: "end_turn",
-      })
-    }
-  })
-
   it("returns an empty resource list when no memory port is configured", async () => {
     const service = new SynapseMcpToolService(host([]), admittedFor())
     expect(await service.listResources()).toEqual({ resources: [] })
@@ -531,23 +496,6 @@ describe("synapseMcpToolService workspace-instructions resources", () => {
         mimeType: "text/plain",
       },
     ])
-  })
-
-  it("records exactly one resources/list trace per call, not one per source", async () => {
-    const traces: RunTrace[] = []
-    const service = new SynapseMcpToolService(host([]), {
-      ...admittedFor("w1"),
-      workspaceId: "w1",
-      recordRun: (trace) => traces.push(trace),
-      memory: fakeMemory([memoryEntry({ id: "m1" })]),
-      workspaceInstructions: fakeWorkspaceInstructions([
-        { uri: "synapse://workspace-instructions/w1/AGENTS.md", fileName: "AGENTS.md" },
-      ]),
-    })
-
-    await service.listResources()
-
-    expect(traces).toHaveLength(1)
   })
 
   it("reads a workspace-instructions resource's text by uri", async () => {

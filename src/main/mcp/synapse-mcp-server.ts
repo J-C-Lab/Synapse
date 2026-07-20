@@ -10,11 +10,11 @@ import type { ToolResult } from "@synapse/plugin-sdk"
 import type { MemoryQueryScope } from "../ai/memory/memory-scope"
 import type { MemoryEntry } from "../ai/memory/memory-store"
 import type { RunProvenance } from "../ai/run-provenance"
-import type { RunTrace } from "../ai/run-trace-store"
 import type { ToolHostPort } from "../ai/tool-registry"
 import type { WorkspaceStore } from "../ai/workspace/workspace-store"
 import type { GrantIdentity } from "../plugins/grant-store"
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../plugins/types"
+import type { McpDurableRunPort } from "./mcp-durable-run"
 import type { McpWorkspaceBinding } from "./mcp-workspace-binding"
 import type { WorkspaceInstructionsResourcePort } from "./workspace-instructions-resource"
 import { randomUUID } from "node:crypto"
@@ -28,7 +28,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js"
 import { decideApproval } from "../ai/approval-gate"
 import { projectModelVisibleTool, sanitizeTitle, warnOnce } from "../ai/guardrails/tool-metadata"
-import { buildMcpRun, buildRunTrace, toToolCaller } from "../ai/run-provenance"
+import { buildMcpRun, toToolCaller } from "../ai/run-provenance"
 import { modelToolName, uniqueName } from "../ai/tool-registry"
 import { logger } from "../logging"
 import { assertWorkspaceAdmitted, McpUnboundError } from "./mcp-workspace-admission"
@@ -61,8 +61,6 @@ export interface MemoryResourcePort {
 
 export interface SynapseMcpToolServiceOptions {
   exposurePolicy?: McpToolExposurePolicy
-  /** Writes a per-call RunTrace when set (the substrate's trace port). */
-  recordRun?: (trace: RunTrace) => void
   /** Default workspace every external call is bound to. */
   workspaceId?: string
   /** Identifies the external MCP client (from `initialize`), for the principal. */
@@ -95,6 +93,12 @@ export interface SynapseMcpToolServiceOptions {
    *  binding is actually rejected — lets the caller log the migration
    *  message to stderr without flooding it on every poll. */
   onUnboundWarning?: () => void
+  /** Production stdio wiring supplies this shared checkpoint/finalization
+   * adapter. Unit-only in-memory services may omit it when they do not need
+   * persistence, but runSynapseMcpStdioServer rejects that configuration. */
+  durableRuns?: McpDurableRunPort
+  /** Injectable clock for durable MCP trace timing. */
+  now?: () => number
 }
 
 export interface SynapseMcpServerOptions extends SynapseMcpToolServiceOptions {
@@ -135,6 +139,9 @@ export class SynapseMcpToolService {
   }
 
   async listTools(): Promise<ListToolsResult> {
+    // Discovery is intentionally not a run: MCP clients poll tools/list
+    // frequently, and there is no host invocation or terminal operation to
+    // audit. Recording it would turn polling into unbounded checkpoints.
     await this.admit()
     const entries = this.refresh()
     const included = await Promise.all(
@@ -181,63 +188,61 @@ export class SynapseMcpToolService {
       this.refresh()
       entry = this.safeToEntry.get(safeName)
     }
-
     if (!entry) {
-      return errorResult(`Unknown Synapse tool: ${safeName}`)
-    }
-    if (!(await this.shouldExpose(entry.descriptor))) {
-      return errorResult(`Synapse MCP policy does not expose tool: ${entry.descriptor.fqName}`)
-    }
-
-    const tool = entry.descriptor.manifestTool
-    const projected = projectModelVisibleTool({
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-      outputSchema: tool.outputSchema,
-      provenance: entry.descriptor.provenance,
-    })
-    if (!projected.ok) {
-      return errorResult(
-        `Synapse MCP policy does not expose tool: ${entry.descriptor.fqName} (${projected.reason})`
+      return this.observe(`mcp:unknown-tool:${safeName}`, async () =>
+        errorResult(`Unknown Synapse tool: ${safeName}`)
       )
     }
 
-    const provenance = buildMcpRun({
-      runId: randomUUID(),
-      workspaceId: this.options.workspaceId,
-      clientId: this.options.clientId,
-    })
-    const startedAt = Date.now()
-    try {
-      const result = toMcpResult(
-        await this.host.invokeTool(entry.descriptor.fqName, input, {
-          caller: toToolCaller(provenance),
-          signal: options.signal,
-          progress: options.progress,
+    // The checkpoint is created immediately before this function can cross
+    // into the host. The descriptor's canonical fqName is frozen there, so
+    // an interrupted host invocation cannot later degrade to a generic trace.
+    const operation = entry.descriptor.fqName
+    return this.observe(
+      operation,
+      async (provenance) => {
+        if (!(await this.shouldExpose(entry.descriptor))) {
+          return errorResult(`Synapse MCP policy does not expose tool: ${entry.descriptor.fqName}`)
+        }
+
+        const tool = entry.descriptor.manifestTool
+        const projected = projectModelVisibleTool({
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          outputSchema: tool.outputSchema,
+          provenance: entry.descriptor.provenance,
         })
-      )
-      this.recordTrace(entry.descriptor.fqName, provenance, startedAt, !result.isError)
-      return result
-    } catch (err) {
-      this.recordTrace(entry.descriptor.fqName, provenance, startedAt, false)
-      return errorResult(err instanceof Error ? err.message : String(err))
-    }
+        if (!projected.ok) {
+          return errorResult(
+            `Synapse MCP policy does not expose tool: ${entry.descriptor.fqName} (${projected.reason})`
+          )
+        }
+
+        try {
+          return toMcpResult(
+            await this.host.invokeTool(entry.descriptor.fqName, input, {
+              caller: toToolCaller(provenance),
+              signal: options.signal,
+              progress: options.progress,
+            })
+          )
+        } catch (err) {
+          return errorResult(err instanceof Error ? err.message : String(err))
+        }
+      },
+      (result) => !result.isError
+    )
   }
 
   async listResources(): Promise<ListResourcesResult> {
-    await this.admit()
-    const provenance = buildMcpRun({
-      runId: randomUUID(),
-      workspaceId: this.options.workspaceId,
-      clientId: this.options.clientId,
+    return this.observe("resources/list", async () => {
+      await this.admit()
+      const [memoryResources, workspaceInstructionResources] = await Promise.all([
+        this.listMemoryResources(),
+        this.listWorkspaceInstructionResources(),
+      ])
+      return { resources: [...memoryResources, ...workspaceInstructionResources] }
     })
-    const startedAt = Date.now()
-    const [memoryResources, workspaceInstructionResources] = await Promise.all([
-      this.listMemoryResources(),
-      this.listWorkspaceInstructionResources(),
-    ])
-    this.recordTrace("resources/list", provenance, startedAt, true)
-    return { resources: [...memoryResources, ...workspaceInstructionResources] }
   }
 
   private async listMemoryResources(): Promise<ListResourcesResult["resources"]> {
@@ -262,21 +267,17 @@ export class SynapseMcpToolService {
     uri: string,
     options: { signal?: AbortSignal } = {}
   ): Promise<ReadResourceResult> {
-    await this.admit()
-    if (uri.startsWith(MEMORY_RESOURCE_PREFIX)) return this.readMemoryResource(uri)
-    if (uri.startsWith(WORKSPACE_INSTRUCTIONS_PREFIX)) {
-      return this.readWorkspaceInstructionsResource(uri, options.signal)
-    }
-    throw new Error(`Unknown Synapse resource: ${uri}`)
+    return this.observe(`resources/read:${uri}`, async () => {
+      await this.admit()
+      if (uri.startsWith(MEMORY_RESOURCE_PREFIX)) return this.readMemoryResource(uri)
+      if (uri.startsWith(WORKSPACE_INSTRUCTIONS_PREFIX)) {
+        return this.readWorkspaceInstructionsResource(uri, options.signal)
+      }
+      throw new Error(`Unknown Synapse resource: ${uri}`)
+    })
   }
 
   private async readMemoryResource(uri: string): Promise<ReadResourceResult> {
-    const provenance = buildMcpRun({
-      runId: randomUUID(),
-      workspaceId: this.options.workspaceId,
-      clientId: this.options.clientId,
-    })
-    const startedAt = Date.now()
     const id = parseResourceId(uri)
     const entry =
       id && this.options.memory
@@ -284,11 +285,9 @@ export class SynapseMcpToolService {
         : undefined
 
     if (!entry) {
-      this.recordTrace(`resources/read:${uri}`, provenance, startedAt, false)
       throw new Error(`Unknown Synapse resource: ${uri}`)
     }
 
-    this.recordTrace(`resources/read:${uri}`, provenance, startedAt, true)
     return { contents: [{ uri, mimeType: "text/plain", text: entry.text }] }
   }
 
@@ -296,12 +295,6 @@ export class SynapseMcpToolService {
     uri: string,
     signal: AbortSignal | undefined
   ): Promise<ReadResourceResult> {
-    const provenance = buildMcpRun({
-      runId: randomUUID(),
-      workspaceId: this.options.workspaceId,
-      clientId: this.options.clientId,
-    })
-    const startedAt = Date.now()
     const content =
       this.options.workspaceInstructions && this.options.workspaceId
         ? await this.options.workspaceInstructions.read({
@@ -313,35 +306,53 @@ export class SynapseMcpToolService {
         : undefined
 
     if (!content) {
-      this.recordTrace(`resources/read:${uri}`, provenance, startedAt, false)
       throw new Error(`Unknown Synapse resource: ${uri}`)
     }
-    this.recordTrace(`resources/read:${uri}`, provenance, startedAt, true)
     return { contents: [{ uri, mimeType: "text/plain", text: content.text }] }
-  }
-
-  private recordTrace(
-    name: string,
-    provenance: RunProvenance,
-    startedAt: number,
-    ok: boolean
-  ): void {
-    if (!this.options.recordRun) return
-    const endedAt = Date.now()
-    this.options.recordRun(
-      buildRunTrace(provenance, {
-        startedAt,
-        endedAt,
-        outcome: ok ? "end_turn" : "error",
-        toolCalls: [{ name, startedAt, ms: endedAt - startedAt, ok }],
-      })
-    )
   }
 
   private resourceScope(): MemoryQueryScope {
     return {
       workspaceId: this.options.workspaceId,
       includeGlobal: this.options.memoryIncludeGlobal ?? false,
+    }
+  }
+
+  private async observe<T>(
+    operation: string,
+    execute: (provenance: Extract<RunProvenance, { origin: "mcp" }>) => Promise<T>,
+    succeeded: (result: T) => boolean = () => true
+  ): Promise<T> {
+    const provenance = buildMcpRun({
+      runId: randomUUID(),
+      workspaceId: this.options.workspaceId,
+      clientId: this.options.clientId,
+    })
+    const startedAt = (this.options.now ?? Date.now)()
+    const durable = this.options.durableRuns
+    if (!durable) return execute(provenance)
+
+    await durable.begin({ provenance, operation })
+    try {
+      const result = await execute(provenance)
+      const ok = succeeded(result)
+      await durable.finalize({
+        provenance,
+        startedAt,
+        endedAt: (this.options.now ?? Date.now)(),
+        ok,
+        ...(ok ? {} : { error: "tool-error" as const }),
+      })
+      return result
+    } catch (err) {
+      await durable.finalize({
+        provenance,
+        startedAt,
+        endedAt: (this.options.now ?? Date.now)(),
+        ok: false,
+        error: "exception",
+      })
+      throw err
     }
   }
 
@@ -398,6 +409,9 @@ export async function runSynapseMcpStdioServer(
   host: ToolHostPort,
   options: SynapseMcpServerOptions = {}
 ): Promise<Server> {
+  if (!options.durableRuns) {
+    throw new Error("Synapse MCP stdio requires a durable run finalization adapter")
+  }
   const server = createSynapseMcpServer(host, options)
   const transport = new StdioServerTransport()
   await server.connect(transport)

@@ -2,7 +2,6 @@ import type { ClipboardContent } from "@synapse/plugin-sdk"
 import type { IpcMainInvokeEvent, WebContents } from "electron"
 import type { ToolResilienceSettings } from "./ai/ai-settings-store"
 import type { ChatProvider } from "./ai/providers/types"
-import type { RunTrace } from "./ai/run-trace-store"
 import type { SecretProtector } from "./lan/credential-store"
 import type { LanDevice, LanPairing, LanStatus, LanTransfer } from "./lan/types"
 import type { HeadlessApprovalServerHandle } from "./mcp/headless-approval-server"
@@ -73,12 +72,7 @@ import {
 } from "./ai/plugin-introspection-tools"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/catalog"
 import { ResilientToolHost } from "./ai/resilient-tool-host"
-import {
-  getLatestPlan,
-  recordRun as persistRunTrace,
-  runTraceDir,
-  upsertRunTrace,
-} from "./ai/run-trace-store"
+import { getLatestPlan, runTraceDir, upsertRunTrace } from "./ai/run-trace-store"
 import { AgentRunRecoveryService } from "./ai/runs/agent-run-recovery-service"
 import { AgentRunStore } from "./ai/runs/agent-run-store"
 import {
@@ -158,6 +152,8 @@ import { marketplaceTokenFilePath, MarketplaceTokenStore } from "./marketplace/t
 import { startHeadlessApprovalServer } from "./mcp/headless-approval-server"
 import { createHostResourceAudit } from "./mcp/host-resource-audit"
 import { runMcpConnectionTest } from "./mcp/mcp-connection-test"
+import { purgeFinalizedMcpRuns } from "./mcp/mcp-durable-run"
+import { McpRunLeaseStore } from "./mcp/mcp-run-lease"
 import { defaultNotificationIcon, showStartupNotification } from "./notifications"
 import { createCapabilityAudit } from "./plugins/capability-audit"
 import { createElectronSecretPrompt, CredentialBroker } from "./plugins/credential-broker"
@@ -311,7 +307,6 @@ let childTaskScheduler: ChildTaskScheduler
 let estimatorQuarantine: EstimatorQuarantineStore | undefined
 let sharedMemoryTools: MemoryToolSource | undefined
 let sharedExecutionTools: ExecutionToolHostSource | undefined
-let runTraceRecorder: (trace: RunTrace) => void = () => {}
 let emitPlanForRun: (
   runId: string,
   steps: import("./ai/plan/plan-types").PlanStep[]
@@ -338,6 +333,7 @@ let continueAnyRun: (runId: string) => Promise<void> = async () => {}
 // correct when every caller mutating a given runId goes through the same
 // in-memory lock map.
 const agentRunStore = new AgentRunStore(path.join(app.getPath("userData"), "ai", "runs"))
+const mcpRunLeaseStore = new McpRunLeaseStore(path.join(app.getPath("userData"), "ai", "runs"))
 const agentBudgetStore = new RootBudgetLedgerStore(
   path.join(app.getPath("userData"), "ai", "budget")
 )
@@ -802,12 +798,8 @@ function broadcast(channel: string, payload: unknown): void {
   }
 }
 
-function broadcastAiChatEvent(event: unknown): void {
-  broadcast("ai:chat:event", event)
-}
-
 /** Real-time push side of the subscribeRun channel (P1-2). Every window
- *  receives every run's events (matching ai:chat:event's existing pattern);
+ *  receives every run's events;
  *  the renderer filters by runId client-side. */
 function broadcastRunEvent(event: unknown): void {
   broadcast("runs:event", event)
@@ -1021,7 +1013,6 @@ function initPluginHost(): PluginHost {
     estimatorQuarantine: () => estimatorQuarantine,
     memoryTools: () => sharedMemoryTools,
     executionTools: () => sharedExecutionTools,
-    recordRun: (trace) => runTraceRecorder(trace),
     runStore: agentRunStore,
     budgetStore: agentBudgetStore,
     upsertTrace: (input) => upsertRunTrace(runTraceDir(userDataDir), input),
@@ -1142,9 +1133,6 @@ async function createAgentService(): Promise<AgentService> {
   const artifactSource = new ArtifactToolSource({ store: artifactStore })
 
   const runsDir = runTraceDir(userDataDir)
-  const recordRun = (trace: RunTrace): void => persistRunTrace(runsDir, trace)
-  runTraceRecorder = recordRun
-
   const planRegistry = new RunPlanRegistry()
   const planSource = new PlanToolSource({
     registry: planRegistry,
@@ -1162,7 +1150,6 @@ async function createAgentService(): Promise<AgentService> {
         runStore: agentRunStore,
         budgetStore: agentBudgetStore,
         upsertTrace: (input) => upsertRunTrace(runsDir, input),
-        recordRun,
         estimatorQuarantine,
         artifactStore,
         skillPackageLeases: skillPackageLeaseStore,
@@ -1344,6 +1331,11 @@ async function createAgentService(): Promise<AgentService> {
           )
         }
 
+        // An external MCP request has no local agent continuation to replay.
+        // Its frozen principal is the authoritative provenance until startup
+        // safely finalizes an interrupted request as aborted below.
+        if (candidate.identity.origin === "mcp") return candidate.config.authority
+
         const parentRunId = candidate.identity.parentRunId
         if (!parentRunId) return revokedAuthority()
         const parentResult = await agentRunStore.load(parentRunId)
@@ -1410,8 +1402,6 @@ async function createAgentService(): Promise<AgentService> {
     settings: aiSettings,
     estimatorQuarantine,
     approvals: new ApprovalStore(aiApprovalsFilePath(userDataDir)),
-    sendEvent: broadcastAiChatEvent,
-    recordRun,
     getLatestPlan: (conversationId) => getLatestPlan(runsDir, conversationId),
     planRegistry,
     mcp: {
@@ -1516,6 +1506,12 @@ async function createAgentService(): Promise<AgentService> {
           await agentService.continueRunThroughOwnership(runId)
           establishOwnership()
           await agentService.continueRun(runId)
+        } else if (checkpoint.identity.origin === "mcp") {
+          // The GUI is not the owner of an external stdio MCP request. A
+          // non-terminal checkpoint may represent a host call still running
+          // in another process, so leave it untouched; only stdio startup can
+          // reclaim an owner it has proved stale and dead.
+          establishOwnership()
         } else {
           // Inserting this entry before any await is the execution ownership
           // barrier for background/subagent runs, which have no conversation
@@ -1544,7 +1540,6 @@ async function createAgentService(): Promise<AgentService> {
                 budgetStore: agentBudgetStore,
                 eventStore: agentEventStore,
                 upsertTrace: (input) => upsertRunTrace(runsDir, input),
-                recordRun,
                 tools: resilientToolHost,
                 onEvent: broadcastRunEvent,
                 estimatorQuarantine,
@@ -1602,6 +1597,11 @@ async function createAgentService(): Promise<AgentService> {
   // for this (fast) dispatch phase, never for the continuations it kicks off.
   void agentService.reconcileRunsAtStartup({
     listRecoverable: async () => {
+      // The GUI never owns an external stdio MCP request. It may reclaim only
+      // a phase-complete checkpoint left between finalization and purge; a
+      // non-terminal MCP checkpoint stays for the owning stdio process to
+      // recover after it has fenced a stale, dead owner lease.
+      await purgeFinalizedMcpRuns({ runStore: agentRunStore, leaseStore: mcpRunLeaseStore })
       await childTaskStartupRecovery
       await autoResumeRecoverableRuns({
         recovery: {
@@ -1611,7 +1611,13 @@ async function createAgentService(): Promise<AgentService> {
           // second, uncapped admission path. Running child tasks remain here
           // and continue through the shared per-run ownership map.
           listRecoverable: async () => {
-            const summaries = await agentRunRecoveryService.listRecoverable()
+            // The GUI never owns an external stdio MCP lifecycle. Exclude it
+            // before AgentRunRecoveryService performs its classification CAS,
+            // so even terminalizing-but-incomplete MCP work is neither
+            // reclassified nor fed to autoResumeRecoverableRuns.abandon().
+            const summaries = await agentRunRecoveryService.listRecoverable({
+              excludeOrigins: ["mcp"],
+            })
             const eligible = []
             for (const summary of summaries) {
               if (summary.origin !== "subagent") {

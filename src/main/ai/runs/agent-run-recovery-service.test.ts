@@ -274,6 +274,38 @@ describe("agentRunRecoveryService.listRecoverable", () => {
     expect(summaries.map((s) => s.runId)).toEqual(["stuck-terminalizing"])
   })
 
+  it("excludes MCP before classification can mutate a terminalizing checkpoint", async () => {
+    await seedRun("mcp-terminalizing", {
+      identity: { runId: "mcp-terminalizing", rootRunId: "mcp-terminalizing", origin: "mcp" },
+      status: "terminalizing",
+      finalization: {
+        finalizationId: "mcp-finalization",
+        desiredStatus: "completed",
+        phase: "prepared",
+        outcome: "end_turn",
+        stopReason: "end_turn",
+        endedAt: 2,
+        trace: trace("mcp-terminalizing", { origin: "mcp", outcome: "end_turn" }),
+        traceHash: canonicalHash(
+          trace("mcp-terminalizing", {
+            origin: "mcp",
+            outcome: "end_turn",
+          }) as unknown as CanonicalJson
+        ),
+        resourceReleasePlan: releasePlan(),
+      },
+    })
+    const buildClassifierInput = vi.fn(neverDriftingClassifierInput())
+    const service = makeService({ buildClassifierInput })
+
+    await expect(service.listRecoverable({ excludeOrigins: ["mcp"] })).resolves.toEqual([])
+    expect(buildClassifierInput).not.toHaveBeenCalled()
+    expect(await runStore.load("mcp-terminalizing")).toMatchObject({
+      ok: true,
+      checkpoint: { revision: 1, status: "terminalizing", finalization: { phase: "prepared" } },
+    })
+  })
+
   it("persists a disposition change discovered during the scan", async () => {
     await seedRun("narrowed-1", { status: "waiting_approval" })
     const service = makeService({

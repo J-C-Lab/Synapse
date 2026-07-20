@@ -1058,7 +1058,6 @@ describe("pluginHost trigger registration", () => {
           provider: fakeProvider(providerStreamed),
           model: "fake-model",
         }),
-        recordRun: runRecorded,
       })
     )
     const sandboxDispatch = vi.spyOn(host.sandbox, "dispatchTrigger")
@@ -1368,7 +1367,6 @@ describe("dispatchBackgroundAgent — memory:read/execution:read wiring", () => 
           provider: providerWithToolCall(memorySearchToolName),
           model: "fake-model",
         }),
-        recordRun: runRecorded,
       })
     )
     await writeHostPlugin({
@@ -1426,7 +1424,6 @@ describe("dispatchBackgroundAgent — memory:read/execution:read wiring", () => 
           provider: providerWithToolCall(memorySearchToolName),
           model: "fake-model",
         }),
-        recordRun: runRecorded,
       })
     )
     await writeHostPlugin({

@@ -4,7 +4,7 @@ import type { AgentArtifactStore } from "./artifacts/artifact-types"
 import type { RootBudgetLedgerStore } from "./budget/root-budget-ledger"
 import type { EstimatorQuarantineStore } from "./estimator-quarantine-store"
 import type { ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
-import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "./run-trace-store"
+import type { TraceUpsertInput, TraceUpsertReceipt } from "./run-trace-store"
 import type { AgentRunStore } from "./runs/agent-run-store"
 import type { RunFinalizerDeps } from "./runs/run-finalizer"
 import type { SkillPackageLeaseStore } from "./skills/skill-package-leases"
@@ -59,8 +59,6 @@ export interface BackgroundAgentRunnerOptions {
   ledger?: AgentBudgetLedger
   model?: string
   now?: () => number
-  /** Forwarded to run-trace-store so background runs are traced too. */
-  recordRun?: (trace: RunTrace) => void
   workspaceRoots: Pick<WorkspaceRootStore, "listForWorkspace">
   estimatorQuarantine?: EstimatorQuarantineStore
   /** Recoverable artifact backend (Checkpoint B). Omitted in tests that
@@ -231,9 +229,6 @@ export class BackgroundAgentRunner {
         },
         start.runId
       )
-
-      const trace = outcome.checkpoint.finalization?.trace
-      if (trace) this.options.recordRun?.(trace)
 
       if (outcome.kind === "suspended_unknown_tool_outcome") {
         // Unreachable for a single-process background run: execution errors

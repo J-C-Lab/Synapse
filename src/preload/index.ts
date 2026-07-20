@@ -264,11 +264,6 @@ const electronAPI = {
     ipcRenderer.invoke("ai:memory:ingest-path", input),
   deleteMemory: (id: string) => ipcRenderer.invoke("ai:memory:delete", id),
   deleteMemorySource: (source: string) => ipcRenderer.invoke("ai:memory:delete-source", source),
-  onAiChatEvent: (handler: (event: unknown) => void): (() => void) => {
-    const listener = (_event: IpcRendererEvent, payload: unknown): void => handler(payload)
-    ipcRenderer.on("ai:chat:event", listener)
-    return () => ipcRenderer.removeListener("ai:chat:event", listener)
-  },
   getUpdateStatus: () => ipcRenderer.invoke("updates:status"),
   checkForUpdates: () => ipcRenderer.invoke("updates:check"),
   downloadUpdate: () => ipcRenderer.invoke("updates:download"),

@@ -81,6 +81,10 @@ export interface FrozenRunConfigV1 {
   authority: FrozenAuthoritySnapshotV1
   context: FrozenContextSnapshotV1
   backgroundExecution?: { maxToolCallsPerRun: number; timeoutMs: number }
+  /** Canonical external operation recorded before an MCP request crosses
+   * into the host. Frozen with the rest of the run config so crash recovery
+   * can publish the same audit trace even if finalization never began. */
+  mcpOperation?: string
 }
 
 export type ToolApprovalState =
@@ -441,7 +445,12 @@ const KNOWN_STATUSES: ReadonlySet<AgentRunStatus> = new Set([
   "failed",
 ])
 
-const KNOWN_ORIGINS: ReadonlySet<string> = new Set(["interactive", "background-agent", "subagent"])
+const KNOWN_ORIGINS: ReadonlySet<string> = new Set([
+  "interactive",
+  "background-agent",
+  "subagent",
+  "mcp",
+])
 const KNOWN_REVIEW_REASONS: ReadonlySet<string> = new Set([
   "unknown-tool-outcome",
   "authority-narrowed",
@@ -1048,6 +1057,7 @@ function isValidConfig(v: unknown): boolean {
     if (!isNonNegativeInteger(v.backgroundExecution.maxToolCallsPerRun)) return false
     if (!isNonNegativeInteger(v.backgroundExecution.timeoutMs)) return false
   }
+  if (!isOptionalString(v.mcpOperation)) return false
   return true
 }
 

@@ -98,7 +98,7 @@ export function buildMcpRun(input: {
   runId: string
   workspaceId?: string
   clientId?: string
-}): RunProvenance {
+}): Extract<RunProvenance, { origin: "mcp" }> {
   return {
     origin: "mcp",
     runId: input.runId,

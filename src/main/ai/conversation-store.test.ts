@@ -118,7 +118,7 @@ describe("conversationStore — legacy-compatible projection", () => {
 })
 
 describe("conversationStore — lazy legacy migration", () => {
-  it("migrates a legacy record to V2 on first read and never regenerates its message ids", async () => {
+  it("keeps legacy readers read-only, then atomically writes stable V2 message ids on the first mutation", async () => {
     writeFileSync(
       join(dir, "legacy1.json"),
       JSON.stringify({
@@ -134,13 +134,18 @@ describe("conversationStore — lazy legacy migration", () => {
     expect(first?.messages).toHaveLength(1)
 
     const raw = JSON.parse(await fs.readFile(join(dir, "legacy1.json"), "utf-8"))
-    expect(raw.schemaVersion).toBe(2)
-    const firstMessageId = raw.messages[0].messageId
+    expect(raw.schemaVersion).toBeUndefined()
+
+    await s.acquireRunLeaseAtCurrentRevision("legacy1", "run-1")
+    const migrated = JSON.parse(await fs.readFile(join(dir, "legacy1.json"), "utf-8"))
+    expect(migrated.schemaVersion).toBe(2)
+    const firstMessageId = migrated.messages[0].messageId
     expect(typeof firstMessageId).toBe("string")
 
-    // Reading again must not regenerate the id, even though the file is
-    // already migrated (this call takes the fast, no-migration path).
+    // Reading again (including from a fresh store instance) must not
+    // regenerate the id once the mutation has committed the V2 record.
     await s.get("legacy1")
+    await new ConversationStore(dir).get("legacy1")
     const rawAgain = JSON.parse(await fs.readFile(join(dir, "legacy1.json"), "utf-8"))
     expect(rawAgain.messages[0].messageId).toBe(firstMessageId)
   })

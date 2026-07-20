@@ -127,8 +127,6 @@ export interface PluginHostOptions {
   /** Supplies the currently selected chat provider/model for trigger-woken agents. */
   backgroundAgentProvider?: () => Promise<{ provider: ChatProvider; model?: string }>
   estimatorQuarantine?: () => EstimatorQuarantineStore | undefined
-  /** Forwards per-run traces from background-agent runs to the host recorder. */
-  recordRun?: (trace: import("../ai/run-trace-store").RunTrace) => void
   /** Durable run/budget stores background-agent runs persist their checkpoint
    *  and root budget ledger through — the same singletons the interactive
    *  path and subagent runner use. */
@@ -590,7 +588,6 @@ export class PluginHost {
       model,
       tools,
       ledger: this.agentBudgetLedger,
-      recordRun: this.options.recordRun,
       runStore: this.options.runStore,
       budgetStore: this.options.budgetStore,
       upsertTrace: this.options.upsertTrace,

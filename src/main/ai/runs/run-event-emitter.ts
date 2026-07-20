@@ -23,14 +23,12 @@ export interface RunEventIdentity {
  *  discriminated union callers can narrow by `type`. */
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
 
-// Every event this emitter produces is durably persisted (persisted: true) —
-// it only ever calls RunEventStore.append. The protocol's "persisted: false"
-// case is for live-only deltas (text streaming) that need a separate
-// in-process bus interactive chat's existing AiChatEvent mechanism already
-// covers; wiring that bus is out of scope here (see design note in
-// packages/agent-protocol/src/events.ts).
+// Normal lifecycle events are durably persisted. Text deltas intentionally
+// stay live-only: storing every token would turn the observation journal into
+// an unbounded transcript, but they still travel through this shared protocol
+// rather than a second legacy renderer event bus.
 export type RunEventInput = DistributiveOmit<
-  AgentRunEvent,
+  Exclude<AgentRunEvent, { type: "text_delta" }>,
   | "schemaVersion"
   | "eventId"
   | "runId"
@@ -44,6 +42,9 @@ export type RunEventInput = DistributiveOmit<
 
 export interface RunEventEmitter {
   emit: (input: RunEventInput) => Promise<void>
+  /** Optional so narrow test/maintenance emitters that only persist lifecycle
+   * events remain valid; production emitters always provide it. */
+  emitTextDelta?: (text: string) => void
 }
 
 // More than one driver may observe the same durable run. In particular a
@@ -91,8 +92,40 @@ export async function createRunEventEmitter(
   }
   let sequence = existing.length > 0 ? existing[existing.length - 1]!.sequence : 0
 
+  const emitTextDelta = (text: string): void => {
+    if (!text) return
+    const event: AgentRunEvent = {
+      type: "text_delta",
+      schemaVersion: 1,
+      eventId: newId(),
+      runId: identity.runId,
+      rootRunId: identity.rootRunId,
+      parentRunId: identity.parentRunId,
+      conversationId: identity.conversationId,
+      // Live-only deltas never advance the journal cursor. Consumers that
+      // fold durable snapshots ignore them before sequence-gap detection.
+      sequence: Math.max(sequence, 1),
+      timestamp: now(),
+      persisted: false,
+      text,
+    }
+    try {
+      onEvent?.(event)
+    } catch {
+      // Renderer delivery is observational and must not affect the run.
+    }
+  }
+
   return {
+    emitTextDelta,
     async emit(input: RunEventInput): Promise<void> {
+      // Keep the live-only boundary effective even for an untyped/plugin
+      // caller that bypasses RunEventInput's compile-time exclusion.
+      if ((input as { type?: string }).type === "text_delta") {
+        const text = (input as { text?: unknown }).text
+        if (typeof text === "string") emitTextDelta(text)
+        return
+      }
       // The event journal is observational: a storage failure must never
       // break the checkpoint-authoritative driver. Serializing all emitters
       // for a run means normal concurrent lifecycle updates cannot race on a

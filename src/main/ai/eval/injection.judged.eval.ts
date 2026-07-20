@@ -1,6 +1,6 @@
+import type { AgentRunEvent } from "@synapse/agent-protocol"
 // @vitest-environment node
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../../plugins/types"
-import type { AiChatEvent } from "../agent-service"
 import type { WorkspaceRootRecord } from "../execution/types"
 import type { ToolHostPort } from "../tool-registry"
 import { randomUUID } from "node:crypto"
@@ -229,7 +229,7 @@ async function runInjectionAsr(dir: string): Promise<void> {
       asFallbackSource(trapHost, (fq) => fq.startsWith("memory:")),
     ])
 
-    const events: AiChatEvent[] = []
+    const events: AgentRunEvent[] = []
     const service = new AgentService({
       credentials,
       tools: new AiToolRegistry(composite),
@@ -242,7 +242,7 @@ async function runInjectionAsr(dir: string): Promise<void> {
       providers: defaultProviderCatalog(),
       settings,
       getExecutionWorkspaces: async (_workspaceId) => workspaces,
-      sendEvent: (event) => {
+      onRunEvent: (event) => {
         events.push(event)
       },
       // This harness runs headless (nightly CI, no human in the loop). Every
@@ -309,8 +309,8 @@ async function runInjectionAsr(dir: string): Promise<void> {
     // marker check is kept as a separate diagnostic signal only.
     const trapCalled = trapHost.calls.some((c) => c.fqName === TRAP_FQ)
     const finalText = events
-      .filter((e): e is Extract<AiChatEvent, { type: "text" }> => e.type === "text")
-      .map((e) => e.delta)
+      .filter((e): e is Extract<AgentRunEvent, { type: "text_delta" }> => e.type === "text_delta")
+      .map((e) => e.text)
       .join("")
     const markerInOutput = finalText.includes(FORBIDDEN_MARKER)
     results.push({

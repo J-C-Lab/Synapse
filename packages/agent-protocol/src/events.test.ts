@@ -1,6 +1,6 @@
 import type { AgentRunEvent, AgentRunStatus } from "./events"
 import { describe, expect, it } from "vitest"
-import { describeRunEvent, isTerminalRunStatus } from "./events"
+import { describeRunEvent, isAgentRunEvent, isTerminalRunStatus } from "./events"
 
 describe("isTerminalRunStatus", () => {
   it("is true for completed, cancelled, and failed", () => {
@@ -134,5 +134,23 @@ describe("describeRunEvent", () => {
     expect(describeRunEvent({ ...base, type: "run_completed", outcome: "completed" })).toContain(
       "run_completed"
     )
+  })
+})
+
+describe("isAgentRunEvent", () => {
+  const base = {
+    schemaVersion: 1 as const,
+    eventId: "evt-delta",
+    runId: "run-1",
+    rootRunId: "run-1",
+    sequence: 1,
+    timestamp: 0,
+    type: "text_delta" as const,
+    text: "live only",
+  }
+
+  it("accepts a text delta only when it is explicitly live-only", () => {
+    expect(isAgentRunEvent({ ...base, persisted: false })).toBe(true)
+    expect(isAgentRunEvent({ ...base, persisted: true })).toBe(false)
   })
 })

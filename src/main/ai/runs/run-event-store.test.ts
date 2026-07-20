@@ -70,6 +70,19 @@ describe("runEventStore — append and read", () => {
     expect(await store.readAll("run-1")).toEqual([])
   })
 
+  it("rejects a persisted text delta even when an unsafe caller bypasses the emitter", async () => {
+    const store = new RunEventStore(dir)
+    const forged = {
+      ...event(1),
+      type: "text_delta",
+      text: "must never reach JSONL",
+      persisted: true,
+    } as unknown as AgentRunEvent
+
+    await expect(store.append("run-1", forged)).rejects.toThrow(/invalid persisted/)
+    expect(await store.readAll("run-1")).toEqual([])
+  })
+
   it("readAfter returns only events past the given sequence", async () => {
     const store = new RunEventStore(dir)
     await store.append("run-1", event(1))

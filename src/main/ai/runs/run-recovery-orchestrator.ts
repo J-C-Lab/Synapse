@@ -3,7 +3,7 @@ import type { AgentArtifactStore } from "../artifacts/artifact-types"
 import type { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import type { EstimatorQuarantineStore } from "../estimator-quarantine-store"
 import type { ChatProvider } from "../providers/types"
-import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "../run-trace-store"
+import type { TraceUpsertInput, TraceUpsertReceipt } from "../run-trace-store"
 import type { SkillPackageLeaseStore } from "../skills/skill-package-leases"
 import type { ToolHostPort } from "../tool-registry"
 import type { AgentRunRecoveryService } from "./agent-run-recovery-service"
@@ -100,7 +100,6 @@ export interface GenericRunContinuationDeps {
   budgetStore: RootBudgetLedgerStore
   eventStore: RunEventStore
   upsertTrace: (input: TraceUpsertInput) => TraceUpsertReceipt
-  recordRun?: (trace: RunTrace) => void
   /** The live global tool host — narrowed per-run to the checkpoint's own
    *  frozen authority fqNames before use. */
   tools: ToolHostPort
@@ -339,8 +338,6 @@ export async function continueBackgroundOrSubagentRun(
       runId
     )
 
-    const trace = outcome.checkpoint.finalization?.trace
-    if (trace) deps.recordRun?.(trace)
     // `suspended_unknown_tool_outcome` is not terminal — the checkpoint
     // needs a further resume, which a later call drives (or the normal
     // requires-review recovery path, if the crash left something the

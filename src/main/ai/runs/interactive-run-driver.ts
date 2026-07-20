@@ -1,3 +1,4 @@
+import type { ToolPrincipal } from "@synapse/plugin-sdk"
 import type { RunTrace, RunTraceErrorCategory, RunTraceToolCall } from "../run-trace-store"
 import type {
   AgentRunCheckpointV1,
@@ -221,11 +222,34 @@ export function buildTraceFromCheckpoint(
     invocationId: checkpoint.identity.invocationId,
     parentRunId: checkpoint.identity.parentRunId,
     origin: checkpoint.identity.origin,
+    principal: tracePrincipal(checkpoint),
     workspaceId: checkpoint.identity.workspaceId,
     startedAt: checkpoint.createdAt,
     endedAt: checkpoint.updatedAt,
     outcome,
     toolCalls,
+    ...(checkpoint.plan && checkpoint.plan.length > 0 ? { plan: checkpoint.plan } : {}),
+  }
+}
+
+/** Restores the renderer/audit-safe principal from the frozen checkpoint
+ * rather than relying on a process-local runtime provenance accumulator. */
+function tracePrincipal(checkpoint: AgentRunCheckpointV1): ToolPrincipal | undefined {
+  switch (checkpoint.identity.origin) {
+    case "interactive":
+    case "background-agent":
+      return { kind: "internal-agent" }
+    case "subagent":
+      return checkpoint.identity.parentRunId
+        ? { kind: "subagent", parentRunId: checkpoint.identity.parentRunId }
+        : undefined
+    case "mcp": {
+      const subjectId = checkpoint.config.authority.principal.subjectId
+      const clientId = subjectId?.startsWith("mcp-client:")
+        ? subjectId.slice("mcp-client:".length)
+        : undefined
+      return { kind: "external-mcp", ...(clientId ? { clientId } : {}) }
+    }
   }
 }
 

@@ -41,7 +41,7 @@ export function useRunSnapshot(runId: string | undefined): AgentRunSnapshot | un
         publish()
       } else if (outcome.kind === "gap") {
         requestedThrough = Math.max(requestedThrough, event.sequence)
-        void catchUp()
+        void catchUp().catch(() => {})
       }
     }
 
@@ -63,7 +63,7 @@ export function useRunSnapshot(runId: string | undefined): AgentRunSnapshot | un
       } finally {
         catchingUp = false
         if (stateRef.current && requestedThrough > stateRef.current.snapshot.lastSequence) {
-          void catchUp()
+          void catchUp().catch(() => {})
         }
       }
     }
@@ -73,14 +73,23 @@ export function useRunSnapshot(runId: string | undefined): AgentRunSnapshot | un
     // closing the otherwise permanent snapshot/subscribe race window.
     const unsubscribe = onRunEvent(apply)
 
-    void getRunSnapshot(id).then((initial) => {
-      if (!alive || !initial) return
-      stateRef.current = initRunSnapshotReducerState(initial)
-      setSnapshot(initial)
-      for (const event of bufferedEvents.splice(0).sort((a, b) => a.sequence - b.sequence)) {
-        apply(event)
-      }
-    })
+    void getRunSnapshot(id)
+      .then((initial) => {
+        if (!alive || !initial) return
+        stateRef.current = initRunSnapshotReducerState(initial)
+        setSnapshot(initial)
+        for (const event of bufferedEvents.splice(0).sort((a, b) => a.sequence - b.sequence)) {
+          apply(event)
+        }
+      })
+      .catch(() => {
+        // Renderer shutdown and IPC teardown can reject this initial fetch.
+        // The subscription is still cleaned up below; avoid an unhandled
+        // rejection or publishing stale state into an unmounted view.
+        if (!alive) return
+        stateRef.current = undefined
+        setSnapshot(undefined)
+      })
 
     return () => {
       alive = false

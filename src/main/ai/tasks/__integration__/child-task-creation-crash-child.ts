@@ -32,12 +32,10 @@ async function seedParent(
   budgetStore: RootBudgetLedgerStore,
   conversations: ConversationStore
 ): Promise<void> {
-  await conversations.save({
+  await conversations.create({
     id: "conversation-1",
     workspaceId: "ws-1",
-    messages: [],
     createdAt: 1,
-    updatedAt: 1,
   })
   await setupInteractiveRun(
     { runStore, budgetStore, conversations, tools: new AiToolRegistry(host()), now: () => 100 },
