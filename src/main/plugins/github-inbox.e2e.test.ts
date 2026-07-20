@@ -19,18 +19,66 @@ import { createHeadlessHotkeyAdapter } from "./headless-trigger-adapters"
 import { PluginHost } from "./plugin-host"
 
 let dir: string
+let hostForCleanup: PluginHost | undefined
+let supportForCleanup: ReturnType<typeof runsSupport> | undefined
 
-function runsSupport(baseDir: string): {
+function runsSupport(
+  baseDir: string,
+  onTrace?: (
+    input: Parameters<ConstructorParameters<typeof PluginHost>[0]["upsertTrace"]>[0]
+  ) => void
+): {
   runStore: AgentRunStore
   budgetStore: RootBudgetLedgerStore
   upsertTrace: ConstructorParameters<typeof PluginHost>[0]["upsertTrace"]
+  hasFinalization: () => boolean
+  waitForFinalization: () => Promise<void>
 } {
   const runsDir = path.join(baseDir, "ai-runs")
+  const runStore = new AgentRunStore(runsDir)
+  const finalizations: Promise<void>[] = []
   return {
-    runStore: new AgentRunStore(runsDir),
+    runStore,
     budgetStore: new RootBudgetLedgerStore(path.join(baseDir, "ai-budget")),
-    upsertTrace: (input) => upsertRunTrace(runsDir, input),
+    upsertTrace: (input) => {
+      const receipt = upsertRunTrace(runsDir, input)
+      if (onTrace) {
+        const finalization = notifyAfterTerminal(runStore, input, onTrace)
+        finalizations.push(finalization)
+        // The test and afterEach await this exact promise. This observer only
+        // prevents an unhandled-rejection gap before they do; it does not
+        // turn a failed lifecycle into a successful test.
+        void finalization.catch(() => {})
+      }
+      return receipt
+    },
+    hasFinalization: () => finalizations.length > 0,
+    waitForFinalization: async () => {
+      await Promise.all(finalizations)
+    },
   }
+}
+
+async function notifyAfterTerminal(
+  runStore: AgentRunStore,
+  input: Parameters<ConstructorParameters<typeof PluginHost>[0]["upsertTrace"]>[0],
+  onTrace: (
+    input: Parameters<ConstructorParameters<typeof PluginHost>[0]["upsertTrace"]>[0]
+  ) => void
+): Promise<void> {
+  for (let attempt = 0; attempt < 500; attempt++) {
+    const loaded = await runStore.load(input.runId)
+    if (!loaded.ok) throw new Error(`background run ${input.runId} is ${loaded.reason}`)
+    if (
+      ["completed", "failed", "cancelled"].includes(loaded.checkpoint.status) &&
+      loaded.checkpoint.finalization?.phase === "complete"
+    ) {
+      onTrace(input)
+      return
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(`background run ${input.runId} did not reach terminal finalization`)
 }
 
 const GET_INBOX_SNAPSHOT_TOOL_NAME = modelToolName({
@@ -48,9 +96,13 @@ const noopFsWatchAdapter: FsWatchAdapter = {
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-github-inbox-"))
+  hostForCleanup = undefined
+  supportForCleanup = undefined
 })
 
 afterEach(async () => {
+  await hostForCleanup?.killAllBackground()
+  if (supportForCleanup?.hasFinalization()) await supportForCleanup.waitForFinalization()
   await fs.rm(dir, { recursive: true, force: true })
 })
 
@@ -73,6 +125,8 @@ describe("github inbox plugin", () => {
     // the tool assertions below, waiting on this ensures the run's async fs
     // writes are done before afterEach removes the temp dir.
     const runRecorded = vi.fn()
+    const support = runsSupport(dir, runRecorded)
+    supportForCleanup = support
     const host = new PluginHost({
       userDataDir: dir,
       resourcesDir: path.resolve("resources"),
@@ -80,7 +134,7 @@ describe("github inbox plugin", () => {
       fsWatchAdapter: noopFsWatchAdapter,
       hotkeyAdapter: createHeadlessHotkeyAdapter(),
       workspaceRoots: { listForWorkspace: async () => [] },
-      ...runsSupport(dir),
+      ...support,
       adapters: {
         clipboard: { read: async () => undefined, write: async () => {} },
         notifications: { show: async () => {} },
@@ -97,6 +151,7 @@ describe("github inbox plugin", () => {
       },
       backgroundAgentProvider: async () => ({ provider, model: "fake-model" }),
     })
+    hostForCleanup = host
     const sandboxDispatch = vi.spyOn(host.sandbox, "dispatchTrigger")
 
     await host.init()
@@ -117,7 +172,10 @@ describe("github inbox plugin", () => {
     expect(seenTools[0].map((tool) => tool.name)).toContain(GET_INBOX_SNAPSHOT_TOOL_NAME)
     expect(seenTools[0].map((tool) => tool.name)).not.toContain(EXECUTE_GITHUB_ACTION_TOOL_NAME)
 
-    await vi.waitFor(() => expect(runRecorded).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(support.hasFinalization()).toBe(true), { timeout: 5000 })
+    await support.waitForFinalization()
+    await host.waitForBackgroundIdle()
+    expect(runRecorded).toHaveBeenCalledTimes(1)
   })
 })
 

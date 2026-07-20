@@ -98,7 +98,7 @@ export class BackgroundAgentRunner {
     }
 
     const resolvedRoots = await this.options.workspaceRoots.listForWorkspace(input.workspaceId)
-    const tools = new AiToolRegistry(this.limitedTools(input.allowedUses))
+    const tools = new AiToolRegistry(limitBackgroundTools(this.options.tools, input.allowedUses))
 
     const controller = new AbortController()
     const abortInput = () => controller.abort()
@@ -262,17 +262,24 @@ export class BackgroundAgentRunner {
       now: this.now,
     }
   }
+}
 
-  private limitedTools(allowedUses: TriggerUse[]): ToolHostPort {
-    return {
-      listTools: () =>
-        this.options.tools
-          .listTools()
-          .filter((tool) =>
-            toolCapabilitiesAllowed(tool.manifestTool.capabilities ?? [], allowedUses)
-          ),
-      invokeTool: (fqName, input, options) => this.options.tools.invokeTool(fqName, input, options),
-    }
+/** The immutable trigger `uses` ceiling applied to a background tool host.
+ * Kept outside {@link BackgroundAgentRunner} because startup recovery must
+ * rebuild the same source-plus-ceiling registry before it compares a frozen
+ * authority snapshot. */
+export function limitBackgroundTools(
+  tools: ToolHostPort,
+  allowedUses: readonly TriggerUse[]
+): ToolHostPort {
+  return {
+    listTools: () =>
+      tools
+        .listTools()
+        .filter((tool) =>
+          toolCapabilitiesAllowed(tool.manifestTool.capabilities ?? [], allowedUses)
+        ),
+    invokeTool: (fqName, input, options) => tools.invokeTool(fqName, input, options),
   }
 }
 

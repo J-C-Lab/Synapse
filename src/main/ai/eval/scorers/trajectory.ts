@@ -38,10 +38,19 @@ export async function scoreTrajectory(fixture: TrajectoryFixture): Promise<Score
   }
   const toolCalls: Array<{ name: string; ok: boolean }> = []
   const toolNames = new Map<string, string>()
+  const tools = new AiToolRegistry(host)
+  // Use the registry's issued schema names rather than recomputing
+  // modelToolName(). The registry appends a unique suffix when two host
+  // fqNames sanitize to the same model name (for example a/b and a_b).
+  const fqNameByModelName = new Map(
+    tools
+      .listWithDescriptors()
+      .map(({ schema, descriptor }) => [schema.name, descriptor.fqName] as const)
+  )
   let finalText = ""
   const runtime = new AgentRuntime({
     provider: scriptedProvider(fixture.script),
-    tools: new AiToolRegistry(host),
+    tools,
     budgetTokens: fixture.budgetTokens,
   })
 
@@ -57,7 +66,10 @@ export async function scoreTrajectory(fixture: TrajectoryFixture): Promise<Score
     },
     onEvent: (event) => {
       if (event.type === "tool_call") {
-        toolNames.set(event.id, event.name)
+        // Model-visible names are sanitized for prompt-injection safety. The
+        // fixture contract deliberately asserts host fqNames, so normalize
+        // the emitted safe name back through this fixture's frozen catalog.
+        toolNames.set(event.id, fqNameByModelName.get(event.name) ?? event.name)
       } else {
         toolCalls.push({ name: toolNames.get(event.id) ?? event.id, ok: !event.isError })
       }

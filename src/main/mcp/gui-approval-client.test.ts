@@ -212,17 +212,16 @@ describe("createGuiApprovalPort — cancel frame", () => {
       spawnGui: vi.fn(),
     }).requestApproval({ identity: identity(), request: request(), signal: controller.signal })
 
-    // Give the request line time to actually reach the fake server before
-    // aborting, so this proves cancellation of an in-flight request — not
-    // just the already-covered "aborted before connecting" case.
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    // Wait for the request frame itself, rather than guessing with a wall-clock
+    // delay. On a busy worker, a fixed delay could abort after the connection
+    // loop's check but before it installs the in-flight abort listener.
+    await vi.waitFor(() => expect(receivedLines).toHaveLength(1))
     controller.abort()
 
     const result = await resultPromise
     expect(result).toEqual({ allow: false, outcomeReason: "cancelled" })
 
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(receivedLines).toHaveLength(2)
+    await vi.waitFor(() => expect(receivedLines).toHaveLength(2))
     expect(receivedLines[1]).toMatchObject({ type: "cancel", reason: "cancelled" })
   })
 
@@ -238,8 +237,7 @@ describe("createGuiApprovalPort — cancel frame", () => {
 
     expect(result).toEqual({ allow: false, outcomeReason: "timed-out" })
 
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(receivedLines).toHaveLength(2)
+    await vi.waitFor(() => expect(receivedLines).toHaveLength(2))
     expect(receivedLines[1]).toMatchObject({ type: "cancel", reason: "timed-out" })
   })
 

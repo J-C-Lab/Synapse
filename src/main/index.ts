@@ -12,11 +12,7 @@ import { spawn } from "node:child_process"
 import * as path from "node:path"
 import process from "node:process"
 import { pathToFileURL } from "node:url"
-import {
-  derivePluginProfile,
-  profileToAgentText,
-  triggerUseToCapability,
-} from "@synapse/plugin-manifest"
+import { derivePluginProfile, profileToAgentText } from "@synapse/plugin-manifest"
 import {
   app,
   BrowserWindow,
@@ -79,7 +75,6 @@ import {
   freezeAuthoritySnapshot,
   withFrozenAuthorityCapabilities,
 } from "./ai/runs/authority-snapshot"
-import { backgroundPrincipal } from "./ai/runs/background-run-setup"
 import { buildTraceFromCheckpoint } from "./ai/runs/interactive-run-driver"
 import { rootSetHashFor } from "./ai/runs/interactive-run-setup"
 import { rebuildRecoveryAuthority } from "./ai/runs/recovery-authority"
@@ -1312,23 +1307,7 @@ async function createAgentService(): Promise<AgentService> {
         }
 
         if (candidate.identity.origin === "background-agent") {
-          const pluginId = candidate.identity.pluginId
-          const currentPluginIdentity = pluginId
-            ? plugins.currentActiveIdentityForPlugin(pluginId)
-            : undefined
-          if (!pluginId || !currentPluginIdentity) return revokedAuthority()
-          const capabilities = candidate.identity.triggerId
-            ? (
-                plugins.getTriggerDeclaration(pluginId, candidate.identity.triggerId)?.uses ?? []
-              ).map(triggerUseToCapability)
-            : []
-          return rebuildRecoveryAuthority(
-            candidate,
-            agentTools,
-            undefined,
-            capabilities,
-            backgroundPrincipal(pluginId, currentPluginIdentity)
-          )
+          return (await plugins.currentBackgroundRecoveryAuthority(candidate)) ?? revokedAuthority()
         }
 
         // An external MCP request has no local agent continuation to replay.

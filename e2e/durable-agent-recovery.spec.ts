@@ -93,6 +93,7 @@ function sealFixtureCheckpoint(checkpoint: Record<string, unknown>): Record<stri
 function seedCheckpointJson(runId: string): Record<string, unknown> {
   const systemPromptText = "You are helpful."
   const baseSha = sha256(systemPromptText)
+  const skillCatalogHash = sha256("[]")
   return sealFixtureCheckpoint({
     schemaVersion: 1,
     revision: 1,
@@ -146,10 +147,12 @@ function seedCheckpointJson(runId: string): Record<string, unknown> {
         schemaVersion: 1,
         baseSystemPrompt: { normalizedText: systemPromptText, sha256: baseSha },
         workspaceInstructions: [],
+        skillCatalog: [],
+        skillCatalogHash,
         // Matches context-snapshot.ts's construction: sha256 of the joined
-        // per-fragment hashes (no workspace instructions here, so it's just
-        // the base prompt's own hash, re-hashed).
-        aggregateHash: sha256(baseSha),
+        // base-prompt and skill-catalog hashes (there are no workspace
+        // instructions in this fixture).
+        aggregateHash: sha256(`${baseSha}|${skillCatalogHash}`),
       },
     },
     messages: [
@@ -168,12 +171,142 @@ function seedCheckpointJson(runId: string): Record<string, unknown> {
   })
 }
 
-async function seedRun(userDir: string, runId: string): Promise<void> {
+const INTERACTIVE_RECOVERY_ROOT_ID = "e2e-reconnect-root"
+
+/** Establishes the same persisted prerequisites that make the real
+ * ExecutionToolHostSource visible to an interactive agent. */
+async function seedInteractiveExecutionWorkspace(userDir: string): Promise<void> {
+  await fs.mkdir(path.join(userDir, "ai"), { recursive: true })
+  await fs.writeFile(
+    path.join(userDir, "settings.json"),
+    JSON.stringify({ allowAgentShell: true }),
+    "utf-8"
+  )
+  await fs.writeFile(
+    path.join(userDir, "ai", "workspace-roots.json"),
+    JSON.stringify([
+      {
+        id: INTERACTIVE_RECOVERY_ROOT_ID,
+        workspaceId: "default",
+        name: "E2E recovery root",
+        root: userDir,
+        role: "primary",
+        createdAt: 1,
+      },
+    ]),
+    "utf-8"
+  )
+  await fs.writeFile(path.join(userDir, "fixture.txt"), "reconnect fixture\n", "utf-8")
+}
+
+function directExecutionReadToolAuthority() {
+  return {
+    fqName: "execution:core/read_file",
+    safeName: "execution_core_read_file",
+    provenance: "host",
+    ownerId: "synapse-host",
+    ownerVersion: "0.2.0",
+    modelSchemaHash: canonicalHash({
+      name: "execution_core_read_file",
+      description: "Read a bounded text file inside an authorized workspace root.",
+      inputSchema: {
+        type: "object",
+        properties: { rootId: { type: "string" }, path: { type: "string" } },
+        required: ["rootId", "path"],
+      },
+    }),
+    annotationsHash: canonicalHash({ readOnlyHint: true }),
+    annotations: { readOnlyHint: true },
+    invocationAdapterId: "host-tool",
+    invocationAdapterVersion: "1",
+    replayGuarantee: "none",
+  }
+}
+
+function bindInteractiveExecutionAuthority(checkpoint: Record<string, unknown>) {
+  checkpoint.config = {
+    ...(checkpoint.config as Record<string, unknown>),
+    workspaceBinding: {
+      workspaceId: "default",
+      bindingRevision: 0,
+      rootIds: [INTERACTIVE_RECOVERY_ROOT_ID],
+      rootSetHash: canonicalHash([INTERACTIVE_RECOVERY_ROOT_ID]),
+    },
+    authority: {
+      schemaVersion: 1,
+      principal: { kind: "interactive", actor: "user" },
+      capabilities: [],
+      // Direct interactive execution has no plugin grant requirement. The
+      // governed background source intentionally differs here.
+      tools: [directExecutionReadToolAuthority()],
+      integrityHash: "",
+    },
+  }
+}
+
+/** A real automatic interactive-resume fixture. Conversations and the BYOK
+ * credential are created through public IPC before this checkpoint is
+ * seeded; on startup it restores an already-pending tool approval, so no
+ * network provider call is possible or needed. */
+async function seedAutomaticInteractiveApprovalRun(
+  userDir: string,
+  runId: string,
+  conversationId: string
+) {
+  const checkpoint = seedCheckpointJson(runId)
+  checkpoint.identity = {
+    runId,
+    rootRunId: runId,
+    origin: "interactive",
+    conversationId,
+    workspaceId: "default",
+  }
+  const baseConfig = checkpoint.config as Record<string, unknown>
+  const baseProfile = baseConfig.resolvedProfile as Record<string, unknown>
+  checkpoint.config = {
+    ...baseConfig,
+    providerId: "anthropic",
+    model: "claude-sonnet-4-6",
+    resolvedProfile: {
+      ...baseProfile,
+      providerId: "anthropic",
+    },
+  }
+  bindInteractiveExecutionAuthority(checkpoint)
+  checkpoint.messages = [
+    { messageId: "u1", message: { role: "user", content: [{ type: "text", text: "go" }] } },
+    {
+      messageId: "a1",
+      message: { role: "assistant", content: [{ type: "text", text: "Reading" }] },
+    },
+  ]
+  checkpoint.toolBatches = [
+    {
+      modelStep: 0,
+      assistantMessageId: "a1",
+      resultCarrierMessageId: "r1",
+      calls: [
+        {
+          ordinal: 0,
+          toolUseId: `tool-${runId}`,
+          safeName: "execution_core_read_file",
+          fqName: "execution:core/read_file",
+          input: { rootId: INTERACTIVE_RECOVERY_ROOT_ID, path: "fixture.txt" },
+          annotations: { readOnlyHint: true },
+          replayGuarantee: "none",
+          approval: { status: "pending", approvalId: `approval-${runId}`, requestedAt: 1 },
+          attempts: [],
+          resolution: { status: "unresolved" },
+        },
+      ],
+    },
+  ]
+
   const runDir = path.join(userDir, "ai", "runs", runId)
   await fs.mkdir(runDir, { recursive: true })
   await fs.writeFile(
     path.join(runDir, "checkpoint.json"),
-    JSON.stringify(seedCheckpointJson(runId)),
+    JSON.stringify(sealFixtureCheckpoint(checkpoint)),
     "utf-8"
   )
 }
@@ -184,6 +317,12 @@ async function seedRun(userDir: string, runId: string): Promise<void> {
  * deterministic real-Electron fixture for the chat reconnect path: no test
  * model or private IPC is involved. */
 async function seedInteractiveToolRun(userDir: string, runId: string, conversationId: string) {
+  // Keep this fixture aligned with a real interactive execution-tool run.
+  // Execution tools are hidden unless both the global setting and a workspace
+  // root are present before the app starts; recovery compares the frozen tool
+  // identity against that live registry.
+  await seedInteractiveExecutionWorkspace(userDir)
+
   const checkpoint = seedCheckpointJson(runId)
   checkpoint.identity = {
     runId,
@@ -194,33 +333,7 @@ async function seedInteractiveToolRun(userDir: string, runId: string, conversati
   }
   checkpoint.status = "suspended_unknown_tool_outcome"
   checkpoint.recovery = { kind: "requires_review", reason: "unknown-tool-outcome" }
-  checkpoint.config = {
-    ...(checkpoint.config as Record<string, unknown>),
-    authority: {
-      schemaVersion: 1,
-      principal: { kind: "interactive", actor: "user" },
-      capabilities: [],
-      tools: [
-        {
-          fqName: "read_file",
-          safeName: "read_file",
-          provenance: "host",
-          ownerId: "synapse-host",
-          ownerVersion: "0.2.0",
-          modelSchemaHash: canonicalHash({
-            name: "read_file",
-            description: "read_file",
-            inputSchema: { type: "object" },
-          }),
-          annotationsHash: canonicalHash({}),
-          invocationAdapterId: "host-tool",
-          invocationAdapterVersion: "1",
-          replayGuarantee: "none",
-        },
-      ],
-      integrityHash: "",
-    },
-  }
+  bindInteractiveExecutionAuthority(checkpoint)
   checkpoint.messages = [
     { messageId: "u1", message: { role: "user", content: [{ type: "text", text: "go" }] } },
     {
@@ -237,10 +350,10 @@ async function seedInteractiveToolRun(userDir: string, runId: string, conversati
         {
           ordinal: 0,
           toolUseId: "tool-reconnect-1",
-          safeName: "read_file",
-          fqName: "read_file",
-          input: {},
-          annotations: {},
+          safeName: "execution_core_read_file",
+          fqName: "execution:core/read_file",
+          input: { rootId: INTERACTIVE_RECOVERY_ROOT_ID, path: "fixture.txt" },
+          annotations: { readOnlyHint: true },
           replayGuarantee: "none",
           approval: { status: "resolved", allowed: true, remember: "once", resolvedAt: 1 },
           attempts: [
@@ -410,8 +523,26 @@ test("renderer discovers a run interrupted before this launch and resumes/abando
   const abandonRunId = "e2e-recoverable-abandon"
 
   try {
-    await seedRun(userDir, resumeRunId)
-    await seedRun(userDir, abandonRunId)
+    // Create the credential and conversations through the exact public IPC
+    // surface first; only the crash-state checkpoint itself is seeded below.
+    // That lets startup genuinely continue an interactive run through an
+    // already-pending approval without ever issuing a provider request.
+    await seedInteractiveExecutionWorkspace(userDir)
+    const setup = await launchSynapseDevAtUserDir(userDir)
+    let conversations: { resume: string; abandon: string }
+    try {
+      const { shell } = await awaitShellReadiness(setup, { mode: "dev" })
+      conversations = await shell.evaluate(async () => {
+        await window.electronAPI.setAiKey("anthropic", "e2e-placeholder-key")
+        const resume = await window.electronAPI.createAiConversation("default")
+        const abandon = await window.electronAPI.createAiConversation("default")
+        return { resume: resume.id, abandon: abandon.id }
+      })
+    } finally {
+      await setup.dispose()
+    }
+    await seedAutomaticInteractiveApprovalRun(userDir, resumeRunId, conversations.resume)
+    await seedAutomaticInteractiveApprovalRun(userDir, abandonRunId, conversations.abandon)
 
     const launched = await launchSynapseDevAtUserDir(userDir)
     try {
@@ -429,6 +560,28 @@ test("renderer discovers a run interrupted before this launch and resumes/abando
       // reclassified, transitioned to running, and handed to the real
       // continuator before the renderer reaches this panel.
       await expect(panel).toContainText("running")
+
+      // The fixture deliberately seeds no event-journal entries. Seeing this
+      // replayed pending approval through the public catch-up IPC proves the
+      // startup continuator entered the durable tool-batch driver, rather
+      // than merely reclassifying the checkpoint to `running`.
+      await expect
+        .poll(async () =>
+          shell.evaluate(
+            async (id) =>
+              (await window.electronAPI.getRunEventsSince(id, 0)).filter(
+                (event) => event.type === "approval_pending"
+              ),
+            resumeRunId
+          )
+        )
+        .toContainEqual(
+          expect.objectContaining({
+            approvalId: `approval-${resumeRunId}`,
+            toolUseId: `tool-${resumeRunId}`,
+            type: "approval_pending",
+          })
+        )
 
       const resumeRow = panel.locator("li", { hasText: resumeRunId })
       const abandonRow = panel.locator("li", { hasText: abandonRunId })
@@ -489,7 +642,24 @@ test("durable agent recovery reconnects one tool card after a real renderer rest
       await shell.getByText("Cortex", { exact: true }).first().click()
       await shell.getByRole("button", { name: "Recovery fixture" }).click()
 
-      await expect(shell.getByText("read_file", { exact: true })).toHaveCount(1)
+      const recovered = await shell.evaluate(
+        async (id) => ({
+          recoverable: await window.electronAPI.listRecoverableRuns(),
+          snapshot: await window.electronAPI.getRunSnapshot(id),
+        }),
+        runId
+      )
+      if (!recovered.snapshot) {
+        throw new Error(`recovery fixture has no public snapshot: ${JSON.stringify(recovered)}`)
+      }
+      expect(recovered.recoverable).toContainEqual(expect.objectContaining({ runId }))
+      expect(recovered.snapshot.toolCalls).toContainEqual(
+        expect.objectContaining({
+          toolUseId: "tool-reconnect-1",
+          safeName: "execution_core_read_file",
+        })
+      )
+      await expect(shell.getByText("execution_core_read_file", { exact: true })).toHaveCount(1)
 
       // Reloading the actual renderer repeats snapshot + persisted event
       // cursor setup. The card must be recovered again, not appended beside
@@ -497,7 +667,7 @@ test("durable agent recovery reconnects one tool card after a real renderer rest
       await shell.reload()
       await shell.getByText("Cortex", { exact: true }).first().click()
       await shell.getByRole("button", { name: "Recovery fixture" }).click()
-      await expect(shell.getByText("read_file", { exact: true })).toHaveCount(1)
+      await expect(shell.getByText("execution_core_read_file", { exact: true })).toHaveCount(1)
       await assertNoShellDiagnostics(launched, shell)
     } finally {
       await launched.dispose()

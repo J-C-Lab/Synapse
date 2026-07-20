@@ -140,11 +140,7 @@ async function sendPayload(
     const timeoutPromise = new Promise<{ kind: "timed-out" }>((resolve) => {
       timeoutTimer = setTimeout(resolve, responseTimeoutMs, { kind: "timed-out" })
     })
-    const abortPromise = signal
-      ? new Promise<{ kind: "cancelled" }>((resolve) => {
-          signal.addEventListener("abort", () => resolve({ kind: "cancelled" }), { once: true })
-        })
-      : new Promise<never>(() => {})
+    const abortPromise = signal ? waitForAbort(signal) : new Promise<never>(() => {})
 
     const winner = await Promise.race([responsePromise, timeoutPromise, abortPromise])
 
@@ -166,6 +162,23 @@ async function sendPayload(
     reader.dispose()
     connected.socket.end()
   }
+}
+
+/**
+ * Turn an AbortSignal into a promise without missing an abort that happened
+ * while the socket was being opened or the request frame was being written.
+ * Checking only before the connection loop is insufficient: a caller can
+ * abort after that check but before an event listener is installed.
+ */
+function waitForAbort(signal: AbortSignal): Promise<{ kind: "cancelled" }> {
+  return new Promise((resolve) => {
+    const onAbort = (): void => {
+      signal.removeEventListener("abort", onAbort)
+      resolve({ kind: "cancelled" })
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+    if (signal.aborted) onAbort()
+  })
 }
 
 function parseResponse(value: unknown): ApprovalResult {
