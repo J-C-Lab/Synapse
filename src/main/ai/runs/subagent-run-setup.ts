@@ -3,7 +3,11 @@ import type { ChatMessage } from "../providers/types"
 import type { AiToolRegistry } from "../tool-registry"
 import type { AgentRunStore } from "./agent-run-store"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
-import { createRootBudgetLedger, reserveChildAccount } from "../budget/root-budget-ledger"
+import {
+  createRootBudgetLedger,
+  reserveChildAccount,
+  StaleLedgerRevisionError,
+} from "../budget/root-budget-ledger"
 import {
   deriveFrozenRunLimits,
   resolveModelCapabilityProfile,
@@ -168,15 +172,32 @@ async function ensureBudgetAccount(
   }
 
   const rootRunId = parent.identity.rootRunId
-  const ledgerNow = await deps.budgetStore.load(rootRunId)
-  const { ledger: reserved } = reserveChildAccount(ledgerNow, {
-    operationId: `reserve-subagent:${input.runId}`,
-    accountId: input.runId,
-    taskId: input.runId,
-    totalTokens: childRunBudgetTokens,
-    durableChildTask: input.childRunBudgetTokens !== undefined,
-  })
-  await deps.budgetStore.mutate(rootRunId, ledgerNow.revision, () => reserved)
+  // Multiple children of one root can legitimately reserve at the same time
+  // (Checkpoint E's bounded concurrency starts several sibling tasks
+  // together, and an interactive run and its subagent can also overlap) —
+  // this is a real concurrent-writer scenario against the shared root
+  // ledger, not just a test artifact. Retry against the freshly-written
+  // ledger on a lost CAS race instead of letting a sibling's concurrent
+  // write fail this reservation outright, mirroring the same retry-on-
+  // StaleLedgerRevisionError shape used elsewhere against this store (e.g.
+  // child-task-scheduler.ts's releaseTerminalBudget).
+  for (;;) {
+    const ledgerNow = await deps.budgetStore.load(rootRunId)
+    const { ledger: reserved } = reserveChildAccount(ledgerNow, {
+      operationId: `reserve-subagent:${input.runId}`,
+      accountId: input.runId,
+      taskId: input.runId,
+      totalTokens: childRunBudgetTokens,
+      durableChildTask: input.childRunBudgetTokens !== undefined,
+    })
+    try {
+      await deps.budgetStore.mutate(rootRunId, ledgerNow.revision, () => reserved)
+      break
+    } catch (err) {
+      if (err instanceof StaleLedgerRevisionError) continue
+      throw err
+    }
+  }
   deps.fault?.("after_child_account_reserved")
   return rootRunId
 }

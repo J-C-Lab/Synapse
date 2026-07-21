@@ -192,6 +192,29 @@ describe("setupSubagentRun — budget inheritance", () => {
     const parentLedger = await budgetStore.load("parent-run-1")
     expect(parentLedger.accounts.root?.reservedTokens).toBe(0)
   })
+
+  // CI reproduction (2026-07-21): two children of the same root reserving
+  // "at once" raced ensureBudgetAccount's single-shot CAS write — one lost
+  // and threw an unhandled StaleLedgerRevisionError instead of retrying
+  // against the freshly-written ledger. Bounded concurrency (Checkpoint E)
+  // makes this a real production scenario, not just a test artifact: up to
+  // three sibling child tasks under one root run can legitimately start
+  // together and each independently reserve a finite account here.
+  it("reserves correctly for two children of the same root started concurrently", async () => {
+    await seedParent("parent-run-1", 10_000)
+
+    const [first, second] = await Promise.all([
+      setupSubagentRun(baseDeps(), baseInput({ runId: "sub-run-1", childRunBudgetTokens: 1024 })),
+      setupSubagentRun(baseDeps(), baseInput({ runId: "sub-run-2", childRunBudgetTokens: 1024 })),
+    ])
+
+    expect(first.identity.rootRunId).toBe("parent-run-1")
+    expect(second.identity.rootRunId).toBe("parent-run-1")
+    const ledger = await budgetStore.load("parent-run-1")
+    expect(ledger.accounts["sub-run-1"]?.totalTokens).toBe(1024)
+    expect(ledger.accounts["sub-run-2"]?.totalTokens).toBe(1024)
+    expect(ledger.accounts.root?.reservedTokens).toBe(2048)
+  })
 })
 
 describe("setupSubagentRun — frozen authority", () => {
