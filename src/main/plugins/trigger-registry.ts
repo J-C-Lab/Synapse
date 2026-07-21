@@ -71,6 +71,9 @@ export class TriggerRegistry {
   private readonly instanceControllers = new Map<string, AbortController>()
   private readonly instanceControllerOwners = new Map<string, string>()
   private readonly instanceRuntimeState = new Map<string, TriggerInstanceRuntimeState>()
+  /** Every adapter fire is intentionally detached from the platform callback,
+   * but teardown still needs a durable way to await the work it started. */
+  private readonly inFlightFires = new Set<Promise<void>>()
 
   constructor(private readonly deps: TriggerRegistryDeps) {}
 
@@ -150,14 +153,14 @@ export class TriggerRegistry {
     if (decl.type === "timer") {
       if (typeof decl.schedule !== "object") return undefined
       return this.deps.timerAdapter.register(decl.id, decl.schedule, (event) => {
-        void this.onFire(pluginId, decl, controller, event)
+        this.startFire(pluginId, decl, controller, event)
       })
     }
     if (decl.type === "cron") {
       if (typeof decl.schedule !== "string") return undefined
       try {
         return this.deps.timerAdapter.registerCron(decl.id, decl.schedule, (event) => {
-          void this.onFire(pluginId, decl, controller, event)
+          this.startFire(pluginId, decl, controller, event)
         })
       } catch {
         return undefined
@@ -165,22 +168,57 @@ export class TriggerRegistry {
     }
     if (decl.type === "clipboard") {
       return this.deps.clipboardAdapter.register(pluginId, decl.id, decl.scope ?? {}, (event) => {
-        void this.onFire(pluginId, decl, controller, event)
+        this.startFire(pluginId, decl, controller, event)
       })
     }
     if (decl.type === "fs.watch") {
       return this.deps.fsWatchAdapter.register(pluginId, decl.id, decl.scope, (event) => {
-        void this.onFire(pluginId, decl, controller, event)
+        this.startFire(pluginId, decl, controller, event)
       })
     }
     if (decl.type === "hotkey") {
       return (
         this.deps.hotkeyAdapter.register(pluginId, decl.id, decl.scope, (event) => {
-          void this.onFire(pluginId, decl, controller, event)
+          this.startFire(pluginId, decl, controller, event)
         }) || undefined
       )
     }
     return undefined
+  }
+
+  /** Waits for every dispatched trigger observed before the registry becomes
+   * idle. Callers that first deregister/abort adapters can use this as a
+   * teardown barrier before releasing their backing stores. */
+  async waitForIdle(): Promise<void> {
+    while (this.inFlightFires.size > 0) {
+      await Promise.allSettled([...this.inFlightFires])
+    }
+  }
+
+  private startFire(
+    pluginId: string,
+    decl: TriggerDeclaration,
+    controller: AbortController,
+    event: unknown
+  ): void {
+    // Adapter unregistering is not a synchronization primitive: a platform
+    // callback captured before deregistration may still arrive afterwards.
+    // Its controller is the authoritative liveness guard, so do not even
+    // create a detached fire promise for a retired registration.
+    if (controller.signal.aborted) return
+    const completion = this.onFire(pluginId, decl, controller, event)
+    this.inFlightFires.add(completion)
+    // Adapter callbacks cannot await. Preserve the existing log-and-continue
+    // behavior for an unexpected outer failure while retaining completion as
+    // an explicit lifecycle barrier for teardown.
+    void completion
+      .catch((err) => {
+        logger.child(`plugin:${pluginId}`).warn("trigger dispatch failed", {
+          triggerId: decl.id,
+          err,
+        })
+      })
+      .finally(() => this.inFlightFires.delete(completion))
   }
 
   private async currentIdentityInstanceCount(pluginId: string, triggerId: string): Promise<number> {
@@ -194,6 +232,10 @@ export class TriggerRegistry {
     const rt = this.runtimes.get(pluginId)?.get(decl.id)
     if (!rt) return
     const count = await this.currentIdentityInstanceCount(pluginId, decl.id)
+    // listForTrigger() is async. The plugin can be disabled, removed, or
+    // re-registered while it is pending; never register an adapter for the
+    // stale runtime after that await.
+    if (rt.controller.signal.aborted || this.runtimes.get(pluginId)?.get(decl.id) !== rt) return
     if (count > 0 && !rt.agentAdapterDispose) {
       const dispose = this.registerAdapter(pluginId, decl, rt.controller)
       if (dispose) rt.agentAdapterDispose = dispose
@@ -277,13 +319,20 @@ export class TriggerRegistry {
     controller: AbortController,
     event: unknown
   ): Promise<void> {
+    if (controller.signal.aborted) return
     const identity = this.deps.identityForPlugin(pluginId)
     const allInstances =
       decl.agent && identity ? await this.deps.instanceStore.listForTrigger(pluginId, decl.id) : []
+    // Teardown may occur while instance lookup is in flight. Do not turn a
+    // stale platform fire into either a handler invocation or agent fan-out.
+    if (controller.signal.aborted) return
     const identityEligibleInstances = identity
       ? allInstances.filter((i) => sameIdentity(i.identity, identity))
       : []
     const archivedByWorkspace = await this.resolveArchivedByWorkspace(identityEligibleInstances)
+    // Archive resolution is another async preflight; repeat the guard so an
+    // abort between the two preflight reads cannot admit the retired trigger.
+    if (controller.signal.aborted) return
 
     if (decl.agent && identityEligibleInstances.length > 0) {
       const allEligibleArchived = identityEligibleInstances.every(
@@ -332,6 +381,9 @@ export class TriggerRegistry {
         this.deps.invoker.release(eventRecord.invocationId)
       }
 
+      // The handler itself may have settled just as teardown happened. It is
+      // never valid to begin the separate background-agent fan-out afterwards.
+      if (controller.signal.aborted) return
       if (!handlerOk || !decl.agent) return
       if (!this.deps.dispatchAgent) {
         logger.child(`plugin:${pluginId}`).warn("background agent dispatcher not configured", {

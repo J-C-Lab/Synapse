@@ -6,6 +6,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import { ConversationStore } from "../conversation-store"
+import { InvalidRunLimitsError } from "../providers/model-capability-profile"
 import { AiToolRegistry } from "../tool-registry"
 import { AgentRunStore } from "./agent-run-store"
 import { setupInteractiveRun } from "./interactive-run-setup"
@@ -71,8 +72,6 @@ function baseInput(overrides: Partial<InteractiveRunSetupInput> = {}): Interacti
     contextCompression: {
       enabled: false,
       thresholdTokens: 0,
-      keepRecentFraction: 0.5,
-      hardReserveTokens: 0,
     },
     executionWorkspaces: [],
     ...overrides,
@@ -264,5 +263,151 @@ describe("setupInteractiveRun — model capability profile", () => {
       baseInput({ providerId: "some-new-provider", model: "m1" })
     )
     expect(checkpoint.config.resolvedProfile.profileId).toBe("unknown:some-new-provider:m1")
+  })
+})
+
+describe("setupInteractiveRun — frozen run limits (Task 23)", () => {
+  it("derives maxOutputTokens from the resolved profile's default when the caller omits it", async () => {
+    await seedConversation("conv-1")
+    const checkpoint = await setupInteractiveRun(
+      baseDeps(),
+      baseInput({ providerId: "anthropic", model: "claude-x", maxOutputTokens: undefined })
+    )
+    expect(checkpoint.config.maxOutputTokens).toBe(
+      checkpoint.config.resolvedProfile.defaultMaxOutputTokens
+    )
+  })
+
+  it("uses a valid caller-requested maxOutputTokens", async () => {
+    await seedConversation("conv-1")
+    const checkpoint = await setupInteractiveRun(
+      baseDeps(),
+      baseInput({ providerId: "anthropic", model: "claude-x", maxOutputTokens: 2048 })
+    )
+    expect(checkpoint.config.maxOutputTokens).toBe(2048)
+  })
+
+  it("rejects a requested maxOutputTokens at or above the profile's context window, before acquiring the conversation lease", async () => {
+    await seedConversation("conv-1")
+    await expect(
+      setupInteractiveRun(
+        baseDeps(),
+        baseInput({ providerId: "anthropic", model: "claude-x", maxOutputTokens: 200_000 })
+      )
+    ).rejects.toThrow(InvalidRunLimitsError)
+    // No stuck lease left behind — a later turn can still acquire one.
+    const lease = await conversations.acquireRunLeaseAtCurrentRevision("conv-1", "some-later-run")
+    expect(lease).toBeDefined()
+  })
+
+  it("derives keepRecentFraction/hardReserveTokens from the profile, ignoring implausible caller-supplied values (cannot widen authority)", async () => {
+    await seedConversation("conv-1")
+    const checkpoint = await setupInteractiveRun(
+      baseDeps(),
+      baseInput({
+        providerId: "anthropic",
+        model: "claude-x",
+        contextCompression: {
+          enabled: true,
+          thresholdTokens: 150_000,
+          keepRecentFraction: 0.99,
+          hardReserveTokens: 999_999,
+        },
+      })
+    )
+    expect(checkpoint.config.contextCompression.keepRecentFraction).toBe(
+      checkpoint.config.resolvedProfile.contextPolicy.keepRecentFraction
+    )
+    expect(checkpoint.config.contextCompression.hardReserveTokens).toBe(
+      checkpoint.config.resolvedProfile.contextPolicy.hardReserveTokens
+    )
+  })
+
+  it("derives the default compression threshold from the profile's summarizeAtFraction when unset", async () => {
+    await seedConversation("conv-1")
+    const checkpoint = await setupInteractiveRun(
+      baseDeps(),
+      baseInput({
+        providerId: "anthropic",
+        model: "claude-x",
+        contextCompression: { enabled: true, thresholdTokens: 0 },
+      })
+    )
+    const profile = checkpoint.config.resolvedProfile
+    expect(checkpoint.config.contextCompression.thresholdTokens).toBe(
+      Math.floor(profile.contextWindowTokens * profile.contextPolicy.summarizeAtFraction)
+    )
+  })
+
+  it("rejects an explicit compression threshold at or below the profile's hard reserve", async () => {
+    await seedConversation("conv-1")
+    await expect(
+      setupInteractiveRun(
+        baseDeps(),
+        baseInput({
+          providerId: "anthropic",
+          model: "claude-x",
+          contextCompression: { enabled: true, thresholdTokens: 4000 },
+        })
+      )
+    ).rejects.toThrow(InvalidRunLimitsError)
+  })
+
+  it("does not reject a low threshold when compression is disabled", async () => {
+    await seedConversation("conv-1")
+    const checkpoint = await setupInteractiveRun(
+      baseDeps(),
+      baseInput({
+        providerId: "anthropic",
+        model: "claude-x",
+        contextCompression: { enabled: false, thresholdTokens: 1 },
+      })
+    )
+    expect(checkpoint.config.contextCompression.enabled).toBe(false)
+  })
+
+  it("rejects a finite runBudgetTokens when the resolved profile cannot bound a finite-budget run", async () => {
+    await seedConversation("conv-1")
+    await expect(
+      setupInteractiveRun(
+        baseDeps(),
+        baseInput({ providerId: "some-new-provider", model: "m1", runBudgetTokens: 1000 })
+      )
+    ).rejects.toThrow(InvalidRunLimitsError)
+  })
+})
+
+describe("setupInteractiveRun — frozen-value guarantee (recovery non-drift)", () => {
+  it("a later call's different requested limits never alter an earlier run's already-frozen checkpoint", async () => {
+    await seedConversation("conv-1")
+    await seedConversation("conv-2")
+
+    const first = await setupInteractiveRun(
+      baseDeps(),
+      baseInput({
+        runId: "run-a",
+        conversationId: "conv-1",
+        providerId: "anthropic",
+        model: "claude-x",
+        maxOutputTokens: 1000,
+      })
+    )
+    await setupInteractiveRun(
+      baseDeps(),
+      baseInput({
+        runId: "run-b",
+        conversationId: "conv-2",
+        providerId: "anthropic",
+        model: "claude-x",
+        maxOutputTokens: 2000,
+      })
+    )
+
+    const reloaded = await runStore.load("run-a")
+    expect(reloaded.ok).toBe(true)
+    if (reloaded.ok) {
+      expect(reloaded.checkpoint.config.maxOutputTokens).toBe(1000)
+    }
+    expect(first.config.maxOutputTokens).toBe(1000)
   })
 })

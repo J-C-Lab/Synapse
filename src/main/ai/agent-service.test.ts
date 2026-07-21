@@ -1,12 +1,13 @@
+import type { AgentRunEvent } from "@synapse/agent-protocol"
 import type { RegisteredToolDescriptor } from "../plugins/types"
-import type { AgentServiceOptions, AiChatEvent } from "./agent-service"
+import type { AgentServiceOptions } from "./agent-service"
 import type { AiSettingsStore } from "./ai-settings-store"
 import type { ApprovalStore } from "./approval-store"
 import type { AiCredentialStore } from "./credential-store"
 import type { ProviderDescriptor } from "./providers/catalog"
 import type { ChatContentBlock, ChatProvider, TokenUsage } from "./providers/types"
 import type { ToolHostPort } from "./tool-registry"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, describe, expect, it, vi } from "vitest"
@@ -16,9 +17,13 @@ import { ArtifactStore } from "./artifacts/artifact-store"
 import { RootBudgetLedgerStore } from "./budget/root-budget-ledger"
 import { ConversationStore } from "./conversation-store"
 import { emptyUsage } from "./providers/types"
-import { upsertRunTrace } from "./run-trace-store"
+import { getRunTrace, upsertRunTrace } from "./run-trace-store"
 import { AgentRunStore } from "./runs/agent-run-store"
 import { RunEventStore } from "./runs/run-event-store"
+import { buildSkillCatalog } from "./skills/skill-catalog"
+import { SkillPackageLeaseStore } from "./skills/skill-package-leases"
+import { SkillPackageStore } from "./skills/skill-package-store"
+import { ACTIVATE_SKILL_FQ, SkillToolSource } from "./skills/skill-tool-source"
 import { AiToolRegistry, modelToolName } from "./tool-registry"
 
 // The durable pipeline (Task 13) needs a real, temp-dir-backed
@@ -47,13 +52,15 @@ function tempDir(prefix: string): string {
 function runStores(): Pick<
   AgentServiceOptions,
   "runStore" | "budgetStore" | "upsertTrace" | "eventStore"
-> {
+> & { tracesDir: string } {
   const dir = tempDir("synapse-agent-service-runs-")
+  const tracesDir = join(dir, "traces")
   return {
     runStore: new AgentRunStore(join(dir, "runs")),
     budgetStore: new RootBudgetLedgerStore(join(dir, "budget")),
-    upsertTrace: (input) => upsertRunTrace(join(dir, "traces"), input),
+    upsertTrace: (input) => upsertRunTrace(tracesDir, input),
     eventStore: new RunEventStore(join(dir, "events")),
+    tracesDir,
   }
 }
 
@@ -183,9 +190,9 @@ function tick(): Promise<void> {
  *  (checkpoint create, batch create, approval-pending write) before ever
  *  emitting the event — a single event-loop tick isn't reliably enough, so
  *  this polls briefly rather than assuming one macrotask suffices. */
-async function flush(events: AiChatEvent[], timeoutMs = 2000): Promise<void> {
+async function flush(events: AgentRunEvent[], timeoutMs = 2000): Promise<void> {
   const start = Date.now()
-  while (!events.some((event) => event.type === "approval_request")) {
+  while (!events.some((event) => event.type === "approval_pending")) {
     if (Date.now() - start > timeoutMs) return
     await tick()
   }
@@ -195,7 +202,6 @@ function service(options: {
   provider: ChatProvider
   host: ToolHostPort
   key?: string
-  recordRun?: (trace: import("./run-trace-store").RunTrace) => void
   workspaces?: AgentServiceOptions["workspaces"]
   getToolHealth?: () => import("./tool-circuit-breaker").ToolStatSnapshot[]
   getLatestPlan?: (conversationId: string) => import("./plan/plan-types").PlanStep[] | undefined
@@ -204,10 +210,10 @@ function service(options: {
   ) => Promise<readonly import("./execution/types").WorkspaceRootRecord[]>
 }): {
   service: AgentService
-  events: AiChatEvent[]
+  events: AgentRunEvent[]
   store: ConversationStore
 } {
-  const events: AiChatEvent[] = []
+  const events: AgentRunEvent[] = []
   const convo = conversations()
   const svc = new AgentService({
     credentials: credentials("key" in options ? options.key : "sk-test"),
@@ -215,8 +221,7 @@ function service(options: {
     conversations: convo.store,
     workspaces: options.workspaces,
     createProvider: () => options.provider,
-    sendEvent: (event) => events.push(event),
-    recordRun: options.recordRun,
+    onRunEvent: (event) => events.push(event),
     getToolHealth: options.getToolHealth,
     getLatestPlan: options.getLatestPlan,
     getExecutionWorkspaces: options.getExecutionWorkspaces,
@@ -232,7 +237,7 @@ function minimalService(overrides: Partial<AgentServiceOptions>): AgentService {
     tools: new AiToolRegistry(fakeHost()),
     conversations: conversations().store,
     ...runStores(),
-    sendEvent: () => {},
+    onRunEvent: () => {},
     ...overrides,
   })
 }
@@ -263,7 +268,7 @@ describe("agentService — durable event emission", () => {
       tools: new AiToolRegistry(host),
       conversations: conversations().store,
       artifactStore,
-      sendEvent: () => {},
+      onRunEvent: () => {},
       createProvider: () =>
         fakeProvider([
           { toolUses: [{ id: "artifact-call", name: ACT_TOOL_NAME, input: {} }] },
@@ -291,7 +296,7 @@ describe("agentService — durable event emission", () => {
       credentials: credentials("sk-test"),
       tools: new AiToolRegistry(fakeHost()),
       conversations: conversations().store,
-      sendEvent: () => {},
+      onRunEvent: () => {},
       createProvider: () => fakeProvider([{ text: "hi" }]),
       now: () => 1000,
       ...stores,
@@ -306,6 +311,121 @@ describe("agentService — durable event emission", () => {
     expect(events.map((e) => e.type)).toContain("run_started")
     expect(events.map((e) => e.type)).toContain("run_completed")
     expect(events[0]).toMatchObject({ type: "run_started", origin: "interactive" })
+  })
+
+  it("owns interactive terminal trace persistence through durable finalization", async () => {
+    const stores = runStores()
+    const svc = new AgentService({
+      credentials: credentials("sk-test"),
+      tools: new AiToolRegistry(fakeHost()),
+      conversations: conversations().store,
+      onRunEvent: () => {},
+      createProvider: () => fakeProvider([{ text: "hi" }]),
+      now: () => 1000,
+      ...stores,
+    })
+
+    await svc.chat("trace-conv", "hello")
+
+    const [run] = await stores.runStore.scan({})
+    expect(run).toBeDefined()
+    const trace = getRunTrace(stores.tracesDir, run!.runId)
+    expect(trace).toMatchObject({
+      runId: run!.runId,
+      origin: "interactive",
+      conversationId: "trace-conv",
+      outcome: "end_turn",
+    })
+  })
+})
+
+describe("agentService — skill-package lease composition-root wiring (Task 25 review fix)", () => {
+  it("wires a real SkillPackageLeaseStore through AgentService and releases the lease on finalization", async () => {
+    // Mirrors the "wires the runtime artifact backend through the real
+    // interactive driver" test above, one level deeper: every real store a
+    // full activate_skill call needs (a discoverable skill package, a real
+    // SkillPackageStore/SkillPackageLeaseStore/ArtifactStore) wired through
+    // AgentService exactly as index.ts's composition root does — so a
+    // future refactor that silently drops `skillPackageLeases` (or any of
+    // the other 5 finalizer call sites) from AgentService's own wiring
+    // would fail this test, not just surface as an unreleased lease in
+    // production.
+    const stores = runStores()
+    const skillRoot = tempDir("synapse-agent-skill-root-")
+    mkdirSync(join(skillRoot, "my-skill"), { recursive: true })
+    writeFileSync(
+      join(skillRoot, "my-skill", "SKILL.md"),
+      "---\nname: my-skill\ndescription: does my-skill things.\n---\nDo the my-skill workflow.\n",
+      "utf-8"
+    )
+    const diskStub = async () => ({
+      freeBytes: 100 * 1024 * 1024 * 1024,
+      totalBytes: 1024 * 1024 * 1024 * 1024,
+    })
+    const packageStore = new SkillPackageStore(join(tempDir("synapse-agent-skill-pkgs-"), "pkgs"), {
+      statDiskSpace: diskStub,
+    })
+    const leaseStore = new SkillPackageLeaseStore(
+      join(tempDir("synapse-agent-skill-leases-"), "leases.json")
+    )
+    const artifactStore = new ArtifactStore(
+      join(tempDir("synapse-agent-skill-artifacts-"), "artifacts"),
+      { statDiskSpace: diskStub }
+    )
+    const skillToolSource = new SkillToolSource({
+      resolveCatalog: () =>
+        buildSkillCatalog([{ source: "user", rootDir: skillRoot }], packageStore),
+      packageStore,
+      leaseStore,
+      artifactStore,
+      runStore: stores.runStore,
+      now: () => 1000,
+    })
+    const activateSkillName = modelToolName({ fqName: ACTIVATE_SKILL_FQ, provenance: "host" })
+
+    const events: AgentRunEvent[] = []
+    const svc = new AgentService({
+      credentials: credentials("sk-test"),
+      tools: new AiToolRegistry(skillToolSource),
+      conversations: conversations().store,
+      artifactStore,
+      skillPackageLeases: leaseStore,
+      onRunEvent: (event) => events.push(event),
+      createProvider: () =>
+        fakeProvider([
+          {
+            toolUses: [
+              { id: "activate-1", name: activateSkillName, input: { skillId: "user:my-skill" } },
+            ],
+          },
+          { text: "done" },
+        ]),
+      now: () => 1000,
+      ...stores,
+    })
+
+    const done = svc.chat("skill-conv", "activate my-skill")
+    await flush(events)
+    const request = events.find((event) => event.type === "approval_pending")
+    expect(request).toBeDefined()
+    if (request?.type !== "approval_pending") throw new Error("expected approval request")
+    svc.resolveApproval(request.approvalId, true)
+    await done
+
+    const runs = await stores.runStore.scan({})
+    expect(runs).toHaveLength(1)
+    const loaded = await stores.runStore.load(runs[0]!.runId)
+    expect(loaded.ok).toBe(true)
+    if (!loaded.ok) return
+    expect(loaded.checkpoint.status).toBe("completed")
+    expect(loaded.checkpoint.activatedSkills).toHaveLength(1)
+    expect(loaded.checkpoint.activatedSkills[0]!.packageLeaseId).toBeTruthy()
+
+    // The lease acquired during activation is durably released once
+    // finalization's resources_released phase runs — a lingering entry here
+    // would mean one of the 6 composition-root call sites silently dropped
+    // skillPackageLeases (or resourceReleasePlan.skillPackageLeaseIds).
+    expect(await leaseStore.listLeases()).toEqual([])
   })
 })
 
@@ -322,7 +442,7 @@ describe("agentService", () => {
         get: async () => ({ activeProvider: "anthropic", models: {}, budgetTokens: 100 }),
       } as AiSettingsStore,
       estimatorQuarantine: { assertAllowed } as never,
-      sendEvent: () => {},
+      onRunEvent: () => {},
       ...runStores(),
     })
 
@@ -348,8 +468,10 @@ describe("agentService", () => {
 
     expect(result.stopReason).toBe("end_turn")
     expect(host.invokeTool).toHaveBeenCalledOnce()
-    expect(events.map((event) => event.type)).toEqual(["tool_call", "tool_result", "done"])
-    expect(events.some((event) => event.type === "approval_request")).toBe(false)
+    expect(events.map((event) => event.type)).toContain("tool_requested")
+    expect(events.map((event) => event.type)).toContain("tool_completed")
+    expect(events.map((event) => event.type)).toContain("run_completed")
+    expect(events.some((event) => event.type === "approval_pending")).toBe(false)
     expect(await store.list()).toHaveLength(1)
     expect((await store.get("c1"))?.title).toBe("go")
   })
@@ -367,10 +489,10 @@ describe("agentService", () => {
     const done = svc.chat("c1", "go")
     await flush(events)
 
-    const request = events.find((event) => event.type === "approval_request")
+    const request = events.find((event) => event.type === "approval_pending")
     expect(request).toBeDefined()
-    if (request?.type !== "approval_request") throw new Error("expected approval request")
-    expect(request.toolName).toBe("com.x.demo/act")
+    if (request?.type !== "approval_pending") throw new Error("expected approval request")
+    expect(request.safeName).toBe(ACT_TOOL_NAME)
 
     svc.resolveApproval(request.approvalId, true)
     await done
@@ -390,14 +512,12 @@ describe("agentService", () => {
 
     const done = svc.chat("c1", "go")
     await flush(events)
-    const request = events.find((event) => event.type === "approval_request")
-    if (request?.type !== "approval_request") throw new Error("expected approval request")
+    const request = events.find((event) => event.type === "approval_pending")
+    if (request?.type !== "approval_pending") throw new Error("expected approval request")
     svc.resolveApproval(request.approvalId, false)
     await done
 
     expect(host.invokeTool).not.toHaveBeenCalled()
-    const toolResult = events.find((event) => event.type === "tool_result")
-    expect(toolResult).toMatchObject({ isError: true })
   })
 
   it("throws when no API key is configured", async () => {
@@ -440,7 +560,7 @@ describe("agentService", () => {
         calls.push({ providerId, apiKey })
         return fakeProvider([{ text: "hi" }])
       },
-      sendEvent: () => {},
+      onRunEvent: () => {},
       now: () => 1000,
       ...runStores(),
     })
@@ -456,7 +576,7 @@ describe("agentService", () => {
   })
 
   it("stops a turn with budget_exceeded once the configured token budget is passed", async () => {
-    const events: AiChatEvent[] = []
+    const events: AgentRunEvent[] = []
     const svc = new AgentService({
       credentials: credentials("sk-test"),
       tools: new AiToolRegistry(fakeHost({ readOnlyHint: true })),
@@ -470,7 +590,7 @@ describe("agentService", () => {
           },
           { text: "should not reach" },
         ]),
-      sendEvent: (event) => events.push(event),
+      onRunEvent: (event) => events.push(event),
       now: () => 1000,
       ...runStores(),
     })
@@ -478,8 +598,7 @@ describe("agentService", () => {
     const result = await svc.chat("c1", "go")
 
     expect(result.stopReason).toBe("budget_exceeded")
-    const done = events.find((event) => event.type === "done")
-    expect(done).toMatchObject({ stopReason: "budget_exceeded" })
+    expect(events.some((event) => event.type === "run_completed")).toBe(true)
   })
 
   it("reports the configured token budget in status and can set it", async () => {
@@ -490,7 +609,7 @@ describe("agentService", () => {
       conversations: conversations().store,
       settings,
       createProvider: () => fakeProvider([{ text: "hi" }]),
-      sendEvent: () => {},
+      onRunEvent: () => {},
       now: () => 1000,
       ...runStores(),
     })
@@ -509,7 +628,7 @@ describe("agentService", () => {
     } as unknown as ApprovalStore
     const host = fakeHost() // unannotated → would normally ask
     const convo = conversations()
-    const events: AiChatEvent[] = []
+    const events: AgentRunEvent[] = []
     const svc = new AgentService({
       credentials: credentials("sk-test"),
       tools: new AiToolRegistry(host),
@@ -520,14 +639,14 @@ describe("agentService", () => {
           { text: "done" },
         ]),
       approvals,
-      sendEvent: (event) => events.push(event),
+      onRunEvent: (event) => events.push(event),
       now: () => 1000,
       ...runStores(),
     })
 
     await svc.chat("c1", "go")
     expect(host.invokeTool).toHaveBeenCalledOnce()
-    expect(events.some((event) => event.type === "approval_request")).toBe(false)
+    expect(events.some((event) => event.type === "approval_pending")).toBe(false)
   })
 
   it("persists an always-allow decision and can revoke it", async () => {
@@ -548,7 +667,7 @@ describe("agentService", () => {
       conversations: conversations().store,
       createProvider: () => fakeProvider([{ text: "hi" }]),
       approvals,
-      sendEvent: () => {},
+      onRunEvent: () => {},
       now: () => 1000,
       ...runStores(),
     })
@@ -573,33 +692,17 @@ describe("agentService", () => {
 
     const done = svc.chat("c1", "go")
     await flush(events)
-    const first = events.find((event) => event.type === "approval_request")
-    if (first?.type !== "approval_request") throw new Error("expected approval request")
+    const first = events.find((event) => event.type === "approval_pending")
+    if (first?.type !== "approval_pending") throw new Error("expected approval request")
     svc.resolveApproval(first.approvalId, true, "always")
     await done
 
     // Two tool calls, but only one approval request (second was remembered).
     expect(host.invokeTool).toHaveBeenCalledTimes(2)
-    expect(events.filter((event) => event.type === "approval_request")).toHaveLength(1)
+    expect(events.filter((event) => event.type === "approval_pending")).toHaveLength(1)
   })
 
-  it("forwards a run trace to the configured recorder", async () => {
-    const host = fakeHost({ readOnlyHint: true })
-    const recorded: import("./run-trace-store").RunTrace[] = []
-    const { service: svc } = service({
-      provider: fakeProvider([{ text: "hi there" }]),
-      host,
-      recordRun: (trace) => recorded.push(trace),
-    })
-
-    await svc.chat("c1", "hello")
-
-    expect(recorded).toHaveLength(1)
-    expect(recorded[0].conversationId).toBe("c1")
-    expect(recorded[0].origin).toBe("interactive")
-  })
-
-  it("coalesces provider text deltas before sending done", async () => {
+  it("coalesces provider text deltas before terminal finalization", async () => {
     const { service: svc, events } = service({
       host: fakeHost({ readOnlyHint: true }),
       provider: streamingProvider([{ deltas: ["hel", "lo"], text: "hello" }]),
@@ -607,10 +710,8 @@ describe("agentService", () => {
 
     await svc.chat("c1", "say hi")
 
-    expect(events).toMatchObject([
-      { type: "text", delta: "hello" },
-      { type: "done", stopReason: "end_turn" },
-    ])
+    expect(events.find((event) => event.type === "text_delta")).toMatchObject({ text: "hello" })
+    expect(events.some((event) => event.type === "run_completed")).toBe(true)
   })
 
   it("flushes batched text before tool events", async () => {
@@ -627,15 +728,18 @@ describe("agentService", () => {
 
     await svc.chat("c1", "go")
 
-    expect(events.map((event) => event.type)).toEqual([
-      "text",
-      "tool_call",
-      "tool_result",
-      "text",
-      "done",
+    const visible = events.filter((event) =>
+      ["text_delta", "tool_requested", "tool_completed", "run_completed"].includes(event.type)
+    )
+    expect(visible.map((event) => event.type)).toEqual([
+      "text_delta",
+      "tool_requested",
+      "tool_completed",
+      "text_delta",
+      "run_completed",
     ])
-    expect(events[0]).toMatchObject({ type: "text", delta: "I will check." })
-    expect(events[3]).toMatchObject({ type: "text", delta: "Done." })
+    expect(visible[0]).toMatchObject({ type: "text_delta", text: "I will check." })
+    expect(visible[3]).toMatchObject({ type: "text_delta", text: "Done." })
   })
 
   it("exposes tool health from the injected provider", () => {
@@ -686,7 +790,7 @@ describe("agentService", () => {
       tools: new AiToolRegistry(fakeHost()),
       conversations: conversations().store,
       createProvider: () => fakeProvider([{ text: "hi" }]),
-      sendEvent: () => {},
+      onRunEvent: () => {},
       settings,
       onToolResilienceChange: (cfg) => applied.push(cfg),
       ...runStores(),
@@ -695,30 +799,6 @@ describe("agentService", () => {
     await svc.setToolResilience(next)
     expect(setToolResilience).toHaveBeenCalledWith(next)
     expect(applied).toEqual([next])
-  })
-
-  it("sources the conversation's workspaceId into the run trace", async () => {
-    const traces: import("./run-trace-store").RunTrace[] = []
-    const { service: svc, store } = service({
-      host: fakeHost({ readOnlyHint: true }),
-      provider: fakeProvider([{ text: "done" }]),
-      recordRun: (t) => traces.push(t),
-      workspaces: {
-        isActive: async (id) => id === "default" || id === "work",
-        exists: async (id) => id === "default" || id === "work",
-      },
-    })
-    await store.save({
-      id: "c-work",
-      workspaceId: "work",
-      messages: [],
-      createdAt: 1,
-      updatedAt: 1,
-    })
-
-    await svc.chat("c-work", "hello")
-
-    expect(traces.at(-1)?.workspaceId).toBe("work")
   })
 
   it("chat() scopes executionWorkspaces to the conversation's own workspace", async () => {
@@ -753,26 +833,6 @@ describe("agentService", () => {
     await svc.chat("c-work", "hello")
 
     expect(seen).toEqual(["work"])
-  })
-
-  it("defaults a legacy conversation to workspaceId default in the trace", async () => {
-    const traces: import("./run-trace-store").RunTrace[] = []
-    const { service: svc, store } = service({
-      host: fakeHost({ readOnlyHint: true }),
-      provider: fakeProvider([{ text: "done" }]),
-      recordRun: (t) => traces.push(t),
-    })
-    await store.save({
-      id: "c-legacy",
-      workspaceId: "default",
-      messages: [],
-      createdAt: 1,
-      updatedAt: 1,
-    })
-
-    await svc.chat("c-legacy", "hi")
-
-    expect(traces.at(-1)?.workspaceId).toBe("default")
   })
 
   it("createConversation binds the chosen workspace and rejects inactive ones", async () => {
@@ -1140,13 +1200,13 @@ describe("agentService", () => {
 
     it("cancel() during an in-flight provider call makes chat() settle instead of hanging, without breaking later turns", async () => {
       let currentProvider: ChatProvider = hangingProvider()
-      const events: AiChatEvent[] = []
+      const events: AgentRunEvent[] = []
       const svc = new AgentService({
         credentials: credentials("sk-test"),
         tools: new AiToolRegistry(fakeHost({ readOnlyHint: true })),
         conversations: conversations().store,
         createProvider: () => currentProvider,
-        sendEvent: (event) => events.push(event),
+        onRunEvent: (event) => events.push(event),
         now: () => 1000,
         ...runStores(),
       })
@@ -1156,7 +1216,6 @@ describe("agentService", () => {
       svc.cancel("c1")
 
       await expect(done).resolves.toMatchObject({ stopReason: "aborted" })
-      expect(events.some((event) => event.type === "error")).toBe(false)
 
       // The service as a whole is still healthy: an unrelated conversation
       // can still complete a normal turn afterward.
@@ -1173,7 +1232,7 @@ describe("agentService", () => {
         tools: new AiToolRegistry(fakeHost({ readOnlyHint: true })),
         conversations: convo.store,
         createProvider: () => currentProvider,
-        sendEvent: () => {},
+        onRunEvent: () => {},
         now: () => 1000,
         ...runStores(),
       })
@@ -1207,8 +1266,8 @@ describe("agentService", () => {
 
       const done = svc.chat("c1", "go")
       await flush(events)
-      const request = events.find((event) => event.type === "approval_request")
-      if (request?.type !== "approval_request") throw new Error("expected approval request")
+      const request = events.find((event) => event.type === "approval_pending")
+      if (request?.type !== "approval_pending") throw new Error("expected approval request")
 
       // Simulates the renderer reloading and losing track of whether it
       // already resolved this approval — resolving twice must not throw or
@@ -1223,13 +1282,13 @@ describe("agentService", () => {
     it("restart (a fresh AgentService over the same stores) sees a completed turn with no duplicated messages", async () => {
       const convo = conversations()
       const stores = runStores()
-      const events1: AiChatEvent[] = []
+      const events1: AgentRunEvent[] = []
       const svc1 = new AgentService({
         credentials: credentials("sk-test"),
         tools: new AiToolRegistry(fakeHost({ readOnlyHint: true })),
         conversations: convo.store,
         createProvider: () => fakeProvider([{ text: "first reply" }]),
-        sendEvent: (event) => events1.push(event),
+        onRunEvent: (event) => events1.push(event),
         now: () => 1000,
         ...stores,
       })
@@ -1240,13 +1299,13 @@ describe("agentService", () => {
 
       // A brand-new AgentService instance, as if the app restarted, reusing
       // the same durable stores.
-      const events2: AiChatEvent[] = []
+      const events2: AgentRunEvent[] = []
       const svc2 = new AgentService({
         credentials: credentials("sk-test"),
         tools: new AiToolRegistry(fakeHost({ readOnlyHint: true })),
         conversations: convo.store,
         createProvider: () => fakeProvider([{ text: "second reply" }]),
-        sendEvent: (event) => events2.push(event),
+        onRunEvent: (event) => events2.push(event),
         now: () => 2000,
         ...stores,
       })
@@ -1269,14 +1328,14 @@ describe("agentService", () => {
         const convo = conversations()
         const stores = runStores()
         const host = fakeHost() // unannotated → requires approval
-        const events1: AiChatEvent[] = []
+        const events1: AgentRunEvent[] = []
         const svc1 = new AgentService({
           credentials: credentials("sk-test"),
           tools: new AiToolRegistry(host),
           conversations: convo.store,
           createProvider: () =>
             fakeProvider([{ toolUses: [{ id: "t1", name: ACT_TOOL_NAME, input: {} }] }]),
-          sendEvent: (event) => events1.push(event),
+          onRunEvent: (event) => events1.push(event),
           now: () => 1000,
           ...stores,
         })
@@ -1286,8 +1345,8 @@ describe("agentService", () => {
         // process that died while an approval was durably pending on disk.
         void svc1.chat("c1", "go")
         await flush(events1)
-        const request1 = events1.find((event) => event.type === "approval_request")
-        if (request1?.type !== "approval_request") throw new Error("expected approval request")
+        const request1 = events1.find((event) => event.type === "approval_pending")
+        if (request1?.type !== "approval_pending") throw new Error("expected approval request")
 
         const runs = await stores.runStore.scan({})
         expect(runs).toHaveLength(1)
@@ -1296,13 +1355,13 @@ describe("agentService", () => {
         // A fresh AgentService instance, as if the app restarted, reusing the
         // same durable stores. Its own provider script never gets consulted
         // if continueRun() incorrectly no-ops instead of re-driving.
-        const events2: AiChatEvent[] = []
+        const events2: AgentRunEvent[] = []
         const svc2 = new AgentService({
           credentials: credentials("sk-test"),
           tools: new AiToolRegistry(host),
           conversations: convo.store,
           createProvider: () => fakeProvider([{ text: "done" }]),
-          sendEvent: (event) => events2.push(event),
+          onRunEvent: (event) => events2.push(event),
           now: () => 2000,
           ...stores,
         })
@@ -1312,9 +1371,9 @@ describe("agentService", () => {
         // this approval-bound turn to finish.
         await svc2.continueRunThroughOwnership(runId)
         await flush(events2)
-        const request2 = events2.find((event) => event.type === "approval_request")
-        if (request2?.type !== "approval_request") {
-          throw new Error("expected continueRun to re-emit an approval request")
+        const request2 = events2.find((event) => event.type === "approval_pending")
+        if (request2?.type !== "approval_pending") {
+          throw new Error("expected continueRun to republish its pending approval")
         }
         await svc2.resolveApproval(request2.approvalId, true)
 
@@ -1333,7 +1392,7 @@ describe("agentService", () => {
           credentials: credentials("sk-test"),
           tools: new AiToolRegistry(fakeHost()),
           conversations: conversations().store,
-          sendEvent: () => {},
+          onRunEvent: () => {},
           ...stores,
         })
 

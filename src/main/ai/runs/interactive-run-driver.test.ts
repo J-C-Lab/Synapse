@@ -7,7 +7,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { createRootBudgetLedger, RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import { EstimatorProfileQuarantinedError } from "../estimator-quarantine-store"
-import { upsertRunTrace } from "../run-trace-store"
+import { getRunTrace, upsertRunTrace } from "../run-trace-store"
 import { AiToolRegistry } from "../tool-registry"
 import { AgentRunStore } from "./agent-run-store"
 import { freezeToolAuthority } from "./authority-snapshot"
@@ -35,12 +35,18 @@ function minimalCheckpoint(
   runId: string,
   maxSteps = 10,
   runBudgetTokens: number | undefined = 10_000,
-  authorityTools: AgentRunCheckpointV1["config"]["authority"]["tools"] = []
+  authorityTools: AgentRunCheckpointV1["config"]["authority"]["tools"] = [],
+  workspaceId?: string
 ): AgentRunCheckpointV1 {
   return sealCheckpointIntegrity({
     schemaVersion: 1,
     revision: 0,
-    identity: { runId, rootRunId: runId, origin: "interactive" },
+    identity: {
+      runId,
+      rootRunId: runId,
+      origin: "interactive",
+      ...(workspaceId ? { workspaceId } : {}),
+    },
     status: "running",
     recovery: { kind: "automatic" },
     createdAt: 1,
@@ -90,6 +96,8 @@ function minimalCheckpoint(
         schemaVersion: 1,
         baseSystemPrompt: { normalizedText: "You are helpful.", sha256: "h" },
         workspaceInstructions: [],
+        skillCatalog: [],
+        skillCatalogHash: "h",
         aggregateHash: "h",
       },
     },
@@ -181,6 +189,7 @@ async function seedRun(
     maxSteps?: number
     runBudgetTokens?: number | undefined
     authorityTools?: AgentRunCheckpointV1["config"]["authority"]["tools"]
+    workspaceId?: string
   } = {}
 ): Promise<void> {
   await runStore.create(
@@ -188,7 +197,8 @@ async function seedRun(
       runId,
       options.maxSteps ?? 10,
       options.runBudgetTokens ?? 10_000,
-      options.authorityTools
+      options.authorityTools,
+      options.workspaceId
     )
   )
   await budgetStore.create(createRootBudgetLedger(runId, options.runBudgetTokens ?? 10_000))
@@ -231,7 +241,13 @@ function makeDeps(
 describe("runInteractiveTurn — happy paths", () => {
   it("drives a no-tool turn straight to end_turn and finalizes the run as completed", async () => {
     const runId = "run-1"
-    await seedRun(runId)
+    await seedRun(runId, { workspaceId: "workspace-1" })
+    const seeded = await runStore.load(runId)
+    if (!seeded.ok) throw new Error("expected checkpoint")
+    await runStore.mutate(runId, seeded.checkpoint.revision, (checkpoint) => ({
+      ...checkpoint,
+      plan: [{ title: "Answer the user", status: "in_progress" }],
+    }))
     const provider = fakeProvider([
       {
         type: "message",
@@ -248,6 +264,12 @@ describe("runInteractiveTurn — happy paths", () => {
     expect(outcome.stopReason).toBe("end_turn")
     expect(outcome.checkpoint.status).toBe("completed")
     expect(outcome.checkpoint.finalization?.phase).toBe("complete")
+    expect(getRunTrace(tracesDir, runId)).toMatchObject({
+      origin: "interactive",
+      principal: { kind: "internal-agent" },
+      workspaceId: "workspace-1",
+      plan: [{ title: "Answer the user", status: "in_progress" }],
+    })
   })
 
   it("drives a tool-call turn through the batch, then a second model step to end_turn", async () => {

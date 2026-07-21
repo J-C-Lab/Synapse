@@ -5,7 +5,7 @@
 // in src/main/ai/runs instead of here.
 
 /** Who started a run. Kept in sync with AgentRunIdentity.origin below. */
-export type AgentRunOrigin = "interactive" | "background-agent" | "subagent"
+export type AgentRunOrigin = "interactive" | "background-agent" | "subagent" | "mcp"
 
 export type AgentRunStatus =
   | "created"
@@ -122,8 +122,11 @@ export interface RunStatusChangedEvent extends AgentRunEventBase {
   recovery: RecoveryDisposition
 }
 
-export interface TextDeltaEvent extends AgentRunEventBase {
+/** A renderer-only text fragment. It is never valid journal input: durable
+ * message state is reconstructed from the checkpoint/conversation instead. */
+export interface TextDeltaEvent extends Omit<AgentRunEventBase, "persisted"> {
   type: "text_delta"
+  persisted: false
   text: string
 }
 
@@ -319,7 +322,8 @@ export function isAgentRunEvent(value: unknown): value is AgentRunEvent {
       return (
         (value.origin === "interactive" ||
           value.origin === "background-agent" ||
-          value.origin === "subagent") &&
+          value.origin === "subagent" ||
+          value.origin === "mcp") &&
         (value.workspaceId === undefined || isString(value.workspaceId))
       )
     case "run_status_changed":
@@ -338,7 +342,7 @@ export function isAgentRunEvent(value: unknown): value is AgentRunEvent {
         ].includes(value.status as string) && isRecoveryDisposition(value.recovery)
       )
     case "text_delta":
-      return isString(value.text)
+      return value.persisted === false && isString(value.text)
     case "budget_admission_updated":
       return (
         isString(value.operationId) &&

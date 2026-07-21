@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import { ConversationStore } from "../conversation-store"
 import { emptyUsage } from "../providers/types"
-import { upsertRunTrace } from "../run-trace-store"
+import { getRunTrace, upsertRunTrace } from "../run-trace-store"
 import { AiToolRegistry } from "../tool-registry"
 import { AgentRunStore } from "./agent-run-store"
 import { setupBackgroundRun } from "./background-run-setup"
@@ -31,7 +31,7 @@ beforeEach(async () => {
   runStore = new AgentRunStore(runsDir)
   budgetStore = new RootBudgetLedgerStore(join(dir, "budget"))
   eventStore = new RunEventStore(join(dir, "events"))
-  upsertTrace = (input) => upsertRunTrace(runsDir, input)
+  upsertTrace = (input) => upsertRunTrace(join(dir, "traces"), input)
 })
 
 afterEach(async () => {
@@ -134,7 +134,13 @@ describe("continueBackgroundOrSubagentRun", () => {
         allowedUses: [],
         instruction: "must not start",
         event: {},
-        providerId: "fake",
+        // A real catalogued provider id (Task 23): setupBackgroundRun now
+        // rejects a finite runBudgetTokens the resolved profile's estimator
+        // cannot back — a synthetic "fake" id falls back to the
+        // never-finite-budget-eligible unknown-model profile. This test's
+        // actual subject is the expired-deadline short-circuit, not
+        // provider-adapter behavior.
+        providerId: "anthropic",
         model: "fake-model",
         maxOutputTokens: 1,
         runBudgetTokens: 10,
@@ -164,7 +170,7 @@ describe("continueBackgroundOrSubagentRun", () => {
     expect(final.ok && final.checkpoint.status).toBe("cancelled")
   })
 
-  it("drives a freshly-created (interrupted before its first step) subagent checkpoint to completion", async () => {
+  it("drives a freshly-created subagent checkpoint through continuation and durable completion", async () => {
     await seedParentRun("parent-1")
     const host = fakeHost()
     const checkpoint = await setupSubagentRun(
@@ -181,22 +187,23 @@ describe("continueBackgroundOrSubagentRun", () => {
     )
     expect(checkpoint.modelSteps).toHaveLength(0)
 
-    const recorded: import("../run-trace-store").RunTrace[] = []
     await continueBackgroundOrSubagentRun(
       {
         runStore,
         budgetStore,
         eventStore,
         upsertTrace,
-        recordRun: (t) => recorded.push(t),
         tools: host,
         buildProvider: async () => fakeProvider("done"),
       },
       checkpoint
     )
 
-    expect(recorded).toHaveLength(1)
-    expect(recorded[0]).toMatchObject({ runId: "child-1", origin: "subagent", outcome: "end_turn" })
+    expect(getRunTrace(join(dir, "traces"), "child-1")).toMatchObject({
+      runId: "child-1",
+      origin: "subagent",
+      outcome: "end_turn",
+    })
 
     const final = await runStore.load("child-1")
     expect(final.ok).toBe(true)
@@ -264,6 +271,171 @@ describe("continueBackgroundOrSubagentRun", () => {
     )
 
     expect(seenToolCount).toBe(1)
+  })
+
+  it("fires onTerminal with the finalized checkpoint once a driven run completes", async () => {
+    await seedParentRun("parent-3")
+    const host = fakeHost()
+    const checkpoint = await setupSubagentRun(
+      { runStore, budgetStore, tools: new AiToolRegistry(host), now: () => 1000 },
+      {
+        runId: "child-3",
+        parentRunId: "parent-3",
+        instruction: "count the items",
+        providerId: "anthropic",
+        model: "claude-x",
+        maxOutputTokens: 4096,
+        maxSteps: 3,
+      }
+    )
+
+    const terminalCheckpoints: string[] = []
+    await continueBackgroundOrSubagentRun(
+      {
+        runStore,
+        budgetStore,
+        eventStore,
+        upsertTrace,
+        tools: host,
+        buildProvider: async () => fakeProvider("done"),
+        onTerminal: (cp) => {
+          terminalCheckpoints.push(cp.identity.runId)
+          expect(cp.status).toBe("completed")
+        },
+      },
+      checkpoint
+    )
+
+    expect(terminalCheckpoints).toEqual(["child-3"])
+  })
+
+  it("does not fire onTerminal for a suspended (non-terminal) outcome", async () => {
+    await seedParentRun("parent-4")
+    const host = fakeHost()
+    const checkpoint = await setupSubagentRun(
+      { runStore, budgetStore, tools: new AiToolRegistry(host), now: () => 1000 },
+      {
+        runId: "child-4",
+        parentRunId: "parent-4",
+        instruction: "count the items",
+        providerId: "anthropic",
+        model: "claude-x",
+        maxOutputTokens: 4096,
+        maxSteps: 3,
+      }
+    )
+    const frozenTool = checkpoint.config.authority.tools.find((t) => t.fqName === "com.x/read")!
+    // A call left "started" with no completion and no resolution is exactly
+    // the shape advanceToolBatch treats as an unreconcilable crash (design
+    // §crash recovery table: "tool started, no completion ... Set
+    // suspended_unknown_tool_outcome") — recreated directly here rather than
+    // via a real injected crash, mirroring tool-batch-runner.test.ts's own
+    // fixture for the identical scenario.
+    const withStuckBatch = await runStore.mutate(
+      checkpoint.identity.runId,
+      checkpoint.revision,
+      (cp) => ({
+        ...cp,
+        nextStep: 1,
+        messages: [
+          ...cp.messages,
+          {
+            messageId: "asst-1",
+            message: {
+              role: "assistant" as const,
+              content: [
+                { type: "tool_use" as const, id: "t1", name: frozenTool.safeName, input: {} },
+              ],
+            },
+          },
+        ],
+        toolBatches: [
+          {
+            modelStep: 0,
+            assistantMessageId: "asst-1",
+            resultCarrierMessageId: "carrier-not-yet-materialized",
+            calls: [
+              {
+                ordinal: 0,
+                toolUseId: "t1",
+                safeName: frozenTool.safeName,
+                fqName: frozenTool.fqName,
+                input: {},
+                annotations: frozenTool.annotations ?? {},
+                replayGuarantee: frozenTool.replayGuarantee,
+                approval: { status: "not_required" as const },
+                attempts: [
+                  {
+                    attemptId: "attempt-x",
+                    invocationId: "inv-x",
+                    invocationFingerprint: "fp-x",
+                    state: { status: "started" as const, startedAt: 1000 },
+                  },
+                ],
+                resolution: { status: "unresolved" as const },
+              },
+            ],
+          },
+        ],
+      })
+    )
+
+    let onTerminalCalled = false
+    await continueBackgroundOrSubagentRun(
+      {
+        runStore,
+        budgetStore,
+        eventStore,
+        upsertTrace,
+        tools: host,
+        buildProvider: async () => fakeProvider("unreachable"),
+        onTerminal: () => {
+          onTerminalCalled = true
+        },
+      },
+      withStuckBatch
+    )
+
+    expect(onTerminalCalled).toBe(false)
+    const final = await runStore.load("child-4")
+    expect(final.ok && final.checkpoint.status).toBe("suspended_unknown_tool_outcome")
+  })
+
+  it("aborts through an externally-supplied signal, same as an expired deadline", async () => {
+    await seedParentRun("parent-5")
+    const host = fakeHost()
+    const checkpoint = await setupSubagentRun(
+      { runStore, budgetStore, tools: new AiToolRegistry(host), now: () => 1000 },
+      {
+        runId: "child-5",
+        parentRunId: "parent-5",
+        instruction: "count the items",
+        providerId: "anthropic",
+        model: "claude-x",
+        maxOutputTokens: 4096,
+        maxSteps: 3,
+      }
+    )
+    const externalController = new AbortController()
+    externalController.abort()
+    const buildProvider = vi.fn(async () => fakeProvider("unreachable"))
+
+    await continueBackgroundOrSubagentRun(
+      {
+        runStore,
+        budgetStore,
+        eventStore,
+        upsertTrace,
+        tools: host,
+        buildProvider,
+      },
+      checkpoint,
+      externalController.signal
+    )
+
+    expect(buildProvider).not.toHaveBeenCalled()
+    const final = await runStore.load("child-5")
+    expect(final.ok && final.checkpoint.status).toBe("cancelled")
   })
 })
 

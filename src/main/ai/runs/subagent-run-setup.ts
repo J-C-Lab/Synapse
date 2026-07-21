@@ -3,8 +3,15 @@ import type { ChatMessage } from "../providers/types"
 import type { AiToolRegistry } from "../tool-registry"
 import type { AgentRunStore } from "./agent-run-store"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
-import { createRootBudgetLedger, reserveChildAccount } from "../budget/root-budget-ledger"
-import { resolveModelCapabilityProfile } from "../providers/model-capability-profile"
+import {
+  createRootBudgetLedger,
+  reserveChildAccount,
+  StaleLedgerRevisionError,
+} from "../budget/root-budget-ledger"
+import {
+  deriveFrozenRunLimits,
+  resolveModelCapabilityProfile,
+} from "../providers/model-capability-profile"
 import { freezeAuthoritySnapshot } from "./authority-snapshot"
 import { buildContextSnapshot } from "./context-snapshot"
 import { toDurableMessages } from "./durable-messages"
@@ -13,13 +20,12 @@ import { toDurableMessages } from "./durable-messages"
 // starts from. A subagent has no independent tool authority or workspace
 // context of its own — it inherits both from the parent run that spawned it
 // (subagent-tool-source.ts already builds the intersected tool registry;
-// this only freezes it). Its budget is either carved out of the parent's
-// own root ledger (a finite child-task account, actually enforced against
-// the shared free balance) or, when the parent itself is unlimited,
-// a fresh independent unlimited root ledger of its own: reserveChildAccount
-// requires a concrete totalTokens, so there is no way to carve an unlimited
-// child out of a finite-or-unlimited root, and none is needed — an
-// unlimited parent has no scarcity to enforce in the first place.
+// this only freezes it). The historical synchronous path gives an
+// unlimited parent an independent unlimited child root, but durable async
+// child tasks pass `childRunBudgetTokens` and are ALWAYS carved from the
+// parent's root ledger, even when that root is unlimited. That creates a
+// real finite account cap instead of accidentally treating an unbounded
+// parent as permission for an unbounded child.
 
 /** Subagents execute a delegated slice — no further planning or delegation. */
 export const SUBAGENT_SYSTEM_PROMPT =
@@ -32,6 +38,9 @@ export interface SubagentRunSetupDeps {
   tools: AiToolRegistry
   now: () => number
   newId?: () => string
+  /** Named creation-transaction crash seam used only by durable restart
+   * tests. Production leaves it undefined. */
+  fault?: (point: "after_child_account_reserved" | "after_checkpoint_created") => void
 }
 
 export interface SubagentRunSetupInput {
@@ -42,6 +51,12 @@ export interface SubagentRunSetupInput {
   model: string
   maxOutputTokens: number
   maxSteps: number
+  /**
+   * A finite account cap used by durable async child tasks. The existing
+   * synchronous compatibility path leaves this absent and retains its
+   * historical parent-budget behaviour.
+   */
+  childRunBudgetTokens?: number
 }
 
 /** The child may use a provider/model selected after its parent began. This
@@ -69,6 +84,17 @@ export async function setupSubagentRun(
   }
   const parent = parentResult.checkpoint
   const resolvedProfile = resolveSubagentModelProfile(input)
+  // Reject an impossible (profile, requested-limits) combination BEFORE
+  // ensureBudgetAccount below, which mutates the shared root ledger
+  // (reserving a child account) — a rejected run must never leave a stray
+  // budget reservation with no checkpoint behind it.
+  const limits = deriveFrozenRunLimits(resolvedProfile, {
+    maxOutputTokens: input.maxOutputTokens,
+    // Subagents never compress — see the frozen contextCompression block
+    // below.
+    compressionEnabled: false,
+    runBudgetTokens: input.childRunBudgetTokens ?? parent.config.runBudgetTokens,
+  })
 
   const rootRunId = await ensureBudgetAccount(deps, input, parent)
 
@@ -108,15 +134,10 @@ export async function setupSubagentRun(
       providerId: input.providerId,
       model: input.model,
       resolvedProfile,
-      maxOutputTokens: input.maxOutputTokens,
-      runBudgetTokens: parent.config.runBudgetTokens,
+      maxOutputTokens: limits.maxOutputTokens,
+      runBudgetTokens: input.childRunBudgetTokens ?? parent.config.runBudgetTokens,
       maxSteps: input.maxSteps,
-      contextCompression: {
-        enabled: false,
-        thresholdTokens: 0,
-        keepRecentFraction: 0.5,
-        hardReserveTokens: 0,
-      },
+      contextCompression: limits.contextCompression,
       workspaceBinding: parent.config.workspaceBinding,
       authority,
       context,
@@ -134,7 +155,9 @@ export async function setupSubagentRun(
     activatedSkills: [],
   }
 
-  return deps.runStore.create(checkpoint)
+  const created = await deps.runStore.create(checkpoint)
+  deps.fault?.("after_checkpoint_created")
+  return created
 }
 
 async function ensureBudgetAccount(
@@ -142,20 +165,39 @@ async function ensureBudgetAccount(
   input: SubagentRunSetupInput,
   parent: AgentRunCheckpointV1
 ): Promise<string> {
-  const parentRunBudgetTokens = parent.config.runBudgetTokens
-  if (parentRunBudgetTokens === undefined) {
+  const childRunBudgetTokens = input.childRunBudgetTokens ?? parent.config.runBudgetTokens
+  if (childRunBudgetTokens === undefined) {
     await deps.budgetStore.create(createRootBudgetLedger(input.runId, undefined))
     return input.runId
   }
 
   const rootRunId = parent.identity.rootRunId
-  const ledgerNow = await deps.budgetStore.load(rootRunId)
-  const { ledger: reserved } = reserveChildAccount(ledgerNow, {
-    operationId: `reserve-subagent:${input.runId}`,
-    accountId: input.runId,
-    taskId: input.runId,
-    totalTokens: parentRunBudgetTokens,
-  })
-  await deps.budgetStore.mutate(rootRunId, ledgerNow.revision, () => reserved)
+  // Multiple children of one root can legitimately reserve at the same time
+  // (Checkpoint E's bounded concurrency starts several sibling tasks
+  // together, and an interactive run and its subagent can also overlap) —
+  // this is a real concurrent-writer scenario against the shared root
+  // ledger, not just a test artifact. Retry against the freshly-written
+  // ledger on a lost CAS race instead of letting a sibling's concurrent
+  // write fail this reservation outright, mirroring the same retry-on-
+  // StaleLedgerRevisionError shape used elsewhere against this store (e.g.
+  // child-task-scheduler.ts's releaseTerminalBudget).
+  for (;;) {
+    const ledgerNow = await deps.budgetStore.load(rootRunId)
+    const { ledger: reserved } = reserveChildAccount(ledgerNow, {
+      operationId: `reserve-subagent:${input.runId}`,
+      accountId: input.runId,
+      taskId: input.runId,
+      totalTokens: childRunBudgetTokens,
+      durableChildTask: input.childRunBudgetTokens !== undefined,
+    })
+    try {
+      await deps.budgetStore.mutate(rootRunId, ledgerNow.revision, () => reserved)
+      break
+    } catch (err) {
+      if (err instanceof StaleLedgerRevisionError) continue
+      throw err
+    }
+  }
+  deps.fault?.("after_child_account_reserved")
   return rootRunId
 }

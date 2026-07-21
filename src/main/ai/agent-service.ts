@@ -24,12 +24,14 @@ import type {
   ProviderToolSchema,
   TokenUsage,
 } from "./providers/types"
-import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "./run-trace-store"
+import type { TraceUpsertInput, TraceUpsertReceipt } from "./run-trace-store"
 import type { AgentRunStore } from "./runs/agent-run-store"
 import type { AgentRunCheckpointV1 } from "./runs/checkpoint-schema"
 import type { DurableApprovalPolicyInput } from "./runs/durable-approval"
+import type { RunEventEmitter } from "./runs/run-event-emitter"
 import type { RunEventStore } from "./runs/run-event-store"
 import type { RunFinalizerDeps } from "./runs/run-finalizer"
+import type { SkillPackageLeaseStore } from "./skills/skill-package-leases"
 import type { ToolStatSnapshot } from "./tool-circuit-breaker"
 import type { AiToolRegistry } from "./tool-registry"
 import type { WorkspaceRootStore } from "./workspace/workspace-root-store"
@@ -47,6 +49,8 @@ import { runInteractiveTurn } from "./runs/interactive-run-driver"
 import { setupInteractiveRun } from "./runs/interactive-run-setup"
 import { createRunEventEmitter } from "./runs/run-event-emitter"
 import { finalizeRun } from "./runs/run-finalizer"
+import { activeSkillInstructionsReader } from "./skills/skill-activation"
+import { releaseSkillPackageLeases } from "./skills/skill-package-leases"
 import { DEFAULT_WORKSPACE } from "./workspace/workspace-store"
 
 // Assembles the AI pieces (credentials + provider catalog + tools + runtime +
@@ -55,22 +59,6 @@ import { DEFAULT_WORKSPACE } from "./workspace/workspace-store"
 // remembered allow-decisions.
 
 export type RememberScope = "once" | "conversation" | "always"
-
-/** Events streamed to the renderer for one chat turn. */
-export type AiChatEvent =
-  | { type: "text"; conversationId: string; delta: string }
-  | { type: "tool_call"; conversationId: string; id: string; name: string; input: unknown }
-  | { type: "tool_result"; conversationId: string; id: string; isError: boolean }
-  | {
-      type: "approval_request"
-      conversationId: string
-      approvalId: string
-      toolName: string
-      input: unknown
-    }
-  | { type: "done"; conversationId: string; stopReason: string; usage: TokenUsage }
-  | { type: "error"; conversationId: string; message: string }
-  | { type: "plan"; conversationId: string; runId: string; steps: PlanStep[] }
 
 export interface ToolApprovalContext {
   conversationId: string
@@ -92,6 +80,10 @@ export interface AgentServiceOptions {
    *  `releaseArtifactRunPin: true` plan simply becomes a safe no-op
    *  (`resourceReceipts.artifactRunPinReleased: false`) without one wired. */
   artifactStore?: AgentArtifactStore
+  /** Durable skill-package lease ledger (Task 25). Omitted in tests that
+   *  don't exercise skill activation — a terminal finalization's
+   *  `skillPackageLeaseIds` plan simply becomes a safe no-op release. */
+  skillPackageLeases?: SkillPackageLeaseStore
   /** Durable append-only event journal — renderer-facing run projections
    *  (Task 15) read from this. */
   eventStore: RunEventStore
@@ -102,12 +94,10 @@ export interface AgentServiceOptions {
    *  caller. */
   onRunEvent?: (event: AgentRunEvent) => void
   /** Strict, idempotent terminal-finalization trace write (design §"Terminal
-   *  finalization across stores"). Distinct from `recordRun` below, which is
-   *  a best-effort convenience callback fired with the same trace. */
+   *  finalization across stores"). */
   upsertTrace: (input: TraceUpsertInput) => TraceUpsertReceipt
   workspaces?: Pick<WorkspaceStore, "exists" | "isActive"> &
     Partial<Pick<WorkspaceStore, "list" | "create" | "rename" | "archive" | "unarchive">>
-  sendEvent: (event: AiChatEvent) => void
   /** Policy hook that can hard-deny or auto-allow before the annotation gate. */
   approvalResolver?: (context: ToolApprovalContext) => Promise<ApprovalDecision | undefined>
   /** BYOK provider catalog. Defaults to {@link defaultProviderCatalog}. */
@@ -142,8 +132,6 @@ export interface AgentServiceOptions {
   pickWorkspaceRootDirectory?: () => Promise<string | null>
   /** Global master switch for local execution. Root CRUD is blocked when false. */
   isAgentShellAllowed?: () => boolean
-  /** Sink for per-run summary traces. Omitted in tests that don't assert tracing. */
-  recordRun?: (trace: RunTrace) => void
   /** Reads back the most recent plan recorded for a conversation, so reselecting it can restore the Progress card. */
   getLatestPlan?: (conversationId: string) => PlanStep[] | undefined
   /** The in-run plan store, so chat() can clear it per turn and expose getPlan. */
@@ -202,6 +190,9 @@ export class AgentService {
   private readonly conversationRuns = new Map<string, string>()
   /** runId → conversationId for the currently active turn(s). */
   private readonly activeRunConversations = new Map<string, string>()
+  /** Active emitters let synchronous plan-tool calls publish the shared
+   * protocol event without restoring a separate chat-event compatibility bus. */
+  private readonly runEventEmitters = new Map<string, RunEventEmitter>()
   private readonly pendingApprovals = new Map<string, PendingApproval>()
   private readonly conversationAllow = new Map<string, Set<string>>()
   private readonly permanentAllow = new Set<string>()
@@ -352,15 +343,10 @@ export class AgentService {
     this.activeRunConversations.set(runId, conversationId)
   }
 
-  /** Wired to the plan tool source; resolves the conversation and pushes a plan event. */
+  /** Wired to the plan tool source. The tool's synchronous contract remains
+   * unchanged; journal publication is deliberately fire-and-forget. */
   emitPlanForRun(runId: string, steps: PlanStep[]): void {
-    const conversationId = this.activeRunConversations.get(runId)
-    if (!conversationId) return
-    try {
-      this.options.sendEvent({ type: "plan", conversationId, runId, steps })
-    } catch {
-      // A UI-push failure must never break the turn.
-    }
+    void this.runEventEmitters.get(runId)?.emit({ type: "plan_updated", plan: steps })
   }
 
   private getPlan(runId: string): PlanStep[] | undefined {
@@ -492,12 +478,10 @@ export class AgentService {
       (await this.options.workspaces?.isActive(workspaceId)) ?? workspaceId === "default"
     if (!active) throw new Error(`Workspace is not active: ${workspaceId}`)
     const id = randomUUID()
-    await this.options.conversations.save({
+    await this.options.conversations.create({
       id,
       workspaceId,
-      messages: [],
       createdAt: this.now(),
-      updatedAt: this.now(),
     })
     return { id, workspaceId }
   }
@@ -542,63 +526,55 @@ export class AgentService {
     const existing = await this.options.conversations.get(conversationId)
     const workspaceId = existing?.workspaceId ?? "default"
     if (!existing) {
-      await this.options.conversations.save({
+      await this.options.conversations.createIfMissing({
         id: conversationId,
         workspaceId,
-        messages: [],
         createdAt: this.now(),
-        updatedAt: this.now(),
       })
     }
     const resolvedExecutionRoots = (await this.options.getExecutionWorkspaces?.(workspaceId)) ?? []
 
     const runId = randomUUID()
 
-    try {
-      const checkpoint = await setupInteractiveRun(
-        {
-          runStore: this.options.runStore,
-          budgetStore: this.options.budgetStore,
-          conversations: this.options.conversations,
-          tools: this.options.tools,
-          now: this.now,
-        },
-        {
-          runId,
-          conversationId,
-          workspaceId,
-          text,
-          providerId,
-          model,
-          maxOutputTokens: 4096,
-          runBudgetTokens: resolvedBudget,
-          maxSteps: 10,
-          contextCompression: {
-            enabled: cfg?.enabled ?? false,
-            thresholdTokens: cfg?.thresholdTokens ?? 0,
-            keepRecentFraction: 0.5,
-            hardReserveTokens: 0,
-          },
-          executionWorkspaces: resolvedExecutionRoots,
-        }
-      )
-
-      return await this.driveRun({
+    const checkpoint = await setupInteractiveRun(
+      {
+        runStore: this.options.runStore,
+        budgetStore: this.options.budgetStore,
+        conversations: this.options.conversations,
+        tools: this.options.tools,
+        now: this.now,
+      },
+      {
         runId,
         conversationId,
-        checkpoint,
+        workspaceId,
+        text,
         providerId,
-        apiKey,
-        emitRunStarted: { workspaceId },
-      })
-    } catch (err) {
-      this.options.sendEvent({
-        type: "error",
-        conversationId,
-        message: err instanceof Error ? err.message : String(err),
-      })
-      throw err
-    }
+        model,
+        // No per-conversation override exists today — omitted, so
+        // setupInteractiveRun derives it from the resolved profile's
+        // defaultMaxOutputTokens instead of this formerly-hardcoded 4096.
+        runBudgetTokens: resolvedBudget,
+        maxSteps: 10,
+        contextCompression: {
+          enabled: cfg?.enabled ?? false,
+          // keepRecentFraction/hardReserveTokens are no longer accepted
+          // here — setupInteractiveRun derives both from the resolved
+          // profile unconditionally (see deriveFrozenRunLimits).
+          thresholdTokens: cfg?.thresholdTokens,
+        },
+        executionWorkspaces: resolvedExecutionRoots,
+      }
+    )
+
+    return await this.driveRun({
+      runId,
+      conversationId,
+      checkpoint,
+      providerId,
+      apiKey,
+      emitRunStarted: { workspaceId },
+    })
   }
 
   /** Re-drives an already-persisted, non-terminal interactive checkpoint from
@@ -665,23 +641,14 @@ export class AgentService {
     const apiKey = await this.options.credentials.get(providerId)
     if (!apiKey) throw new AgentMissingKeyError()
 
-    try {
-      return await this.driveRun({
-        runId,
-        conversationId,
-        checkpoint,
-        providerId,
-        apiKey,
-        onOwnershipEstablished,
-      })
-    } catch (err) {
-      this.options.sendEvent({
-        type: "error",
-        conversationId,
-        message: err instanceof Error ? err.message : String(err),
-      })
-      throw err
-    }
+    return await this.driveRun({
+      runId,
+      conversationId,
+      checkpoint,
+      providerId,
+      apiKey,
+      onOwnershipEstablished,
+    })
   }
 
   /** The shared turn body every interactive run (fresh or resumed) drives
@@ -705,10 +672,7 @@ export class AgentService {
     const controller = new AbortController()
     this.runAborts.set(runId, controller)
     let stopLeaseHeartbeat: (() => void) | undefined
-
-    const textBatcher = createTextDeltaBatcher((delta) =>
-      this.options.sendEvent({ type: "text", conversationId, delta })
-    )
+    let textBatcher: TextDeltaBatcher | undefined
 
     try {
       const provider = this.createProviderFor(providerId, apiKey)
@@ -723,6 +687,8 @@ export class AgentService {
         undefined,
         this.options.onRunEvent
       )
+      this.runEventEmitters.set(runId, eventEmitter)
+      textBatcher = createTextDeltaBatcher((delta) => eventEmitter.emitTextDelta?.(delta))
       const lease = checkpoint.conversationCommit
       if (lease) {
         // Recovery must fence itself before the very first provider/tool
@@ -773,7 +739,8 @@ export class AgentService {
             now: this.now,
             maxSteps: checkpoint.config.maxSteps,
             artifactStore: this.options.artifactStore,
-            onTextDelta: (delta) => textBatcher.push(delta),
+            activeSkillInstructions: activeSkillInstructionsReader(this.options.artifactStore),
+            onTextDelta: (delta) => textBatcher?.push(delta),
             eventEmitter,
           },
           toolBatch: {
@@ -790,35 +757,21 @@ export class AgentService {
             resolver: (policyInput) =>
               this.resolveDurableApprovalPolicy(conversationId, policyInput),
             requestApproval: (approvalId, policyInput) =>
-              this.requestDurableApproval(conversationId, approvalId, policyInput, textBatcher),
+              this.requestDurableApproval(conversationId, approvalId, policyInput, textBatcher!),
             now: this.now,
-            onToolCall: (call) => {
-              textBatcher.flush()
-              const fqName = this.options.tools.describe(call.name)?.fqName ?? call.name
-              this.options.sendEvent({
-                type: "tool_call",
-                conversationId,
-                id: call.id,
-                name: fqName,
-                input: call.input,
-              })
+            onToolCall: () => {
+              textBatcher?.flush()
             },
-            onToolResult: (result) => {
-              textBatcher.flush()
-              this.options.sendEvent({
-                type: "tool_result",
-                conversationId,
-                id: result.id,
-                isError: result.isError,
-              })
+            onToolResult: () => {
+              textBatcher?.flush()
             },
             eventEmitter,
           },
           signal: controller.signal,
           finalize: (rid, input) => finalizeRun(this.finalizerDeps(eventEmitter), rid, input),
-          buildResourceReleasePlan: () => ({
+          buildResourceReleasePlan: (cp) => ({
             budgetOperationIds: [],
-            skillPackageLeaseIds: [],
+            skillPackageLeaseIds: cp.activatedSkills.map((a) => a.packageLeaseId),
             // buildResourceReleasePlan is only ever invoked from
             // finalizeTerminal (interactive-run-driver.ts) — every call site
             // is a genuine terminal outcome, never a non-terminal pause, so
@@ -838,29 +791,25 @@ export class AgentService {
         runId
       )
 
-      const trace = outcome.checkpoint.finalization?.trace
-      if (trace) this.options.recordRun?.(trace)
-
       const stopReason: string =
         outcome.kind === "suspended_unknown_tool_outcome" ? "suspended" : outcome.stopReason
       const usage = outcome.checkpoint.usage
       // A fast provider can finish before the coalescing timer fires. The
       // terminal event is an ordering boundary, so synchronously drain any
-      // buffered text before publishing `done` instead of relying on the
+      // buffered text before returning instead of relying on the
       // timer (or the finally block) to win that race.
-      textBatcher.flush()
-      this.options.sendEvent({ type: "done", conversationId, stopReason, usage })
+      textBatcher!.flush()
       return { stopReason, usage }
     } finally {
       stopLeaseHeartbeat?.()
-      textBatcher.flush()
-      textBatcher.dispose()
+      textBatcher?.dispose()
       this.runAborts.delete(runId)
       if (this.conversationRuns.get(conversationId) === runId) {
         this.conversationRuns.delete(conversationId)
       }
       this.failPendingApprovals(conversationId)
       this.activeRunConversations.delete(runId)
+      this.runEventEmitters.delete(runId)
       this.options.planRegistry?.clear(runId)
     }
   }
@@ -872,6 +821,8 @@ export class AgentService {
       upsertTrace: this.options.upsertTrace,
       releaseResources: (plan, context) =>
         releaseArtifactRunResources(this.options.artifactStore, plan, context),
+      releaseSkillPackageLeases: (leaseIds) =>
+        releaseSkillPackageLeases(this.options.skillPackageLeases, leaseIds),
       now: this.now,
       eventEmitter,
     }
@@ -940,13 +891,6 @@ export class AgentService {
         input: policyInput.input,
       })
       textBatcher.flush()
-      this.options.sendEvent({
-        type: "approval_request",
-        conversationId,
-        approvalId,
-        toolName: policyInput.fqName,
-        input: policyInput.input,
-      })
     })
   }
 

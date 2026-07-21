@@ -7,7 +7,7 @@ import process from "node:process"
 import { RootBudgetLedgerStore } from "../ai/budget/root-budget-ledger"
 import { asFallbackSource, CompositeToolHost } from "../ai/composite-tool-host"
 import { MEMORY_FQ_PREFIX, MemoryToolSource } from "../ai/memory/memory-tools"
-import { recordRun, runTraceDir, upsertRunTrace } from "../ai/run-trace-store"
+import { runTraceDir, upsertRunTrace } from "../ai/run-trace-store"
 import { AgentRunStore } from "../ai/runs/agent-run-store"
 import { WorkspaceRootStore } from "../ai/workspace/workspace-root-store"
 import { WorkspaceStore } from "../ai/workspace/workspace-store"
@@ -17,6 +17,12 @@ import { PluginHost } from "../plugins/plugin-host"
 import { createGuiApprovalPort } from "./gui-approval-client"
 import { createHeadlessMemoryService } from "./headless-memory"
 import { createHostResourceAccessAudit } from "./host-resource-audit"
+import {
+  createMcpDurableRunAdapter,
+  reconcileMcpRunsAtStartup,
+  scheduleMcpLeaseMaintenance,
+} from "./mcp-durable-run"
+import { McpRunLeaseStore } from "./mcp-run-lease"
 import { resolveMcpWorkspaceBinding } from "./mcp-workspace-binding"
 import { startParentWatchdog } from "./parent-watchdog"
 import { resolveStdioUserDataDir } from "./stdio-paths"
@@ -101,6 +107,36 @@ async function main(): Promise<void> {
   // is ever dispatched here — these are supplied only because
   // PluginHostOptions requires them uniformly across every mode.
   const runsDir = runTraceDir(userDataDir)
+  const mcpRunsDir = path.join(userDataDir, "ai", "runs")
+  const runStore = new AgentRunStore(mcpRunsDir)
+  const leaseStore = new McpRunLeaseStore(mcpRunsDir)
+  // A hard process death can land either after finalization (before purge) or
+  // while a host invocation is still in flight. Reclaim the former and
+  // terminalize the latter as aborted from its frozen canonical operation
+  // before accepting any new external call in this independent stdio process.
+  await reconcileMcpRunsAtStartup({
+    runStore,
+    leaseStore,
+    upsertTrace: (input) => upsertRunTrace(runsDir, input),
+  })
+  const mcpLeaseMaintenance = await scheduleMcpLeaseMaintenance({
+    runStore,
+    leaseStore,
+    upsertTrace: (input) => upsertRunTrace(runsDir, input),
+    onError: (error) => {
+      process.stderr.write(
+        `[synapse:mcp] deferred lease reconciliation failed: ${
+          error instanceof Error ? (error.stack ?? error.message) : String(error)
+        }\n`
+      )
+    },
+  })
+  const durableRuns = createMcpDurableRunAdapter({
+    runStore,
+    leaseStore,
+    upsertTrace: (input) => upsertRunTrace(runsDir, input),
+    requestMaintenance: mcpLeaseMaintenance.request,
+  })
   const pluginHost = new PluginHost({
     userDataDir,
     resourcesDir,
@@ -108,7 +144,7 @@ async function main(): Promise<void> {
     fetch: (url, init) => globalThis.fetch(url, init),
     runtime: () => ({ locale: "en", theme: { mode: "light", accent: "neutral" } }),
     capabilityGovernance: { userDataDir, approve },
-    runStore: new AgentRunStore(path.join(userDataDir, "ai", "runs")),
+    runStore,
     budgetStore: new RootBudgetLedgerStore(path.join(userDataDir, "ai", "budget")),
     upsertTrace: (input) => upsertRunTrace(runsDir, input),
     workspaceRoots: workspaceRootStore,
@@ -125,7 +161,6 @@ async function main(): Promise<void> {
   const binding = resolveMcpWorkspaceBinding(process.env)
   const server = await runSynapseMcpStdioServer(host, {
     version: process.env.npm_package_version,
-    recordRun: (trace) => recordRun(runsDir, trace),
     workspaceBinding: binding,
     workspaces: workspaceStore,
     workspaceId: binding.kind === "bound" ? binding.workspaceId : undefined,
@@ -148,12 +183,14 @@ async function main(): Promise<void> {
         ? buildGrantIdentity(pluginId, entry.manifest, entry.source.kind)
         : undefined
     },
+    durableRuns,
   })
 
   let closing = false
   const shutdown = (): void => {
     if (closing) return
     closing = true
+    mcpLeaseMaintenance.stop()
     void Promise.resolve(pluginHost.dispose()).finally(() => process.exit(0))
   }
   server.onclose = shutdown

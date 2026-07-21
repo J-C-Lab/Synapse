@@ -27,9 +27,25 @@ function principalsMatch(a: ToolPrincipal, b: ToolPrincipal): boolean {
 export function checkArtifactAccess(
   owner: ArtifactOwnerContext,
   delegateToRunIds: readonly string[],
-  caller: ArtifactCaller
+  caller: ArtifactCaller,
+  delegateToConversationIds: readonly string[] = []
 ): boolean {
   if (caller.runId === owner.runId) return true
+
+  // A durable child result is intentionally readable by a later interactive
+  // turn in the same conversation. This is an explicit manifest grant, not
+  // an inference from kind or rootRunId: it never admits a sibling,
+  // background job, subagent, or external MCP caller.
+  if (
+    owner.principal.kind === "subagent" &&
+    caller.principal.kind === "local-user" &&
+    owner.conversationId !== undefined &&
+    owner.conversationId === caller.conversationId &&
+    owner.workspaceId === caller.workspaceId &&
+    delegateToConversationIds.includes(caller.conversationId)
+  ) {
+    return true
+  }
 
   const isDirectParent = owner.parentRunId !== undefined && owner.parentRunId === caller.runId
   const isDirectChild = caller.parentRunId !== undefined && caller.parentRunId === owner.runId

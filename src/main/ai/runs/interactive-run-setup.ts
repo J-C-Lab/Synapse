@@ -10,7 +10,10 @@ import type { CanonicalJson } from "./canonical-json"
 import type { AgentRunCheckpointV1, ModelCapabilityProfile } from "./checkpoint-schema"
 import { buildDefaultSystemText } from "../agent-runtime"
 import { createRootBudgetLedger } from "../budget/root-budget-ledger"
-import { resolveModelCapabilityProfile } from "../providers/model-capability-profile"
+import {
+  deriveFrozenRunLimits,
+  resolveModelCapabilityProfile,
+} from "../providers/model-capability-profile"
 import { freezeAuthoritySnapshot } from "./authority-snapshot"
 import { canonicalHash } from "./canonical-json"
 import { buildContextSnapshot } from "./context-snapshot"
@@ -39,14 +42,27 @@ export interface InteractiveRunSetupInput {
   text: string
   providerId: string
   model: string
-  maxOutputTokens: number
+  /** Optional: forward-compatible with a future per-run override — no
+   *  caller sets this today. Omitted → derived from the resolved profile's
+   *  `defaultMaxOutputTokens` (see `deriveFrozenRunLimits`). */
+  maxOutputTokens?: number
   runBudgetTokens?: number
   maxSteps: number
+  /** Only `enabled` and `thresholdTokens` are real caller input — compression
+   *  is user-configurable (`AiSettings.contextCompression`) but its trigger
+   *  geometry is not. `thresholdTokens` follows the existing convention that
+   *  `0`/omitted means "no explicit value" (derive the default from the
+   *  profile's `summarizeAtFraction`); a positive value is an explicit
+   *  override. `keepRecentFraction`/`hardReserveTokens` are accepted for
+   *  backward compatibility with existing call sites but are ALWAYS
+   *  overridden by the resolved profile's `contextPolicy` — see
+   *  `deriveFrozenRunLimits`. Do not add a caller-supplied value for either;
+   *  they are not user-configurable by design. */
   contextCompression: {
     enabled: boolean
-    thresholdTokens: number
-    keepRecentFraction: number
-    hardReserveTokens: number
+    thresholdTokens?: number
+    keepRecentFraction?: number
+    hardReserveTokens?: number
   }
   executionWorkspaces: readonly WorkspaceRootRecord[]
   /** Interactive runs have no independently-scoped capability grants today
@@ -84,6 +100,21 @@ export async function setupInteractiveRun(
   deps: InteractiveRunSetupDeps,
   input: InteractiveRunSetupInput
 ): Promise<AgentRunCheckpointV1> {
+  // Resolve the profile and reject an impossible (profile, requested-limits)
+  // combination BEFORE any side effect — in particular before the
+  // conversation lease below, so a rejected run never leaves a stuck lease
+  // behind for a later turn to clean up.
+  const resolvedProfile: ModelCapabilityProfile = resolveModelCapabilityProfile(
+    input.providerId,
+    input.model
+  )
+  const limits = deriveFrozenRunLimits(resolvedProfile, {
+    maxOutputTokens: input.maxOutputTokens,
+    compressionEnabled: input.contextCompression.enabled,
+    explicitThresholdTokens: input.contextCompression.thresholdTokens,
+    runBudgetTokens: input.runBudgetTokens,
+  })
+
   const newUserMessage: ChatMessage = {
     role: "user",
     content: [{ type: "text", text: input.text }],
@@ -116,11 +147,6 @@ export async function setupInteractiveRun(
     })),
   })
 
-  const resolvedProfile: ModelCapabilityProfile = resolveModelCapabilityProfile(
-    input.providerId,
-    input.model
-  )
-
   const now = deps.now()
   const checkpoint: AgentRunCheckpointV1 = {
     schemaVersion: 1,
@@ -141,10 +167,10 @@ export async function setupInteractiveRun(
       providerId: input.providerId,
       model: input.model,
       resolvedProfile,
-      maxOutputTokens: input.maxOutputTokens,
+      maxOutputTokens: limits.maxOutputTokens,
       runBudgetTokens: input.runBudgetTokens,
       maxSteps: input.maxSteps,
-      contextCompression: input.contextCompression,
+      contextCompression: limits.contextCompression,
       workspaceBinding: {
         workspaceId: input.workspaceId,
         bindingRevision: 0,

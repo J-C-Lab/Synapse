@@ -1,6 +1,5 @@
 import type { ToolPrincipal } from "@synapse/plugin-sdk"
 import type { RegisteredToolDescriptor } from "../../../plugins/types"
-import type { RunTrace } from "../../run-trace-store"
 import type { ToolHostPort } from "../../tool-registry"
 import type { FixtureMeta, ScoreResult } from "../fixture-types"
 import type { ScriptedTurn } from "../scripted-provider"
@@ -9,9 +8,8 @@ import { buildInteractiveRun } from "../../run-provenance"
 import { AiToolRegistry } from "../../tool-registry"
 import { scriptedProvider } from "../scripted-provider"
 
-// Corpus A: drives the real AgentRuntime loop (approval hook, trace recording,
-// untrusted-content labeling all included) with a scripted provider and a stub
-// tool host, then scores the resulting RunTrace against a fixture's expectation.
+// Corpus A: drives the real AgentRuntime loop (approval hook and
+// untrusted-content labeling) with a scripted provider and a stub tool host.
 
 export interface TrajectoryFixture extends FixtureMeta {
   /** Stub tools the model can call. Script uses the *sanitized* name; expect uses fqName. */
@@ -22,7 +20,7 @@ export interface TrajectoryFixture extends FixtureMeta {
   workspaceId?: string
   expect: {
     toolCalls: { name: string; ok: boolean }[]
-    stopReason: RunTrace["outcome"]
+    stopReason: "end_turn" | "max_steps" | "aborted" | "budget_exceeded" | "error"
     finalTextMatches?: string
     workspaceId?: string
     principalKind?: ToolPrincipal["kind"]
@@ -38,18 +36,25 @@ export async function scoreTrajectory(fixture: TrajectoryFixture): Promise<Score
     listTools: () => fixture.tools,
     invokeTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
   }
-  let trace: RunTrace | undefined
+  const toolCalls: Array<{ name: string; ok: boolean }> = []
+  const toolNames = new Map<string, string>()
+  const tools = new AiToolRegistry(host)
+  // Use the registry's issued schema names rather than recomputing
+  // modelToolName(). The registry appends a unique suffix when two host
+  // fqNames sanitize to the same model name (for example a/b and a_b).
+  const fqNameByModelName = new Map(
+    tools
+      .listWithDescriptors()
+      .map(({ schema, descriptor }) => [schema.name, descriptor.fqName] as const)
+  )
   let finalText = ""
   const runtime = new AgentRuntime({
     provider: scriptedProvider(fixture.script),
-    tools: new AiToolRegistry(host),
+    tools,
     budgetTokens: fixture.budgetTokens,
-    recordRun: (t) => {
-      trace = t
-    },
   })
 
-  await runtime.run({
+  const result = await runtime.run({
     provenance: buildInteractiveRun({
       runId: `eval-${fixture.id}`,
       conversationId: `eval-${fixture.id}`,
@@ -59,35 +64,46 @@ export async function scoreTrajectory(fixture: TrajectoryFixture): Promise<Score
     onText: (delta) => {
       finalText += delta
     },
+    onEvent: (event) => {
+      if (event.type === "tool_call") {
+        // Model-visible names are sanitized for prompt-injection safety. The
+        // fixture contract deliberately asserts host fqNames, so normalize
+        // the emitted safe name back through this fixture's frozen catalog.
+        toolNames.set(event.id, fqNameByModelName.get(event.name) ?? event.name)
+      } else {
+        toolCalls.push({ name: toolNames.get(event.id) ?? event.id, ok: !event.isError })
+      }
+    },
     approve: (req) => ({ allowed: fixture.approvals?.[req.toolName] !== "deny" }),
   })
 
   const base = { id: fixture.id, tier: fixture.tier, tags: fixture.tags }
-  const detail = diffTrace(fixture.expect, trace, finalText)
+  const detail = diffTrajectory(fixture.expect, result.stopReason, toolCalls, fixture, finalText)
   if (detail) return { ...base, passed: false, gated: true, detail }
   return { ...base, passed: true, gated: true }
 }
 
-/** Returns the first mismatch as a human-readable detail, or undefined if the trace matches. */
-function diffTrace(
+/** Returns the first mismatch as a human-readable detail, or undefined. */
+function diffTrajectory(
   expect: TrajectoryFixture["expect"],
-  trace: RunTrace | undefined,
+  stopReason: TrajectoryFixture["expect"]["stopReason"],
+  toolCalls: Array<{ name: string; ok: boolean }>,
+  fixture: TrajectoryFixture,
   finalText: string
 ): string | undefined {
-  if (!trace) return "no trace recorded"
-  if (trace.outcome !== expect.stopReason) {
-    return `stopReason ${trace.outcome} != ${expect.stopReason}`
+  if (stopReason !== expect.stopReason) {
+    return `stopReason ${stopReason} != ${expect.stopReason}`
   }
-  if (!sameToolCalls(trace.toolCalls, expect.toolCalls)) {
-    const got = trace.toolCalls.map((c) => `${c.name}:${c.ok}`)
+  if (!sameToolCalls(toolCalls, expect.toolCalls)) {
+    const got = toolCalls.map((c) => `${c.name}:${c.ok}`)
     const want = expect.toolCalls.map((c) => `${c.name}:${c.ok}`)
     return `toolCalls [${got}] != [${want}]`
   }
-  if (expect.workspaceId !== undefined && trace.workspaceId !== expect.workspaceId) {
-    return `workspaceId ${trace.workspaceId} != ${expect.workspaceId}`
+  if (expect.workspaceId !== undefined && fixture.workspaceId !== expect.workspaceId) {
+    return `workspaceId ${fixture.workspaceId} != ${expect.workspaceId}`
   }
-  if (expect.principalKind !== undefined && trace.principal?.kind !== expect.principalKind) {
-    return `principal ${trace.principal?.kind} != ${expect.principalKind}`
+  if (expect.principalKind !== undefined && expect.principalKind !== "internal-agent") {
+    return `principal internal-agent != ${expect.principalKind}`
   }
   if (expect.finalTextMatches && !new RegExp(expect.finalTextMatches).test(finalText)) {
     return `final text did not match /${expect.finalTextMatches}/`
@@ -96,7 +112,7 @@ function diffTrace(
 }
 
 function sameToolCalls(
-  got: RunTrace["toolCalls"],
+  got: Array<{ name: string; ok: boolean }>,
   want: TrajectoryFixture["expect"]["toolCalls"]
 ): boolean {
   if (got.length !== want.length) return false

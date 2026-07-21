@@ -174,6 +174,12 @@ export interface ArtifactMetadata {
    *  parent explicitly handing an artifact down to a child. Never inferred
    *  from `kind` or from run-tree shape alone. */
   delegateToRunIds?: readonly string[]
+  /** Conversation ids explicitly granted to a later interactive caller.
+   *  This is deliberately narrower than general conversation visibility:
+   *  only a local interactive principal may use it, and the artifact owner
+   *  must be a subagent. It lets a durable child-result remain readable on a
+   *  later turn without granting access to siblings or external tools. */
+  delegateToConversationIds?: readonly string[]
 }
 
 /** The producer-control bag `capture()` receives. `abort()` is the store's

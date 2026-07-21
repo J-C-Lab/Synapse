@@ -1,4 +1,5 @@
 import type { WorkspaceRootRecord } from "../execution/types"
+import type { FrozenSkillCatalogEntrySnapshot } from "../skills/skill-catalog"
 import { createHash } from "node:crypto"
 import { promises as fs } from "node:fs"
 import * as os from "node:os"
@@ -8,7 +9,9 @@ import {
   assembleFromContextSnapshot,
   buildContextSnapshot,
   CONTEXT_SNAPSHOT_MAX_AGGREGATE_BYTES,
+  contextSnapshotIntegrityMatches,
   ContextSnapshotTooLargeError,
+  skillCatalogHash,
 } from "./context-snapshot"
 
 const tempDirs: string[] = []
@@ -41,6 +44,8 @@ describe("buildContextSnapshot", () => {
     expect(snapshot.baseSystemPrompt.normalizedText).toBe("You are Synapse.")
     expect(snapshot.baseSystemPrompt.sha256).toBe(sha256("You are Synapse."))
     expect(snapshot.workspaceInstructions).toEqual([])
+    expect(snapshot.skillCatalog).toEqual([])
+    expect(snapshot.skillCatalogHash).toBe(skillCatalogHash([]))
   })
 
   it("captures a workspace instruction already wrapped in its untrusted envelope", async () => {
@@ -89,9 +94,11 @@ describe("buildContextSnapshot", () => {
     })
     expect(first.aggregateHash).toBe(
       sha256(
-        [first.baseSystemPrompt.sha256, ...first.workspaceInstructions.map((e) => e.sha256)].join(
-          "|"
-        )
+        [
+          first.baseSystemPrompt.sha256,
+          ...first.workspaceInstructions.map((e) => e.sha256),
+          first.skillCatalogHash,
+        ].join("|")
       )
     )
 
@@ -112,6 +119,98 @@ describe("buildContextSnapshot", () => {
         instructionWorkspaces: [],
       })
     ).rejects.toThrow(ContextSnapshotTooLargeError)
+  })
+
+  it("freezes the projected skill catalog and folds its hash into aggregateHash", async () => {
+    const skillCatalog: FrozenSkillCatalogEntrySnapshot[] = [
+      { id: "user:a", name: "a", description: "does a", source: "user", trust: "user-authored" },
+      {
+        id: "workspace:b",
+        name: "b",
+        description: "does b",
+        source: "workspace",
+        trust: "workspace-content",
+      },
+    ]
+    const snapshot = await buildContextSnapshot({
+      baseSystemText: "base",
+      instructionWorkspaces: [],
+      skillCatalog,
+    })
+
+    expect(snapshot.skillCatalog).toEqual(skillCatalog)
+    expect(snapshot.skillCatalogHash).toBe(skillCatalogHash(skillCatalog))
+    expect(contextSnapshotIntegrityMatches(snapshot)).toBe(true)
+  })
+
+  it("sorts the frozen skill catalog by id regardless of input order", async () => {
+    const snapshot = await buildContextSnapshot({
+      baseSystemText: "base",
+      instructionWorkspaces: [],
+      skillCatalog: [
+        {
+          id: "workspace:z",
+          name: "z",
+          description: "z",
+          source: "workspace",
+          trust: "workspace-content",
+        },
+        { id: "user:a", name: "a", description: "a", source: "user", trust: "user-authored" },
+      ],
+    })
+
+    expect(snapshot.skillCatalog.map((e) => e.id)).toEqual(["user:a", "workspace:z"])
+  })
+
+  it("changes aggregateHash when the skill catalog changes but instructions do not", async () => {
+    const withoutSkills = await buildContextSnapshot({
+      baseSystemText: "base",
+      instructionWorkspaces: [],
+    })
+    const withSkills = await buildContextSnapshot({
+      baseSystemText: "base",
+      instructionWorkspaces: [],
+      skillCatalog: [
+        { id: "user:a", name: "a", description: "does a", source: "user", trust: "user-authored" },
+      ],
+    })
+
+    expect(withSkills.aggregateHash).not.toBe(withoutSkills.aggregateHash)
+  })
+
+  it("counts the serialized skill catalog toward the v1 aggregate byte limit", async () => {
+    const hugeCatalog: FrozenSkillCatalogEntrySnapshot[] = Array.from({ length: 1 }, (_, i) => ({
+      id: `user:${i}`,
+      name: `skill-${i}`,
+      description: "x".repeat(CONTEXT_SNAPSHOT_MAX_AGGREGATE_BYTES + 1),
+      source: "user" as const,
+      trust: "user-authored" as const,
+    }))
+
+    await expect(
+      buildContextSnapshot({
+        baseSystemText: "base",
+        instructionWorkspaces: [],
+        skillCatalog: hugeCatalog,
+      })
+    ).rejects.toThrow(ContextSnapshotTooLargeError)
+  })
+})
+
+describe("contextSnapshotIntegrityMatches", () => {
+  it("detects tampering with a frozen skill catalog entry", async () => {
+    const snapshot = await buildContextSnapshot({
+      baseSystemText: "base",
+      instructionWorkspaces: [],
+      skillCatalog: [
+        { id: "user:a", name: "a", description: "does a", source: "user", trust: "user-authored" },
+      ],
+    })
+    const tampered = {
+      ...snapshot,
+      skillCatalog: [{ ...snapshot.skillCatalog[0]!, description: "tampered" }],
+    }
+    expect(contextSnapshotIntegrityMatches(tampered)).toBe(false)
   })
 })
 

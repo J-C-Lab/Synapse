@@ -380,7 +380,10 @@ module.exports = {
   }
 }
 `)
-    const sandbox = sandboxForTest(2000, 2000, 10)
+    // Keep the outer tool deadline comfortably above normal scheduling jitter
+    // so this test reaches the VM sanitizer. The sanitizer still receives the
+    // remaining deadline and must interrupt the hostile descriptor trap.
+    const sandbox = sandboxForTest(2000, 2000, 100)
     await sandbox.loadPlugin(entry)
 
     await expect(

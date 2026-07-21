@@ -22,18 +22,63 @@ import { PluginHost } from "./plugin-host"
 let dir: string
 let home: string
 let previousHome: string | undefined
+let hostForCleanup: PluginHost | undefined
+let supportForCleanup: ReturnType<typeof runsSupport> | undefined
 
-function runsSupport(baseDir: string): {
+function runsSupport(
+  baseDir: string,
+  onTrace?: (
+    input: Parameters<ConstructorParameters<typeof PluginHost>[0]["upsertTrace"]>[0]
+  ) => void
+): {
   runStore: AgentRunStore
   budgetStore: RootBudgetLedgerStore
   upsertTrace: ConstructorParameters<typeof PluginHost>[0]["upsertTrace"]
+  hasFinalization: () => boolean
+  waitForFinalization: () => Promise<void>
 } {
   const runsDir = path.join(baseDir, "ai-runs")
+  const runStore = new AgentRunStore(runsDir)
+  const finalizations: Promise<void>[] = []
   return {
-    runStore: new AgentRunStore(runsDir),
+    runStore,
     budgetStore: new RootBudgetLedgerStore(path.join(baseDir, "ai-budget")),
-    upsertTrace: (input) => upsertRunTrace(runsDir, input),
+    upsertTrace: (input) => {
+      const receipt = upsertRunTrace(runsDir, input)
+      if (onTrace) {
+        const finalization = notifyAfterTerminal(runStore, input, onTrace)
+        finalizations.push(finalization)
+        void finalization.catch(() => {})
+      }
+      return receipt
+    },
+    hasFinalization: () => finalizations.length > 0,
+    waitForFinalization: async () => {
+      await Promise.all(finalizations)
+    },
   }
+}
+
+async function notifyAfterTerminal(
+  runStore: AgentRunStore,
+  input: Parameters<ConstructorParameters<typeof PluginHost>[0]["upsertTrace"]>[0],
+  onTrace: (
+    input: Parameters<ConstructorParameters<typeof PluginHost>[0]["upsertTrace"]>[0]
+  ) => void
+): Promise<void> {
+  for (let attempt = 0; attempt < 500; attempt++) {
+    const loaded = await runStore.load(input.runId)
+    if (!loaded.ok) throw new Error(`background run ${input.runId} is ${loaded.reason}`)
+    if (
+      ["completed", "failed", "cancelled"].includes(loaded.checkpoint.status) &&
+      loaded.checkpoint.finalization?.phase === "complete"
+    ) {
+      onTrace(input)
+      return
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(`background run ${input.runId} did not reach terminal finalization`)
 }
 
 const CLASSIFY_AND_MOVE_TOOL_NAME = modelToolName({
@@ -46,9 +91,13 @@ beforeEach(async () => {
   home = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-home-"))
   previousHome = process.env.HOME
   process.env.HOME = home
+  hostForCleanup = undefined
+  supportForCleanup = undefined
 })
 
 afterEach(async () => {
+  await hostForCleanup?.killAllBackground()
+  if (supportForCleanup?.hasFinalization()) await supportForCleanup.waitForFinalization()
   process.env.HOME = previousHome
   await fs.rm(dir, { recursive: true, force: true })
   await fs.rm(home, { recursive: true, force: true })
@@ -94,6 +143,8 @@ describe("downloadsOrganizer", () => {
     // the tool/file assertions below, waiting on this ensures the run's async
     // fs writes are done before afterEach removes the temp dir.
     const runRecorded = vi.fn()
+    const support = runsSupport(dir, runRecorded)
+    supportForCleanup = support
     const host = new PluginHost({
       userDataDir: dir,
       resourcesDir: path.resolve("resources"),
@@ -102,15 +153,15 @@ describe("downloadsOrganizer", () => {
       fsWatchAdapter,
       storageFlushMs: 0,
       workspaceRoots: { listForWorkspace: async () => [] },
-      ...runsSupport(dir),
+      ...support,
       backgroundAgentProvider: async () => ({ provider, model: "fake-model" }),
       capabilityGovernance: {
         userDataDir: dir,
         approve: async () => ({ allow: true }),
         prompt: async () => ({ allow: true }),
       },
-      recordRun: runRecorded,
     })
+    hostForCleanup = host
 
     await host.init()
     expect(host.get("com.synapse.downloads-organizer")?.status).toBe("active")
@@ -157,7 +208,10 @@ describe("downloadsOrganizer", () => {
       fs.access(path.join(home, "Downloads", "Documents", "report.pdf"))
     ).rejects.toThrow()
 
-    await vi.waitFor(() => expect(runRecorded).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(support.hasFinalization()).toBe(true), { timeout: 5000 })
+    await support.waitForFinalization()
+    await host.waitForBackgroundIdle()
+    expect(runRecorded).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -168,10 +222,15 @@ function fakeProvider(
 ): ChatProvider {
   let turn = 0
   return {
-    id: "fake",
-    // The manifest configures a finite maxTokensPerRun; durable admission
-    // fails closed for a finite-budget run whose provider can't guarantee
-    // an upper bound.
+    // A real catalogued provider id (Task 23): setupBackgroundRun now
+    // resolves a real capability profile at run creation and rejects a
+    // finite runBudgetTokens/maxTokensPerRun the resolved profile's own
+    // estimator cannot back — a synthetic "fake" id would fall back to the
+    // never-finite-budget-eligible unknown-model profile. The manifest
+    // configures a finite maxTokensPerRun; durable admission (at first
+    // dispatch) also fails closed for a finite-budget run whose provider
+    // can't guarantee an upper bound.
+    id: "anthropic",
     estimateRequestUpperBound: () => ({
       estimatorId: "fake",
       estimatorVersion: "1",

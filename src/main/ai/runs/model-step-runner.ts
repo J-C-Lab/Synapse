@@ -21,6 +21,8 @@ import { freeBalance, ROOT_ACCOUNT_ID } from "../budget/root-budget-ledger"
 import { projectCompactedMessages } from "../context/history-artifact"
 import { streamWithDeadlines } from "../provider-stream-deadlines"
 import { addUsage, emptyUsage, totalTokens } from "../providers/types"
+import { activeSkillEffectiveToolNames } from "../skills/skill-activation"
+import { SKILL_META_TOOL_FQ_NAMES } from "../skills/skill-tool-source"
 import { canonicalHash } from "./canonical-json"
 import { assembleFromContextSnapshot } from "./context-snapshot"
 
@@ -105,6 +107,20 @@ export interface ModelStepDeps {
   /** Shared version-scoped admission breaker. It is consulted immediately
    * before every new finite-budget prepared attempt, including recovery. */
   assertEstimatorAllowed?: (checkpoint: AgentRunCheckpointV1) => Promise<void>
+  /** Rebuilds the untrusted-content text for every currently-active skill
+   *  (Task 25), sourced solely from each activation's frozen
+   *  `skill-instructions` run artifact — never the skill's live source
+   *  file. Resolved exactly once per `advanceModelStep` call (never
+   *  per-transition) and threaded through both call sites that build the
+   *  outgoing request (`prepareAttempt`/`callProviderAndStage`), since
+   *  `checkpoint.activatedSkills` cannot change mid-step (activation only
+   *  ever happens via a tool call in a separate durable tool-batch step) and
+   *  the underlying artifact bytes are immutable — so resolving it fresh in
+   *  a later call always reproduces byte-identical text, keeping
+   *  `requestHash` consistent across a crash-and-resume. Omitted (never
+   *  called) when no skill runtime/artifact store is wired — see
+   *  skill-activation.ts's `activeSkillInstructionsReader`. */
+  activeSkillInstructions?: (checkpoint: AgentRunCheckpointV1) => Promise<string>
 }
 
 export class InsufficientEstimateError extends Error {}
@@ -138,8 +154,16 @@ export async function advanceModelStep(
   const step = checkpoint.nextStep
   let attempt = latestAttempt(checkpoint, step)
 
+  // Resolved once per call, not per-transition — see this field's docstring
+  // on ModelStepDeps for why a fresh resolve on every resumed call still
+  // stays byte-identical (and thus requestHash-consistent) with whatever an
+  // earlier call in this same step already hashed.
+  const skillInstructionsText = deps.activeSkillInstructions
+    ? await deps.activeSkillInstructions(checkpoint)
+    : ""
+
   if (!attempt) {
-    checkpoint = await prepareAttempt(deps, checkpoint, step)
+    checkpoint = await prepareAttempt(deps, checkpoint, step, skillInstructionsText)
     attempt = latestAttempt(checkpoint, step)!
   }
 
@@ -147,7 +171,13 @@ export async function advanceModelStep(
     // "dispatched" observed here is only ever a genuine resume from a prior
     // process — a fresh call never sees it (the dispatch and provider call
     // happen in the same continuation below).
-    checkpoint = await ensureForfeitedAndPrepareNext(deps, checkpoint, step, attempt)
+    checkpoint = await ensureForfeitedAndPrepareNext(
+      deps,
+      checkpoint,
+      step,
+      attempt,
+      skillInstructionsText
+    )
     attempt = latestAttempt(checkpoint, step)!
   }
 
@@ -159,7 +189,7 @@ export async function advanceModelStep(
   if (attempt.state === "held") {
     checkpoint = await markDispatched(deps, checkpoint, step, attempt)
     attempt = latestAttempt(checkpoint, step)!
-    checkpoint = await callProviderAndStage(deps, checkpoint, step, attempt)
+    checkpoint = await callProviderAndStage(deps, checkpoint, step, attempt, skillInstructionsText)
     attempt = latestAttempt(checkpoint, step)!
   }
 
@@ -213,9 +243,10 @@ function upsertAttempt(
 async function prepareAttempt(
   deps: ModelStepDeps,
   checkpoint: AgentRunCheckpointV1,
-  step: number
+  step: number,
+  skillInstructionsText: string
 ): Promise<AgentRunCheckpointV1> {
-  const { system, messages } = outgoingRequestContext(checkpoint)
+  const { system, messages } = outgoingRequestContext(checkpoint, skillInstructionsText)
   const tools = frozenModelTools(checkpoint, deps.tools())
   const maxOutputTokens = checkpoint.config.maxOutputTokens
 
@@ -326,11 +357,12 @@ async function callProviderAndStage(
   deps: ModelStepDeps,
   checkpoint: AgentRunCheckpointV1,
   step: number,
-  attempt: ModelRequestAttempt
+  attempt: ModelRequestAttempt,
+  skillInstructionsText: string
 ): Promise<AgentRunCheckpointV1> {
   await deps.fault?.("before_provider_call")
 
-  const { system, messages } = outgoingRequestContext(checkpoint)
+  const { system, messages } = outgoingRequestContext(checkpoint, skillInstructionsText)
   const tools = frozenModelTools(checkpoint, deps.tools())
   // The frozen catalog is only actually load-bearing at dispatch time if
   // it's enforced here, not just recorded — see ToolCatalogDriftError's
@@ -450,7 +482,8 @@ async function ensureForfeitedAndPrepareNext(
   deps: ModelStepDeps,
   checkpoint: AgentRunCheckpointV1,
   step: number,
-  attempt: ModelRequestAttempt
+  attempt: ModelRequestAttempt,
+  skillInstructionsText: string
 ): Promise<AgentRunCheckpointV1> {
   let cp = checkpoint
   let current = attempt
@@ -494,7 +527,7 @@ async function ensureForfeitedAndPrepareNext(
     })
   }
 
-  return prepareAttempt(deps, cp, step)
+  return prepareAttempt(deps, cp, step, skillInstructionsText)
 }
 
 /** A run admits/settles against its own account: the root account for a run
@@ -522,8 +555,22 @@ function budgetAccountIdFor(checkpoint: AgentRunCheckpointV1): string {
  *  identical `{system, messages}` a real dispatch would use (minus the
  *  untrusted-context injection below, which the compression decision
  *  intentionally skips — see history-artifact.ts's top-of-file note on why
- *  the compression step projects from raw durable messages instead). */
-export function outgoingRequestContext(checkpoint: AgentRunCheckpointV1): {
+ *  the compression step projects from raw durable messages instead).
+ *
+ *  `skillInstructionsText` (Task 25) is folded into the SAME untrusted
+ *  envelope as workspace instructions — one single injected content block,
+ *  never a second `injectUntrustedContext` call — because
+ *  `checkpoint.activatedSkills` is durable run state that accrues mid-run
+ *  (unlike `config.context`'s frozen-at-creation workspace instructions),
+ *  so it cannot live in `FrozenContextSnapshotV1` itself. The caller
+ *  resolves this text once per `advanceModelStep` call via
+ *  `deps.activeSkillInstructions` (async I/O against the artifact store);
+ *  this function itself stays a synchronous, pure projection of
+ *  `(checkpoint, alreadyResolvedText)`. */
+export function outgoingRequestContext(
+  checkpoint: AgentRunCheckpointV1,
+  skillInstructionsText = ""
+): {
   system: string
   messages: ChatMessage[]
 } {
@@ -537,8 +584,11 @@ export function outgoingRequestContext(checkpoint: AgentRunCheckpointV1): {
     checkpoint.messages,
     checkpoint.contextCompaction
   )
-  const messages = instructionContextText
-    ? injectUntrustedContext(durableMessages, instructionContextText)
+  const combinedUntrustedText = [instructionContextText, skillInstructionsText]
+    .filter((text) => text.trim().length > 0)
+    .join("\n\n")
+  const messages = combinedUntrustedText
+    ? injectUntrustedContext(durableMessages, combinedUntrustedText)
     : durableMessages
   return { system, messages }
 }
@@ -564,15 +614,44 @@ function requestHashFor(
  * expose a tool that was not part of its frozen authority. AgentService and
  * origin-aware recovery additionally validate descriptor ownership/version;
  * this central guard makes the schema side fail closed for every caller,
- * including future ones that only have provider schemas available. */
+ * including future ones that only have provider schemas available.
+ *
+ * Task 25: once any skill is active, the result is further narrowed to the
+ * union of every active skill's own (already-narrowed-at-activation)
+ * `effectiveToolNames` — see skill-activation.ts's
+ * `activeSkillEffectiveToolNames`. This can only ever REMOVE a tool from
+ * what the frozen authority already allows, never add one: an activation's
+ * `effectiveToolNames` is itself computed as an intersection with the run's
+ * frozen tool set at activation time, so this second filter is redundant-
+ * but-safe when nothing is active, and strictly narrowing when something
+ * is.
+ *
+ * `skill:core/list_skills` and `skill:core/activate_skill` are exempt from
+ * this narrowing (skill-tool-source.ts's `SKILL_META_TOOL_FQ_NAMES`) —
+ * review fix: nothing requires a skill author's own `allowed-tools` list to
+ * name them, so a tightly-scoped skill's own narrowing could otherwise
+ * strand the run, unable to list or activate any other skill (or even walk
+ * back the mistake) for the rest of it. The exemption only ever restores
+ * visibility of a tool already in `checkpoint.config.authority.tools` —
+ * the `frozen` lookup above still gates every tool on that, so this can
+ * never add a tool beyond the run's frozen ceiling. */
 function frozenModelTools(
   checkpoint: AgentRunCheckpointV1,
   liveTools: ProviderToolSchema[]
 ): ProviderToolSchema[] {
   const frozenBySafeName = new Map(
-    checkpoint.config.authority.tools.map((tool) => [tool.safeName, tool.modelSchemaHash])
+    checkpoint.config.authority.tools.map((tool) => [tool.safeName, tool])
   )
-  return liveTools.filter(
-    (tool) => frozenBySafeName.get(tool.name) === canonicalHash(tool as unknown as CanonicalJson)
-  )
+  const skillNarrowedFqNames = activeSkillEffectiveToolNames(checkpoint.activatedSkills)
+  return liveTools.filter((tool) => {
+    const frozen = frozenBySafeName.get(tool.name)
+    if (!frozen || frozen.modelSchemaHash !== canonicalHash(tool as unknown as CanonicalJson)) {
+      return false
+    }
+    return (
+      skillNarrowedFqNames === undefined ||
+      SKILL_META_TOOL_FQ_NAMES.has(frozen.fqName) ||
+      skillNarrowedFqNames.has(frozen.fqName)
+    )
+  })
 }

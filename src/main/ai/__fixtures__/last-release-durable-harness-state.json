@@ -1,0 +1,28 @@
+{
+  "conversation": {
+    "id": "release-conversation-1",
+    "workspaceId": "default",
+    "title": "Release conversation",
+    "messages": [
+      { "role": "user", "content": [{ "type": "text", "text": "Summarize the release." }] },
+      { "role": "assistant", "content": [{ "type": "text", "text": "The release is ready." }] }
+    ],
+    "createdAt": 1700000000000,
+    "updatedAt": 1700000001000
+  },
+  "settings": {
+    "activeProvider": "openai",
+    "models": { "openai": "gpt-4.1-mini" },
+    "budgetTokens": 2048,
+    "contextCompression": { "enabled": true, "thresholdTokens": 16000 }
+  },
+  "trace": {
+    "runId": "release-run-1",
+    "conversationId": "release-conversation-1",
+    "origin": "interactive",
+    "startedAt": 1700000000000,
+    "endedAt": 1700000001000,
+    "outcome": "end_turn",
+    "toolCalls": []
+  }
+}

@@ -14,9 +14,9 @@ import { withCapabilityPromptTarget } from "./capability-prompt-router"
 import { requireString } from "./validation"
 
 // IPC surface for the built-in assistant (design §8). Streaming is push-based:
-// `ai:chat` kicks off a turn and resolves when it ends, while text / tool /
-// approval events arrive out-of-band on `ai:chat:event` (wired in main via the
-// AgentService's sendEvent). Keys are set but never read back to the renderer.
+// `ai:chat` kicks off a turn and resolves when it ends; renderer lifecycle,
+// tool, approval, and live-text updates arrive through the shared runs:event
+// protocol. Keys are set but never read back to the renderer.
 
 export interface AiIpcService {
   getStatus: () => Promise<AiStatus>

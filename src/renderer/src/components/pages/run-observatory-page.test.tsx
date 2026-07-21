@@ -44,6 +44,7 @@ const enMessages: Record<string, string> = {
   "runObservatory.detailTrigger": "Trigger instance",
   "runObservatory.detailParentRun": "Parent run",
   "runObservatory.detailChildRuns": "Child runs",
+  "runObservatory.detailChildTasks": "Asynchronous child tasks",
   "runObservatory.detailToolCalls": "Tool calls",
   "runObservatory.detailPlan": "Plan",
   "runObservatory.detailArtifacts": "Artifacts",
@@ -51,6 +52,8 @@ const enMessages: Record<string, string> = {
   "runObservatory.parentUnavailable":
     "Parent run trace is unavailable. It may have aged out of retention or failed to persist.",
   "runObservatory.noChildRuns": "No child runs.",
+  "runObservatory.noChildTasks": "No asynchronous child tasks.",
+  "runObservatory.childTaskResult": "Open result run",
   "runObservatory.noArtifacts": "No artifacts.",
   "runObservatory.artifactBytes": "bytes",
   "runObservatory.artifactIncomplete": "incomplete ({{reason}})",
@@ -230,6 +233,26 @@ describe("run observatory page", () => {
 
     expect(await screen.findByText("artifact://run/run-a/a1")).toBeInTheDocument()
     expect(screen.getByText(/tool-result · text\/plain · 5000 bytes/)).toBeInTheDocument()
+  })
+
+  it("shows bounded asynchronous child-task status and links its result run", async () => {
+    getRun.mockImplementation(async (runId: string) =>
+      runId === "run-a" ? { ...summaryA, toolCalls: [] } : { ...summaryB, toolCalls: [] }
+    )
+    getRunSnapshot.mockResolvedValue({
+      artifacts: [],
+      childTasks: [
+        { childRunId: "child-result-1", status: "completed", label: "Inspect workspace" },
+      ],
+    })
+    render(<RunObservatoryPage />)
+    fireEvent.click(await screen.findByText("run-a"))
+
+    const tasks = within(await screen.findByTestId("child-tasks-summary"))
+    expect(tasks.getByText("Inspect workspace")).toBeInTheDocument()
+    expect(tasks.getByText(/completed/)).toBeInTheDocument()
+    fireEvent.click(tasks.getByText("Open result run"))
+    await waitFor(() => expect(getRun).toHaveBeenCalledWith("child-result-1"))
   })
 
   it("marks an incomplete artifact with its truncation reason", async () => {

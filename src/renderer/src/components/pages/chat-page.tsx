@@ -1,7 +1,8 @@
+import type { AgentRunEvent, AgentRunSnapshot } from "@synapse/agent-protocol"
 import type { ImperativePanelHandle } from "react-resizable-panels"
 import type { ArtifactAvailability, DisplayMessage, ToolCard } from "./chat-message-model"
 import type { PlanStep } from "@/components/PlanPanel"
-import type { AiChatEvent, AiConversationSummary, AiStatus, AiTokenUsage } from "@/lib/electron"
+import type { AiConversationSummary, AiStatus, AiTokenUsage } from "@/lib/electron"
 import {
   ArrowUp,
   Boxes,
@@ -63,7 +64,7 @@ import {
   isElectron,
   listAiConversations,
   listRecoverableRuns,
-  onAiChatEvent,
+  onRunEvent,
   sendAiChat,
   setAiKey,
 } from "@/lib/electron"
@@ -78,7 +79,72 @@ import {
 interface PendingApproval {
   approvalId: string
   toolName: string
-  input: unknown
+}
+
+/**
+ * A snapshot deliberately exposes approval ids separately from tool-call
+ * summaries. run-projection creates both in checkpoint scan order, so this
+ * positional pairing is the shared-protocol equivalent of the live
+ * approval_pending event. It never reads or reconstructs host-only tool
+ * input.
+ */
+function firstPendingApproval(
+  snapshot: AgentRunSnapshot,
+  ignored: ReadonlySet<string>
+): PendingApproval | null {
+  const pendingCalls = snapshot.toolCalls.filter((call) => call.status === "pending_approval")
+  for (const [index, approvalId] of snapshot.pendingApprovalIds.entries()) {
+    if (ignored.has(approvalId)) continue
+    const call = pendingCalls[index]
+    if (call) return { approvalId, toolName: call.safeName }
+  }
+  return null
+}
+
+function isTerminalSnapshot(snapshot: AgentRunSnapshot): boolean {
+  return ["completed", "cancelled", "failed"].includes(snapshot.status)
+}
+
+function streamingPlaceholderId(snapshot: AgentRunSnapshot): string | undefined {
+  if (isTerminalSnapshot(snapshot)) return undefined
+  const step = snapshot.currentModelStep
+  if (!step || ["response_staged", "budget_settled"].includes(step.state)) return undefined
+  return `durable-run:${snapshot.identity.runId}:stream:${step.step}`
+}
+
+// AppShell's resume prop is intentionally one-shot: it is cleared after the
+// lazy ChatPage consumes it. A renderer reload recreates AppShell, so retain
+// the actually active Cortex conversation separately for the same window.
+// sessionStorage survives reload but does not make an old conversation the
+// default across unrelated app launches.
+const ACTIVE_CORTEX_CONVERSATION_KEY = "synapse.active-cortex-conversation"
+
+function readActiveCortexConversation(): string | undefined {
+  try {
+    return window.sessionStorage.getItem(ACTIVE_CORTEX_CONVERSATION_KEY) ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+function persistActiveCortexConversation(conversationId: string): void {
+  try {
+    window.sessionStorage.setItem(ACTIVE_CORTEX_CONVERSATION_KEY, conversationId)
+  } catch {
+    // A locked-down renderer can still run a fresh conversation; persistence
+    // is only a reload convenience and must not block chat itself.
+  }
+}
+
+function clearPersistedActiveCortexConversation(conversationId: string): void {
+  try {
+    if (window.sessionStorage.getItem(ACTIVE_CORTEX_CONVERSATION_KEY) === conversationId) {
+      window.sessionStorage.removeItem(ACTIVE_CORTEX_CONVERSATION_KEY)
+    }
+  } catch {
+    // Best-effort cleanup only; a missing persisted id still remains an
+    // unlocked draft in component state even if browser storage is unavailable.
+  }
 }
 
 export function ChatPage({
@@ -97,12 +163,16 @@ export function ChatPage({
   const [busy, setBusy] = useState(false)
   const [usage, setUsage] = useState<AiTokenUsage | null>(null)
   const [approval, setApproval] = useState<PendingApproval | null>(null)
+  const [sendError, setSendError] = useState<string | null>(null)
   const [showMcp, setShowMcp] = useState(false)
   const [showMemory, setShowMemory] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showSidebar, setShowSidebar] = useState(true)
   const [conversations, setConversations] = useState<AiConversationSummary[]>([])
-  const [conversationId, setConversationId] = useState<string>(() => crypto.randomUUID())
+  const restoredConversationIdRef = useRef(initialConversationId ?? readActiveCortexConversation())
+  const [conversationId, setConversationId] = useState<string>(
+    () => restoredConversationIdRef.current ?? crypto.randomUUID()
+  )
   const [activeWorkspaceId, setActiveWorkspaceId] = useState("default")
   const [conversationLocked, setConversationLocked] = useState(false)
   const [planSteps, setPlanSteps] = useState<PlanStep[]>([])
@@ -114,11 +184,37 @@ export function ChatPage({
   const liveTextRef = useRef("")
   const liveTextRafRef = useRef<number | null>(null)
   const sidebarPanelRef = useRef<ImperativePanelHandle>(null)
+  const mountedRef = useRef(true)
   const conversationIdRef = useRef(conversationId)
+  const conversationSelectionGenerationRef = useRef(0)
+  const selectingConversationRef = useRef(false)
+  const resolvedApprovalIdsRef = useRef<Set<string>>(new Set())
+  // Event handlers outlive the render that installed them. Keep the current
+  // stream target in a ref as well so a terminal event flushes live text into
+  // the reload-created placeholder instead of whichever assistant bubble was
+  // appended most recently.
+  const streamingMessageIdRef = useRef<string | null>(null)
+  const terminalSnapshotRunIdRef = useRef<string | undefined>(undefined)
   const runSnapshot = useRunSnapshot(activeRunId)
+
+  const updateStreamingMessageId = useCallback((id: string | null) => {
+    streamingMessageIdRef.current = id
+    setStreamingMessageId(id)
+  }, [])
 
   useEffect(() => {
     conversationIdRef.current = conversationId
+  }, [conversationId])
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  useEffect(() => {
+    persistActiveCortexConversation(conversationId)
   }, [conversationId])
 
   useEffect(() => {
@@ -129,13 +225,26 @@ export function ChatPage({
   }, [showSidebar])
 
   const refreshConversations = useCallback(() => {
-    if (isElectron()) void listAiConversations().then(setConversations)
+    if (!isElectron()) return
+    void listAiConversations()
+      .then((next) => {
+        if (mountedRef.current) setConversations(next)
+      })
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
     if (!isElectron()) return
-    void getAiStatus().then(setStatus)
+    let alive = true
+    void getAiStatus()
+      .then((next) => {
+        if (alive) setStatus(next)
+      })
+      .catch(() => {})
     refreshConversations()
+    return () => {
+      alive = false
+    }
   }, [refreshConversations])
 
   useEffect(() => {
@@ -159,7 +268,10 @@ export function ChatPage({
   const flushLiveText = useCallback((prev: DisplayMessage[]): DisplayMessage[] => {
     if (!liveTextRef.current) return prev
     const next = prev.slice()
-    const lastIndex = next.length - 1
+    const streamIndex = streamingMessageIdRef.current
+      ? next.findIndex((message) => message.id === streamingMessageIdRef.current)
+      : -1
+    const lastIndex = streamIndex >= 0 ? streamIndex : next.length - 1
     const last = next[lastIndex]
     if (last?.role === "assistant") {
       next[lastIndex] = { ...last, blocks: flushTextIntoBlocks(last.blocks, liveTextRef.current) }
@@ -171,82 +283,217 @@ export function ChatPage({
 
   useEffect(() => {
     if (!stickToBottomRef.current) return
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
+    scrollRef.current?.scrollTo?.({ top: scrollRef.current.scrollHeight })
   }, [messages, liveText])
 
   const handleEvent = useCallback(
-    (event: AiChatEvent) => {
+    (event: AgentRunEvent) => {
       if (event.conversationId !== conversationIdRef.current) return
 
-      if (event.type === "text") {
-        liveTextRef.current += event.delta
+      if (event.type === "run_started") {
+        setActiveRunId(event.runId)
+        resolvedApprovalIdsRef.current.clear()
+        terminalSnapshotRunIdRef.current = undefined
+      }
+      if (event.type === "text_delta") {
+        liveTextRef.current += event.text
         scheduleLiveTextRender()
         return
       }
 
       setMessages((prev) => {
         const flushed = flushLiveText(prev)
-        return event.type === "done" ? flushed : applyEvent(flushed, event)
+        return applyEvent(flushed, event)
       })
 
-      if (event.type === "done") {
-        setStreamingMessageId(null)
-        setUsage(event.usage)
+      if (event.type === "run_completed" || event.type === "run_failed") {
+        terminalSnapshotRunIdRef.current = event.runId
+        updateStreamingMessageId(null)
+        setApproval(null)
+        resolvedApprovalIdsRef.current.clear()
         refreshConversations()
+        // Finalization commits the conversation before the terminal event.
+        // Refresh the active transcript so a reload-era streaming placeholder
+        // is replaced by the canonical, durable assistant message.
+        void getAiConversation(event.conversationId)
+          .then((stored) => {
+            if (
+              mountedRef.current &&
+              event.conversationId === conversationIdRef.current &&
+              stored
+            ) {
+              setMessages(hydrateMessages(stored.messages))
+            }
+          })
+          .catch(() => {})
       }
-      if (event.type === "approval_request") {
-        setApproval({
-          approvalId: event.approvalId,
-          toolName: event.toolName,
-          input: event.input,
-        })
+      if (event.type === "approval_pending") {
+        setApproval(
+          (current) =>
+            current ?? {
+              approvalId: event.approvalId,
+              toolName: event.safeName,
+            }
+        )
       }
-      if (event.type === "plan") {
-        setPlanSteps(event.steps)
+      if (event.type === "approval_resolved") {
+        resolvedApprovalIdsRef.current.add(event.approvalId)
+        setApproval((current) => (current?.approvalId === event.approvalId ? null : current))
+      }
+      if (event.type === "plan_updated") {
+        setPlanSteps(event.plan)
       }
     },
-    [flushLiveText, refreshConversations, scheduleLiveTextRender]
+    [flushLiveText, refreshConversations, scheduleLiveTextRender, updateStreamingMessageId]
   )
 
   useEffect(() => {
     if (!isElectron()) return
-    return onAiChatEvent(handleEvent)
+    return onRunEvent(handleEvent)
   }, [handleEvent])
 
   useEffect(() => {
-    if (!runSnapshot) return
-    setMessages((previous) => mergeDurableRunSnapshot(previous, runSnapshot))
+    if (!runSnapshot || runSnapshot.identity.conversationId !== conversationId) return
+    const terminal = isTerminalSnapshot(runSnapshot)
+    const placeholderId = streamingPlaceholderId(runSnapshot)
+    const completedAssistantId = runSnapshot.currentModelStep?.assistantMessageId
+    const completedPlaceholderId = runSnapshot.currentModelStep
+      ? `durable-run:${runSnapshot.identity.runId}:stream:${runSnapshot.currentModelStep.step}`
+      : undefined
+    setMessages((previous) => {
+      let reconciled = previous
+      if (placeholderId && !previous.some((message) => message.id === placeholderId)) {
+        reconciled = [...previous, { id: placeholderId, role: "assistant", blocks: [] }]
+      } else if (completedAssistantId && completedPlaceholderId) {
+        const durableId = `durable-run:${runSnapshot.identity.runId}:message:${completedAssistantId}`
+        reconciled = previous.map((message) =>
+          message.id === completedPlaceholderId ? { ...message, id: durableId } : message
+        )
+      }
+      return mergeDurableRunSnapshot(reconciled, runSnapshot)
+    })
+    updateStreamingMessageId(
+      placeholderId ??
+        (completedAssistantId
+          ? `durable-run:${runSnapshot.identity.runId}:message:${completedAssistantId}`
+          : null)
+    )
     setPlanSteps(runSnapshot.plan ?? [])
-  }, [runSnapshot])
+    if (terminal) {
+      // A reload/selection can attach after finalization committed the
+      // conversation but before the live terminal event. The snapshot sees
+      // the terminal state, while the conversation is the only source with
+      // the canonical host-rich transcript, so replace recovered placeholders
+      // exactly once for this terminal run.
+      updateStreamingMessageId(null)
+      liveTextRef.current = ""
+      setLiveText("")
+      const runId = runSnapshot.identity.runId
+      const terminalConversationId = runSnapshot.identity.conversationId
+      if (terminalConversationId && terminalSnapshotRunIdRef.current !== runId) {
+        terminalSnapshotRunIdRef.current = runId
+        void getAiConversation(terminalConversationId)
+          .then((stored) => {
+            if (
+              mountedRef.current &&
+              terminalConversationId === conversationIdRef.current &&
+              stored
+            ) {
+              setMessages(hydrateMessages(stored.messages))
+            }
+          })
+          .catch(() => {})
+      }
+    } else if (terminalSnapshotRunIdRef.current === runSnapshot.identity.runId) {
+      terminalSnapshotRunIdRef.current = undefined
+    }
+    // A renderer can attach after approval_pending was emitted. Recreate the
+    // first unresolved prompt from durable state, keeping any live prompt in
+    // front so multiple pending requests remain deterministic.
+    for (const id of resolvedApprovalIdsRef.current) {
+      if (!runSnapshot.pendingApprovalIds.includes(id)) resolvedApprovalIdsRef.current.delete(id)
+    }
+    const durableApproval = firstPendingApproval(runSnapshot, resolvedApprovalIdsRef.current)
+    setApproval((current) => {
+      if (!durableApproval) return null
+      return current && runSnapshot.pendingApprovalIds.includes(current.approvalId)
+        ? current
+        : durableApproval
+    })
+  }, [runSnapshot, approval, updateStreamingMessageId])
 
-  async function selectConversation(id: string) {
-    if (id === conversationId || busy) return
+  async function selectConversation(id: string, force = false) {
+    if ((!force && id === conversationId) || busy) return
+    const generation = ++conversationSelectionGenerationRef.current
+    selectingConversationRef.current = true
+    conversationIdRef.current = id
     setConversationId(id)
     setUsage(null)
     setApproval(null)
+    setSendError(null)
     setPlanSteps([])
-    setStreamingMessageId(null)
+    updateStreamingMessageId(null)
     liveTextRef.current = ""
     setLiveText("")
-    const stored = await getAiConversation(id)
+    setActiveRunId(undefined)
+    setConversationLocked(false)
+    terminalSnapshotRunIdRef.current = undefined
+    let stored: Awaited<ReturnType<typeof getAiConversation>>
+    try {
+      stored = await getAiConversation(id)
+    } catch {
+      if (generation === conversationSelectionGenerationRef.current && mountedRef.current) {
+        setActiveRunId(undefined)
+        setConversationLocked(false)
+        selectingConversationRef.current = false
+      }
+      return
+    }
+    if (generation !== conversationSelectionGenerationRef.current || !mountedRef.current) return
     setMessages(stored ? hydrateMessages(stored.messages) : [])
     setActiveWorkspaceId(stored?.workspaceId ?? "default")
     setPlanSteps(stored?.plan ?? [])
+    if (!stored) {
+      // sessionStorage can contain a freshly generated, never-created draft
+      // id, or an id deleted by another renderer. It is not a durable
+      // conversation, so retain it only as an unlocked draft: send() must
+      // create a real conversation rather than addressing this absent id.
+      clearPersistedActiveCortexConversation(id)
+      setActiveRunId(undefined)
+      setConversationLocked(false)
+      selectingConversationRef.current = false
+      return
+    }
     // A conversation can have at most one live durable interactive run (its
     // fenced lease). On a renderer restart it will not emit a legacy
     // ai:chat event again, so locate it through the durable recovery scan and
     // let useRunSnapshot rebuild the in-flight cards from checkpoint + event
     // cursor. Terminal traces are intentionally not used for this purpose.
-    const recoverable = await listRecoverableRuns()
+    let recoverable: Awaited<ReturnType<typeof listRecoverableRuns>>
+    try {
+      recoverable = await listRecoverableRuns()
+    } catch {
+      if (generation === conversationSelectionGenerationRef.current && mountedRef.current) {
+        setActiveRunId(undefined)
+        setConversationLocked(true)
+        // A rejected lookup from an older selection must not clear the
+        // newer selection's send fence while it is still resolving.
+        selectingConversationRef.current = false
+      }
+      return
+    }
+    if (generation !== conversationSelectionGenerationRef.current || !mountedRef.current) return
     const active = recoverable
       .filter((run) => run.conversationId === id)
       .sort((a, b) => b.updatedAt - a.updatedAt)[0]
     setActiveRunId(active?.runId)
     setConversationLocked(true)
+    selectingConversationRef.current = false
   }
 
   useEffect(() => {
-    if (initialConversationId) void selectConversation(initialConversationId)
+    const resumeConversationId = restoredConversationIdRef.current
+    if (resumeConversationId) void selectConversation(resumeConversationId, true).catch(() => {})
     // Signal that THIS mount has read `initialConversationId`, regardless of
     // whether it was set — this is what lets AppShell safely clear its
     // one-shot pending id. Clearing must happen only after this component has
@@ -257,30 +504,39 @@ export function ChatPage({
     // parent-side effect keyed only on `nav` would fire during that gap and
     // clear the id before it was ever read, silently dropping the resume.
     onInitialConversationConsumed?.()
-    // Intentionally runs once on mount only: `initialConversationId` is a
-    // one-shot instruction from Home's "continue conversation" card, not a
-    // prop that should re-trigger a reload if it were to change later.
+    // Intentionally runs once on mount only: the explicit Home resume id and
+    // the session-restored id are both mount-time instructions, not props
+    // that should re-trigger a reload if they change later.
     // eslint-disable-next-line react/exhaustive-deps
   }, [])
 
   function newConversation() {
     if (busy) return
-    setConversationId(crypto.randomUUID())
+    const id = crypto.randomUUID()
+    conversationSelectionGenerationRef.current++
+    selectingConversationRef.current = false
+    conversationIdRef.current = id
+    setConversationId(id)
     setConversationLocked(false)
     setMessages([])
     setUsage(null)
     setApproval(null)
+    setSendError(null)
     setPlanSteps([])
-    setStreamingMessageId(null)
+    updateStreamingMessageId(null)
     setActiveRunId(undefined)
     liveTextRef.current = ""
     setLiveText("")
   }
 
   async function removeConversation(id: string) {
-    await deleteAiConversation(id)
-    if (id === conversationId) newConversation()
-    refreshConversations()
+    try {
+      await deleteAiConversation(id)
+      if (id === conversationId) newConversation()
+      refreshConversations()
+    } catch {
+      setSendError(t("chat.startFailed"))
+    }
   }
 
   async function saveKey() {
@@ -290,6 +546,8 @@ export function ChatPage({
       await setAiKey(status?.provider ?? "anthropic", keyDraft.trim())
       setKeyDraft("")
       setStatus(await getAiStatus())
+    } catch {
+      setSendError(t("chat.startFailed"))
     } finally {
       setSavingKey(false)
     }
@@ -297,11 +555,12 @@ export function ChatPage({
 
   async function send() {
     const text = input.trim()
-    if (!text || busy) return
+    if (!text || busy || selectingConversationRef.current) return
     setInput("")
     setPlanSteps([])
+    setSendError(null)
     const assistantId = crypto.randomUUID()
-    setStreamingMessageId(assistantId)
+    updateStreamingMessageId(assistantId)
     liveTextRef.current = ""
     setLiveText("")
     setMessages((prev) => [
@@ -316,22 +575,42 @@ export function ChatPage({
         const created = await createAiConversation(activeWorkspaceId)
         id = created.id
         conversationIdRef.current = id
+        // `sendAiChat` begins synchronously below, before React can commit
+        // the state update and run its persistence effect. Persist the newly
+        // durable id here so a reload during that gap reattaches to this run
+        // rather than the pre-creation draft id.
+        persistActiveCortexConversation(id)
         setConversationId(id)
         setConversationLocked(true)
       }
-      await sendAiChat(id, text)
+      const result = await sendAiChat(id, text)
+      setUsage(result.usage)
+    } catch {
+      // Setup failures can occur before a durable run exists, so no
+      // run_failed event will arrive. Keep the user input visible but remove
+      // the speculative assistant bubble and surface a renderer-safe error.
+      setMessages((previous) => previous.filter((message) => message.id !== assistantId))
+      setSendError(t("chat.startFailed"))
     } finally {
       setBusy(false)
-      setStreamingMessageId(null)
+      updateStreamingMessageId(null)
       setMessages((prev) => flushLiveText(prev))
     }
   }
 
   async function resolveApproval(allow: boolean, remember: "once" | "always") {
     if (!approval) return
-    const id = approval.approvalId
+    const pending = approval
+    const id = pending.approvalId
+    resolvedApprovalIdsRef.current.add(id)
     setApproval(null)
-    await approveAiTool(id, allow, remember)
+    try {
+      await approveAiTool(id, allow, remember)
+    } catch {
+      // Do not permanently hide a durable approval if its IPC request fails.
+      resolvedApprovalIdsRef.current.delete(id)
+      setApproval(pending)
+    }
   }
 
   if (status && !status.hasKey) {
@@ -381,7 +660,7 @@ export function ChatPage({
           <ConversationSidebar
             conversations={conversations}
             activeId={conversationId}
-            onSelect={(id) => void selectConversation(id)}
+            onSelect={(id) => void selectConversation(id).catch(() => {})}
             onNew={newConversation}
             onDelete={(id) => void removeConversation(id)}
           />
@@ -410,6 +689,11 @@ export function ChatPage({
               status={status}
               onStatusChange={setStatus}
             />
+            {sendError && (
+              <p role="alert" className="mx-auto w-full max-w-3xl px-1 text-sm text-destructive">
+                {sendError}
+              </p>
+            )}
 
             {messages.length === 0 ? (
               <div className="flex flex-1 min-h-0 items-center justify-center overflow-y-auto px-4">
@@ -489,11 +773,6 @@ export function ChatPage({
                     {t("chat.approvalBody", { tool: approval?.toolName ?? "" })}
                   </DialogDescription>
                 </DialogHeader>
-                {approval && (
-                  <pre className="max-h-48 overflow-auto rounded bg-muted p-3 text-xs">
-                    {JSON.stringify(approval.input, null, 2)}
-                  </pre>
-                )}
                 <DialogFooter className="gap-2 sm:justify-between">
                   <Button variant="ghost" onClick={() => void resolveApproval(false, "once")}>
                     {t("chat.deny")}
@@ -882,11 +1161,16 @@ function useArtifactAvailability(uri: string | undefined): ArtifactAvailability 
   useEffect(() => {
     if (!uri || artifactAvailabilityCache.has(uri)) return
     let cancelled = false
-    void getArtifactStatus(uri).then((result) => {
-      if (cancelled) return
-      artifactAvailabilityCache.set(uri, result.status === "available" ? "available" : result.code)
-      forceRerender((n) => n + 1)
-    })
+    void getArtifactStatus(uri)
+      .then((result) => {
+        if (cancelled) return
+        artifactAvailabilityCache.set(
+          uri,
+          result.status === "available" ? "available" : result.code
+        )
+        forceRerender((n) => n + 1)
+      })
+      .catch(() => {})
     return () => {
       cancelled = true
     }

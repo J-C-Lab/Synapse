@@ -1,18 +1,30 @@
-import type { ChatContentBlock, ChatProvider } from "./providers/types"
-import type { RunTrace } from "./run-trace-store"
+import type { ToolCaller } from "@synapse/plugin-sdk"
 import type { ToolHostPort } from "./tool-registry"
-import { describe, expect, it } from "vitest"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { createMcpDurableRunAdapter } from "../mcp/mcp-durable-run"
+import { McpRunLeaseStore } from "../mcp/mcp-run-lease"
 import { SynapseMcpToolService } from "../mcp/synapse-mcp-server"
-import { AgentRuntime } from "./agent-runtime"
-import { emptyUsage } from "./providers/types"
-import { buildInteractiveRun } from "./run-provenance"
-import { AiToolRegistry, modelToolName } from "./tool-registry"
+import { getRunTrace, upsertRunTrace } from "./run-trace-store"
+import { AgentRunStore } from "./runs/agent-run-store"
+import { modelToolName } from "./tool-registry"
 
 const FQ = "com.probe/read_probe"
 const SAFE = modelToolName({ fqName: FQ, provenance: "plugin" })
+const tempDirs: string[] = []
 
-function stubHost(): ToolHostPort {
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
+function stubHost(
+  onInvoke?: (caller: ToolCaller) => void | Promise<void>
+): ToolHostPort & { callers: ToolCaller[] } {
+  const callers: ToolCaller[] = []
   return {
+    callers,
     listTools: () => [
       {
         fqName: FQ,
@@ -26,58 +38,33 @@ function stubHost(): ToolHostPort {
         },
       },
     ],
-    invokeTool: async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
-  }
-}
-
-function oneToolThenDone(): ChatProvider {
-  let step = 0
-  return {
-    id: "fake",
-    async *stream() {
-      if (step++ === 0) {
-        const content: ChatContentBlock[] = [{ type: "tool_use", id: "t1", name: SAFE, input: {} }]
-        yield {
-          type: "message",
-          message: { role: "assistant", content },
-          usage: emptyUsage(),
-          stopReason: "tool_use",
-        }
-      } else {
-        yield {
-          type: "message",
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text: "done" }],
-          },
-          usage: emptyUsage(),
-          stopReason: "end_turn",
-        }
+    invokeTool: vi.fn(async (_fqName, _input, options) => {
+      if (options?.caller) {
+        callers.push(options.caller)
+        await onInvoke?.(options.caller)
       }
-    },
+      return { content: [{ type: "text" as const, text: "ok" }] }
+    }),
   }
 }
 
 describe("caller parity", () => {
-  it("produces same-shaped traces from the internal agent and an external MCP client", async () => {
-    const traces: RunTrace[] = []
-    const host = stubHost()
-
-    await new AgentRuntime({
-      provider: oneToolThenDone(),
-      tools: new AiToolRegistry(host),
-      recordRun: (trace) => traces.push(trace),
-    }).run({
-      provenance: buildInteractiveRun({
-        runId: "parity-internal",
-        conversationId: "c1",
-        workspaceId: "ws-internal",
-      }),
-      messages: [{ role: "user", content: [{ type: "text", text: "probe" }] }],
+  it("binds an external principal to both the host call and its durable MCP trace", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "synapse-caller-parity-"))
+    tempDirs.push(dir)
+    const runStore = new AgentRunStore(join(dir, "runs"))
+    const tracesDir = join(dir, "traces")
+    const host = stubHost(async (caller) => {
+      if (!caller.runId) throw new Error("MCP caller is missing run id")
+      // This executes inside host.invokeTool: the durable boundary must have
+      // frozen the canonical fqName before the external side effect starts.
+      expect(await runStore.load(caller.runId)).toMatchObject({
+        ok: true,
+        checkpoint: { config: { mcpOperation: FQ } },
+      })
     })
 
     await new SynapseMcpToolService(host, {
-      recordRun: (trace) => traces.push(trace),
       workspaceId: "ws-external",
       clientId: "claude-desktop",
       workspaceBinding: { kind: "bound", workspaceId: "ws-external" },
@@ -85,22 +72,28 @@ describe("caller parity", () => {
         get: async (id) =>
           id === "ws-external" ? { id, name: "External", createdAt: 0 } : undefined,
       },
+      durableRuns: createMcpDurableRunAdapter({
+        runStore,
+        leaseStore: new McpRunLeaseStore(join(dir, "runs"), { now: () => 1000 }),
+        upsertTrace: (input) => upsertRunTrace(tracesDir, input),
+        now: () => 1000,
+      }),
     }).callTool(SAFE, {})
 
-    const internal = traces.find((t) => t.origin === "interactive")!
-    const external = traces.find((t) => t.origin === "mcp")!
-
-    for (const t of [internal, external]) {
-      expect(typeof t.runId).toBe("string")
-      expect(t.principal).toBeDefined()
-      expect(t.workspaceId).toBeTruthy()
-      expect(t.outcome).toBe("end_turn")
-      expect(t.toolCalls[0]).toMatchObject({ name: FQ, ok: true })
-    }
-
-    expect(internal.principal).toEqual({ kind: "internal-agent" })
-    expect(external.principal).toEqual({ kind: "external-mcp", clientId: "claude-desktop" })
-    expect(internal.workspaceId).toBe("ws-internal")
-    expect(external.workspaceId).toBe("ws-external")
+    const caller = host.callers[0]
+    expect(caller).toMatchObject({
+      kind: "mcp",
+      principal: { kind: "external-mcp", clientId: "claude-desktop" },
+      workspaceId: "ws-external",
+    })
+    const trace = getRunTrace(tracesDir, caller!.runId!)
+    expect(trace).toMatchObject({
+      runId: caller!.runId,
+      origin: "mcp",
+      principal: { kind: "external-mcp", clientId: "claude-desktop" },
+      workspaceId: "ws-external",
+      outcome: "end_turn",
+      toolCalls: [{ name: FQ, ok: true }],
+    })
   })
 })

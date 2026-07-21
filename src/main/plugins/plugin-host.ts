@@ -7,6 +7,7 @@ import type {
   SearchPluginsResponse,
   Visibility,
 } from "@synapse/marketplace-types"
+import type { TriggerUse } from "@synapse/plugin-manifest"
 import type { ClipboardContent, ToolResult } from "@synapse/plugin-sdk"
 import type { RootBudgetLedgerStore } from "../ai/budget/root-budget-ledger"
 import type { EstimatorQuarantineStore } from "../ai/estimator-quarantine-store"
@@ -15,6 +16,9 @@ import type { MemoryToolSource } from "../ai/memory/memory-tools"
 import type { ChatProvider } from "../ai/providers/types"
 import type { TraceUpsertInput, TraceUpsertReceipt } from "../ai/run-trace-store"
 import type { AgentRunStore } from "../ai/runs/agent-run-store"
+import type { FrozenAuthoritySnapshotV1 } from "../ai/runs/authority-snapshot"
+import type { AgentRunCheckpointV1 } from "../ai/runs/checkpoint-schema"
+import type { ToolHostPort } from "../ai/tool-registry"
 import type { WorkspaceRootStore } from "../ai/workspace/workspace-root-store"
 import type { WorkspaceStore } from "../ai/workspace/workspace-store"
 import type { PluginTriggerRow, TriggerInstanceRow } from "../ipc/triggers"
@@ -46,12 +50,15 @@ import { Buffer as NodeBuffer } from "node:buffer"
 import { createHash } from "node:crypto"
 import { promises as fs } from "node:fs"
 import * as path from "node:path"
-import { getCapability } from "@synapse/plugin-manifest"
-import { BackgroundAgentRunner } from "../ai/background-agent-runner"
+import { getCapability, triggerUseToCapability } from "@synapse/plugin-manifest"
+import { BackgroundAgentRunner, limitBackgroundTools } from "../ai/background-agent-runner"
 import { GovernedBackgroundToolHost } from "../ai/background-host-tool-gate"
 import { asFallbackSource, CompositeToolHost } from "../ai/composite-tool-host"
 import { ExecutionReadOnlyToolSource } from "../ai/execution/execution-read-tools"
 import { MemoryReadOnlyToolSource } from "../ai/memory/memory-read-tools"
+import { backgroundPrincipal } from "../ai/runs/background-run-setup"
+import { rebuildRecoveryAuthority } from "../ai/runs/recovery-authority"
+import { AiToolRegistry } from "../ai/tool-registry"
 import { logger } from "../logging"
 import { AgentBudgetLedger } from "./agent-budget"
 import { BackgroundInvoker } from "./background-invoker"
@@ -127,8 +134,6 @@ export interface PluginHostOptions {
   /** Supplies the currently selected chat provider/model for trigger-woken agents. */
   backgroundAgentProvider?: () => Promise<{ provider: ChatProvider; model?: string }>
   estimatorQuarantine?: () => EstimatorQuarantineStore | undefined
-  /** Forwards per-run traces from background-agent runs to the host recorder. */
-  recordRun?: (trace: import("../ai/run-trace-store").RunTrace) => void
   /** Durable run/budget stores background-agent runs persist their checkpoint
    *  and root budget ledger through — the same singletons the interactive
    *  path and subagent runner use. */
@@ -140,6 +145,11 @@ export interface PluginHostOptions {
    *  can release its artifact run pin. Omitted in tests that don't exercise
    *  artifact retention. */
   artifactStore?: import("../ai/artifacts/artifact-types").AgentArtifactStore
+  /** Durable skill-package lease ledger (Task 25) — threaded to
+   *  BackgroundAgentRunner so a trigger-woken agent's terminal finalization
+   *  can release any skill-package leases it acquired. Omitted in tests
+   *  that don't exercise skill activation. */
+  skillPackageLeases?: import("../ai/skills/skill-package-leases").SkillPackageLeaseStore
   workspaceRoots: Pick<WorkspaceRootStore, "listForWorkspace">
   workspaces?: Pick<WorkspaceStore, "get" | "exists" | "isActive" | "isArchived">
   /** The interactive path's own MemoryToolSource/ExecutionToolHostSource
@@ -528,10 +538,20 @@ export class PluginHost {
     this.triggerRegistry.deregisterTrigger(pluginId, triggerId)
   }
 
-  killAllBackground(): void {
+  /** Waits until currently-dispatched trigger work settles without changing
+   * trigger registration or plugin grant state. */
+  async waitForBackgroundIdle(): Promise<void> {
+    await this.triggerRegistry.waitForIdle()
+  }
+
+  /** Stops registered trigger sources and waits for their in-flight dispatch
+   * promises. This is a lifecycle barrier for hosts whose durable stores are
+   * about to be released (including deterministic test teardown). */
+  async killAllBackground(): Promise<void> {
     for (const row of this.triggerRegistry.snapshot()) {
       this.triggerRegistry.deregisterPlugin(row.pluginId)
     }
+    await this.triggerRegistry.waitForIdle()
   }
 
   searchCommands(query: string, locale?: string, limit?: number): PluginCommandResult[] {
@@ -561,23 +581,7 @@ export class PluginHost {
       throw new Error(`Plugin is not active: ${request.pluginId}`)
     }
 
-    const authorizer = this.bridge.createBackgroundHostToolAuthorizer(
-      request.pluginId,
-      entry.manifest
-    )
-    const confirmed = await authorizer.confirmedCapabilities(["memory:read", "execution:read"])
-
-    const sources = []
-    const executionTools = this.options.executionTools?.()
-    if (executionTools) sources.push(new ExecutionReadOnlyToolSource(executionTools))
-    const memoryTools = this.options.memoryTools?.()
-    if (memoryTools) sources.push(new MemoryReadOnlyToolSource(memoryTools))
-
-    const governed = new GovernedBackgroundToolHost({ authorizer, sources, confirmed })
-    const tools = new CompositeToolHost([
-      governed,
-      asFallbackSource(this, (fqName) => governed.ownsTool(fqName)),
-    ])
+    const tools = await this.createBackgroundToolHost(request.pluginId, entry.manifest)
 
     const { provider, model } = await this.options.backgroundAgentProvider()
     const runner = new BackgroundAgentRunner({
@@ -585,13 +589,13 @@ export class PluginHost {
       model,
       tools,
       ledger: this.agentBudgetLedger,
-      recordRun: this.options.recordRun,
       runStore: this.options.runStore,
       budgetStore: this.options.budgetStore,
       upsertTrace: this.options.upsertTrace,
       workspaceRoots: this.options.workspaceRoots,
       estimatorQuarantine: this.options.estimatorQuarantine?.(),
       artifactStore: this.options.artifactStore,
+      skillPackageLeases: this.options.skillPackageLeases,
     })
     await runner.run({
       pluginId: request.pluginId,
@@ -632,6 +636,67 @@ export class PluginHost {
     pluginId: string
   ): ReturnType<typeof buildGrantIdentity> | undefined {
     return this.isPluginActive(pluginId) ? this.manifestIdentityForPlugin(pluginId) : undefined
+  }
+
+  /** Reconstructs the exact live tool contract a background trigger would
+   * receive if dispatched now: current confirmed grants, governed read-only
+   * host sources, plugin fallback, and the trigger's immutable `uses`
+   * ceiling. Startup recovery must use this instead of the interactive tool
+   * registry, whose host descriptors intentionally do not carry a plugin
+   * capability requirement. */
+  async currentBackgroundRecoveryAuthority(
+    checkpoint: AgentRunCheckpointV1
+  ): Promise<FrozenAuthoritySnapshotV1 | undefined> {
+    if (checkpoint.identity.origin !== "background-agent") return undefined
+    const { pluginId, triggerId } = checkpoint.identity
+    if (!pluginId || !triggerId) return undefined
+    const pluginIdentity = this.currentActiveIdentityForPlugin(pluginId)
+    const trigger = this.getTriggerDeclaration(pluginId, triggerId)
+    if (!pluginIdentity || !trigger) return undefined
+
+    const registry = await this.createBackgroundToolRegistry(pluginId, trigger.uses)
+    if (!registry) return undefined
+    return rebuildRecoveryAuthority(
+      checkpoint,
+      registry,
+      undefined,
+      trigger.uses.map(triggerUseToCapability),
+      backgroundPrincipal(pluginId, pluginIdentity)
+    )
+  }
+
+  private async createBackgroundToolRegistry(
+    pluginId: string,
+    allowedUses: readonly TriggerUse[]
+  ): Promise<AiToolRegistry | undefined> {
+    const entry = this.registry.get(pluginId)
+    if (!entry || entry.status !== "active" || !entry.manifest) return undefined
+    return new AiToolRegistry(
+      limitBackgroundTools(
+        await this.createBackgroundToolHost(pluginId, entry.manifest),
+        allowedUses
+      )
+    )
+  }
+
+  private async createBackgroundToolHost(
+    pluginId: string,
+    manifest: PluginManifest
+  ): Promise<ToolHostPort> {
+    const authorizer = this.bridge.createBackgroundHostToolAuthorizer(pluginId, manifest)
+    const confirmed = await authorizer.confirmedCapabilities(["memory:read", "execution:read"])
+
+    const sources = []
+    const executionTools = this.options.executionTools?.()
+    if (executionTools) sources.push(new ExecutionReadOnlyToolSource(executionTools))
+    const memoryTools = this.options.memoryTools?.()
+    if (memoryTools) sources.push(new MemoryReadOnlyToolSource(memoryTools))
+
+    const governed = new GovernedBackgroundToolHost({ authorizer, sources, confirmed })
+    return new CompositeToolHost([
+      governed,
+      asFallbackSource(this, (fqName) => governed.ownsTool(fqName)),
+    ])
   }
 
   isPluginActive(pluginId: string): boolean {

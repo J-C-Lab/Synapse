@@ -272,6 +272,43 @@ describe("read_artifact — range validation", () => {
 })
 
 describe("read_artifact — access control", () => {
+  it("does not treat a subagent caller with an omitted principal as a later interactive turn", async () => {
+    const store = makeStore()
+    const ref = await store.capture(
+      new TextEncoder().encode("child result"),
+      {
+        runId: "child-run",
+        owner: {
+          runId: "child-run",
+          rootRunId: "old-root",
+          parentRunId: "old-parent",
+          conversationId: "conv-1",
+          workspaceId: "ws-1",
+          principal: { kind: "subagent", parentRunId: "old-parent" },
+        },
+        kind: "child-result",
+        mediaType: "text/plain",
+        delegateToConversationIds: ["conv-1"],
+      },
+      { abort: () => {} }
+    )
+    const result = await new ArtifactToolSource({ store }).invokeTool(
+      READ_ARTIFACT_FQ,
+      { uri: ref.uri },
+      {
+        caller: {
+          kind: "subagent",
+          runId: "sibling-run",
+          parentRunId: "old-parent",
+          conversationId: "conv-1",
+          workspaceId: "ws-1",
+        },
+      }
+    )
+    expect(result.isError).toBe(true)
+    expect((result.content[0] as { text: string }).text).toMatch(/artifact_forbidden/)
+  })
+
   it("rejects a forged/unrelated caller with artifact_forbidden", async () => {
     const store = makeStore()
     const ref = await store.capture(

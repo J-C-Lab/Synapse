@@ -601,7 +601,6 @@ export type AiConversationSummary = SynapseAiConversationSummary
 export type AiWorkspace = SynapseAiWorkspace
 export type AiConversation = SynapseAiConversation
 export type AiChatMessage = SynapseAiChatMessage
-export type AiChatEvent = SynapseAiChatEvent
 export type AiTokenUsage = SynapseAiTokenUsage
 export type AiRememberScope = SynapseAiRememberScope
 export type McpServerConfig = SynapseMcpServerConfig
@@ -679,6 +678,9 @@ export async function listAiWorkspaces(options?: {
 
 export type RunSummary = SynapseRunSummary
 export type RunDetail = SynapseRunDetail
+/** Renderer-safe snapshot projection only; task mutation remains model-tool
+ * scoped in the main process. */
+export type ChildTaskSummary = SynapseChildTaskSummary
 
 export async function listRuns(query?: { parentRunId?: string }): Promise<RunSummary[]> {
   return api().listRuns(query)
@@ -838,10 +840,6 @@ export async function approveAiTool(
   remember?: AiRememberScope
 ): Promise<void> {
   await api().approveAiTool(approvalId, allow, remember)
-}
-
-export function onAiChatEvent(handler: (event: AiChatEvent) => void): () => void {
-  return api().onAiChatEvent(handler)
 }
 
 export async function listAiAllowedTools(): Promise<string[]> {

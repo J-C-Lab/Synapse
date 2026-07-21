@@ -29,12 +29,15 @@ import {
 import { PluginSandboxError } from "./plugin-sandbox"
 
 let dir: string
+let backgroundHostsForCleanup: PluginHost[] = []
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "synapse-host-"))
+  backgroundHostsForCleanup = []
 })
 
 afterEach(async () => {
+  await Promise.all(backgroundHostsForCleanup.map((host) => host.killAllBackground()))
   await fs.rm(dir, { recursive: true, force: true })
 })
 
@@ -54,10 +57,18 @@ const noopFsWatchAdapter: FsWatchAdapter = {
 
 function fakeProvider(onStream?: () => void): ChatProvider {
   return {
-    id: "fake",
-    // Required for background-agent-trigger tests: their manifests configure
-    // finite maxTokensPerRun, and durable admission fails closed for a
-    // finite-budget run whose provider can't guarantee an upper bound.
+    // A real catalogued provider id (Task 23): setupBackgroundRun now
+    // resolves a real capability profile at run creation and rejects a
+    // finite runBudgetTokens/maxTokensPerRun the resolved profile's own
+    // estimator cannot back (isEligibleForFiniteBudget) — a synthetic
+    // "fake" id would fall back to the never-finite-budget-eligible
+    // unknown-model profile regardless of what this mock's own
+    // estimateRequestUpperBound below returns. Required for
+    // background-agent-trigger tests: their manifests configure finite
+    // maxTokensPerRun, and durable admission (at first dispatch) also fails
+    // closed for a finite-budget run whose provider can't guarantee an
+    // upper bound.
+    id: "anthropic",
     estimateRequestUpperBound: () => ({
       estimatorId: "fake",
       estimatorVersion: "1",
@@ -77,17 +88,63 @@ function fakeProvider(onStream?: () => void): ChatProvider {
   }
 }
 
-function runsSupport(baseDir: string): {
+function runsSupport(
+  baseDir: string,
+  onTrace?: (
+    input: Parameters<ConstructorParameters<typeof PluginHost>[0]["upsertTrace"]>[0]
+  ) => void
+): {
   runStore: AgentRunStore
   budgetStore: RootBudgetLedgerStore
   upsertTrace: ConstructorParameters<typeof PluginHost>[0]["upsertTrace"]
+  hasFinalization: () => boolean
+  waitForFinalization: () => Promise<void>
 } {
   const runsDir = path.join(baseDir, "ai-runs")
+  const runStore = new AgentRunStore(runsDir)
+  const finalizations: Promise<void>[] = []
   return {
-    runStore: new AgentRunStore(runsDir),
+    runStore,
     budgetStore: new RootBudgetLedgerStore(path.join(baseDir, "ai-budget")),
-    upsertTrace: (input) => upsertRunTrace(runsDir, input),
+    upsertTrace: (input) => {
+      const receipt = upsertRunTrace(runsDir, input)
+      if (onTrace) {
+        const finalization = notifyAfterTerminal(runStore, input, onTrace)
+        finalizations.push(finalization)
+        void finalization.catch(() => {})
+      }
+      return receipt
+    },
+    hasFinalization: () => finalizations.length > 0,
+    waitForFinalization: async () => {
+      await Promise.all(finalizations)
+    },
   }
+}
+
+async function notifyAfterTerminal(
+  runStore: AgentRunStore,
+  input: Parameters<ConstructorParameters<typeof PluginHost>[0]["upsertTrace"]>[0],
+  onTrace: (
+    input: Parameters<ConstructorParameters<typeof PluginHost>[0]["upsertTrace"]>[0]
+  ) => void
+): Promise<void> {
+  // Trace publication precedes resource release and terminal completion. The
+  // helper therefore observes the completed finalization ledger, and callers
+  // await its promise before their temp-directory cleanup barrier runs.
+  for (let attempt = 0; attempt < 500; attempt++) {
+    const loaded = await runStore.load(input.runId)
+    if (!loaded.ok) throw new Error(`background run ${input.runId} is ${loaded.reason}`)
+    if (
+      ["completed", "failed", "cancelled"].includes(loaded.checkpoint.status) &&
+      loaded.checkpoint.finalization?.phase === "complete"
+    ) {
+      onTrace(input)
+      return
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(`background run ${input.runId} did not reach terminal finalization`)
 }
 
 function hostOptions(
@@ -1041,18 +1098,20 @@ describe("pluginHost trigger registration", () => {
     // providerStreamed, waiting on this ensures the run's async fs writes are
     // done before the test's afterEach tries to remove the temp dir.
     const runRecorded = vi.fn()
+    const support = runsSupport(dir, runRecorded)
     const host = new PluginHost(
       hostOptions({
         migrationMarker: migrationAlreadyDone(),
         timerAdapter,
         adapters: noopAdapters,
+        ...support,
         backgroundAgentProvider: async () => ({
           provider: fakeProvider(providerStreamed),
           model: "fake-model",
         }),
-        recordRun: runRecorded,
       })
     )
+    backgroundHostsForCleanup.push(host)
     const sandboxDispatch = vi.spyOn(host.sandbox, "dispatchTrigger")
     const pluginId = "com.synapse.agent-trigger"
     await writeHostPlugin({
@@ -1081,7 +1140,10 @@ describe("pluginHost trigger registration", () => {
     fires.tick?.({ scheduledAt: 0, firedAt: 1, driftMs: 0 })
 
     await vi.waitFor(() => expect(providerStreamed).toHaveBeenCalledTimes(1))
-    await vi.waitFor(() => expect(runRecorded).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(support.hasFinalization()).toBe(true), { timeout: 5000 })
+    await support.waitForFinalization()
+    await host.waitForBackgroundIdle()
+    expect(runRecorded).toHaveBeenCalledTimes(1)
     expect(sandboxDispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         pluginId,
@@ -1294,10 +1356,10 @@ function providerWithToolCall(toolName: string, input: unknown = { query: "hi" }
   let index = 0
   const turns = [{ toolUses: [{ id: "t1", name: toolName, input }] }, { text: "done" }]
   return {
-    id: "fake",
-    // The manifest configures a finite maxTokensPerRun; durable admission
-    // fails closed for a finite-budget run whose provider can't guarantee
-    // an upper bound.
+    // See fakeProvider's comment above (Task 23): a real catalogued
+    // provider id is required now that setupBackgroundRun rejects a finite
+    // maxTokensPerRun the resolved profile's estimator cannot back.
+    id: "anthropic",
     estimateRequestUpperBound: () => ({
       estimatorId: "fake",
       estimatorVersion: "1",
@@ -1350,19 +1412,21 @@ describe("dispatchBackgroundAgent — memory:read/execution:read wiring", () => 
     // settled — waiting on it too (not just memory.search) ensures the run's
     // async fs writes are done before afterEach removes the temp dir.
     const runRecorded = vi.fn()
+    const support = runsSupport(dir, runRecorded)
     const host = new PluginHost(
       hostOptions({
         migrationMarker: migrationAlreadyDone(),
         timerAdapter,
         adapters: noopAdapters,
+        ...support,
         memoryTools: () => memoryToolSource,
         backgroundAgentProvider: async () => ({
           provider: providerWithToolCall(memorySearchToolName),
           model: "fake-model",
         }),
-        recordRun: runRecorded,
       })
     )
+    backgroundHostsForCleanup.push(host)
     await writeHostPlugin({
       id: pluginId,
       permissions: ["notification"],
@@ -1382,7 +1446,29 @@ describe("dispatchBackgroundAgent — memory:read/execution:read wiring", () => 
     fires.tick?.({ scheduledAt: 0, firedAt: 1, driftMs: 0 })
 
     await vi.waitFor(() => expect(memory.search).toHaveBeenCalled())
-    await vi.waitFor(() => expect(runRecorded).toHaveBeenCalled())
+    await vi.waitFor(() => expect(support.hasFinalization()).toBe(true), { timeout: 5000 })
+    await support.waitForFinalization()
+    await host.waitForBackgroundIdle()
+    expect(runRecorded).toHaveBeenCalledTimes(1)
+
+    // This is the restart regression: setup froze the governed background
+    // registry (where memory:read is a required capability), while the
+    // interactive registry intentionally has no such requirement. Recovery
+    // must rebuild the former, including its trigger uses top-cap, so an
+    // unchanged confirmed grant remains automatic instead of spuriously
+    // becoming `tool-removed-or-changed`.
+    const trace = runRecorded.mock.calls[0]?.[0] as { runId: string }
+    const persisted = await support.runStore.load(trace.runId)
+    expect(persisted.ok).toBe(true)
+    if (!persisted.ok) throw new Error(`missing background fixture run: ${persisted.reason}`)
+    const recovered = await host.currentBackgroundRecoveryAuthority(persisted.checkpoint)
+    expect(recovered).toEqual(persisted.checkpoint.config.authority)
+    expect(recovered?.tools).toContainEqual(
+      expect.objectContaining({
+        fqName: "memory:core/memory_search",
+        requiredCapabilities: [expect.objectContaining({ id: "memory:read" })],
+      })
+    )
   })
 
   it("a declared-but-unconfirmed capability is denied, not silently used", async () => {
@@ -1408,19 +1494,21 @@ describe("dispatchBackgroundAgent — memory:read/execution:read wiring", () => 
     }
     const pluginId = "com.synapse.agent-trigger"
     const runRecorded = vi.fn()
+    const support = runsSupport(dir, runRecorded)
     const host = new PluginHost(
       hostOptions({
         migrationMarker: migrationAlreadyDone(),
         timerAdapter,
         adapters: noopAdapters,
+        ...support,
         memoryTools: () => memoryToolSource,
         backgroundAgentProvider: async () => ({
           provider: providerWithToolCall(memorySearchToolName),
           model: "fake-model",
         }),
-        recordRun: runRecorded,
       })
     )
+    backgroundHostsForCleanup.push(host)
     await writeHostPlugin({
       id: pluginId,
       permissions: ["notification"],
@@ -1437,7 +1525,10 @@ describe("dispatchBackgroundAgent — memory:read/execution:read wiring", () => 
     // The denied capability still runs the surrounding run to completion
     // (the tool call itself resolves as a synthetic denial) — wait for
     // finalization so afterEach doesn't race the run's async fs writes.
-    await vi.waitFor(() => expect(runRecorded).toHaveBeenCalled())
+    await vi.waitFor(() => expect(support.hasFinalization()).toBe(true), { timeout: 5000 })
+    await support.waitForFinalization()
+    await host.waitForBackgroundIdle()
+    expect(runRecorded).toHaveBeenCalledTimes(1)
     expect(memory.search).not.toHaveBeenCalled()
   })
 })

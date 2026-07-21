@@ -7,7 +7,6 @@ import type {
   ProviderStreamEvent,
   TokenUsage,
 } from "./providers/types"
-import type { RunTrace } from "./run-trace-store"
 import type { ToolHostPort } from "./tool-registry"
 import { randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
@@ -186,13 +185,6 @@ describe("buildSystemPrompt", () => {
   })
 })
 
-function oneToolThenDone(): ChatProvider {
-  return fakeProvider([
-    { toolUses: [{ id: "t1", name: GREET_TOOL_NAME, input: {} }] },
-    { text: "done" },
-  ])
-}
-
 describe("agentRuntime", () => {
   it("runs a tool call and feeds the result back to the model", async () => {
     const host = fakeHost()
@@ -341,150 +333,6 @@ describe("agentRuntime", () => {
     expect(result.messages[2]?.content[0]).toMatchObject({ type: "tool_result", isError: true })
   })
 
-  it("records a run trace with tool calls and puts runId on the caller", async () => {
-    const host = fakeHost()
-    const recorded: RunTrace[] = []
-    const runtime = new AgentRuntime({
-      provider: fakeProvider([
-        { toolUses: [{ id: "t1", name: GREET_TOOL_NAME, input: { name: "Ada" } }] },
-        { text: "Hello Ada" },
-      ]),
-      tools: new AiToolRegistry(host),
-      recordRun: (trace) => recorded.push(trace),
-    })
-
-    const result = await runtime.run({
-      provenance: interactiveProvenance(),
-      messages: [userMessage("hi")],
-    })
-
-    expect(result.stopReason).toBe("end_turn")
-    expect(recorded).toHaveLength(1)
-    expect(recorded[0]).toMatchObject({
-      conversationId: "c1",
-      origin: "interactive",
-      outcome: "end_turn",
-    })
-    expect(typeof recorded[0].runId).toBe("string")
-    expect(recorded[0].runId.length).toBeGreaterThan(0)
-    expect(recorded[0].toolCalls).toHaveLength(1)
-    expect(recorded[0].toolCalls[0]).toMatchObject({ name: "com.x.demo/greet", ok: true })
-
-    const callerArg = (host.invokeTool as ReturnType<typeof vi.fn>).mock.calls[0][2]
-    expect(callerArg.caller.runId).toBe(recorded[0].runId)
-  })
-
-  it("uses a supplied runId verbatim (background-agent path)", async () => {
-    const host = fakeHost()
-    const recorded: RunTrace[] = []
-    const runtime = new AgentRuntime({
-      provider: fakeProvider([{ text: "done" }]),
-      tools: new AiToolRegistry(host),
-      recordRun: (trace) => recorded.push(trace),
-    })
-
-    await runtime.run({
-      provenance: buildBackgroundAgentRun({
-        runId: "supplied-run",
-        invocationId: "inv-1",
-        workspaceId: "ws-test",
-        triggerInstanceId: "inst-test",
-      }),
-      messages: [userMessage("hi")],
-    })
-
-    expect(recorded[0].runId).toBe("supplied-run")
-    expect(recorded[0].origin).toBe("background-agent")
-  })
-
-  it("generates a distinct runId per run() call on the same conversation", async () => {
-    const host = fakeHost()
-    const recorded: RunTrace[] = []
-    const runtime = new AgentRuntime({
-      provider: fakeProvider([{ text: "a" }, { text: "b" }]),
-      tools: new AiToolRegistry(host),
-      recordRun: (trace) => recorded.push(trace),
-    })
-
-    await runtime.run({
-      provenance: interactiveProvenance("c1", { runId: randomUUID() }),
-      messages: [userMessage("one")],
-    })
-    await runtime.run({
-      provenance: interactiveProvenance("c1", { runId: randomUUID() }),
-      messages: [userMessage("two")],
-    })
-
-    expect(recorded).toHaveLength(2)
-    expect(recorded[0].runId).not.toBe(recorded[1].runId)
-  })
-
-  it("records an aborted run with outcome 'aborted'", async () => {
-    const host = fakeHost()
-    const recorded: RunTrace[] = []
-    const runtime = new AgentRuntime({
-      provider: fakeProvider([{ text: "x" }]),
-      tools: new AiToolRegistry(host),
-      recordRun: (trace) => recorded.push(trace),
-    })
-    const controller = new AbortController()
-    controller.abort()
-
-    await runtime.run({
-      provenance: interactiveProvenance(),
-      messages: [userMessage("hi")],
-      signal: controller.signal,
-    })
-
-    expect(recorded).toHaveLength(1)
-    expect(recorded[0].outcome).toBe("aborted")
-  })
-
-  it("does not let a throwing recorder break the run (spec §6)", async () => {
-    const host = fakeHost()
-    const runtime = new AgentRuntime({
-      provider: fakeProvider([
-        { toolUses: [{ id: "t1", name: GREET_TOOL_NAME, input: {} }] },
-        { text: "done" },
-      ]),
-      tools: new AiToolRegistry(host),
-      recordRun: () => {
-        throw new Error("recorder boom")
-      },
-    })
-
-    const result = await runtime.run({
-      provenance: interactiveProvenance(),
-      messages: [userMessage("hi")],
-    })
-    expect(result.stopReason).toBe("end_turn")
-  })
-
-  it("records a subagent run with origin 'subagent' and parentRunId", async () => {
-    const host = fakeHost()
-    const recorded: RunTrace[] = []
-    const runtime = new AgentRuntime({
-      provider: fakeProvider([{ text: "child done" }]),
-      tools: new AiToolRegistry(host),
-      recordRun: (t) => recorded.push(t),
-    })
-
-    await runtime.run({
-      provenance: buildSubagentRun({
-        runId: "child-1",
-        conversationId: "c1",
-        parentRunId: "parent-1",
-      }),
-      messages: [userMessage("subtask")],
-    })
-
-    expect(recorded[0]).toMatchObject({
-      runId: "child-1",
-      origin: "subagent",
-      parentRunId: "parent-1",
-    })
-  })
-
   it("backfills an internal-agent principal onto a caller supplied without one", async () => {
     // Mirrors background-agent-runner.ts, which passes its own `caller`
     // (kind "background-agent") but historically never stamped `principal` —
@@ -548,21 +396,6 @@ describe("agentRuntime", () => {
         }),
       })
     )
-  })
-
-  it("folds the run's final plan into the recorded trace", async () => {
-    const host = fakeHost()
-    const recorded: RunTrace[] = []
-    const plan = [{ title: "A", status: "completed" as const }]
-    const runtime = new AgentRuntime({
-      provider: fakeProvider([{ text: "done" }]),
-      tools: new AiToolRegistry(host),
-      recordRun: (t) => recorded.push(t),
-      getPlan: (runId) => (runId ? plan : undefined),
-    })
-
-    await runtime.run({ provenance: interactiveProvenance(), messages: [userMessage("hi")] })
-    expect(recorded[0].plan).toEqual(plan)
   })
 
   it("sends compacted messages when a compressor is configured", async () => {
@@ -878,25 +711,6 @@ describe("agentRuntime", () => {
     )
   })
 
-  it("stamps an internal-agent principal and workspaceId onto the trace", async () => {
-    const traces: RunTrace[] = []
-    const runtime = new AgentRuntime({
-      provider: fakeProvider([{ text: "hi" }]),
-      tools: new AiToolRegistry(fakeHost()),
-      recordRun: (trace) => traces.push(trace),
-    })
-
-    await runtime.run({
-      provenance: interactiveProvenance("c1", { workspaceId: "ws-int" }),
-      messages: [userMessage("hi")],
-    })
-
-    expect(traces).toHaveLength(1)
-    expect(traces[0].origin).toBe("interactive")
-    expect(traces[0].principal).toEqual({ kind: "internal-agent" })
-    expect(traces[0].workspaceId).toBe("ws-int")
-  })
-
   it("workspaceInstructionRoots folds instructions in without emitting execution-tool guidance text", async () => {
     const root = await tempWorkspace()
     await fs.writeFile(path.join(root, "AGENTS.md"), "Run tests before committing.\n", "utf-8")
@@ -930,79 +744,6 @@ describe("agentRuntime", () => {
     await runtime.run({ provenance: interactiveProvenance(), messages: [userMessage("hello")] })
     expect(seenSystems[0]).not.toContain("list_files")
     expect(seenSystems[0]).not.toContain("read_file")
-  })
-
-  it("a run with options.workspaceId/triggerInstanceId produces a RunTrace carrying both", async () => {
-    const traces: import("./run-trace-store").RunTrace[] = []
-    const runtime = new AgentRuntime({
-      provider: fakeProvider([{ text: "ok" }]),
-      tools: new AiToolRegistry(fakeHost()),
-      recordRun: (trace) => traces.push(trace),
-    })
-    await runtime.run({
-      provenance: buildBackgroundAgentRun({
-        runId: randomUUID(),
-        invocationId: "inv-test",
-        workspaceId: "work",
-        triggerInstanceId: "instance-1",
-      }),
-      messages: [userMessage("hi")],
-    })
-    expect(traces[0]?.workspaceId).toBe("work")
-    expect(traces[0]?.triggerInstanceId).toBe("instance-1")
-  })
-
-  it("never persists raw exception text into the trace — only a closed category", async () => {
-    const traces: RunTrace[] = []
-    const secretMessage = "ENOENT: /Users/alice/.ssh/id_rsa not found, token=sk-abc123"
-    const host: ToolHostPort = {
-      listTools: () => [descriptor()],
-      invokeTool: vi.fn(async () => {
-        throw new Error(secretMessage)
-      }),
-    }
-    const runtime = new AgentRuntime({
-      provider: oneToolThenDone(),
-      tools: new AiToolRegistry(host),
-      recordRun: (t) => traces.push(t),
-    })
-
-    const result = await runtime.run({
-      provenance: buildInteractiveRun({ runId: "r1", conversationId: "c1" }),
-      messages: [userMessage("go")],
-    })
-
-    expect(traces[0]?.toolCalls[0]?.error).toBe("exception")
-    expect(traces[0]?.toolCalls[0]?.error).not.toContain("id_rsa")
-    const toolResultBlock = result.messages
-      .flatMap((m) => m.content)
-      .find((b) => b.type === "tool_result")
-    expect(JSON.stringify(toolResultBlock)).toContain(secretMessage)
-  })
-
-  it("persists 'aborted' instead of 'exception' when the run's signal was already aborted", async () => {
-    const traces: RunTrace[] = []
-    const controller = new AbortController()
-    const host: ToolHostPort = {
-      listTools: () => [descriptor()],
-      invokeTool: vi.fn(async () => {
-        controller.abort()
-        throw new Error("boom")
-      }),
-    }
-    const runtime = new AgentRuntime({
-      provider: oneToolThenDone(),
-      tools: new AiToolRegistry(host),
-      recordRun: (t) => traces.push(t),
-    })
-
-    await runtime.run({
-      provenance: buildInteractiveRun({ runId: "r1", conversationId: "c1" }),
-      messages: [userMessage("go")],
-      signal: controller.signal,
-    })
-
-    expect(traces[0]?.toolCalls[0]?.error).toBe("aborted")
   })
 })
 

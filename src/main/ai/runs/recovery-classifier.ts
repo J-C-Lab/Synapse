@@ -2,14 +2,13 @@ import type { RecoveryDisposition } from "@synapse/agent-protocol"
 import type { FrozenAuthoritySnapshotV1 } from "./authority-snapshot"
 import type { CanonicalJson } from "./canonical-json"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
-import type { FrozenContextSnapshotV1 } from "./context-snapshot"
-import { createHash } from "node:crypto"
 import {
   compareCapabilityGrant,
   compareToolAuthority,
   principalMatches,
 } from "./authority-snapshot"
 import { canonicalHash } from "./canonical-json"
+import { contextSnapshotIntegrityMatches } from "./context-snapshot"
 
 // Pure recovery classification (design §"Run recovery service and startup
 // UX"): given one checkpoint and the live state it must be reconciled
@@ -94,7 +93,7 @@ export function classifyRunRecovery(
     if (outcome.kind === "narrowed") anyToolNarrowed = true
   }
 
-  if (!contextSnapshotIsIntact(checkpoint.config.context)) {
+  if (!contextSnapshotIntegrityMatches(checkpoint.config.context)) {
     return { kind: "blocked", reason: "frozen-context-corrupt" }
   }
 
@@ -170,27 +169,4 @@ function hasUnknownToolOutcome(checkpoint: AgentRunCheckpointV1): boolean {
       )
     })
   )
-}
-
-function sha256(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex")
-}
-
-/** Re-derives every hash the context snapshot carries and checks it against
- *  what's stored — the same construction context-snapshot.ts's
- *  buildContextSnapshot uses, so a genuinely untouched checkpoint always
- *  passes and any bit-level corruption always fails. */
-function contextSnapshotIsIntact(context: FrozenContextSnapshotV1): boolean {
-  if (sha256(context.baseSystemPrompt.normalizedText) !== context.baseSystemPrompt.sha256) {
-    return false
-  }
-  for (const instruction of context.workspaceInstructions) {
-    if (sha256(instruction.normalizedText) !== instruction.sha256) return false
-  }
-  const aggregateHash = sha256(
-    [context.baseSystemPrompt.sha256, ...context.workspaceInstructions.map((i) => i.sha256)].join(
-      "|"
-    )
-  )
-  return aggregateHash === context.aggregateHash
 }

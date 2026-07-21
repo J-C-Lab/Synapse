@@ -1,21 +1,18 @@
 import type { ToolResult } from "@synapse/plugin-sdk"
 import type { WorkspaceRootRecord } from "./execution/types"
 import type { EnvelopeTier } from "./guardrails/untrusted-content"
-import type { PlanStep } from "./plan/plan-types"
 import type { ProviderStreamDeadlines } from "./provider-stream-deadlines"
 import type { ChatContentBlock, ChatMessage, ChatProvider, TokenUsage } from "./providers/types"
 import type { RunProvenance } from "./run-provenance"
 
-import type { RunTrace, RunTraceErrorCategory, RunTraceToolCall } from "./run-trace-store"
 import type { AiToolRegistry } from "./tool-registry"
 import process from "node:process"
-import { logger } from "../logging"
 import { truncateToolResultText } from "./context/tool-result-budget"
 import { labelUntrustedContent } from "./guardrails/untrusted-content"
 import { streamWithDeadlines } from "./provider-stream-deadlines"
 import { DEFAULT_ANTHROPIC_MODEL } from "./providers/anthropic-provider"
 import { addUsage, emptyUsage, totalTokens } from "./providers/types"
-import { buildRunTrace, toToolCaller } from "./run-provenance"
+import { toToolCaller } from "./run-provenance"
 import { assembleFromContextSnapshot, buildContextSnapshot } from "./runs/context-snapshot"
 import { renderToolResultText } from "./tool-registry"
 
@@ -133,8 +130,6 @@ export interface AgentRuntimeOptions {
   workspaceInstructionRoots?: () => readonly WorkspaceRootRecord[]
   /** Max characters from a tool result to return to the model before truncation. */
   maxToolResultChars?: number
-  recordRun?: (trace: RunTrace) => void
-  getPlan?: (runId: string) => PlanStep[] | undefined
   compress?: (
     system: string,
     messages: ChatMessage[]
@@ -186,8 +181,6 @@ export class AgentRuntime {
 
   async run(options: AgentRunOptions): Promise<AgentRunResult> {
     const provenance = options.provenance
-    const startedAt = Date.now()
-    const toolCalls: RunTraceToolCall[] = []
     const messages = [...options.messages]
     const model = this.options.model ?? DEFAULT_ANTHROPIC_MODEL
     const maxSteps = this.options.maxSteps ?? 10
@@ -219,114 +212,68 @@ export class AgentRuntime {
     let usage = emptyUsage()
 
     const finish = (stopReason: AgentRunResult["stopReason"]): AgentRunResult => {
-      this.recordTrace({ provenance, startedAt, toolCalls, outcome: stopReason })
       return { messages, stopReason, usage }
     }
 
-    try {
-      for (let step = 0; step < maxSteps; step++) {
-        if (options.signal?.aborted) return finish("aborted")
-        if (step > 0 && budgetTokens !== undefined && totalTokens(usage) >= budgetTokens) {
-          return finish("budget_exceeded")
-        }
-
-        const tools = this.options.tools.list()
-        let assistant: ChatMessage | undefined
-
-        const contextualMessages = instructionContext
-          ? injectUntrustedContext(messages, instructionContext)
-          : messages
-        const outgoing = this.options.compress
-          ? await this.options.compress(system, contextualMessages)
-          : { messages: contextualMessages, summarizerTokens: 0 }
-        if (outgoing.summarizerTokens > 0) {
-          usage = addUsage(usage, { ...emptyUsage(), outputTokens: outgoing.summarizerTokens })
-        }
-
-        for await (const event of streamWithDeadlines(
-          this.options.provider,
-          { model, system, messages: outgoing.messages, tools, maxTokens, signal: options.signal },
-          this.options.providerStreamDeadlines
-        )) {
-          if (event.type === "text") {
-            options.onText?.(event.text)
-          } else {
-            assistant = event.message
-            usage = addUsage(usage, event.usage)
-          }
-        }
-
-        if (!assistant) throw new Error("Provider stream ended without a final message")
-        messages.push(assistant)
-
-        const calls = assistant.content.filter(isToolUse)
-        if (calls.length === 0) return finish("end_turn")
-
-        const resultBlocks: ChatContentBlock[] = []
-        for (const call of calls) {
-          options.onEvent?.({ type: "tool_call", id: call.id, name: call.name, input: call.input })
-          resultBlocks.push(await this.runOneTool(call, options, provenance, toolCalls))
-        }
-        messages.push({ role: "user", content: resultBlocks })
+    for (let step = 0; step < maxSteps; step++) {
+      if (options.signal?.aborted) return finish("aborted")
+      if (step > 0 && budgetTokens !== undefined && totalTokens(usage) >= budgetTokens) {
+        return finish("budget_exceeded")
       }
 
-      return finish("max_steps")
-    } catch (err) {
-      this.recordTrace({ provenance, startedAt, toolCalls, outcome: "error" })
-      throw err
-    }
-  }
+      const tools = this.options.tools.list()
+      let assistant: ChatMessage | undefined
 
-  private recordTrace(args: {
-    provenance: RunProvenance
-    startedAt: number
-    toolCalls: RunTraceToolCall[]
-    outcome: RunTrace["outcome"]
-  }): void {
-    const record = this.options.recordRun
-    if (!record) return
-    const plan = this.options.getPlan?.(args.provenance.runId)
-    const trace = buildRunTrace(args.provenance, {
-      startedAt: args.startedAt,
-      endedAt: Date.now(),
-      outcome: args.outcome,
-      toolCalls: args.toolCalls,
-      ...(plan && plan.length > 0 ? { plan } : {}),
-    })
+      const contextualMessages = instructionContext
+        ? injectUntrustedContext(messages, instructionContext)
+        : messages
+      const outgoing = this.options.compress
+        ? await this.options.compress(system, contextualMessages)
+        : { messages: contextualMessages, summarizerTokens: 0 }
+      if (outgoing.summarizerTokens > 0) {
+        usage = addUsage(usage, { ...emptyUsage(), outputTokens: outgoing.summarizerTokens })
+      }
 
-    try {
-      record(trace)
-    } catch (err) {
-      logger.child("agent-runtime").warn("recordRun threw; run trace dropped", {
-        runId: args.provenance.runId,
-        err,
-      })
+      for await (const event of streamWithDeadlines(
+        this.options.provider,
+        { model, system, messages: outgoing.messages, tools, maxTokens, signal: options.signal },
+        this.options.providerStreamDeadlines
+      )) {
+        if (event.type === "text") {
+          options.onText?.(event.text)
+        } else {
+          assistant = event.message
+          usage = addUsage(usage, event.usage)
+        }
+      }
+
+      if (!assistant) throw new Error("Provider stream ended without a final message")
+      messages.push(assistant)
+
+      const calls = assistant.content.filter(isToolUse)
+      if (calls.length === 0) return finish("end_turn")
+
+      const resultBlocks: ChatContentBlock[] = []
+      for (const call of calls) {
+        options.onEvent?.({ type: "tool_call", id: call.id, name: call.name, input: call.input })
+        resultBlocks.push(await this.runOneTool(call, options, provenance))
+      }
+      messages.push({ role: "user", content: resultBlocks })
     }
+
+    return finish("max_steps")
   }
 
   private async runOneTool(
     call: { id: string; name: string; input: unknown },
     options: AgentRunOptions,
-    provenance: RunProvenance,
-    toolCalls: RunTraceToolCall[]
+    provenance: RunProvenance
   ): Promise<ChatContentBlock> {
-    const startedAt = Date.now()
-    const record = (ok: boolean, error?: RunTraceErrorCategory): void => {
-      toolCalls.push({
-        name: this.resolveToolName(call.name),
-        startedAt,
-        ms: Date.now() - startedAt,
-        ok,
-        error,
-      })
-    }
-
     const outcome: ToolApprovalOutcome = options.approve
       ? await options.approve({ toolName: call.name, input: call.input })
       : { allowed: true }
     if (!outcome.allowed) {
       options.onEvent?.({ type: "tool_result", id: call.id, isError: true })
-      record(false, "denied")
       return toolResult(call.id, "Tool call denied.", true)
     }
 
@@ -343,12 +290,10 @@ export class AgentRuntime {
         maxToolResultChars: this.options.maxToolResultChars,
       })
       options.onEvent?.({ type: "tool_result", id: call.id, isError: rendered.isError })
-      record(!rendered.isError, rendered.isError ? "tool-error" : undefined)
       return toolResult(call.id, rendered.text, rendered.isError)
     } catch (err) {
       options.onEvent?.({ type: "tool_result", id: call.id, isError: true })
       const message = err instanceof Error ? err.message : String(err)
-      record(false, options.signal?.aborted ? "aborted" : "exception")
       return toolResult(call.id, message, true)
     }
   }

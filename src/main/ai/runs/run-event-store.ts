@@ -32,7 +32,15 @@ export class RunEventStore {
    *  not strictly exceed the run's last durable sequence. */
   async append(runId: string, event: AgentRunEvent): Promise<void> {
     await this.withLock(runId, async () => {
-      if (!isAgentRunEvent(event) || event.runId !== runId || !event.persisted) {
+      // `text_delta` is deliberately live-only. Keep this explicit check in
+      // addition to protocol validation so an unsafe caller cannot smuggle a
+      // fabricated delta through this persistence boundary by type assertion.
+      if (
+        !isAgentRunEvent(event) ||
+        event.type === "text_delta" ||
+        event.runId !== runId ||
+        !event.persisted
+      ) {
         throw new Error(`invalid persisted event for run ${runId}`)
       }
       const events = await this.readAllUnlocked(runId)
@@ -74,7 +82,12 @@ export class RunEventStore {
     for (const [index, line] of lines.entries()) {
       try {
         const parsed: unknown = JSON.parse(line)
-        if (!isAgentRunEvent(parsed) || parsed.runId !== runId || !parsed.persisted) {
+        if (
+          !isAgentRunEvent(parsed) ||
+          parsed.type === "text_delta" ||
+          parsed.runId !== runId ||
+          !parsed.persisted
+        ) {
           throw new Error("invalid event shape")
         }
         const last = events[events.length - 1]

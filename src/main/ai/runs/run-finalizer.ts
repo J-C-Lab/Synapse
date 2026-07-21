@@ -77,6 +77,15 @@ export interface RunFinalizerDeps {
     plan: RunFinalizationLedger["resourceReleasePlan"],
     context: { runId: string; finalizationId: string }
   ) => Promise<{ artifactRunPinReleased: boolean }>
+  /** Idempotently releases every skill-package lease named in the plan
+   *  (Task 25) so an uninstall/package-GC pass can eventually rely on "no
+   *  active leases" — see skill-package-leases.ts's releaseSkillPackageLeases.
+   *  Optional/omittable exactly like `releaseResources`'s artifact-store
+   *  dependency: a caller with no skill runtime wired is a safe no-op. Never
+   *  reflected back into `resourceReceipts` as a live success flag (mirrors
+   *  budgetOperationIds/adoptionLeaseIds today: the receipt echoes the plan,
+   *  not a per-id outcome) — see `releaseResourcesPhase` below. */
+  releaseSkillPackageLeases?: (leaseIds: readonly string[]) => Promise<void>
   now: () => number
   newId?: () => string
   /** Named crash-recovery test seams — never set in production. */
@@ -404,6 +413,11 @@ async function releaseResourcesPhase(
     runId,
     finalizationId: ledger.finalizationId,
   })
+  // Skill-package leases are released alongside (not through)
+  // deps.releaseResources — a distinct resource with its own store, wired
+  // by every composition-root call site the same way artifactStore already
+  // is. Safe to call again on a retried phase: release() is idempotent.
+  await deps.releaseSkillPackageLeases?.(plan.skillPackageLeaseIds)
 
   return mutateCheckpoint(deps, runId, (cp) => ({
     ...cp,

@@ -19,6 +19,8 @@ import { RUN_STATUS_TRANSITIONS } from "./run-types"
 const SAFE_RUN_ID = /^[\w-]{1,128}$/
 const CHECKPOINT_FILE = "checkpoint.json"
 const ABANDONED_DIR = ".abandoned"
+const FILE_OPERATION_MAX_ATTEMPTS = 8
+const DEFAULT_FILE_OPERATION_RETRY_DELAY_MS = 10
 
 function isSafeRunId(id: string): boolean {
   return SAFE_RUN_ID.test(id)
@@ -91,12 +93,35 @@ export interface RunScanFilter {
   incompleteFinalizationOnly?: boolean
 }
 
+export interface AgentRunStoreOptions {
+  /** Test seam for bounded terminal-checkpoint deletion retries. */
+  removeDirectory?: (directory: string) => Promise<void>
+  /** Test seam. Production waits briefly between Windows file-lock retries. */
+  fileOperationRetryDelayMs?: number
+}
+
 type RawRead = { kind: "missing" } | { kind: "corrupt" } | { kind: "ok"; value: unknown }
 
 export class AgentRunStore {
   private readonly locks = new Map<string, Promise<void>>()
+  private readonly removeDirectory: (directory: string) => Promise<void>
+  private readonly fileOperationRetryDelayMs: number
 
-  constructor(private readonly baseDir: string) {}
+  constructor(
+    private readonly baseDir: string,
+    options: AgentRunStoreOptions = {}
+  ) {
+    this.removeDirectory =
+      options.removeDirectory ?? ((directory) => fs.rm(directory, { recursive: true, force: true }))
+    this.fileOperationRetryDelayMs =
+      options.fileOperationRetryDelayMs ?? DEFAULT_FILE_OPERATION_RETRY_DELAY_MS
+    if (
+      !Number.isSafeInteger(this.fileOperationRetryDelayMs) ||
+      this.fileOperationRetryDelayMs < 0
+    ) {
+      throw new Error("Agent run store fileOperationRetryDelayMs must be a non-negative integer")
+    }
+  }
 
   async create(checkpoint: AgentRunCheckpointV1): Promise<AgentRunCheckpointV1> {
     const runId = checkpoint.identity.runId
@@ -210,6 +235,42 @@ export class AgentRunStore {
         abandonedAt: Date.now(),
         reason: "checkpoint-unreadable",
       })
+    })
+  }
+
+  /**
+   * Removes a fully finalized terminal checkpoint after its durable trace has
+   * been published. This is intentionally narrower than discard(): callers
+   * cannot use it to erase recoverable evidence. Short-lived external MCP
+   * requests use it to keep the shared run store bounded while retaining
+   * their readable RunTrace index.
+   */
+  async purgeTerminal(runId: string): Promise<void> {
+    if (!isSafeRunId(runId)) throw new InvalidRunIdError(runId)
+    await this.withLock(runId, async () => {
+      const raw = await readCheckpointRaw(this.checkpointPath(runId))
+      if (raw.kind === "missing") return
+      if (raw.kind !== "ok")
+        throw new CheckpointCorruptionError(`checkpoint for run ${runId} is corrupt`)
+      const validated = validateCheckpoint(raw.value)
+      if (!validated.ok) {
+        throw new CheckpointCorruptionError(`checkpoint for run ${runId} is ${validated.reason}`)
+      }
+      const checkpoint = validated.checkpoint
+      if (
+        !isTerminalRunStatus(checkpoint.status) ||
+        checkpoint.finalization?.phase !== "complete"
+      ) {
+        throw new Error(`cannot purge non-finalized run ${runId}`)
+      }
+      // Windows readers can retain a just-finalized checkpoint briefly. The
+      // trace is already durable at this point, so a bounded EPERM/EBUSY retry
+      // avoids surfacing a false failed MCP request while preserving all other
+      // deletion errors for the caller to diagnose.
+      await retryTransientFileOperation(
+        () => this.removeDirectory(this.runDir(runId)),
+        this.fileOperationRetryDelayMs
+      )
     })
   }
 
@@ -354,6 +415,28 @@ async function readCheckpointRaw(filePath: string): Promise<RawRead> {
 
 function isNotFound(err: unknown): boolean {
   return Boolean(err && typeof err === "object" && (err as { code?: string }).code === "ENOENT")
+}
+
+function isTransientFileOperationError(err: unknown): boolean {
+  const code = err && typeof err === "object" ? (err as { code?: string }).code : undefined
+  return code === "EPERM" || code === "EBUSY"
+}
+
+async function retryTransientFileOperation(
+  operation: () => Promise<void>,
+  retryDelayMs: number
+): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await operation()
+      return
+    } catch (err) {
+      if (attempt >= FILE_OPERATION_MAX_ATTEMPTS || !isTransientFileOperationError(err)) {
+        throw err
+      }
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs * attempt))
+    }
+  }
 }
 
 function safeDeadline(createdAt: number, timeoutMs: number): number {

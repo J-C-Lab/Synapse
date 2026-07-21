@@ -206,7 +206,6 @@ function installElectronApi(settings: SynapseUserSettings): TestElectronApi {
     ingestMemoryDocumentFromPath: vi.fn().mockResolvedValue({ source: "", chunks: 0 }),
     deleteMemory: vi.fn().mockResolvedValue(true),
     deleteMemorySource: vi.fn().mockResolvedValue(0),
-    onAiChatEvent: vi.fn(() => () => undefined),
     getUpdateStatus: vi.fn().mockResolvedValue({ status: "idle", currentVersion: "0.0.0" }),
     checkForUpdates: vi.fn().mockResolvedValue(undefined),
     downloadUpdate: vi.fn().mockResolvedValue(undefined),

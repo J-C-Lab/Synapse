@@ -2,7 +2,6 @@ import type { ClipboardContent } from "@synapse/plugin-sdk"
 import type { IpcMainInvokeEvent, WebContents } from "electron"
 import type { ToolResilienceSettings } from "./ai/ai-settings-store"
 import type { ChatProvider } from "./ai/providers/types"
-import type { RunTrace } from "./ai/run-trace-store"
 import type { SecretProtector } from "./lan/credential-store"
 import type { LanDevice, LanPairing, LanStatus, LanTransfer } from "./lan/types"
 import type { HeadlessApprovalServerHandle } from "./mcp/headless-approval-server"
@@ -13,11 +12,7 @@ import { spawn } from "node:child_process"
 import * as path from "node:path"
 import process from "node:process"
 import { pathToFileURL } from "node:url"
-import {
-  derivePluginProfile,
-  profileToAgentText,
-  triggerUseToCapability,
-} from "@synapse/plugin-manifest"
+import { derivePluginProfile, profileToAgentText } from "@synapse/plugin-manifest"
 import {
   app,
   BrowserWindow,
@@ -73,30 +68,37 @@ import {
 } from "./ai/plugin-introspection-tools"
 import { DEFAULT_PROVIDER_ID, defaultProviderCatalog } from "./ai/providers/catalog"
 import { ResilientToolHost } from "./ai/resilient-tool-host"
-import {
-  getLatestPlan,
-  recordRun as persistRunTrace,
-  runTraceDir,
-  upsertRunTrace,
-} from "./ai/run-trace-store"
+import { getLatestPlan, runTraceDir, upsertRunTrace } from "./ai/run-trace-store"
 import { AgentRunRecoveryService } from "./ai/runs/agent-run-recovery-service"
 import { AgentRunStore } from "./ai/runs/agent-run-store"
 import {
   freezeAuthoritySnapshot,
   withFrozenAuthorityCapabilities,
 } from "./ai/runs/authority-snapshot"
-import { backgroundPrincipal } from "./ai/runs/background-run-setup"
 import { buildTraceFromCheckpoint } from "./ai/runs/interactive-run-driver"
 import { rootSetHashFor } from "./ai/runs/interactive-run-setup"
 import { rebuildRecoveryAuthority } from "./ai/runs/recovery-authority"
+import { createRunEventEmitter } from "./ai/runs/run-event-emitter"
 import { RunEventStore } from "./ai/runs/run-event-store"
 import { finalizeRun } from "./ai/runs/run-finalizer"
+import { toAgentChildTaskSummary } from "./ai/runs/run-projection"
 import {
   autoResumeRecoverableRuns,
   continueBackgroundOrSubagentRun,
 } from "./ai/runs/run-recovery-orchestrator"
+import { buildSkillCatalog } from "./ai/skills/skill-catalog"
+import {
+  releaseSkillPackageLeases,
+  skillPackageLeasesFilePath,
+  SkillPackageLeaseStore,
+} from "./ai/skills/skill-package-leases"
+import { skillPackagesRoot, SkillPackageStore } from "./ai/skills/skill-package-store"
+import { SKILL_FQ_PREFIX, SkillToolSource } from "./ai/skills/skill-tool-source"
 import { SubagentRunner } from "./ai/subagent/subagent-runner"
 import { SpawnSubagentToolSource, SUBAGENT_FQ_PREFIX } from "./ai/subagent/subagent-tool-source"
+import { ChildTaskScheduler } from "./ai/tasks/child-task-scheduler"
+import { ChildTaskStore } from "./ai/tasks/child-task-store"
+import { ChildTaskToolSource } from "./ai/tasks/child-task-tool-source"
 import { AiToolRegistry } from "./ai/tool-registry"
 import { migrateAgentShellRoots } from "./ai/workspace/workspace-migration"
 import { WorkspaceRootStore } from "./ai/workspace/workspace-root-store"
@@ -145,6 +147,8 @@ import { marketplaceTokenFilePath, MarketplaceTokenStore } from "./marketplace/t
 import { startHeadlessApprovalServer } from "./mcp/headless-approval-server"
 import { createHostResourceAudit } from "./mcp/host-resource-audit"
 import { runMcpConnectionTest } from "./mcp/mcp-connection-test"
+import { purgeFinalizedMcpRuns } from "./mcp/mcp-durable-run"
+import { McpRunLeaseStore } from "./mcp/mcp-run-lease"
 import { defaultNotificationIcon, showStartupNotification } from "./notifications"
 import { createCapabilityAudit } from "./plugins/capability-audit"
 import { createElectronSecretPrompt, CredentialBroker } from "./plugins/credential-broker"
@@ -293,10 +297,11 @@ let approvalRegistry!: ApprovalRegistry
 let lan: LanService
 let agent: AgentService
 let agentRunRecoveryService: AgentRunRecoveryService
+let childTaskStore: ChildTaskStore
+let childTaskScheduler: ChildTaskScheduler
 let estimatorQuarantine: EstimatorQuarantineStore | undefined
 let sharedMemoryTools: MemoryToolSource | undefined
 let sharedExecutionTools: ExecutionToolHostSource | undefined
-let runTraceRecorder: (trace: RunTrace) => void = () => {}
 let emitPlanForRun: (
   runId: string,
   steps: import("./ai/plan/plan-types").PlanStep[]
@@ -323,6 +328,7 @@ let continueAnyRun: (runId: string) => Promise<void> = async () => {}
 // correct when every caller mutating a given runId goes through the same
 // in-memory lock map.
 const agentRunStore = new AgentRunStore(path.join(app.getPath("userData"), "ai", "runs"))
+const mcpRunLeaseStore = new McpRunLeaseStore(path.join(app.getPath("userData"), "ai", "runs"))
 const agentBudgetStore = new RootBudgetLedgerStore(
   path.join(app.getPath("userData"), "ai", "budget")
 )
@@ -354,9 +360,67 @@ const artifactStore = new ArtifactStore(artifactsRoot(app.getPath("userData")), 
       Date.now(),
       CONVERSATION_ARTIFACT_GRACE_MS
     )
-    return referenced.has(uri)
+    if (referenced.has(uri)) return true
+    // A succeeded durable child task exposes its result through the task
+    // record rather than necessarily through a conversation message. Scan
+    // the small task store on every candidate's just-in-time GC check so the
+    // record is a canonical retention root. Include the pre-finalization
+    // pending ref as well: finalization releases the run pin after this ref
+    // is durable, and a crash before terminal promotion must not create a
+    // reclaimable-result window. No other child-run artifact is retained.
+    const childTasks = await childTaskStore.scan()
+    return childTasks.some(
+      (task) => task.resultArtifact?.uri === uri || task.pendingResultArtifact?.uri === uri
+    )
   },
 })
+// The immutable, content-addressed skill package store (Task 24, design
+// §"Progressive skill runtime"). Mirrors artifactStore's construction above:
+// one store per app run, rooted under userData.
+const skillPackageStore = new SkillPackageStore(skillPackagesRoot(app.getPath("userData")))
+// Durable skill-package lease ledger (Task 25) — one store per app run,
+// mirroring skillPackageStore's construction. Threaded into every finalizer
+// wiring site below (interactive/background/subagent/recovery) so a
+// terminal run releases whatever leases it acquired via activate_skill.
+const skillPackageLeaseStore = new SkillPackageLeaseStore(
+  skillPackageLeasesFilePath(app.getPath("userData"))
+)
+// v1 discovery root: only the user's own skill directory. A bound-workspace
+// skill root is deliberately not wired here yet — the same gap
+// context-snapshot.ts's `skillCatalog` param already has (nothing populates
+// it from a real run-setup call site today either); wiring a per-workspace
+// root is future work, not a regression introduced by this task. Live
+// discovery is bounded/cheap (skill-package-store.ts's own note: "expected
+// to hold at most a few dozen small packages"), so re-running it on every
+// list_skills/activate_skill call is intentional rather than caching a
+// possibly-stale snapshot.
+const skillsUserRoot = path.join(app.getPath("userData"), "skills")
+const resolveSkillCatalog = () =>
+  buildSkillCatalog([{ source: "user", rootDir: skillsUserRoot }], skillPackageStore)
+const skillToolSource = new SkillToolSource({
+  resolveCatalog: resolveSkillCatalog,
+  packageStore: skillPackageStore,
+  leaseStore: skillPackageLeaseStore,
+  artifactStore,
+  runStore: agentRunStore,
+  now: Date.now,
+})
+/** Every packageLeaseId any checkpoint on disk still references — the
+ *  startup-reconciliation input skillPackageLeaseStore.reconcileStartup()
+ *  needs (see its call site's comment). Scans every run unconditionally
+ *  (no status/finalization filter): a lease belonging to an already-
+ *  terminal, fully-released run is simply absent from both this set and
+ *  the ledger, so including or excluding it changes nothing. */
+async function liveSkillPackageLeaseIds(): Promise<Set<string>> {
+  const ids = new Set<string>()
+  for (const entry of await agentRunStore.scan({})) {
+    if (!entry.result.ok) continue
+    for (const activation of entry.result.checkpoint.activatedSkills) {
+      ids.add(activation.packageLeaseId)
+    }
+  }
+  return ids
+}
 let accountService: MarketplaceAccountService
 let marketplaceTokens: MarketplaceTokenStore | undefined
 // External MCP servers feeding tools to the built-in agent (P5). Held at module
@@ -545,6 +609,8 @@ function registerIpc(): void {
       recovery: agentRunRecoveryService,
       continueRun: (runId) => continueAnyRun(runId),
       artifactStore,
+      childTaskStore,
+      childTaskScheduler,
     },
     { isTrustedSender: isTrustedIpcSender }
   )
@@ -727,12 +793,8 @@ function broadcast(channel: string, payload: unknown): void {
   }
 }
 
-function broadcastAiChatEvent(event: unknown): void {
-  broadcast("ai:chat:event", event)
-}
-
 /** Real-time push side of the subscribeRun channel (P1-2). Every window
- *  receives every run's events (matching ai:chat:event's existing pattern);
+ *  receives every run's events;
  *  the renderer filters by runId client-side. */
 function broadcastRunEvent(event: unknown): void {
   broadcast("runs:event", event)
@@ -946,11 +1008,11 @@ function initPluginHost(): PluginHost {
     estimatorQuarantine: () => estimatorQuarantine,
     memoryTools: () => sharedMemoryTools,
     executionTools: () => sharedExecutionTools,
-    recordRun: (trace) => runTraceRecorder(trace),
     runStore: agentRunStore,
     budgetStore: agentBudgetStore,
     upsertTrace: (input) => upsertRunTrace(runTraceDir(userDataDir), input),
     artifactStore,
+    skillPackageLeases: skillPackageLeaseStore,
     workspaceRoots: workspaceRootStore,
     workspaces,
     reservedAccelerators: () => [launcher.getSettings().hotkey],
@@ -1066,9 +1128,6 @@ async function createAgentService(): Promise<AgentService> {
   const artifactSource = new ArtifactToolSource({ store: artifactStore })
 
   const runsDir = runTraceDir(userDataDir)
-  const recordRun = (trace: RunTrace): void => persistRunTrace(runsDir, trace)
-  runTraceRecorder = recordRun
-
   const planRegistry = new RunPlanRegistry()
   const planSource = new PlanToolSource({
     registry: planRegistry,
@@ -1086,11 +1145,16 @@ async function createAgentService(): Promise<AgentService> {
         runStore: agentRunStore,
         budgetStore: agentBudgetStore,
         upsertTrace: (input) => upsertRunTrace(runsDir, input),
-        recordRun,
         estimatorQuarantine,
         artifactStore,
+        skillPackageLeases: skillPackageLeaseStore,
       }).run(inp)
     },
+  })
+  const childTaskSource = new ChildTaskToolSource({
+    scheduler: () => childTaskScheduler,
+    runStore: agentRunStore,
+    parentTools: () => agentTools,
   })
 
   // The model sees one flat tool list: local plugin tools, external MCP tools
@@ -1118,6 +1182,8 @@ async function createAgentService(): Promise<AgentService> {
       artifactSource,
       planSource,
       subagentSource,
+      childTaskSource,
+      skillToolSource,
       asFallbackSource(
         plugins,
         (fqName) =>
@@ -1127,7 +1193,8 @@ async function createAgentService(): Promise<AgentService> {
           fqName.startsWith(EXECUTION_FQ_PREFIX) ||
           fqName.startsWith(ARTIFACT_FQ_PREFIX) ||
           fqName.startsWith(PLAN_FQ_PREFIX) ||
-          fqName.startsWith(SUBAGENT_FQ_PREFIX)
+          fqName.startsWith(SUBAGENT_FQ_PREFIX) ||
+          fqName.startsWith(SKILL_FQ_PREFIX)
       ),
       manager,
       memoryToolSource,
@@ -1159,24 +1226,45 @@ async function createAgentService(): Promise<AgentService> {
   agentRunRecoveryService = new AgentRunRecoveryService({
     runStore: agentRunStore,
     now: Date.now,
-    finalize: (runId, input) =>
-      finalizeRun(
+    finalize: async (runId, input) => {
+      const finalized = await finalizeRun(
         {
           runStore: agentRunStore,
           conversation: conversations,
           upsertTrace: (upsertInput) => upsertRunTrace(runsDir, upsertInput),
           releaseResources: (plan, context) =>
             releaseArtifactRunResources(artifactStore, plan, context),
+          releaseSkillPackageLeases: (leaseIds) =>
+            releaseSkillPackageLeases(skillPackageLeaseStore, leaseIds),
           now: Date.now,
         },
         runId,
         input
-      ),
+      )
+      // abandon() (and resume()'s mark_failed path) reach a real terminal
+      // checkpoint through this finalize() call WITHOUT ever going through
+      // continueBackgroundOrSubagentRun's onTerminal hook — the only other
+      // place a ChildTaskRecord gets reconciled. Without this, a child task
+      // abandoned via the existing human-review recovery panel (e.g. a
+      // crash classified requires_review: unknown-tool-outcome) would stay
+      // "running" forever in ChildTaskStore, permanently leaking its
+      // concurrency slot on every future recoverAtStartup() scan. Best-
+      // effort: a bookkeeping failure here must never make an otherwise-
+      // successful abandon/resume appear to fail. Harmless no-op for every
+      // checkpoint that isn't a child task's run.
+      await childTaskScheduler.handleRunTerminal(finalized).catch((err) => {
+        logger.child("runs").warn("failed to reconcile child task after recovery finalize", {
+          runId,
+          err,
+        })
+      })
+      return finalized
+    },
     buildAbandonTrace: (checkpoint) => buildTraceFromCheckpoint(checkpoint, "aborted"),
     buildFailureTrace: (checkpoint) => buildTraceFromCheckpoint(checkpoint, "error"),
-    buildAbandonResourcePlan: () => ({
+    buildAbandonResourcePlan: (checkpoint) => ({
       budgetOperationIds: [],
-      skillPackageLeaseIds: [],
+      skillPackageLeaseIds: checkpoint.activatedSkills.map((a) => a.packageLeaseId),
       // abandon() drives the exact same finalization protocol as a normal
       // completion, with desired status "cancelled" — always a genuine
       // terminal outcome for this run.
@@ -1219,24 +1307,13 @@ async function createAgentService(): Promise<AgentService> {
         }
 
         if (candidate.identity.origin === "background-agent") {
-          const pluginId = candidate.identity.pluginId
-          const currentPluginIdentity = pluginId
-            ? plugins.currentActiveIdentityForPlugin(pluginId)
-            : undefined
-          if (!pluginId || !currentPluginIdentity) return revokedAuthority()
-          const capabilities = candidate.identity.triggerId
-            ? (
-                plugins.getTriggerDeclaration(pluginId, candidate.identity.triggerId)?.uses ?? []
-              ).map(triggerUseToCapability)
-            : []
-          return rebuildRecoveryAuthority(
-            candidate,
-            agentTools,
-            undefined,
-            capabilities,
-            backgroundPrincipal(pluginId, currentPluginIdentity)
-          )
+          return (await plugins.currentBackgroundRecoveryAuthority(candidate)) ?? revokedAuthority()
         }
+
+        // An external MCP request has no local agent continuation to replay.
+        // Its frozen principal is the authoritative provenance until startup
+        // safely finalizes an interrupted request as aborted below.
+        if (candidate.identity.origin === "mcp") return candidate.config.authority
 
         const parentRunId = candidate.identity.parentRunId
         if (!parentRunId) return revokedAuthority()
@@ -1298,13 +1375,12 @@ async function createAgentService(): Promise<AgentService> {
       }),
     conversations,
     artifactStore,
+    skillPackageLeases: skillPackageLeaseStore,
     workspaces: new WorkspaceStore(path.join(userDataDir, "ai")),
     providers: defaultProviderCatalog(),
     settings: aiSettings,
     estimatorQuarantine,
     approvals: new ApprovalStore(aiApprovalsFilePath(userDataDir)),
-    sendEvent: broadcastAiChatEvent,
-    recordRun,
     getLatestPlan: (conversationId) => getLatestPlan(runsDir, conversationId),
     planRegistry,
     mcp: {
@@ -1316,6 +1392,64 @@ async function createAgentService(): Promise<AgentService> {
 
   emitPlanForRun = (runId, steps) => agentService.emitPlanForRun(runId, steps)
   makeSubagentProvider = () => agentService.createBackgroundAgentProvider()
+
+  // Resolves a checkpoint's own frozen providerId to a live provider — never
+  // today's live-settings provider, matching continueBackgroundOrSubagentRun's
+  // own resume contract (a resume replays what the run already committed to).
+  // Shared between continueAnyRun's generic background/subagent branch below
+  // and the async child-task scheduler (Task 26), which drives every child
+  // run through that exact same generic path.
+  const buildProviderForRun = async (providerId: string): Promise<ChatProvider> => {
+    const apiKey = await credentials.get(providerId)
+    if (!apiKey) throw new AgentMissingKeyError()
+    const descriptor = defaultProviderCatalog().find((p) => p.id === providerId)
+    if (!descriptor) throw new Error(`Unknown provider: ${providerId}`)
+    return descriptor.create(apiKey)
+  }
+
+  // Durable async child-task kernel (Task 26, design §"Durable async child
+  // tasks"). One store/scheduler per app run, mirroring skillPackageStore's
+  // construction above.
+  //
+  // dispatchRun is deliberately `continueAnyRun` itself (assigned below,
+  // referenced here only through this closure so construction order doesn't
+  // matter) — NOT a direct continueBackgroundOrSubagentRun call. This closes
+  // a real startup double-dispatch race a spec review caught: index.ts's
+  // generic autoResumeRecoverableRuns scan drives ANY non-terminal
+  // automatic-recovery subagent checkpoint unconditionally, including a
+  // `queued` child task's — nothing at the checkpoint level distinguishes
+  // "never dispatched" from "genuinely in flight". Without a shared dedup,
+  // that scan and childTaskScheduler.recoverAtStartup() could both start an
+  // independent drive of the same runId, and the checkpoint store's per-runId
+  // CAS mutex only bounds the damage (one loses with a StaleRevisionError on
+  // its first write) — it doesn't stop the loser's tool calls already
+  // in-flight before that write. Routing every dispatch through
+  // continueAnyRun's existing continuingAnyRuns map means whichever caller
+  // reaches it first is the only one that ever drives it.
+  childTaskStore = new ChildTaskStore(path.join(userDataDir, "ai", "child-tasks"))
+  childTaskScheduler = new ChildTaskScheduler({
+    store: childTaskStore,
+    runStore: agentRunStore,
+    budgetStore: agentBudgetStore,
+    dispatchRun: (runId) => continueAnyRun(runId),
+    artifactStore,
+    onDispatchError: (taskId, err) =>
+      logger.child("runs").warn("child task dispatch failed", { taskId, err }),
+    onTaskUpdated: async (task) => {
+      const emitter = await createRunEventEmitter(
+        agentEventStore,
+        {
+          runId: task.originRunId,
+          rootRunId: task.rootRunId,
+          conversationId: task.conversationId,
+        },
+        Date.now,
+        undefined,
+        broadcastRunEvent
+      )
+      await emitter.emit({ type: "child_task_updated", child: toAgentChildTaskSummary(task) })
+    },
+  })
 
   continueAnyRun = (runId: string): Promise<void> => {
     const existing = continuingAnyRuns.get(runId)
@@ -1351,32 +1485,56 @@ async function createAgentService(): Promise<AgentService> {
           await agentService.continueRunThroughOwnership(runId)
           establishOwnership()
           await agentService.continueRun(runId)
+        } else if (checkpoint.identity.origin === "mcp") {
+          // The GUI is not the owner of an external stdio MCP request. A
+          // non-terminal checkpoint may represent a host call still running
+          // in another process, so leave it untouched; only stdio startup can
+          // reclaim an owner it has proved stale and dead.
+          establishOwnership()
         } else {
           // Inserting this entry before any await is the execution ownership
           // barrier for background/subagent runs, which have no conversation
           // lease. Never allow a second Resume to start another driver.
           establishOwnership()
-          await continueBackgroundOrSubagentRun(
-            {
-              runStore: agentRunStore,
-              budgetStore: agentBudgetStore,
-              eventStore: agentEventStore,
-              upsertTrace: (input) => upsertRunTrace(runsDir, input),
-              recordRun,
-              tools: resilientToolHost,
-              onEvent: broadcastRunEvent,
-              estimatorQuarantine,
-              artifactStore,
-              buildProvider: async (providerId) => {
-                const apiKey = await credentials.get(providerId)
-                if (!apiKey) throw new AgentMissingKeyError()
-                const descriptor = defaultProviderCatalog().find((p) => p.id === providerId)
-                if (!descriptor) throw new Error(`Unknown provider: ${providerId}`)
-                return descriptor.create(apiKey)
+          // A task already durably cancelled (ChildTaskScheduler.cancel())
+          // but never dispatched must not take a real model/tool step just
+          // because this shared dedup path happens to be the one that ends
+          // up driving it — pre-abort so it finalizes to "cancelled" on its
+          // very first loop check instead. Harmless (and cheap: one local
+          // scan) for every checkpoint that isn't a child task's run.
+          const cancelledChildTask = await childTaskStore.findByRunId(runId)
+          const controller = new AbortController()
+          if (cancelledChildTask?.status === "cancelled") controller.abort()
+          // Registered before the drive starts (not inside the scheduler,
+          // which has no idea this generic path exists) so a child task
+          // resumed here — rather than via the scheduler's own dispatch —
+          // is still reachable by ChildTaskScheduler.cancel(); onTerminal is
+          // a harmless no-op for every checkpoint that isn't a child task's
+          // run (ChildTaskStore.findByRunId returns undefined for those).
+          childTaskScheduler.registerLiveController(runId, controller)
+          try {
+            await continueBackgroundOrSubagentRun(
+              {
+                runStore: agentRunStore,
+                budgetStore: agentBudgetStore,
+                eventStore: agentEventStore,
+                upsertTrace: (input) => upsertRunTrace(runsDir, input),
+                tools: resilientToolHost,
+                onEvent: broadcastRunEvent,
+                estimatorQuarantine,
+                artifactStore,
+                beforeFinalize: (checkpoint, input) =>
+                  childTaskScheduler.prepareResultBeforeFinalization(checkpoint, input),
+                skillPackageLeases: skillPackageLeaseStore,
+                buildProvider: buildProviderForRun,
+                onTerminal: (cp) => childTaskScheduler.handleRunTerminal(cp),
               },
-            },
-            checkpoint
-          )
+              checkpoint,
+              controller.signal
+            )
+          } finally {
+            childTaskScheduler.unregisterLiveController(runId)
+          }
         }
       } catch (err) {
         rejectOwnership(err)
@@ -1397,6 +1555,16 @@ async function createAgentService(): Promise<AgentService> {
     return ownership
   }
 
+  // Rehydrate/admit child tasks first. This synchronously reconstructs every
+  // running slot and changes only scheduler-admitted queued tasks to running
+  // before the generic scan is allowed to inspect them. The generic scan
+  // below explicitly excludes still-queued child tasks, so a checkpoint that
+  // has never owned a scheduler slot cannot bypass either child-task cap.
+  const childTaskStartupRecovery = childTaskScheduler.recoverAtStartup()
+  void childTaskStartupRecovery.catch((err) =>
+    logger.child("runs").warn("failed to recover child tasks at startup", { err })
+  )
+
   // Kick off the startup recovery scan now, without blocking app readiness on
   // it — chat() internally awaits this same promise before starting any new
   // turn, so a stale/terminalizing conversation lease from a prior process
@@ -1408,8 +1576,41 @@ async function createAgentService(): Promise<AgentService> {
   // for this (fast) dispatch phase, never for the continuations it kicks off.
   void agentService.reconcileRunsAtStartup({
     listRecoverable: async () => {
+      // The GUI never owns an external stdio MCP request. It may reclaim only
+      // a phase-complete checkpoint left between finalization and purge; a
+      // non-terminal MCP checkpoint stays for the owning stdio process to
+      // recover after it has fenced a stale, dead owner lease.
+      await purgeFinalizedMcpRuns({ runStore: agentRunStore, leaseStore: mcpRunLeaseStore })
+      await childTaskStartupRecovery
       await autoResumeRecoverableRuns({
-        recovery: agentRunRecoveryService,
+        recovery: {
+          // A queued child checkpoint is deliberately durable before it is
+          // dispatched, but only ChildTaskScheduler may admit it. Letting
+          // this generic automatic-recovery scan resume it would make it a
+          // second, uncapped admission path. Running child tasks remain here
+          // and continue through the shared per-run ownership map.
+          listRecoverable: async () => {
+            // The GUI never owns an external stdio MCP lifecycle. Exclude it
+            // before AgentRunRecoveryService performs its classification CAS,
+            // so even terminalizing-but-incomplete MCP work is neither
+            // reclassified nor fed to autoResumeRecoverableRuns.abandon().
+            const summaries = await agentRunRecoveryService.listRecoverable({
+              excludeOrigins: ["mcp"],
+            })
+            const eligible = []
+            for (const summary of summaries) {
+              if (summary.origin !== "subagent") {
+                eligible.push(summary)
+                continue
+              }
+              const child = await childTaskStore.findByRunId(summary.runId)
+              if (child?.status !== "queued") eligible.push(summary)
+            }
+            return eligible
+          },
+          resume: (runId) => agentRunRecoveryService.resume(runId),
+          abandon: (runId) => agentRunRecoveryService.abandon(runId),
+        },
         runStore: agentRunStore,
         continueRun: async (checkpoint) => {
           await continueAnyRun(checkpoint.identity.runId)
@@ -1632,6 +1833,22 @@ if (isMcpStdioMode) {
       // and removes unmanifested debris; doing it from a normal GC sweep
       // would race live capture reservations.
       await artifactStore.reconcileStartup()
+      // Skill packages are ingested via an atomic stage-then-rename (Task
+      // 24); the only crash-recoverable debris is a `.tmp-*` staging
+      // directory a prior process never finished renaming away. Safe to run
+      // unconditionally at startup, before any driver/GC starts, same as
+      // artifactStore above.
+      await skillPackageStore.reconcileStartup()
+      // Releases any skill-package lease left behind by a crash between
+      // activate_skill's lease acquisition and its checkpoint commit (Task
+      // 25, design §"Progressive disclosure": "an acquired lease without a
+      // matching activation is released after reconciliation"). The live
+      // set is every packageLeaseId still referenced by any checkpoint on
+      // disk — a lease belonging to a fully-finalized run is already absent
+      // from the ledger (run-finalizer.ts's resources_released phase
+      // removed it), so including it here is a harmless no-op, not a
+      // correctness requirement to exclude it.
+      await skillPackageLeaseStore.reconcileStartup(await liveSkillPackageLeaseIds())
       plugins = initPluginHost()
       app.on("browser-window-created", (_, win) => {
         bindCapabilityPromptLifecycle(win)

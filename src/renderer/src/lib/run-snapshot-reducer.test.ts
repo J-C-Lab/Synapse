@@ -294,15 +294,14 @@ describe("applyRunEvent", () => {
     expect(state.snapshot.finalizationPhase).toBe("trace_upserted")
   })
 
-  it("no-ops on sequence-bump-only event types (text_delta, run_started, ...)", () => {
+  it("ignores live-only text deltas without advancing the durable cursor", () => {
     const state = initRunSnapshotReducerState(baseSnapshot())
     const outcome = applyRunEvent(
       state,
       eventBase({ type: "text_delta", text: "hi", persisted: false })
     )
-    expect(outcome.kind).toBe("applied")
-    if (outcome.kind !== "applied") throw new Error("unreachable")
-    expect(outcome.state.snapshot.lastSequence).toBe(6)
+    expect(outcome.kind).toBe("ignored")
+    expect(outcome.state.snapshot.lastSequence).toBe(5)
     expect(outcome.state.snapshot.status).toBe(state.snapshot.status)
   })
 })

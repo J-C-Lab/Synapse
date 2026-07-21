@@ -3,13 +3,17 @@ import type { AgentArtifactStore } from "../artifacts/artifact-types"
 import type { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import type { EstimatorQuarantineStore } from "../estimator-quarantine-store"
 import type { ChatProvider } from "../providers/types"
-import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "../run-trace-store"
+import type { TraceUpsertInput, TraceUpsertReceipt } from "../run-trace-store"
+import type { SkillPackageLeaseStore } from "../skills/skill-package-leases"
 import type { ToolHostPort } from "../tool-registry"
 import type { AgentRunRecoveryService } from "./agent-run-recovery-service"
 import type { AgentRunStore } from "./agent-run-store"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
 import type { RunEventStore } from "./run-event-store"
+import type { FinalizeRunInput } from "./run-finalizer"
 import { releaseArtifactRunResources } from "../artifacts/artifact-retention"
+import { activeSkillInstructionsReader } from "../skills/skill-activation"
+import { releaseSkillPackageLeases } from "../skills/skill-package-leases"
 import { AiToolRegistry } from "../tool-registry"
 import { StaleRevisionError } from "./agent-run-store"
 import { freezeToolAuthority, toolIdentityMatches } from "./authority-snapshot"
@@ -96,7 +100,6 @@ export interface GenericRunContinuationDeps {
   budgetStore: RootBudgetLedgerStore
   eventStore: RunEventStore
   upsertTrace: (input: TraceUpsertInput) => TraceUpsertReceipt
-  recordRun?: (trace: RunTrace) => void
   /** The live global tool host — narrowed per-run to the checkpoint's own
    *  frozen authority fqNames before use. */
   tools: ToolHostPort
@@ -113,6 +116,27 @@ export interface GenericRunContinuationDeps {
   /** Recoverable artifact backend (Checkpoint B). Omitted in tests that
    *  don't exercise artifact retention. */
   artifactStore?: AgentArtifactStore
+  /** Durable skill-package lease ledger (Task 25). Omitted in tests that
+   *  don't exercise skill activation. */
+  skillPackageLeases?: SkillPackageLeaseStore
+  /** Fired once this call's driven run reaches a real terminal checkpoint
+   *  state (never for a `suspended_unknown_tool_outcome`, which is not
+   *  terminal) — whether the checkpoint was freshly dispatched or resumed
+   *  after a crash. Generic on purpose: this module has no concept of a
+   *  child task. The async child-task scheduler (Task 26) is the intended
+   *  consumer — it uses this single hook to update a `ChildTaskRecord`'s
+   *  status and free its concurrency slot regardless of whether the run was
+   *  driven by its own dispatch or by the startup recovery scan. Absent for
+   *  every other caller. */
+  onTerminal?: (checkpoint: AgentRunCheckpointV1) => void | Promise<void>
+  /** Runs after a successful terminal outcome is known but before
+   * finalizeRun releases the artifact pin. Durable child-task result capture
+   * uses this seam to persist its retention reference before GC can observe
+   * the run as releasable. */
+  beforeFinalize?: (
+    checkpoint: AgentRunCheckpointV1,
+    input: FinalizeRunInput
+  ) => void | Promise<void>
 }
 
 /** Re-drives an interrupted background-agent or subagent checkpoint to
@@ -121,7 +145,14 @@ export interface GenericRunContinuationDeps {
  *  credential, corrupt checkpoint), which the caller logs. */
 export async function continueBackgroundOrSubagentRun(
   deps: GenericRunContinuationDeps,
-  initialCheckpoint: AgentRunCheckpointV1
+  initialCheckpoint: AgentRunCheckpointV1,
+  /** Additional external cancellation source, OR'd with this function's own
+   *  internal (deadline-derived) controller — same pattern
+   *  BackgroundAgentRunner.run() uses for its caller-supplied `input.signal`.
+   *  The async child-task scheduler (Task 26) uses this to cancel a task it
+   *  is actively driving in this same process; absent for every other
+   *  caller (the startup recovery scan has nothing else to OR in). */
+  externalSignal?: AbortSignal
 ): Promise<void> {
   const now = deps.now ?? Date.now
   let checkpoint = initialCheckpoint
@@ -173,11 +204,15 @@ export async function continueBackgroundOrSubagentRun(
       ? undefined
       : Math.max(0, checkpoint.config.deadlineAt - now())
   const controller = new AbortController()
+  const abortFromExternal = () => controller.abort()
+  externalSignal?.addEventListener("abort", abortFromExternal, { once: true })
   // The normal recovery path classifies an expired migrated deadline before
   // dispatching here. Keep this synchronous abort as the defensive boundary
   // for any direct caller: setTimeout(0) is too late to prevent first-turn
-  // work from observing a live signal.
-  if (remainingTimeoutMs === 0) controller.abort()
+  // work from observing a live signal. An already-aborted external signal
+  // (e.g. a task cancelled before this process ever dispatched it) gets the
+  // same synchronous treatment, for the same reason.
+  if (remainingTimeoutMs === 0 || externalSignal?.aborted) controller.abort()
   const timeout =
     remainingTimeoutMs === undefined || remainingTimeoutMs === 0
       ? undefined
@@ -220,6 +255,7 @@ export async function continueBackgroundOrSubagentRun(
           now,
           maxSteps: checkpoint.config.maxSteps,
           artifactStore: deps.artifactStore,
+          activeSkillInstructions: activeSkillInstructionsReader(deps.artifactStore),
           eventEmitter,
         },
         toolBatch: {
@@ -269,21 +305,26 @@ export async function continueBackgroundOrSubagentRun(
           eventEmitter,
         },
         signal: controller.signal,
-        finalize: (rid, input) =>
-          finalizeRun(
+        finalize: async (rid, input) => {
+          const before = await deps.runStore.load(rid)
+          if (before.ok) await deps.beforeFinalize?.(before.checkpoint, input)
+          return finalizeRun(
             {
               runStore: deps.runStore,
               upsertTrace: deps.upsertTrace,
               releaseResources: (plan, context) =>
                 releaseArtifactRunResources(deps.artifactStore, plan, context),
+              releaseSkillPackageLeases: (leaseIds) =>
+                releaseSkillPackageLeases(deps.skillPackageLeases, leaseIds),
               now,
             },
             rid,
             input
-          ),
-        buildResourceReleasePlan: () => ({
+          )
+        },
+        buildResourceReleasePlan: (cp) => ({
           budgetOperationIds: [],
-          skillPackageLeaseIds: [],
+          skillPackageLeaseIds: cp.activatedSkills.map((a) => a.packageLeaseId),
           // Every call here comes from finalizeTerminal
           // (interactive-run-driver.ts) — always a genuine terminal outcome
           // for this resumed background/subagent run.
@@ -297,9 +338,14 @@ export async function continueBackgroundOrSubagentRun(
       runId
     )
 
-    const trace = outcome.checkpoint.finalization?.trace
-    if (trace) deps.recordRun?.(trace)
+    // `suspended_unknown_tool_outcome` is not terminal — the checkpoint
+    // needs a further resume, which a later call drives (or the normal
+    // requires-review recovery path, if the crash left something the
+    // driver itself cannot reconcile). Only a real "finalized" outcome ever
+    // reaches a terminal checkpoint status.
+    if (outcome.kind === "finalized") await deps.onTerminal?.(outcome.checkpoint)
   } finally {
     if (timeout) clearTimeout(timeout)
+    externalSignal?.removeEventListener("abort", abortFromExternal)
   }
 }

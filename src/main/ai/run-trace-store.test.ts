@@ -1,5 +1,5 @@
 import type { RunTrace } from "./run-trace-store"
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -7,7 +7,6 @@ import {
   getLatestPlan,
   getRunTrace,
   listRuns,
-  recordRun,
   runTraceDir,
   TraceUpsertCorruptionError,
   upsertRunTrace,
@@ -22,7 +21,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-function trace(overrides: Partial<Parameters<typeof recordRun>[1]> = {}) {
+function trace(overrides: Partial<RunTrace> = {}) {
   return {
     runId: "run-1",
     conversationId: "c1",
@@ -35,9 +34,21 @@ function trace(overrides: Partial<Parameters<typeof recordRun>[1]> = {}) {
   }
 }
 
+/** Test-only writer for historic plain files. Production writes exclusively
+ * through upsertRunTrace; this helper exists to exercise the reader's
+ * backwards compatibility boundary. */
+function upsertFixtureTrace(targetDir: string, value: RunTrace): void {
+  upsertRunTrace(targetDir, {
+    runId: value.runId,
+    finalizationId: `fixture-${value.runId}`,
+    traceHash: `fixture-hash-${value.runId}`,
+    trace: value,
+  })
+}
+
 describe("runTraceStore", () => {
-  it("round-trips a recorded trace by runId", () => {
-    recordRun(dir, trace())
+  it("reads a historic plain trace by runId without rewriting it", () => {
+    writeFileSync(path.join(dir, "run-1.json"), JSON.stringify(trace()))
     expect(getRunTrace(dir, "run-1")).toEqual(trace())
   })
 
@@ -46,9 +57,9 @@ describe("runTraceStore", () => {
   })
 
   it("lists runs newest-first and filters by conversationId", () => {
-    recordRun(dir, trace({ runId: "a", conversationId: "c1", startedAt: 100 }))
-    recordRun(dir, trace({ runId: "b", conversationId: "c2", startedAt: 200 }))
-    recordRun(dir, trace({ runId: "c", conversationId: "c1", startedAt: 300 }))
+    upsertFixtureTrace(dir, trace({ runId: "a", conversationId: "c1", startedAt: 100 }))
+    upsertFixtureTrace(dir, trace({ runId: "b", conversationId: "c2", startedAt: 200 }))
+    upsertFixtureTrace(dir, trace({ runId: "c", conversationId: "c1", startedAt: 300 }))
 
     const all = listRuns(dir)
     expect(all.map((t) => t.runId)).toEqual(["c", "b", "a"])
@@ -58,13 +69,13 @@ describe("runTraceStore", () => {
   })
 
   it("respects the limit option", () => {
-    for (let i = 0; i < 5; i++) recordRun(dir, trace({ runId: `r${i}`, startedAt: i }))
+    for (let i = 0; i < 5; i++) upsertFixtureTrace(dir, trace({ runId: `r${i}`, startedAt: i }))
     expect(listRuns(dir, { limit: 2 })).toHaveLength(2)
   })
 
   it("prunes oldest files once MAX_RUN_FILES is exceeded", () => {
     for (let i = 0; i < 502; i++) {
-      recordRun(dir, trace({ runId: `r${String(i).padStart(4, "0")}`, startedAt: i }))
+      upsertFixtureTrace(dir, trace({ runId: `r${String(i).padStart(4, "0")}`, startedAt: i }))
     }
     expect(getRunTrace(dir, "r0000")).toBeUndefined()
     expect(getRunTrace(dir, "r0001")).toBeUndefined()
@@ -72,19 +83,19 @@ describe("runTraceStore", () => {
     expect(listRuns(dir)).toHaveLength(500)
   })
 
-  it("never throws on a write to an unwritable dir (best-effort)", () => {
-    expect(() => recordRun(path.join(dir, "nested", "deep"), trace())).not.toThrow()
+  it("creates the trace directory for a durable upsert", () => {
+    expect(() => upsertFixtureTrace(path.join(dir, "nested", "deep"), trace())).not.toThrow()
   })
 
   it("refuses a runId containing path separators (no escape from dir)", () => {
-    recordRun(dir, trace({ runId: "../escape" }))
+    expect(() => upsertFixtureTrace(dir, trace({ runId: "../escape" }))).toThrow()
     expect(getRunTrace(dir, "../escape")).toBeUndefined()
     expect(existsSync(path.join(dir, "..", "escape.json"))).toBe(false)
   })
 
   it("refuses a runId with a slash or backslash", () => {
-    recordRun(dir, trace({ runId: "a/b" }))
-    recordRun(dir, trace({ runId: "a\\b" }))
+    expect(() => upsertFixtureTrace(dir, trace({ runId: "a/b" }))).toThrow()
+    expect(() => upsertFixtureTrace(dir, trace({ runId: "a\\b" }))).toThrow()
     expect(listRuns(dir)).toHaveLength(0)
   })
 
@@ -96,7 +107,7 @@ describe("runTraceStore", () => {
         { title: "B", status: "pending" },
       ],
     })
-    recordRun(dir, withPlan)
+    upsertFixtureTrace(dir, withPlan)
     expect(getRunTrace(dir, "rp")?.plan).toEqual(withPlan.plan)
   })
 
@@ -112,16 +123,25 @@ describe("runTraceStore", () => {
       outcome: "end_turn",
       toolCalls: [],
     }
-    recordRun(parityDir, trace)
+    upsertFixtureTrace(parityDir, trace)
     expect(getRunTrace(parityDir, "run-ext-1")).toEqual(trace)
     rmSync(parityDir, { recursive: true, force: true })
   })
 
   it("filters listRuns by parentRunId", () => {
-    recordRun(dir, trace({ runId: "p", startedAt: 1 }))
-    recordRun(dir, trace({ runId: "c1", parentRunId: "p", startedAt: 2, origin: "subagent" }))
-    recordRun(dir, trace({ runId: "c2", parentRunId: "p", startedAt: 3, origin: "subagent" }))
-    recordRun(dir, trace({ runId: "other", parentRunId: "q", startedAt: 4, origin: "subagent" }))
+    upsertFixtureTrace(dir, trace({ runId: "p", startedAt: 1 }))
+    upsertFixtureTrace(
+      dir,
+      trace({ runId: "c1", parentRunId: "p", startedAt: 2, origin: "subagent" })
+    )
+    upsertFixtureTrace(
+      dir,
+      trace({ runId: "c2", parentRunId: "p", startedAt: 3, origin: "subagent" })
+    )
+    upsertFixtureTrace(
+      dir,
+      trace({ runId: "other", parentRunId: "q", startedAt: 4, origin: "subagent" })
+    )
 
     const children = listRuns(dir, { parentRunId: "p" })
     expect(children.map((t) => t.runId).sort()).toEqual(["c1", "c2"])
@@ -129,7 +149,7 @@ describe("runTraceStore", () => {
 
   describe("getLatestPlan", () => {
     it("returns the newest run's plan for the conversation", () => {
-      recordRun(
+      upsertFixtureTrace(
         dir,
         trace({
           runId: "older",
@@ -137,7 +157,7 @@ describe("runTraceStore", () => {
           plan: [{ title: "old step", status: "completed" }],
         })
       )
-      recordRun(
+      upsertFixtureTrace(
         dir,
         trace({
           runId: "newer",
@@ -155,17 +175,17 @@ describe("runTraceStore", () => {
     })
 
     it("skips runs with no plan or an empty plan to find the latest real one", () => {
-      recordRun(
+      upsertFixtureTrace(
         dir,
         trace({ runId: "has-plan", startedAt: 1, plan: [{ title: "a", status: "pending" }] })
       )
-      recordRun(dir, trace({ runId: "no-plan", startedAt: 2 }))
-      recordRun(dir, trace({ runId: "empty-plan", startedAt: 3, plan: [] }))
+      upsertFixtureTrace(dir, trace({ runId: "no-plan", startedAt: 2 }))
+      upsertFixtureTrace(dir, trace({ runId: "empty-plan", startedAt: 3, plan: [] }))
       expect(getLatestPlan(dir, "c1")).toEqual([{ title: "a", status: "pending" }])
     })
 
     it("returns undefined when the conversation has no run with a plan", () => {
-      recordRun(dir, trace({ runId: "no-plan" }))
+      upsertFixtureTrace(dir, trace({ runId: "no-plan" }))
       expect(getLatestPlan(dir, "c1")).toBeUndefined()
     })
 
@@ -174,7 +194,7 @@ describe("runTraceStore", () => {
     })
 
     it("does not leak another conversation's plan", () => {
-      recordRun(
+      upsertFixtureTrace(
         dir,
         trace({
           runId: "other-convo",
@@ -195,39 +215,39 @@ describe("runTraceStore", () => {
 
   describe("listRuns — extended filters", () => {
     it("filters by origin", () => {
-      recordRun(dir, trace({ runId: "a", origin: "interactive" }))
-      recordRun(dir, trace({ runId: "b", origin: "mcp" }))
+      upsertFixtureTrace(dir, trace({ runId: "a", origin: "interactive" }))
+      upsertFixtureTrace(dir, trace({ runId: "b", origin: "mcp" }))
       expect(listRuns(dir, { origin: "mcp" }).map((t) => t.runId)).toEqual(["b"])
     })
 
     it("filters by outcome", () => {
-      recordRun(dir, trace({ runId: "a", outcome: "end_turn" }))
-      recordRun(dir, trace({ runId: "b", outcome: "error" }))
+      upsertFixtureTrace(dir, trace({ runId: "a", outcome: "end_turn" }))
+      upsertFixtureTrace(dir, trace({ runId: "b", outcome: "error" }))
       expect(listRuns(dir, { outcome: "error" }).map((t) => t.runId)).toEqual(["b"])
     })
 
     it("filters by workspaceId", () => {
-      recordRun(dir, trace({ runId: "a", workspaceId: "ws-1" }))
-      recordRun(dir, trace({ runId: "b", workspaceId: "ws-2" }))
+      upsertFixtureTrace(dir, trace({ runId: "a", workspaceId: "ws-1" }))
+      upsertFixtureTrace(dir, trace({ runId: "b", workspaceId: "ws-2" }))
       expect(listRuns(dir, { workspaceId: "ws-2" }).map((t) => t.runId)).toEqual(["b"])
     })
 
     it("filters by triggerInstanceId", () => {
-      recordRun(dir, trace({ runId: "a", triggerInstanceId: "inst-1" }))
-      recordRun(dir, trace({ runId: "b", triggerInstanceId: "inst-2" }))
+      upsertFixtureTrace(dir, trace({ runId: "a", triggerInstanceId: "inst-1" }))
+      upsertFixtureTrace(dir, trace({ runId: "b", triggerInstanceId: "inst-2" }))
       expect(listRuns(dir, { triggerInstanceId: "inst-2" }).map((t) => t.runId)).toEqual(["b"])
     })
 
     it("combines a new filter with the existing conversationId filter", () => {
-      recordRun(dir, trace({ runId: "a", conversationId: "c1", origin: "interactive" }))
-      recordRun(dir, trace({ runId: "b", conversationId: "c1", origin: "subagent" }))
+      upsertFixtureTrace(dir, trace({ runId: "a", conversationId: "c1", origin: "interactive" }))
+      upsertFixtureTrace(dir, trace({ runId: "b", conversationId: "c1", origin: "subagent" }))
       expect(
         listRuns(dir, { conversationId: "c1", origin: "subagent" }).map((t) => t.runId)
       ).toEqual(["b"])
     })
 
     it("a filter matching nothing returns an empty array, not undefined", () => {
-      recordRun(dir, trace({ runId: "a", origin: "interactive" }))
+      upsertFixtureTrace(dir, trace({ runId: "a", origin: "interactive" }))
       expect(listRuns(dir, { origin: "mcp" })).toEqual([])
     })
   })
@@ -294,7 +314,7 @@ describe("runTraceStore", () => {
       expect(getRunTrace(dir, "run-1")?.outcome).toBe("error")
     })
 
-    it("is visible through getRunTrace and listRuns like a recordRun trace", () => {
+    it("is visible through getRunTrace and listRuns like a upsertFixtureTrace trace", () => {
       upsertRunTrace(dir, {
         runId: "run-1",
         finalizationId: "fin-1",
@@ -305,7 +325,7 @@ describe("runTraceStore", () => {
       expect(listRuns(dir).map((t) => t.runId)).toEqual(["run-1"])
     })
 
-    it("stores an on-disk envelope distinct from the plain recordRun format", () => {
+    it("stores an on-disk envelope distinct from the plain upsertFixtureTrace format", () => {
       upsertRunTrace(dir, {
         runId: "run-1",
         finalizationId: "fin-1",
@@ -318,24 +338,6 @@ describe("runTraceStore", () => {
         finalizationId: "fin-1",
         traceHash: "hash-1",
       })
-    })
-
-    it("does not let a later legacy recordRun flatten a durable envelope", () => {
-      upsertRunTrace(dir, {
-        runId: "run-1",
-        finalizationId: "fin-1",
-        traceHash: "hash-1",
-        trace: trace(),
-      })
-      recordRun(dir, trace({ outcome: "error" }))
-
-      const raw = JSON.parse(readFileSync(path.join(dir, "run-1.json"), "utf8"))
-      expect(raw).toMatchObject({
-        envelopeVersion: 1,
-        finalizationId: "fin-1",
-        traceHash: "hash-1",
-      })
-      expect(getRunTrace(dir, "run-1")?.outcome).toBe("end_turn")
     })
   })
 
@@ -350,7 +352,7 @@ describe("runTraceStore", () => {
         toolCalls: [],
         // no principal, no workspaceId — a record written before this spec's invariants existed
       }
-      recordRun(dir, legacy as Parameters<typeof recordRun>[1])
+      writeFileSync(path.join(dir, "legacy-1.json"), JSON.stringify(legacy))
       expect(getRunTrace(dir, "legacy-1")).toEqual(legacy)
     })
 
@@ -365,7 +367,7 @@ describe("runTraceStore", () => {
         // no triggerInstanceId, no workspaceId — RunProvenance would require both for a
         // NEW background-agent run, but this file predates that invariant
       }
-      recordRun(dir, legacy as Parameters<typeof recordRun>[1])
+      writeFileSync(path.join(dir, "legacy-2.json"), JSON.stringify(legacy))
       const all = listRuns(dir)
       expect(all.find((t) => t.runId === "legacy-2")).toEqual(legacy)
     })

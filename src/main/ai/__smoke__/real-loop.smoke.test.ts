@@ -1,9 +1,9 @@
+import type { AgentRunEvent } from "@synapse/agent-protocol"
 // @vitest-environment node
 // The main process runs in Node, not a browser. The default jsdom environment
 // makes the OpenAI SDK refuse to construct (browser-key-safety guard), so this
 // real-provider smoke runs under node to match the production runtime.
 import type { RegisteredToolDescriptor, ToolInvocationOptions } from "../../plugins/types"
-import type { AiChatEvent } from "../agent-service"
 import type { ToolHostPort } from "../tool-registry"
 import { randomUUID } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
@@ -100,7 +100,7 @@ describe.skipIf(!API_KEY)(`AI tool-use loop — real provider (${PROVIDER})`, ()
       if (MODEL) await settings.setModel(PROVIDER, MODEL)
 
       const host = new GreetToolHost()
-      const events: AiChatEvent[] = []
+      const events: AgentRunEvent[] = []
       const service = new AgentService({
         credentials,
         tools: new AiToolRegistry(host),
@@ -111,9 +111,9 @@ describe.skipIf(!API_KEY)(`AI tool-use loop — real provider (${PROVIDER})`, ()
         eventStore: new RunEventStore(path.join(dir, "events")),
         providers: defaultProviderCatalog(),
         settings,
-        sendEvent: (event) => {
+        onRunEvent: (event) => {
           events.push(event)
-          if (event.type === "text") process.stdout.write(event.delta)
+          if (event.type === "text_delta") process.stdout.write(event.text)
           else console.warn(`\n[event] ${event.type} ${JSON.stringify(omitDelta(event))}`)
         },
       })
@@ -136,17 +136,17 @@ describe.skipIf(!API_KEY)(`AI tool-use loop — real provider (${PROVIDER})`, ()
       })
 
       // 2. The loop emitted the tool lifecycle and a successful result.
-      const toolCall = events.find((e) => e.type === "tool_call")
-      expect(toolCall, "expected a tool_call event").toBeDefined()
-      expect(toolCall && toolCall.type === "tool_call" && toolCall.name).toBe(GREET_FQ_NAME)
-      const toolResult = events.find((e) => e.type === "tool_result")
-      expect(toolResult && toolResult.type === "tool_result" && toolResult.isError).toBe(false)
+      const toolCall = events.find((e) => e.type === "tool_requested")
+      expect(toolCall, "expected a tool_requested event").toBeDefined()
+      expect(toolCall && toolCall.type === "tool_requested" && toolCall.fqName).toBe(GREET_FQ_NAME)
+      const toolResult = events.find((e) => e.type === "tool_completed")
+      expect(toolResult && toolResult.type === "tool_completed" && toolResult.isError).toBe(false)
 
       // 3. The model produced a final answer that used the tool output.
       expect(result.stopReason).toBe("end_turn")
       const finalText = events
-        .filter((e): e is Extract<AiChatEvent, { type: "text" }> => e.type === "text")
-        .map((e) => e.delta)
+        .filter((e): e is Extract<AgentRunEvent, { type: "text_delta" }> => e.type === "text_delta")
+        .map((e) => e.text)
         .join("")
       expect(finalText).toMatch(/Ada Lovelace/i)
 
@@ -158,8 +158,8 @@ describe.skipIf(!API_KEY)(`AI tool-use loop — real provider (${PROVIDER})`, ()
   )
 })
 
-function omitDelta(event: AiChatEvent): Record<string, unknown> {
-  const { ...rest } = event as Record<string, unknown>
-  delete rest.delta
+function omitDelta(event: AgentRunEvent): Record<string, unknown> {
+  const { ...rest } = event as unknown as Record<string, unknown>
+  delete rest.text
   return rest
 }

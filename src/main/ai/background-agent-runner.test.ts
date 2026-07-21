@@ -2,7 +2,6 @@ import type { TriggerUse } from "@synapse/plugin-manifest"
 import type { RegisteredToolDescriptor } from "../plugins/types"
 import type { EstimatorQuarantineStore } from "./estimator-quarantine-store"
 import type { ChatContentBlock, ChatProvider, ProviderRequest, TokenUsage } from "./providers/types"
-import type { RunTrace } from "./run-trace-store"
 import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -12,7 +11,7 @@ import { BackgroundAgentRunner } from "./background-agent-runner"
 import { RootBudgetLedgerStore } from "./budget/root-budget-ledger"
 import { EstimatorProfileQuarantinedError } from "./estimator-quarantine-store"
 import { emptyUsage } from "./providers/types"
-import { upsertRunTrace } from "./run-trace-store"
+import { getRunTrace, upsertRunTrace } from "./run-trace-store"
 import { AgentRunStore } from "./runs/agent-run-store"
 import { modelToolName } from "./tool-registry"
 
@@ -25,8 +24,16 @@ interface ScriptedTurn {
 function fakeProvider(turns: ScriptedTurn[]): ChatProvider {
   let index = 0
   return {
-    id: "fake",
-    descriptor: { providerId: "fake", estimatorId: "fake", estimatorVersion: "1" },
+    // A real catalogued provider id (Task 23): setupBackgroundRun now
+    // resolves a real capability profile at creation and rejects a finite
+    // runBudgetTokens the resolved profile's estimator cannot back
+    // (isEligibleForFiniteBudget). A synthetic "fake" id would fall back to
+    // the conservative unknown-model profile, which is never eligible for a
+    // finite budget — this file's tests exercise background-agent-runner.ts
+    // itself, not provider-adapter behavior, so any real catalogued id is a
+    // faithful stand-in.
+    id: "anthropic",
+    descriptor: { providerId: "anthropic", estimatorId: "fake", estimatorVersion: "1" },
     estimateRequestUpperBound: () => ({
       estimatorId: "fake",
       estimatorVersion: "1",
@@ -110,7 +117,7 @@ beforeEach(async () => {
   const runsDir = join(dir, "runs")
   runStore = new AgentRunStore(runsDir)
   budgetStore = new RootBudgetLedgerStore(join(dir, "budget"))
-  upsertTrace = (input) => upsertRunTrace(runsDir, input)
+  upsertTrace = (input) => upsertRunTrace(join(dir, "traces"), input)
 })
 
 afterEach(async () => {
@@ -277,13 +284,11 @@ describe("backgroundAgentRunner", () => {
     })
   })
 
-  it("records a trace whose runId is a string and origin/invocationId match the input", async () => {
-    const recorded: RunTrace[] = []
+  it("finalizes a durable trace whose origin and invocationId match the input", async () => {
     const runner = new BackgroundAgentRunner(
       runnerOptions({
         provider: fakeProvider([{ text: "done" }]),
         tools: { listTools: () => [], invokeTool: vi.fn() },
-        recordRun: (trace) => recorded.push(trace),
       })
     )
 
@@ -298,19 +303,18 @@ describe("backgroundAgentRunner", () => {
       instruction: "Run.",
     })
 
-    expect(recorded).toHaveLength(1)
-    expect(recorded[0]?.origin).toBe("background-agent")
-    expect(recorded[0]?.invocationId).toBe("inv-1")
-    expect(typeof recorded[0]?.runId).toBe("string")
+    const [run] = await runStore.scan({})
+    const trace = getRunTrace(join(dir, "traces"), run!.runId)
+    expect(trace?.origin).toBe("background-agent")
+    expect(trace?.invocationId).toBe("inv-1")
+    expect(typeof trace?.runId).toBe("string")
   })
 
-  it("records outcome 'budget_exceeded' (not 'aborted') when the token budget can't admit even one model step", async () => {
-    const recorded: RunTrace[] = []
+  it("durably finalizes budget_exceeded rather than aborted when admission fails", async () => {
     const runner = new BackgroundAgentRunner(
       runnerOptions({
         provider: fakeProvider([{ text: "should not reach" }]),
         tools: { listTools: () => [], invokeTool: vi.fn() },
-        recordRun: (trace) => recorded.push(trace),
       })
     )
 
@@ -330,8 +334,8 @@ describe("backgroundAgentRunner", () => {
     })
 
     expect(result.stopReason).toBe("budget_exceeded")
-    expect(recorded).toHaveLength(1)
-    expect(recorded[0]?.outcome).toBe("budget_exceeded")
+    const [run] = await runStore.scan({})
+    expect(getRunTrace(join(dir, "traces"), run!.runId)?.outcome).toBe("budget_exceeded")
   })
 
   it("caller.workspaceId and the run's instanceId equal the input's", async () => {

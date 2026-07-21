@@ -2,9 +2,10 @@ import type { AgentArtifactStore } from "../artifacts/artifact-types"
 import type { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import type { EstimatorQuarantineStore } from "../estimator-quarantine-store"
 import type { ChatMessage, ChatProvider } from "../providers/types"
-import type { RunTrace, TraceUpsertInput, TraceUpsertReceipt } from "../run-trace-store"
+import type { TraceUpsertInput, TraceUpsertReceipt } from "../run-trace-store"
 import type { AgentRunStore } from "../runs/agent-run-store"
 import type { RunFinalizerDeps } from "../runs/run-finalizer"
+import type { SkillPackageLeaseStore } from "../skills/skill-package-leases"
 import type { AiToolRegistry } from "../tool-registry"
 import { randomUUID } from "node:crypto"
 import { releaseArtifactRunResources } from "../artifacts/artifact-retention"
@@ -13,6 +14,8 @@ import { toChatMessages } from "../runs/durable-messages"
 import { runInteractiveTurn } from "../runs/interactive-run-driver"
 import { finalizeRun } from "../runs/run-finalizer"
 import { resolveSubagentModelProfile, setupSubagentRun } from "../runs/subagent-run-setup"
+import { activeSkillInstructionsReader } from "../skills/skill-activation"
+import { releaseSkillPackageLeases } from "../skills/skill-package-leases"
 
 const SUMMARY_MAX = 2000
 
@@ -37,11 +40,13 @@ export interface SubagentRunnerOptions {
   upsertTrace: (input: TraceUpsertInput) => TraceUpsertReceipt
   model?: string
   now?: () => number
-  recordRun?: (trace: RunTrace) => void
   estimatorQuarantine?: EstimatorQuarantineStore
   /** Recoverable artifact backend (Checkpoint B). Omitted in tests that
    *  don't exercise artifact retention. */
   artifactStore?: AgentArtifactStore
+  /** Durable skill-package lease ledger (Task 25). Omitted in tests that
+   *  don't exercise skill activation. */
+  skillPackageLeases?: SkillPackageLeaseStore
 }
 
 export class SubagentRunner {
@@ -93,6 +98,7 @@ export class SubagentRunner {
           now: this.now,
           maxSteps: checkpoint.config.maxSteps,
           artifactStore: this.options.artifactStore,
+          activeSkillInstructions: activeSkillInstructionsReader(this.options.artifactStore),
           signal: input.signal,
         },
         toolBatch: {
@@ -123,9 +129,9 @@ export class SubagentRunner {
         },
         signal: input.signal,
         finalize: (runId, finalizeInput) => finalizeRun(this.finalizerDeps(), runId, finalizeInput),
-        buildResourceReleasePlan: () => ({
+        buildResourceReleasePlan: (cp) => ({
           budgetOperationIds: [],
-          skillPackageLeaseIds: [],
+          skillPackageLeaseIds: cp.activatedSkills.map((a) => a.packageLeaseId),
           // Every call here comes from finalizeTerminal
           // (interactive-run-driver.ts) — always a genuine terminal outcome
           // for this subagent run.
@@ -140,9 +146,6 @@ export class SubagentRunner {
       },
       childRunId
     )
-
-    const trace = outcome.checkpoint.finalization?.trace
-    if (trace) this.options.recordRun?.(trace)
 
     if (outcome.kind === "suspended_unknown_tool_outcome") {
       // Unreachable for a single-process subagent run — see the identical
@@ -163,6 +166,8 @@ export class SubagentRunner {
       upsertTrace: this.options.upsertTrace,
       releaseResources: (plan, context) =>
         releaseArtifactRunResources(this.options.artifactStore, plan, context),
+      releaseSkillPackageLeases: (leaseIds) =>
+        releaseSkillPackageLeases(this.options.skillPackageLeases, leaseIds),
       now: this.now,
     }
   }

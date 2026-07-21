@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { RootBudgetLedgerStore } from "../budget/root-budget-ledger"
 import { ConversationStore } from "../conversation-store"
 import { emptyUsage } from "../providers/types"
-import { upsertRunTrace } from "../run-trace-store"
+import { getRunTrace, upsertRunTrace } from "../run-trace-store"
 import { AgentRunStore } from "../runs/agent-run-store"
 import { setupInteractiveRun } from "../runs/interactive-run-setup"
 import { AiToolRegistry } from "../tool-registry"
@@ -23,7 +23,7 @@ beforeEach(async () => {
   const runsDir = join(dir, "runs")
   runStore = new AgentRunStore(runsDir)
   budgetStore = new RootBudgetLedgerStore(join(dir, "budget"))
-  upsertTrace = (input) => upsertRunTrace(runsDir, input)
+  upsertTrace = (input) => upsertRunTrace(join(dir, "traces"), input)
 })
 
 afterEach(async () => {
@@ -160,15 +160,13 @@ describe("subagentRunner", () => {
     expect(child.ok && child.checkpoint.config.resolvedProfile.profileId).toBe("openai-default-v1")
   })
 
-  it("runs a nested agent and returns a summary + child run metadata", async () => {
+  it("runs a nested agent and returns a summary plus durably finalized child metadata", async () => {
     await seedParentRun("parent-1")
-    const recorded: import("../run-trace-store").RunTrace[] = []
     const runner = new SubagentRunner({
       provider: fakeProvider("subtask complete: found 3 items"),
       runStore,
       budgetStore,
       upsertTrace,
-      recordRun: (t) => recorded.push(t),
     })
 
     const result = await runner.run({
@@ -181,11 +179,10 @@ describe("subagentRunner", () => {
     expect(result.summary).toContain("subtask complete")
     expect(typeof result.childRunId).toBe("string")
     expect(result.outcome).toBe("end_turn")
-    expect(recorded[0]).toMatchObject({
+    expect(getRunTrace(join(dir, "traces"), result.childRunId)).toMatchObject({
       origin: "subagent",
       parentRunId: "parent-1",
       conversationId: "c1",
     })
-    expect(recorded[0].runId).toBe(result.childRunId)
   })
 })

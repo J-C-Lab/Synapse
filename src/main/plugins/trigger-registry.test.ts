@@ -744,26 +744,39 @@ describe("triggerRegistry — onFire fan-out", () => {
     expect(agentStarts).toHaveBeenCalledTimes(2)
   })
 
-  it("recreates instance controller after plugin deregistration so removal can abort in-flight runs", async () => {
+  it("ignores a captured pre-teardown callback and lets only the re-registered callback dispatch", async () => {
     let agentSignal: AbortSignal | undefined
     let unblockAgent: (() => void) | undefined
+    const handlerDispatch = vi.fn(async () => {})
+    const agentDispatch = vi.fn(async (req: { signal: AbortSignal }) => {
+      agentSignal = req.signal
+      await new Promise<void>((resolve) => {
+        unblockAgent = resolve
+      })
+    })
     const { registry, fireFns } = buildRegistryWithFireCapture({
       instanceStore: fakeInstanceStore([instanceRecord({ id: "instance-1" })]),
       identityForPlugin: () => githubIdentity,
-      dispatch: async () => {},
-      dispatchAgent: async (req) => {
-        agentSignal = req.signal
-        await new Promise<void>((resolve) => {
-          unblockAgent = resolve
-        })
-      },
+      dispatch: handlerDispatch,
+      dispatchAgent: agentDispatch,
     })
     await registry.register("com.synapse.github-inbox", [agentTimerDeclaration()])
+    const oldFire = fireFns[0]
     registry.deregisterPlugin("com.synapse.github-inbox")
     await registry.register("com.synapse.github-inbox", [agentTimerDeclaration()])
+    const newFire = fireFns[1]
 
-    fireFns[0]!({ firedAt: 1 })
+    // A platform adapter is allowed to deliver a callback it captured before
+    // its disposer ran. The old callback belongs to the aborted runtime and
+    // must make no handler or background-agent dispatch.
+    oldFire?.({ firedAt: 1 })
     await flushMicrotasks()
+    expect(handlerDispatch).not.toHaveBeenCalled()
+    expect(agentDispatch).not.toHaveBeenCalled()
+
+    newFire?.({ firedAt: 2 })
+    await vi.waitFor(() => expect(agentDispatch).toHaveBeenCalledTimes(1))
+    expect(handlerDispatch).toHaveBeenCalledTimes(1)
     expect(agentSignal?.aborted).toBe(false)
 
     await registry.onInstanceRemoved(instanceRecord({ id: "instance-1" }))

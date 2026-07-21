@@ -98,6 +98,8 @@ function minimalCheckpoint(runId: string, maxSteps = 10): AgentRunCheckpointV1 {
         schemaVersion: 1,
         baseSystemPrompt: { normalizedText: "You are helpful.", sha256: "h" },
         workspaceInstructions: [],
+        skillCatalog: [],
+        skillCatalogHash: "h",
         aggregateHash: "h",
       },
     },
@@ -1089,6 +1091,96 @@ describe("advanceDurableRun — context compression (Task 20)", () => {
     const finalLedger = await budgetStore.load(runId)
     expect(finalLedger.accounts[ROOT_ACCOUNT_ID]!.heldTokens).toBe(0)
     expect(finalLedger.operations[plannedOperationId]).toBeDefined()
+  })
+})
+
+describe("advanceDurableRun — hardReserveTokens lowers the effective compression threshold (Task 23)", () => {
+  const modelReply: ProviderStreamEvent & { type: "message" } = {
+    type: "message",
+    message: { role: "assistant", content: [{ type: "text", text: "unreachable" }] },
+    usage: {
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+    },
+    stopReason: "end_turn",
+  }
+
+  // Every other compression test in this file leaves `hardReserveTokens: 0`
+  // (checkpointForCompression's default), so `effectiveThreshold =
+  // thresholdTokens - hardReserveTokens` has never actually been exercised
+  // with a nonzero reserve — Task 20's review flagged that formula as an
+  // unverified interpretation. These two tests hold the raw `thresholdTokens`
+  // and the projection fixed and vary only `hardReserveTokens`, proving the
+  // subtraction is real: the same projection stays under budget at
+  // hardReserveTokens=0 and triggers compression once a nonzero reserve
+  // lowers the effective threshold below it.
+  //
+  // system prompt "You are helpful." = 5 tokens; m1 "old " x 50 = 200 chars
+  // = 50 tokens; m2 "recent question" = 16 chars = 4 tokens. Projection
+  // estimate = 5 + 50 + 4 = 59.
+  function messagesForReserveTest(): DurableChatMessage[] {
+    return [userMsg("m1", longText("old", 50)), userMsg("m2", "recent question")]
+  }
+
+  it("does not compress when the raw threshold covers the projection and hardReserveTokens is zero", async () => {
+    const runId = "compress-reserve-1"
+    await runStore.create(
+      checkpointForCompression(runId, messagesForReserveTest(), {
+        enabled: true,
+        thresholdTokens: 60,
+        hardReserveTokens: 0,
+      })
+    )
+    await budgetStore.create(createRootBudgetLedger(runId, 10_000))
+    const provider = fakeProviderWithSummarizer(modelReply, "SUMMARY")
+
+    const outcome = await advanceDurableRun(
+      {
+        runStore,
+        budgetStore,
+        provider,
+        tools: () => [],
+        now: () => 1000,
+        maxSteps: 10,
+        artifactStore,
+      },
+      runId
+    )
+
+    expect(outcome.kind).not.toBe("compressed")
+    expect(outcome.checkpoint.contextCompaction).toBeUndefined()
+  })
+
+  it("compresses once a nonzero hardReserveTokens lowers the effective threshold below the same projection", async () => {
+    const runId = "compress-reserve-2"
+    await runStore.create(
+      checkpointForCompression(runId, messagesForReserveTest(), {
+        enabled: true,
+        thresholdTokens: 60,
+        hardReserveTokens: 5,
+      })
+    )
+    await budgetStore.create(createRootBudgetLedger(runId, 10_000))
+    const provider = fakeProviderWithSummarizer(modelReply, "SUMMARY")
+
+    const outcome = await advanceDurableRun(
+      {
+        runStore,
+        budgetStore,
+        provider,
+        tools: () => [],
+        now: () => 1000,
+        maxSteps: 10,
+        artifactStore,
+      },
+      runId
+    )
+
+    expect(outcome.kind).toBe("compressed")
+    expect(outcome.checkpoint.contextCompaction).toBeDefined()
+    expect(outcome.checkpoint.contextCompaction!.evictedThroughMessageId).toBe("m1")
   })
 })
 

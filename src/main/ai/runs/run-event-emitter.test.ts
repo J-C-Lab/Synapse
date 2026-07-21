@@ -1,4 +1,5 @@
 import type { AgentRunEvent } from "@synapse/agent-protocol"
+import type { RunEventInput } from "./run-event-emitter"
 import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -86,7 +87,58 @@ describe("createRunEventEmitter", () => {
     expect(events.map((e) => e.sequence)).toEqual([1, 2, 3])
   })
 
-  it("does not let a projection append failure stop the driver, and reuses the sequence", async () => {
+  it("re-syncs when an asynchronous child-task projection appends between driver events", async () => {
+    const emitter = await createRunEventEmitter(
+      store,
+      { runId: "run-child", rootRunId: "run-child", conversationId: "conv-1" },
+      () => 1000
+    )
+    await emitter.emit({ type: "run_started", origin: "interactive" })
+    await store.append("run-child", {
+      schemaVersion: 1,
+      eventId: "child-event",
+      runId: "run-child",
+      rootRunId: "run-child",
+      conversationId: "conv-1",
+      sequence: 2,
+      timestamp: 1001,
+      persisted: true,
+      type: "child_task_updated",
+      child: { childRunId: "child-1", status: "running", label: "Research" },
+    })
+
+    await emitter.emit({ type: "run_completed", outcome: "completed" })
+    expect((await store.readAll("run-child")).map((event) => event.sequence)).toEqual([1, 2, 3])
+  })
+
+  it("persists every concurrent child-task update emitted by short-lived emitters", async () => {
+    const emitters = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        createRunEventEmitter(
+          store,
+          { runId: "parent-run", rootRunId: "parent-run", conversationId: "conv-1" },
+          () => 1000
+        )
+      )
+    )
+
+    await Promise.all(
+      emitters.map((emitter, index) =>
+        emitter.emit({
+          type: "child_task_updated",
+          child: { childRunId: `child-${index}`, status: "running", label: `Task ${index}` },
+        })
+      )
+    )
+
+    const events = await store.readAll("parent-run")
+    expect(events).toHaveLength(20)
+    expect(events.map((event) => event.sequence)).toEqual(
+      Array.from({ length: 20 }, (_, index) => index + 1)
+    )
+  })
+
+  it("does not let a projection append failure stop lifecycle emission, and reuses the sequence", async () => {
     const append = vi
       .fn<(runId: string, event: AgentRunEvent) => Promise<void>>()
       .mockRejectedValueOnce(new Error("disk unavailable"))
@@ -100,12 +152,43 @@ describe("createRunEventEmitter", () => {
       onEvent
     )
 
-    await expect(emitter.emit({ type: "text_delta", text: "first" })).resolves.toBeUndefined()
-    await expect(emitter.emit({ type: "text_delta", text: "second" })).resolves.toBeUndefined()
+    await expect(
+      emitter.emit({ type: "run_started", origin: "interactive" })
+    ).resolves.toBeUndefined()
+    await expect(
+      emitter.emit({ type: "run_started", origin: "interactive" })
+    ).resolves.toBeUndefined()
 
     expect(append.mock.calls.map(([, event]) => event.sequence)).toEqual([1, 1])
     expect(onEvent).toHaveBeenCalledTimes(1)
-    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ text: "second", sequence: 1 }))
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "run_started", sequence: 1 })
+    )
+  })
+
+  it("routes an untyped text delta to the live broadcaster without appending it", async () => {
+    const append = vi
+      .fn<(runId: string, event: AgentRunEvent) => Promise<void>>()
+      .mockResolvedValue(undefined)
+    const onEvent = vi.fn()
+    const emitter = await createRunEventEmitter(
+      { readAll: async () => [], append },
+      { runId: "run-live", rootRunId: "run-live" },
+      () => 10,
+      () => "event-id",
+      onEvent
+    )
+
+    await emitter.emit({ type: "text_delta", text: "live only" } as unknown as RunEventInput)
+
+    expect(append).not.toHaveBeenCalled()
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "text_delta",
+        text: "live only",
+        persisted: false,
+      })
+    )
   })
 
   it("starts the driver when the prior observational journal cannot be read", async () => {

@@ -1,3 +1,4 @@
+import type { ChildTaskRecord } from "../tasks/child-task-types"
 import type { AgentRunCheckpointV1 } from "./checkpoint-schema"
 import { describe, expect, it } from "vitest"
 import { toAgentRunSnapshot, toAgentRunSummary } from "./run-projection"
@@ -60,6 +61,8 @@ function minimalCheckpoint(overrides: Partial<AgentRunCheckpointV1> = {}): Agent
         schemaVersion: 1,
         baseSystemPrompt: { normalizedText: "You are helpful.", sha256: "h" },
         workspaceInstructions: [],
+        skillCatalog: [],
+        skillCatalogHash: "h",
         aggregateHash: "h",
       },
     },
@@ -156,6 +159,28 @@ describe("toAgentRunSnapshot", () => {
     const snapshot = toAgentRunSnapshot(minimalCheckpoint(), 0)
     expect(snapshot.childTasks).toEqual([])
     expect(snapshot.artifacts).toEqual([])
+  })
+
+  it("projects durable child-task records as bounded renderer-safe summaries", () => {
+    const child: ChildTaskRecord = {
+      schemaVersion: 1,
+      revision: 2,
+      taskId: "task-1",
+      conversationId: "conv-1",
+      originRunId: "run-1",
+      rootRunId: "run-1",
+      currentRunId: "child-1",
+      name: "x".repeat(800),
+      description: "never rendered",
+      status: "succeeded",
+      budgetAccountId: "child-1",
+      allocationOperationId: "reserve-subagent:child-1",
+      createdAt: 1,
+      updatedAt: 2,
+    }
+    expect(toAgentRunSnapshot(minimalCheckpoint(), 0, [child]).childTasks).toEqual([
+      { childRunId: "child-1", status: "completed", label: "x".repeat(500) },
+    ])
   })
 
   describe("artifacts (Task 21)", () => {

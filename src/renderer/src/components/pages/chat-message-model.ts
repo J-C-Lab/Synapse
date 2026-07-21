@@ -1,5 +1,5 @@
-import type { AgentRunSnapshot } from "@synapse/agent-protocol"
-import type { AiChatEvent, AiChatMessage } from "@/lib/electron"
+import type { AgentRunEvent, AgentRunSnapshot } from "@synapse/agent-protocol"
+import type { AiChatMessage } from "@/lib/electron"
 
 // Display model for the chat view, plus a mapper from the stored provider-neutral
 // IR (AiChatMessage[]) back into it so a selected history conversation can be
@@ -134,21 +134,23 @@ export function flushTextIntoBlocks(blocks: MessageBlock[], text: string): Messa
   return next
 }
 
-/** Applies one live chat event to the message list. Pure — used by both the renderer and its tests. */
-export function applyEvent(messages: DisplayMessage[], event: AiChatEvent): DisplayMessage[] {
+/** Applies one shared-protocol live event to the message list. Tool inputs
+ * intentionally stay host-only, so live cards use an empty object until a
+ * completed conversation is rehydrated from its durable projection. */
+export function applyEvent(messages: DisplayMessage[], event: AgentRunEvent): DisplayMessage[] {
   const next = messages.slice()
   const lastIndex = next.length - 1
   const last = next[lastIndex]
   if (!last || last.role !== "assistant") return next
 
   switch (event.type) {
-    case "tool_call":
-      // A renderer can receive a legacy live event after it has already
-      // rehydrated the same durable tool ordinal from a run snapshot. Never
+    case "tool_requested":
+      // A renderer can receive a live event after it has already rehydrated
+      // the same durable tool ordinal from a run snapshot. Never
       // create a second card for that toolUseId.
       if (
         next.some((message) =>
-          message.blocks.some((block) => block.kind === "tool" && block.id === event.id)
+          message.blocks.some((block) => block.kind === "tool" && block.id === event.toolUseId)
         )
       ) {
         break
@@ -157,25 +159,31 @@ export function applyEvent(messages: DisplayMessage[], event: AiChatEvent): Disp
         ...last,
         blocks: [
           ...last.blocks,
-          { kind: "tool", id: event.id, name: event.name, input: event.input, status: "running" },
+          {
+            kind: "tool",
+            id: event.toolUseId,
+            name: event.fqName,
+            input: {},
+            status: "running",
+          },
         ],
       }
       break
-    case "tool_result":
+    case "tool_completed":
       next[lastIndex] = {
         ...last,
         blocks: last.blocks.map((block) =>
-          block.kind === "tool" && block.id === event.id
+          block.kind === "tool" && block.id === event.toolUseId
             ? { ...block, status: event.isError ? "error" : "success" }
             : block
         ),
       }
       break
-    case "error": {
+    case "run_failed": {
       const blocks = last.blocks.slice()
       const tailIndex = blocks.length - 1
       const tail = blocks[tailIndex]
-      const warning = `⚠️ ${event.message}`
+      const warning = `⚠️ ${event.reason ?? "Run failed."}`
       if (tail?.kind === "text") blocks[tailIndex] = { ...tail, text: `${tail.text}\n\n${warning}` }
       else blocks.push({ kind: "text", text: warning })
       next[lastIndex] = { ...last, blocks }

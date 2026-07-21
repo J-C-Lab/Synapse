@@ -62,6 +62,10 @@ export function applyRunEvent(
   event: AgentRunEvent
 ): ApplyRunEventOutcome {
   if (event.runId !== state.snapshot.identity.runId) return { kind: "ignored", state }
+  // Text streaming is deliberately live-only and carries the current durable
+  // cursor rather than a journal entry. ChatPage renders it directly; it must
+  // never manufacture a gap in this snapshot reducer.
+  if (!event.persisted) return { kind: "ignored", state }
   if (state.seenEventIds.has(event.eventId)) return { kind: "ignored", state }
   if (event.sequence <= state.snapshot.lastSequence) return { kind: "ignored", state }
   if (event.sequence > state.snapshot.lastSequence + 1) return { kind: "gap", state }

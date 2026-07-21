@@ -1,5 +1,5 @@
 import type { AgentArtifactRefSummary, AgentRunSummary } from "@synapse/agent-protocol"
-import type { ResumeRunResult, RunDetail, RunSummary } from "@/lib/electron"
+import type { ChildTaskSummary, ResumeRunResult, RunDetail, RunSummary } from "@/lib/electron"
 import { useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
 import {
@@ -35,6 +35,7 @@ export function RunObservatoryPage() {
   const [conversationExists, setConversationExists] = useState<boolean | undefined>()
   const [parentUnavailable, setParentUnavailable] = useState(false)
   const [childRuns, setChildRuns] = useState<RunSummary[]>([])
+  const [childTasks, setChildTasks] = useState<ChildTaskSummary[]>([])
   const [artifacts, setArtifacts] = useState<AgentArtifactRefSummary[]>([])
   const [recoverable, setRecoverable] = useState<AgentRunSummary[]>([])
   const [resumeResults, setResumeResults] = useState<Record<string, ResumeRunResult>>({})
@@ -82,6 +83,7 @@ export function RunObservatoryPage() {
     let cancelled = false
     setParentUnavailable(false)
     setArtifacts([])
+    setChildTasks([])
     void getRun(selectedRunId).then((result) => {
       if (cancelled) return
       setDetail(result)
@@ -100,7 +102,10 @@ export function RunObservatoryPage() {
     // not on the bounded RunTrace `detail` above — a separate side-fetch,
     // same pattern as the childRuns fetch just above (Task 21).
     void getRunSnapshot(selectedRunId).then((snapshot) => {
-      if (!cancelled) setArtifacts(snapshot?.artifacts ?? [])
+      if (!cancelled) {
+        setArtifacts(snapshot?.artifacts ?? [])
+        setChildTasks(snapshot?.childTasks ?? [])
+      }
     })
     return () => {
       cancelled = true
@@ -375,6 +380,28 @@ export function RunObservatoryPage() {
                           onClick={() => setSelectedRunId(c.runId)}
                         >
                           {c.runId}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div data-testid="child-tasks-summary">
+                <strong>{t("runObservatory.detailChildTasks")}:</strong>
+                {childTasks.length === 0 ? (
+                  <span className="text-muted-foreground"> {t("runObservatory.noChildTasks")}</span>
+                ) : (
+                  <ul className="ml-4 list-disc">
+                    {childTasks.map((task) => (
+                      <li key={task.childRunId}>
+                        <span>{task.label ?? task.childRunId}</span>{" "}
+                        <span className="text-xs text-muted-foreground">({task.status})</span>{" "}
+                        <button
+                          type="button"
+                          className="underline"
+                          onClick={() => setSelectedRunId(task.childRunId)}
+                        >
+                          {t("runObservatory.childTaskResult")}
                         </button>
                       </li>
                     ))}

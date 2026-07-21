@@ -24,12 +24,11 @@ export default defineConfig({
   test: {
     // The e2e/ suite is Playwright (its own runner) — keep it out of Vitest,
     // which would otherwise pick up *.spec.ts and choke on @playwright/test.
-    // .worktrees/** holds sibling checkouts of this same repo (see
-    // superpowers:using-git-worktrees) — without this exclusion, Vitest
-    // discovers and runs their source as a second copy of every suite,
-    // producing duplicate React instances (invalid-hook-call errors) and
-    // competing real-socket tests.
-    exclude: [...configDefaults.exclude, "e2e/**", "**/*.eval.ts", ".worktrees/**"],
+    // Local worktree metadata can contain sibling checkouts of this repo —
+    // without these exclusions, Vitest discovers and runs their source as a
+    // second copy of every suite, producing duplicate React instances
+    // (invalid-hook-call errors) and competing real-socket tests.
+    exclude: [...configDefaults.exclude, "e2e/**", "**/*.eval.ts", ".worktrees/**", ".claude/**"],
     environment: "jsdom",
     globals: false,
     setupFiles: ["./vitest.setup.ts"],
@@ -56,6 +55,7 @@ export default defineConfig({
         "**/*.test.tsx",
         "**/*.d.ts",
         ".worktrees/**",
+        ".claude/**",
       ],
     },
   },

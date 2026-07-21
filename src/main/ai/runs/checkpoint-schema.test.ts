@@ -60,6 +60,8 @@ function minimalCheckpoint(): AgentRunCheckpointV1 {
         schemaVersion: 1,
         baseSystemPrompt: { normalizedText: "base", sha256: "h" },
         workspaceInstructions: [],
+        skillCatalog: [],
+        skillCatalogHash: "h",
         aggregateHash: "h",
       },
     },
@@ -448,6 +450,75 @@ describe("validateCheckpoint", () => {
     expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
   })
 
+  it("rejects a context snapshot missing its skill catalog", () => {
+    const checkpoint = minimalCheckpoint()
+    const { skillCatalog: _drop, ...contextWithoutSkillCatalog } = checkpoint.config.context
+    const bad = {
+      ...checkpoint,
+      config: { ...checkpoint.config, context: contextWithoutSkillCatalog },
+    }
+    expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("rejects a skill catalog entry with an unrecognized source or trust value", () => {
+    const checkpoint = minimalCheckpoint()
+    const entry = {
+      id: "user:a",
+      name: "a",
+      description: "desc",
+      source: "user",
+      trust: "user-authored",
+    }
+    expect(
+      validateCheckpoint({
+        ...checkpoint,
+        config: {
+          ...checkpoint.config,
+          context: {
+            ...checkpoint.config.context,
+            skillCatalog: [{ ...entry, source: "not-a-real-source" }],
+          },
+        },
+      })
+    ).toEqual({ ok: false, reason: "malformed" })
+    expect(
+      validateCheckpoint({
+        ...checkpoint,
+        config: {
+          ...checkpoint.config,
+          context: {
+            ...checkpoint.config.context,
+            skillCatalog: [{ ...entry, trust: "not-a-real-trust" }],
+          },
+        },
+      })
+    ).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("accepts a well-formed skill catalog entry", () => {
+    const checkpoint = minimalCheckpoint()
+    const good = {
+      ...checkpoint,
+      config: {
+        ...checkpoint.config,
+        context: {
+          ...checkpoint.config.context,
+          skillCatalog: [
+            {
+              id: "user:a",
+              name: "a",
+              description: "desc",
+              source: "user" as const,
+              trust: "user-authored" as const,
+            },
+          ],
+        },
+      },
+    }
+    // Real integrity requires re-sealing since skillCatalog content changed.
+    expect(validateCheckpoint(sealCheckpointIntegrity(good)).ok).toBe(true)
+  })
+
   it("rejects a durable message with an unrecognized role", () => {
     const bad = {
       ...minimalCheckpoint(),
@@ -588,4 +659,62 @@ describe("validateCheckpoint", () => {
     }
     expect(validateCheckpoint(good).ok).toBe(true)
   })
+
+  it("accepts a well-formed skill activation", () => {
+    const good = sealCheckpointIntegrity({
+      ...minimalCheckpoint(),
+      activatedSkills: [validSkillActivation()],
+    })
+    expect(validateCheckpoint(good).ok).toBe(true)
+  })
+
+  it("rejects a skill activation whose artifact pointer is not skill-instructions kind", () => {
+    const activation = validSkillActivation()
+    const bad = sealCheckpointIntegrity({
+      ...minimalCheckpoint(),
+      activatedSkills: [
+        {
+          ...activation,
+          instructionsArtifact: { ...activation.instructionsArtifact, kind: "tool-result" },
+        },
+      ],
+    })
+    expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("rejects a skill activation with an unknown trust label", () => {
+    const activation = validSkillActivation()
+    const bad = {
+      ...minimalCheckpoint(),
+      activatedSkills: [{ ...activation, trust: "totally-trusted" }],
+    }
+    expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
+  })
+
+  it("rejects a skill activation missing effectiveToolNames", () => {
+    const activation = validSkillActivation()
+    const { effectiveToolNames: _drop, ...rest } = activation
+    const bad = { ...minimalCheckpoint(), activatedSkills: [rest] }
+    expect(validateCheckpoint(bad)).toEqual({ ok: false, reason: "malformed" })
+  })
 })
+
+function validSkillActivation() {
+  return {
+    activationId: "act-1",
+    skillId: "user:my-skill",
+    packageHash: "p".repeat(64),
+    instructionsHash: "h".repeat(64),
+    trust: "user-authored" as const,
+    effectiveToolNames: ["execution:core/run_command"],
+    packageLeaseId: "lease-1",
+    instructionsArtifact: {
+      uri: "artifact://run/run-1/art-1" as const,
+      kind: "skill-instructions" as const,
+      mediaType: "text/markdown; charset=utf-8",
+      capturedBytes: 42,
+      complete: true,
+    },
+    activatedAt: 1,
+  }
+}

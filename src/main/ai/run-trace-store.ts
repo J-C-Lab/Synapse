@@ -2,7 +2,6 @@ import type { ToolPrincipal } from "@synapse/plugin-sdk"
 import type { PlanStep } from "./plan/plan-types"
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import * as path from "node:path"
-import { logger } from "../logging"
 
 // A per-run summary index. It does NOT duplicate tool arguments/results or
 // message text — those live in ConversationStore (full history) and audit.log
@@ -60,25 +59,6 @@ function isSafeRunId(runId: string): boolean {
   return runId !== "." && runId !== ".." && !runId.includes("..") && SAFE_RUN_ID.test(runId)
 }
 
-export function recordRun(dir: string, trace: RunTrace): void {
-  if (!isSafeRunId(trace.runId)) {
-    logger.child("run-trace").warn("refusing unsafe runId for trace file", { runId: trace.runId })
-    return
-  }
-  try {
-    mkdirSync(dir, { recursive: true })
-    const file = path.join(dir, `${trace.runId}.json`)
-    // A durable finalizer owns an envelope once it has written one. Legacy
-    // best-effort callers still invoke recordRun for compatibility, but must
-    // never flatten finalization id/hash/revision evidence into a plain trace.
-    if (readEnvelope(file)) return
-    writeFileSync(file, `${JSON.stringify(trace)}\n`)
-    prune(dir)
-  } catch (err) {
-    logger.child("run-trace").warn("failed to record run trace", { runId: trace.runId, err })
-  }
-}
-
 export function getRunTrace(dir: string, runId: string): RunTrace | undefined {
   if (!isSafeRunId(runId)) return undefined
   const file = path.join(dir, `${runId}.json`)
@@ -91,9 +71,7 @@ export function getRunTrace(dir: string, runId: string): RunTrace | undefined {
 }
 
 // --- strict, idempotent terminal-finalization upsert -----------------------
-// recordRun above stays a best-effort, unconditional overwrite for every
-// non-terminal caller (background/subagent runs not yet migrated onto the
-// durable finalizer). upsertRunTrace is the terminal-finalization path
+// upsertRunTrace is the sole production terminal-finalization writer.
 // (design §"Terminal finalization across stores" step 3): identical retries
 // (same finalizationId + traceHash) return the already-stored revision;
 // the same finalizationId with a different hash is corruption, never

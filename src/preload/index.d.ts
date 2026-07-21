@@ -2,13 +2,21 @@
 // Kept in the preload package so the renderer and the preload always
 // agree on the contract.
 
-import type { AgentRunEvent, AgentRunSnapshot, AgentRunSummary } from "@synapse/agent-protocol"
+import type {
+  AgentChildTaskSummary,
+  AgentRunEvent,
+  AgentRunSnapshot,
+  AgentRunSummary,
+} from "@synapse/agent-protocol"
 
 export {}
 
 declare global {
   type LauncherAppKind = "win32" | "uwp" | "url" | "macos"
   type SynapseFloatingBallFeature = "appLauncher"
+  /** Bounded child-task metadata carried by AgentRunSnapshot.childTasks.
+   * No child task management endpoint is exposed to the renderer. */
+  type SynapseChildTaskSummary = AgentChildTaskSummary
 
   interface LauncherAppEntry {
     id: string
@@ -516,26 +524,6 @@ declare global {
     plan?: Array<{ title: string; status: "pending" | "in_progress" | "completed" }>
   }
 
-  type SynapseAiChatEvent =
-    | { type: "text"; conversationId: string; delta: string }
-    | { type: "tool_call"; conversationId: string; id: string; name: string; input: unknown }
-    | { type: "tool_result"; conversationId: string; id: string; isError: boolean }
-    | {
-        type: "approval_request"
-        conversationId: string
-        approvalId: string
-        toolName: string
-        input: unknown
-      }
-    | { type: "done"; conversationId: string; stopReason: string; usage: SynapseAiTokenUsage }
-    | { type: "error"; conversationId: string; message: string }
-    | {
-        type: "plan"
-        conversationId: string
-        runId: string
-        steps: Array<{ title: string; status: "pending" | "in_progress" | "completed" }>
-      }
-
   type SynapseAiRememberScope = "once" | "conversation" | "always"
 
   interface SynapseMemoryEntry {
@@ -960,7 +948,6 @@ declare global {
       }) => Promise<SynapseMemoryIngestResult>
       deleteMemory: (id: string) => Promise<boolean>
       deleteMemorySource: (source: string) => Promise<number>
-      onAiChatEvent: (handler: (event: SynapseAiChatEvent) => void) => () => void
       getUpdateStatus: () => Promise<SynapseUpdateState>
       checkForUpdates: () => Promise<void>
       downloadUpdate: () => Promise<void>
