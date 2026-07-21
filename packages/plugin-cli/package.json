@@ -1,6 +1,6 @@
 {
   "name": "@synapsepkg/plugin-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Synapse plugin build tool — bundles a plugin project into an installable .syn package",
   "license": "MIT",
   "exports": {

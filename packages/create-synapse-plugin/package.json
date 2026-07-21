@@ -1,6 +1,6 @@
 {
   "name": "create-synapse-plugin",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Scaffold a new Synapse plugin project",
   "license": "MIT",
   "bin": {
