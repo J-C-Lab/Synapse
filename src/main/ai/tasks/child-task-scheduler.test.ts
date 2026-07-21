@@ -90,9 +90,31 @@ function fakeHost(): ToolHostPort {
   }
 }
 
+// Every child task in this file reserves a FINITE budget account
+// (taskInput()'s default budgetTokens), and model-step-runner.ts's
+// prepareAttempt() requires a finite account's admission to have a real
+// provider-supplied upper-bound estimate: `estimateRequestUpperBound?.()`
+// returning undefined throws InsufficientEstimateError before the provider
+// is ever dispatched (see model-step-runner.ts:264-275). Every fake
+// provider in this file MUST implement it, or every model step in every
+// test here fails closed at admission — never reaching stream() at all —
+// regardless of which provider is plugged in. (This was the real root
+// cause of the "cancels a running task by aborting its live controller"
+// test's flakiness: admission was silently failing before dispatch, and
+// whether the test observed "cancelled" or hung waiting for it depended on
+// an unrelated race between that immediate failure and cancel()'s own
+// forced-abort finalization — not on anything about polling vs. signals.)
+const FAKE_ESTIMATE = {
+  estimatorId: "byte-upper-bound",
+  estimatorVersion: "1",
+  inputUpperBoundTokens: 100,
+  maxOutputTokens: 256,
+} as const
+
 function fakeProvider(text = "done") {
   return {
     id: "fake",
+    estimateRequestUpperBound: () => FAKE_ESTIMATE,
     async *stream() {
       yield {
         type: "message" as const,
@@ -110,7 +132,11 @@ function fakeProvider(text = "done") {
  *  synchronously (the Promise executor runs immediately), so there is no
  *  race between constructing this and a caller reaching for `reject`. */
 function makeHangingProvider(): {
-  provider: { id: string; stream: (req?: { signal?: AbortSignal }) => AsyncGenerator<never> }
+  provider: {
+    id: string
+    estimateRequestUpperBound: () => typeof FAKE_ESTIMATE
+    stream: (req?: { signal?: AbortSignal }) => AsyncGenerator<never>
+  }
   reject: (err: unknown) => void
   /** Resolves the instant stream()'s (lazy) generator body actually starts
    *  running — a deterministic "the dispatch has genuinely reached the
@@ -132,6 +158,7 @@ function makeHangingProvider(): {
   })
   const provider = {
     id: "fake",
+    estimateRequestUpperBound: () => FAKE_ESTIMATE,
     async *stream(req?: { signal?: AbortSignal }): AsyncGenerator<never> {
       markEntered()
       // The signal may already be aborted by the time this (lazy) generator
@@ -161,6 +188,7 @@ function makeControllableProvider(): {
   })
   const provider = {
     id: "fake",
+    estimateRequestUpperBound: () => FAKE_ESTIMATE,
     async *stream() {
       const text = await gate
       yield {
@@ -232,6 +260,15 @@ function makeDispatchRun(
   dispatchRun: (runId: string) => Promise<void>
   bindScheduler: (s: ChildTaskScheduler) => void
   dispatchCount: () => number
+  /** Resolves exactly when the in-flight dispatch for this runId settles
+   *  (or immediately, if none is in flight). A deterministic alternative to
+   *  polling a checkpoint/task-record status for "the drive this test just
+   *  triggered has finished" — see the cancel-a-running-task test's own note
+   *  on why that poll was a source of flakiness under full-suite load. Must
+   *  be called while the dispatch is still known to be in flight (e.g. after
+   *  awaiting makeHangingProvider's `entered`), not before dispatchRun has
+   *  even been invoked — otherwise there is nothing yet to await. */
+  waitForDispatch: (runId: string) => Promise<void>
 } {
   let scheduler: ChildTaskScheduler | undefined
   let count = 0
@@ -278,14 +315,22 @@ function makeDispatchRun(
       scheduler = s
     },
     dispatchCount: () => count,
+    waitForDispatch: (runId) => inFlight.get(runId) ?? Promise.resolve(),
   }
 }
 
 function makeScheduler(
   overrides: Partial<ChildTaskSchedulerDeps> = {},
-  dispatchOptions: Parameters<typeof makeDispatchRun>[0] = {}
+  dispatchOptions: Parameters<typeof makeDispatchRun>[0] = {},
+  /** Optional out-param: when supplied, receives the underlying
+   *  makeDispatchRun's `waitForDispatch` so a caller can await a specific
+   *  in-flight drive deterministically instead of polling for its effects.
+   *  Left undefined for every test that doesn't need it, so this stays a
+   *  purely additive, non-breaking parameter. */
+  out?: { waitForDispatch?: (runId: string) => Promise<void> }
 ): ChildTaskScheduler {
-  const { dispatchRun, bindScheduler } = makeDispatchRun(dispatchOptions)
+  const { dispatchRun, bindScheduler, waitForDispatch } = makeDispatchRun(dispatchOptions)
+  if (out) out.waitForDispatch = waitForDispatch
   const deps: ChildTaskSchedulerDeps = {
     store: taskStore,
     runStore,
@@ -385,6 +430,11 @@ describe("childTaskScheduler.start", () => {
 
     const finalCheckpoint = await runStore.load(record.currentRunId)
     expect(finalCheckpoint.ok && finalCheckpoint.checkpoint.status).toBe("completed")
+    // A "succeeded" ChildTaskRecord also maps a genuine admission failure
+    // (budget_exceeded) to a "completed" checkpoint — asserting the real
+    // outcome here is what actually proves the fake provider's stream() was
+    // reached and consumed, not merely that admission failed gracefully.
+    expect(finalCheckpoint.ok && finalCheckpoint.checkpoint.finalization?.outcome).toBe("end_turn")
   })
 
   it("captures the child's final text as a child-result artifact when an artifact store is supplied", async () => {
@@ -628,24 +678,39 @@ describe("childTaskScheduler.cancel", () => {
     // A provider that never resolves on its own lets the test reliably
     // observe the task still "running" before cancelling it; it reacts to
     // the abort signal exactly like a real provider must.
-    const { provider: hangingProvider } = makeHangingProvider()
-    const scheduler = makeScheduler({}, { buildProvider: async () => hangingProvider })
+    const { provider: hangingProvider, entered } = makeHangingProvider()
+    const out: { waitForDispatch?: (runId: string) => Promise<void> } = {}
+    const scheduler = makeScheduler({}, { buildProvider: async () => hangingProvider }, out)
     const { taskId } = await scheduler.start(taskInput())
 
-    await waitUntil(async () => (await taskStore.get(taskId)).status === "running")
+    // Deterministic: wait for the provider's stream() to actually start
+    // running rather than polling the task record for "running" — by the
+    // time `entered` resolves, the queued->running CAS write has already
+    // landed (admitAndDispatch commits it before ever invoking dispatchRun),
+    // so this is strictly stronger than the poll it replaces, not merely an
+    // equivalent race with different odds.
+    await entered
+    const record = await taskStore.get(taskId)
+    expect(record.status).toBe("running")
+
     await scheduler.cancel(taskId)
 
     // cancel() persists the task-record decision immediately (durable
     // -before-signal, by design) but the underlying checkpoint only reaches
     // its own terminal "cancelled" status once the aborted drive actually
-    // finishes finalizing, asynchronously — wait for that directly rather
-    // than for the (already-flipped) task record.
-    const record = await taskStore.get(taskId)
-    expect(record.status).toBe("cancelled")
-    await waitUntil(async () => {
-      const cp = await runStore.load(record.currentRunId)
-      return cp.ok && cp.checkpoint.status === "cancelled"
-    })
+    // finishes finalizing, asynchronously. Await the real in-flight dispatch
+    // promise directly instead of polling for its effect — this file's
+    // `waitUntil` poll on this exact line previously timed out under heavy
+    // full-suite parallel contention (a false negative: the writer was
+    // merely scheduled out, not stuck), which this cannot reproduce, since
+    // it observes dispatch completion itself rather than inferring it from
+    // a fixed-interval poll gap.
+    const cancelledRecord = await taskStore.get(taskId)
+    expect(cancelledRecord.status).toBe("cancelled")
+    await out.waitForDispatch!(cancelledRecord.currentRunId)
+
+    const finalCheckpoint = await runStore.load(cancelledRecord.currentRunId)
+    expect(finalCheckpoint.ok && finalCheckpoint.checkpoint.status).toBe("cancelled")
   })
 
   it("is idempotent for an already-terminal task", async () => {
