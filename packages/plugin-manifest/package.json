@@ -1,6 +1,6 @@
 {
   "name": "@synapsepkg/plugin-manifest",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Synapse plugin manifest schema, validation, and engine-compatibility helpers — shared by the Synapse host and the plugin CLI",
   "license": "MIT",
   "sideEffects": false,
