@@ -26,8 +26,9 @@ Synapse is an Electron desktop app built around a simple mental model:
 - **Synapse plugins are the brain's hands** — capabilities the agent (and the user) can invoke.
 - **The marketplace is the society** where those hands are produced, distributed, and peer-reviewed.
 
-In practice that means a single desktop shell that hosts a built-in AI agent, a sandboxed
-plugin runtime that exposes plugin actions as **MCP tools**, encrypted **LAN device-to-device**
+In practice that means a single desktop shell that hosts a built-in AI agent — with
+crash-recoverable runs, local skills, and delegated background agents — a sandboxed plugin
+runtime that exposes plugin actions as **MCP tools**, encrypted **LAN device-to-device**
 transfer, and a full **plugin marketplace** (backend + web portal) for publishing, browsing,
 rating, and moderating plugins.
 
@@ -39,6 +40,16 @@ rating, and moderating plugins.
 - **Multi-provider BYOK** — Claude by default, plus OpenAI and OpenAI-compatible vendors (智谱/GLM, 硅基流动/SiliconFlow, 阿里百炼/Qwen) via a provider abstraction; keys are yours, encrypted at rest
 - **Bidirectional MCP** — plugin tools are exposed as [Model Context Protocol](https://modelcontextprotocol.io) tools, and Synapse can also act as an MCP **client** consuming external servers
 - **Long-term memory** — documents ingested into chunked, searchable memory (RAG) with encrypted MCP server secrets
+
+### 🤖 Durable, autonomous agents
+
+- **Crash-recoverable runs** — every interactive, background, and delegated turn is a durable checkpoint (frozen model/tool config, ordered tool-call ledger, budget ledger); interrupted runs resume or are safely abandoned on restart, with recovery/audit visibility in the **Run Observatory** panel
+- **Local progressive skills** — the agent discovers and activates `SKILL.md` packages from your user/workspace folders on demand; captured immutably and treated as untrusted content, so a skill can teach a workflow but never widen the run's tools or capabilities
+- **Delegated subagents** — a scoped, one-shot `spawn_subagent` helper for inline delegation, plus conversation-owned **async child tasks** (`start`/`check`/`list`/`cancel`) that carry their own least-privilege tools, a finite token budget, and bounded concurrency
+- **Event-driven background agents** — hotkey, timer, filesystem-watch, and polling triggers (e.g. a GitHub inbox watcher) can fire an agent turn with no chat window open, gated by per-trigger budget admission and a circuit breaker
+- **Capability governance** — every plugin action is scoped and approved just-in-time per call (no blanket auto-allow), audited, revocable, and safely migrated across plugin upgrades
+- **Credential broker** — OAuth device/PKCE flows backed by an encrypted vault with automatic token refresh, so a plugin can act on your behalf without the agent ever seeing a raw secret
+- **Governed local execution** — an approval-gated shell/file/patch toolset runs inside the bound workspace with command policy, environment filtering, and recoverable captured output
 
 ### 🧩 Plugin system
 
@@ -75,14 +86,14 @@ backend, and the docs/portal live under `packages/` and `docs/`.
 synapse/
 ├─ src/                              # Electron desktop app
 │  ├─ main/                          # Main process
-│  │  ├─ ai/                         # Agent runtime, providers, MCP client, memory
+│  │  ├─ ai/                         # Durable agent runtime (checkpoints, skills, subagents), providers, MCP client, memory
 │  │  ├─ mcp/                        # Synapse-as-MCP-server
-│  │  ├─ plugins/                    # Plugin host, sandbox, permissions, tool bridge
+│  │  ├─ plugins/                    # Plugin host, sandbox, capability governance, credential broker, triggers
 │  │  ├─ marketplace/                # Desktop account sign-in + encrypted token store
 │  │  ├─ lan/                        # Bonjour discovery + pinned-HTTPS transfer
 │  │  ├─ launcher/  settings/  updates/  protocol/  ipc/
 │  ├─ preload/                       # contextBridge API + renderer-visible types
-│  └─ renderer/                      # React SPA (home, chat, launcher, plugins, marketplace, LAN, settings)
+│  └─ renderer/                      # React SPA (home, chat, runs, launcher, plugins, marketplace, LAN, settings)
 │
 ├─ packages/
 │  ├─ plugin-manifest/               # synapse.json schema, validation, engine compatibility
