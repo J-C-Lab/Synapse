@@ -49,6 +49,7 @@ Commands:
 Environment:
   SYNAPSE_MARKETPLACE_URL   Marketplace server URL (default ${DEFAULT_SERVER})
   SYNAPSE_TOKEN             Marketplace session token, used instead of persistent login
+  SYNAPSE_SECRET_TOOL_PATH  Linux only: explicit path to secret-tool, if not at a standard location
 
 Token resolution order for whoami/publish: --token-stdin > SYNAPSE_TOKEN > the
 persisted login from \`synapse-plugin login\` (stored via a system credential

@@ -1,6 +1,6 @@
 import type { ExecResult } from "./exec"
-import { describe, expect, it, vi } from "vitest"
-import { createLinuxCredentialHelper } from "./linux"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createLinuxCredentialHelper, SECRET_TOOL_PATH_ENV } from "./linux"
 
 function fakeExec(impl: (command: string, args: string[], stdin?: string) => ExecResult) {
   return vi.fn(async (command: string, args: string[], stdin?: string) =>
@@ -8,33 +8,66 @@ function fakeExec(impl: (command: string, args: string[], stdin?: string) => Exe
   )
 }
 
+const originalEnv: Record<string, string | undefined> = {}
+
+beforeEach(() => {
+  originalEnv[SECRET_TOOL_PATH_ENV] = process.env[SECRET_TOOL_PATH_ENV]
+  delete process.env[SECRET_TOOL_PATH_ENV]
+})
+
+afterEach(() => {
+  if (originalEnv[SECRET_TOOL_PATH_ENV] === undefined) delete process.env[SECRET_TOOL_PATH_ENV]
+  else process.env[SECRET_TOOL_PATH_ENV] = originalEnv[SECRET_TOOL_PATH_ENV]
+})
+
 describe("createLinuxCredentialHelper", () => {
-  it("resolves secret-tool via a pure filesystem check on a fixed candidate path first", async () => {
+  it("resolves secret-tool via a pure filesystem check on a fixed candidate path", async () => {
     const exec = fakeExec(() => ({ code: 0, stdout: "", stderr: "" }))
     const fileExists = vi.fn(async (p: string) => p === "/usr/bin/secret-tool")
     const helper = createLinuxCredentialHelper(exec, { fileExists })
     expect(await helper.isAvailable()).toBe(true)
+    // Never shells out to resolve availability — no PATH search of any kind.
     expect(exec).not.toHaveBeenCalled()
   })
 
-  it("falls back to a one-time PATH search only when no fixed candidate path exists, then reuses that resolved absolute path for every later call", async () => {
-    const fileExists = vi.fn(async () => false)
-    const exec = fakeExec((command) =>
-      command === "which"
-        ? { code: 0, stdout: "/opt/homebrew/bin/secret-tool\n", stderr: "" }
-        : { code: 0, stdout: "", stderr: "" }
-    )
+  it("prefers an explicit SYNAPSE_SECRET_TOOL_PATH override when it exists", async () => {
+    process.env[SECRET_TOOL_PATH_ENV] = "/opt/custom/secret-tool"
+    const exec = fakeExec(() => ({ code: 0, stdout: "", stderr: "" }))
+    const fileExists = vi.fn(async (p: string) => p === "/opt/custom/secret-tool")
     const helper = createLinuxCredentialHelper(exec, { fileExists })
-    expect(await helper.isAvailable()).toBe(true)
-    expect(exec).toHaveBeenCalledWith("which", ["secret-tool"])
-
-    exec.mockClear()
     await helper.store("k", "v")
     expect(exec).toHaveBeenCalledWith(
-      "/opt/homebrew/bin/secret-tool",
+      "/opt/custom/secret-tool",
       expect.arrayContaining(["store"]),
       "v"
     )
+  })
+
+  it("ignores an explicit override that doesn't actually exist, falling back to fixed candidates", async () => {
+    process.env[SECRET_TOOL_PATH_ENV] = "/opt/does-not-exist/secret-tool"
+    const exec = fakeExec(() => ({ code: 0, stdout: "", stderr: "" }))
+    const fileExists = vi.fn(async (p: string) => p === "/usr/bin/secret-tool")
+    const helper = createLinuxCredentialHelper(exec, { fileExists })
+    await helper.store("k", "v")
+    expect(exec).toHaveBeenCalledWith(
+      "/usr/bin/secret-tool",
+      expect.arrayContaining(["store"]),
+      "v"
+    )
+  })
+
+  // Regression test: an earlier version fell back to `exec("which", ["secret-tool"])`
+  // and trusted whatever path it returned. That's still a PATH search — a
+  // malicious `which` (or a hijacked `secret-tool` that `which` legitimately
+  // finds first on a poisoned PATH) could intercept the token. This helper
+  // must never shell out to search PATH at all; an unresolvable secret-tool
+  // fails closed instead.
+  it("never falls back to a PATH search (no `which`/`where` call) when no fixed candidate or override exists", async () => {
+    const exec = fakeExec(() => ({ code: 0, stdout: "/usr/bin/secret-tool", stderr: "" }))
+    const fileExists = vi.fn(async () => false)
+    const helper = createLinuxCredentialHelper(exec, { fileExists })
+    expect(await helper.isAvailable()).toBe(false)
+    expect(exec).not.toHaveBeenCalled()
   })
 
   it("reports unavailable when secret-tool is not installed anywhere (not every distro ships libsecret-tools)", async () => {

@@ -1,11 +1,17 @@
 import type { CredentialHelper } from "./types"
+import process from "node:process"
 import { fileExists as defaultFileExists, runWithStdin } from "./exec"
 
 const SERVICE = "synapse-cli"
 
+/** Lets a user point at their actual secret-tool install when it isn't at
+ *  one of the fixed candidate paths below — an explicit, user-controlled
+ *  choice, not something resolved from an untrusted PATH search. */
+export const SECRET_TOOL_PATH_ENV = "SYNAPSE_SECRET_TOOL_PATH"
+
 // Unlike macOS/Windows, Linux has no single guaranteed install location for
 // secret-tool — distro packaging (and Nix, flatpak, etc.) can put it
-// elsewhere. Check the common fixed locations by absolute path first.
+// elsewhere. Check the common fixed locations by absolute path.
 const CANDIDATE_PATHS = ["/usr/bin/secret-tool", "/usr/local/bin/secret-tool", "/bin/secret-tool"]
 
 export type ExecFn = typeof runWithStdin
@@ -14,14 +20,16 @@ export type ExecFn = typeof runWithStdin
  * Shells out to `secret-tool` (the `libsecret-tools` package — GNOME/most
  * desktop Linux distros, but not guaranteed present). `secret-tool store`
  * reads the secret from stdin, so it never appears in argv. When the tool
- * is missing, `isAvailable()` reports false and the metadata store fails
- * closed (no plaintext fallback) rather than silently degrading.
+ * can't be resolved, `isAvailable()` reports false and the metadata store
+ * fails closed (no plaintext fallback) rather than silently degrading.
  *
- * Resolution avoids trusting PATH for every call (CWE-426): a fixed
- * absolute candidate is preferred; only if none exists does this fall back
- * to a one-time `which` search, and the exact absolute path `which` returns
- * is cached and reused for every subsequent store/retrieve/erase — so at
- * most one call ever trusts PATH, not every call.
+ * Resolution never trusts PATH (CWE-426): it checks `SYNAPSE_SECRET_TOOL_PATH`
+ * (an explicit, user-controlled choice) and then a short list of fixed
+ * absolute candidates, each via a pure filesystem check — no process spawn,
+ * no `which`/`where` search at all. An earlier version fell back to a
+ * one-time `which secret-tool` search when no fixed candidate existed; that
+ * is still a PATH search an attacker-planted `which` or `secret-tool` could
+ * intercept, so it was removed rather than narrowed.
  */
 export function createLinuxCredentialHelper(
   exec: ExecFn = runWithStdin,
@@ -32,20 +40,18 @@ export function createLinuxCredentialHelper(
 
   async function resolvePath(): Promise<string | undefined> {
     if (resolved) return resolved
+    const override = process.env[SECRET_TOOL_PATH_ENV]
+    if (override && (await fileExists(override))) {
+      resolved = override
+      return resolved
+    }
     for (const candidate of CANDIDATE_PATHS) {
       if (await fileExists(candidate)) {
         resolved = candidate
         return resolved
       }
     }
-    const probe = await exec("which", ["secret-tool"]).catch(() => ({
-      code: 1,
-      stdout: "",
-      stderr: "",
-    }))
-    const found = probe.code === 0 ? probe.stdout.trim().split(/\r?\n/)[0] : undefined
-    if (found) resolved = found
-    return resolved
+    return undefined
   }
 
   return {
