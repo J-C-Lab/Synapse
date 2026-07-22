@@ -3,7 +3,8 @@ import { createHash } from "node:crypto"
 import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { runWithStdin } from "./exec"
+import process from "node:process"
+import { fileExists as defaultFileExists, runWithStdin } from "./exec"
 
 export type ExecFn = typeof runWithStdin
 
@@ -26,6 +27,14 @@ $unprotected = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $
 [Console]::Out.Write([System.Text.Encoding]::UTF8.GetString($unprotected))
 `
 
+/** The built-in Windows PowerShell's fixed, OS-guaranteed location — never
+ *  resolved via PATH, so an attacker-planted `powershell.exe` earlier on
+ *  PATH can't intercept a call that receives the secret via stdin. */
+function defaultPowershellPath(): string {
+  const systemRoot = process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows"
+  return path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+}
+
 /**
  * DPAPI-backed storage: PowerShell (present on every supported Windows
  * version) does the encrypt/decrypt via .NET's ProtectedData, tied to the
@@ -33,13 +42,20 @@ $unprotected = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $
  * a file. Unlike Windows Credential Manager (whose stored secrets can't be
  * read back out through a CLI — `cmdkey` only lists/deletes), this gives a
  * real store+retrieve round trip without a compiled native addon. The
- * secret itself is always passed via stdin to PowerShell, never argv/env.
+ * secret itself is always passed via stdin to PowerShell, never argv/env,
+ * and PowerShell is always invoked by its trusted absolute path (CWE-426).
  */
 export function createWindowsCredentialHelper(
   exec: ExecFn = runWithStdin,
-  options: { dir?: string } = {}
+  options: {
+    dir?: string
+    powershellPath?: string
+    fileExists?: (path: string) => Promise<boolean>
+  } = {}
 ): CredentialHelper {
   const dir = options.dir ?? path.join(os.homedir(), ".synapse", "credential-blobs")
+  const powershellPath = options.powershellPath ?? defaultPowershellPath()
+  const fileExists = options.fileExists ?? defaultFileExists
 
   function blobPath(key: string): string {
     const digest = createHash("sha256").update(key).digest("hex")
@@ -49,16 +65,11 @@ export function createWindowsCredentialHelper(
   return {
     name: "windows",
     async isAvailable() {
-      const result = await exec("where", ["powershell.exe"]).catch(() => ({
-        code: 1,
-        stdout: "",
-        stderr: "",
-      }))
-      return result.code === 0
+      return fileExists(powershellPath)
     },
     async store(key, value) {
       const result = await exec(
-        "powershell.exe",
+        powershellPath,
         ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", ENCRYPT_SCRIPT],
         value
       )
@@ -76,7 +87,7 @@ export function createWindowsCredentialHelper(
         return undefined
       }
       const result = await exec(
-        "powershell.exe",
+        powershellPath,
         ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", DECRYPT_SCRIPT],
         ciphertext
       )

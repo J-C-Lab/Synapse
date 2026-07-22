@@ -8,25 +8,29 @@ function fakeExec(impl: (command: string, args: string[], stdin?: string) => Exe
   )
 }
 
+const SECURITY_PATH = "/usr/bin/security"
+
 describe("createMacosCredentialHelper", () => {
-  it("reports available when `security` resolves on PATH", async () => {
-    const exec = fakeExec(() => ({ code: 0, stdout: "/usr/bin/security", stderr: "" }))
-    const helper = createMacosCredentialHelper(exec)
+  it("reports available via a pure filesystem check on the trusted absolute path — never a PATH search", async () => {
+    const exec = fakeExec(() => ({ code: 0, stdout: "", stderr: "" }))
+    const fileExists = vi.fn(async () => true)
+    const helper = createMacosCredentialHelper(exec, { fileExists })
     expect(await helper.isAvailable()).toBe(true)
-    expect(exec).toHaveBeenCalledWith("which", ["security"])
+    expect(fileExists).toHaveBeenCalledWith(SECURITY_PATH)
+    expect(exec).not.toHaveBeenCalled()
   })
 
-  it("reports unavailable when `security` is missing", async () => {
+  it("reports unavailable when /usr/bin/security doesn't exist", async () => {
     const exec = fakeExec(() => ({ code: 1, stdout: "", stderr: "" }))
-    const helper = createMacosCredentialHelper(exec)
+    const helper = createMacosCredentialHelper(exec, { fileExists: async () => false })
     expect(await helper.isAvailable()).toBe(false)
   })
 
-  it("stores a secret by passing it as the -w argument (Keychain has no stdin option)", async () => {
+  it("invokes the trusted absolute path, never a bare command name PATH could resolve to something else", async () => {
     const exec = fakeExec(() => ({ code: 0, stdout: "", stderr: "" }))
     const helper = createMacosCredentialHelper(exec)
     await helper.store("synapse-cli:https://m.test", "secret-token")
-    expect(exec).toHaveBeenCalledWith("security", [
+    expect(exec).toHaveBeenCalledWith(SECURITY_PATH, [
       "add-generic-password",
       "-a",
       "synapse-cli:https://m.test",
