@@ -211,6 +211,12 @@ const isMcpStdioMode = process.argv.includes("--mcp-stdio")
 const APP_SCHEME = "app"
 const APP_ORIGIN = `${APP_SCHEME}://app`
 
+// Serves a plugin's declared icon (manifest `icon` / command `icon`) from its
+// install directory, as `plugin-asset://<pluginId>/<relativeIconPath>`. Reuses
+// resolve-static-path's traversal check, rooted at that plugin's own rootDir
+// rather than the renderer output directory.
+const PLUGIN_ASSET_SCHEME = "plugin-asset"
+
 // Must be called *before* app is ready. Marking the scheme `standard` and
 // `secure` makes its origin behave like https for CORS, cookies, and CSP.
 protocol.registerSchemesAsPrivileged([
@@ -223,6 +229,16 @@ protocol.registerSchemesAsPrivileged([
       stream: true,
     },
   },
+  {
+    scheme: PLUGIN_ASSET_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
+  },
 ])
 
 // Marketplace user avatars are served by GitHub (avatars + camo redirects).
@@ -231,7 +247,7 @@ const AVATAR_IMG_SRC = "https://*.githubusercontent.com"
 
 const PROD_CSP =
   "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-  `img-src 'self' data: blob: ${AVATAR_IMG_SRC}; font-src 'self' data:; connect-src 'self'; ` +
+  `img-src 'self' data: blob: ${AVATAR_IMG_SRC} ${PLUGIN_ASSET_SCHEME}:; font-src 'self' data:; connect-src 'self'; ` +
   "object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'self'"
 
 function devCsp(devOrigin: string): string {
@@ -240,7 +256,7 @@ function devCsp(devOrigin: string): string {
     `default-src 'self' ${devOrigin} ${ws}; ` +
     `script-src 'self' 'unsafe-inline' 'unsafe-eval' ${devOrigin}; ` +
     `style-src 'self' 'unsafe-inline' ${devOrigin}; ` +
-    `img-src 'self' data: blob: ${AVATAR_IMG_SRC} ${devOrigin}; ` +
+    `img-src 'self' data: blob: ${AVATAR_IMG_SRC} ${PLUGIN_ASSET_SCHEME}: ${devOrigin}; ` +
     `font-src 'self' data: ${devOrigin}; ` +
     `connect-src 'self' ${devOrigin} ${ws}`
   )
@@ -291,6 +307,31 @@ function registerStaticProtocol(): void {
 
 const launcher = new LauncherService()
 let plugins: PluginHost
+
+function registerPluginAssetProtocol(): void {
+  protocol.handle(PLUGIN_ASSET_SCHEME, async (request) => {
+    const url = new URL(request.url)
+    const pluginId = url.hostname
+    const entry = plugins?.registry.get(pluginId)
+    if (!entry) return new Response("Not Found", { status: 404 })
+
+    const resolved = resolveStaticPath(url.pathname, entry.rootDir)
+    if (resolved.kind === "forbidden") {
+      return new Response("Forbidden", { status: 403 })
+    }
+
+    const fileUrl = pathToFileURL(resolved.filePath).toString()
+    const response = await net.fetch(fileUrl, { bypassCustomProtocolHandlers: true })
+    if (!response.ok) return response
+    const headers = new Headers(response.headers)
+    headers.set("content-type", getContentType(resolved.filePath))
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    })
+  })
+}
 let capabilityService!: CapabilityIpcService
 let hostResourceIpcService!: HostResourceIpcService
 let approvalRegistry!: ApprovalRegistry
@@ -1847,6 +1888,7 @@ if (isMcpStdioMode) {
 
       applyCsp()
       registerStaticProtocol()
+      registerPluginAssetProtocol()
       // Reconcile only artifacts interrupted by a prior process before any
       // driver or GC can start. This settles manifest-backed captures exactly
       // and removes unmanifested debris; doing it from a normal GC sweep
