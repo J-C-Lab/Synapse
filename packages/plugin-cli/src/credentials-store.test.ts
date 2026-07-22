@@ -16,12 +16,12 @@ afterEach(async () => {
   await fs.rm(dir, { recursive: true, force: true })
 })
 
-function fakeHelper(available = true): CredentialHelper {
+function fakeHelper(available: boolean | (() => boolean) = true): CredentialHelper {
   const secrets = new Map<string, string>()
   return {
     name: "linux",
     async isAvailable() {
-      return available
+      return typeof available === "function" ? available() : available
     },
     async store(key: string, value: string) {
       secrets.set(key, value)
@@ -88,11 +88,74 @@ describe("fileCredentialStore", () => {
     await expect(store.clear("https://never.test")).resolves.toBeUndefined()
   })
 
+  it("clear() throws and keeps the metadata entry when the helper is unavailable, rather than silently orphaning the still-stored secret", async () => {
+    let available = true
+    const helper = fakeHelper(() => available)
+    const store = fileCredentialStore({ dir, helper })
+    await store.set("https://a.test", "token-a")
+
+    available = false
+    await expect(store.clear("https://a.test")).rejects.toThrow()
+
+    // The metadata entry must still point at the (still-present, now
+    // temporarily unreachable) secret — losing that mapping here would mean
+    // no later `clear()` could ever erase it, even once the helper is back.
+    available = true
+    expect(await store.get("https://a.test")).toBe("token-a")
+  })
+
   it("tolerates a missing or corrupt metadata file", async () => {
     await fs.mkdir(dir, { recursive: true })
     await fs.writeFile(path.join(dir, "config.json"), "not json")
     const helper = fakeHelper()
     const store = fileCredentialStore({ dir, helper })
     expect(await store.get("https://a.test")).toBeUndefined()
+  })
+
+  describe("legacy plaintext migration", () => {
+    async function writeLegacyCredentials(tokens: Record<string, string>): Promise<string> {
+      await fs.mkdir(dir, { recursive: true })
+      const file = path.join(dir, "credentials.json")
+      await fs.writeFile(file, JSON.stringify({ tokens }, null, 2))
+      return file
+    }
+
+    it("migrates an existing user's plaintext credentials.json into the helper-backed store", async () => {
+      const legacyFile = await writeLegacyCredentials({ "https://a.test": "old-plaintext-token" })
+      const helper = fakeHelper()
+
+      const store = fileCredentialStore({ dir, helper })
+      expect(await store.get("https://a.test")).toBe("old-plaintext-token")
+
+      // The secret now lives behind the helper, not in the plaintext file.
+      await expect(fs.access(legacyFile)).rejects.toThrow()
+    })
+
+    it("deletes the plaintext file even when nothing could be migrated (no helper available)", async () => {
+      const legacyFile = await writeLegacyCredentials({ "https://a.test": "old-plaintext-token" })
+      const helper = fakeHelper(false)
+
+      const store = fileCredentialStore({ dir, helper })
+      // Can't migrate without a helper, so the token is simply gone — but the
+      // plaintext copy must not be left sitting on disk either way.
+      expect(await store.get("https://a.test")).toBeUndefined()
+      await expect(fs.access(legacyFile)).rejects.toThrow()
+    })
+
+    it("does not clobber a server already present in the new config", async () => {
+      const helper = fakeHelper()
+      await fileCredentialStore({ dir, helper }).set("https://a.test", "new-token")
+      await writeLegacyCredentials({ "https://a.test": "stale-plaintext-token" })
+
+      const store = fileCredentialStore({ dir, helper })
+      expect(await store.get("https://a.test")).toBe("new-token")
+    })
+
+    it("is a no-op when there is no legacy file", async () => {
+      const helper = fakeHelper()
+      const store = fileCredentialStore({ dir, helper })
+      await expect(store.get("https://a.test")).resolves.toBeUndefined()
+      await expect(fs.access(path.join(dir, "credentials.json"))).rejects.toThrow()
+    })
   })
 })

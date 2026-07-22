@@ -31,6 +31,7 @@ export function fileCredentialStore(
 ): CredentialStore {
   const dir = options.dir ?? path.join(os.homedir(), ".synapse")
   const configFile = path.join(dir, "config.json")
+  const legacyFile = path.join(dir, "credentials.json")
   const helper = options.helper === undefined ? resolveCredentialHelper() : options.helper
 
   function credentialIdFor(baseUrl: string): string {
@@ -52,8 +53,42 @@ export function fileCredentialStore(
     await fs.writeFile(configFile, JSON.stringify(data, null, 2))
   }
 
+  // One-time migration off the previous implementation's plaintext
+  // ~/.synapse/credentials.json. Tokens it can migrate (helper available,
+  // server not already present in the new config) move into the
+  // helper-backed store; the plaintext file is deleted afterward
+  // regardless — leaving a stale plaintext copy of a secret on disk is
+  // exactly the vulnerability this store replaces, migrated or not.
+  let migration: Promise<void> | undefined
+  function ensureMigrated(): Promise<void> {
+    migration ??= (async () => {
+      let legacyTokens: Record<string, string>
+      try {
+        const raw = await fs.readFile(legacyFile, "utf-8")
+        legacyTokens = (JSON.parse(raw) as { tokens?: Record<string, string> }).tokens ?? {}
+      } catch {
+        return
+      }
+
+      const config = await readConfig()
+      let changed = false
+      for (const [baseUrl, token] of Object.entries(legacyTokens)) {
+        if (config.servers[baseUrl]) continue
+        if (!helper || !(await helper.isAvailable())) continue
+        const credentialId = credentialIdFor(baseUrl)
+        await helper.store(credentialId, token)
+        config.servers[baseUrl] = { credentialId }
+        changed = true
+      }
+      if (changed) await writeConfig(config)
+      await fs.rm(legacyFile, { force: true })
+    })()
+    return migration
+  }
+
   return {
     async get(baseUrl) {
+      await ensureMigrated()
       if (!helper || !(await helper.isAvailable())) return undefined
       const config = await readConfig()
       const entry = config.servers[baseUrl]
@@ -62,6 +97,7 @@ export function fileCredentialStore(
     },
 
     async set(baseUrl, token) {
+      await ensureMigrated()
       if (!helper || !(await helper.isAvailable())) {
         throw new Error(
           "No system credential helper is available on this platform (or its underlying tool " +
@@ -77,15 +113,24 @@ export function fileCredentialStore(
     },
 
     async clear(baseUrl) {
+      await ensureMigrated()
       const config = await readConfig()
       const entry = config.servers[baseUrl]
-      if (entry && helper && (await helper.isAvailable())) {
-        await helper.erase(entry.credentialId)
+      if (!entry) return
+      if (!helper || !(await helper.isAvailable())) {
+        // Deleting the metadata entry here would orphan the secret still
+        // sitting in the Keychain/DPAPI/Secret Service — nothing could ever
+        // erase it afterward, since this credentialId mapping would be gone.
+        // Fail closed instead: report the logout as unsuccessful.
+        throw new Error(
+          "No system credential helper is available on this platform (or its underlying tool " +
+            "isn't installed), so the stored login can't be erased right now. Try again once " +
+            "the credential helper is available."
+        )
       }
-      if (entry) {
-        delete config.servers[baseUrl]
-        await writeConfig(config)
-      }
+      await helper.erase(entry.credentialId)
+      delete config.servers[baseUrl]
+      await writeConfig(config)
     },
   }
 }
