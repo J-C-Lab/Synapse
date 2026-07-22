@@ -157,7 +157,11 @@ import { GrantStore, grantStoreFilePath } from "./plugins/grant-store"
 import { createHotkeyAdapter } from "./plugins/hotkey-adapter"
 import { createMarketplaceApi } from "./plugins/marketplace-api"
 import { PluginHost } from "./plugins/plugin-host"
-import { getContentType, resolveStaticPath } from "./protocol/resolve-static-path"
+import {
+  getContentType,
+  resolveSafePluginAssetPath,
+  resolveStaticPath,
+} from "./protocol/resolve-static-path"
 import {
   consumeSearchWindowTrayOpenSuppression,
   ensureSearchWindow,
@@ -315,7 +319,7 @@ function registerPluginAssetProtocol(): void {
     const entry = plugins?.registry.get(pluginId)
     if (!entry) return new Response("Not Found", { status: 404 })
 
-    const resolved = resolveStaticPath(url.pathname, entry.rootDir)
+    const resolved = await resolveSafePluginAssetPath(url.pathname, entry.rootDir)
     if (resolved.kind === "forbidden") {
       return new Response("Forbidden", { status: 403 })
     }
@@ -607,7 +611,7 @@ function registerIpc(): void {
   })
 
   ipcMain.handle("settings:update", async (event, patch: unknown) => {
-    if (!isTrustedIpcSender(event)) return launcher.getSettings()
+    if (!isTrustedIpcSender(event)) return undefined
     const previous = launcher.getSettings()
     let next = await launcher.updateSettings(coercePatch(patch))
 
