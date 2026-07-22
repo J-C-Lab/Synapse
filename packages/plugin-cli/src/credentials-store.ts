@@ -142,7 +142,16 @@ export function fileCredentialStore(
   function ensureMigrated(): Promise<void> {
     tokenMigration ??= migrateLegacyTokens()
     return tokenMigration.then((safeToDeleteLegacyFile) => {
-      if (safeToDeleteLegacyFile) return tryDeleteLegacyFile()
+      if (!safeToDeleteLegacyFile) {
+        // The attempt didn't complete — clear the memo so a later access
+        // in this same process (once whatever blocked it, e.g. a full
+        // disk, clears) retries the whole migration from scratch, rather
+        // than permanently giving up for the rest of this store instance's
+        // lifetime just because the first attempt hit a transient failure.
+        tokenMigration = undefined
+        return
+      }
+      return tryDeleteLegacyFile()
     })
   }
 
@@ -167,28 +176,27 @@ export function fileCredentialStore(
       }
       const credentialId = credentialIdFor(baseUrl)
       const config = await readConfig()
-      // credentialIdFor() is deterministic, so a repeat login to a server
-      // that's already configured reuses the exact same credentialId the
-      // on-disk config already references — capture that *before*
-      // store()/writeConfig() below decide whether a rollback is safe.
-      const hadExistingEntry = Boolean(config.servers[baseUrl])
-      await helper.store(credentialId, token)
+      // Written *before* storing the secret (see below): if this write
+      // fails, nothing has been stored yet, so there's nothing to roll
+      // back at all. If it succeeds but the store() call that follows
+      // fails, the metadata is restored to whatever it looked like before
+      // this call — verbatim, not inferred from a presence check, so it's
+      // correct however the config previously used this baseUrl.
+      const previousEntry = config.servers[baseUrl]
       config.servers[baseUrl] = { credentialId }
+      await writeConfig(config)
       try {
-        await writeConfig(config)
+        await helper.store(credentialId, token)
       } catch (err) {
-        if (!hadExistingEntry) {
-          // This credentialId was never referenced by any successfully
-          // written config before this call — nothing else points at it,
-          // so it's safe (and necessary) to roll it back rather than
-          // leaving it orphaned in the Keychain/DPAPI/Secret Service.
-          await helper.erase(credentialId).catch(() => {})
-        }
-        // If an entry already existed for this baseUrl, the on-disk config
-        // (unchanged, since this write just failed) still correctly
-        // references this same credentialId — erasing it here would
-        // destroy a credential the user could already reach, even though
-        // store() above already overwrote its value in place.
+        if (previousEntry) config.servers[baseUrl] = previousEntry
+        else delete config.servers[baseUrl]
+        // Best-effort: even if this rewrite also fails, get() still
+        // resolves safely either way — to the untouched previous
+        // credential (a repeat login) or to "not found" (a brand-new
+        // login, since store() above never got to create anything under
+        // this credentialId) — never to a secret with nothing pointing at
+        // it, since nothing was ever stored before the metadata existed.
+        await writeConfig(config).catch(() => {})
         throw err
       }
     },

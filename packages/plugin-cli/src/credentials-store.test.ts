@@ -112,18 +112,68 @@ describe("fileCredentialStore", () => {
     expect(await store.get("https://a.test")).toBeUndefined()
   })
 
-  it("rolls back the just-stored credential if writing the metadata fails, so it isn't left orphaned", async () => {
+  it("never stores a secret for a brand-new login if writing the metadata fails first, so there's nothing to roll back at all", async () => {
     // Occupy config.json's path with a directory so fs.writeFile(configFile, ...)
     // deterministically fails with EISDIR, without needing OS-specific
     // permission/locking tricks.
     await fs.mkdir(path.join(dir, "config.json"))
     const helper = fakeHelper()
-    const eraseSpy = vi.spyOn(helper, "erase")
+    const storeSpy = vi.spyOn(helper, "store")
 
     const store = fileCredentialStore({ dir, helper })
     await expect(store.set("https://a.test", "token-a")).rejects.toThrow()
 
-    expect(eraseSpy).toHaveBeenCalledWith("synapse-cli:https://a.test")
+    // The metadata write happens before the secret is ever stored, so a
+    // config-write failure can never leave a stored-but-unreferenced
+    // secret needing (possibly-failing) cleanup — it simply never gets
+    // stored in the first place.
+    expect(storeSpy).not.toHaveBeenCalled()
+  })
+
+  it("writes the metadata before storing the secret, proving a config-write failure can never orphan an already-stored credential", async () => {
+    let configReferencedCredentialWhenStoreWasCalled = false
+    const helper: CredentialHelper = {
+      name: "linux",
+      isAvailable: async () => true,
+      store: async (key) => {
+        const raw = await fs.readFile(path.join(dir, "config.json"), "utf-8").catch(() => "{}")
+        const parsed = JSON.parse(raw) as { servers?: Record<string, { credentialId: string }> }
+        configReferencedCredentialWhenStoreWasCalled = Object.values(parsed.servers ?? {}).some(
+          (entry) => entry.credentialId === key
+        )
+      },
+      retrieve: async () => undefined,
+      erase: async () => {},
+    }
+    const store = fileCredentialStore({ dir, helper })
+
+    await store.set("https://a.test", "token-a")
+
+    expect(configReferencedCredentialWhenStoreWasCalled).toBe(true)
+  })
+
+  it("restores the previous credentialId mapping if store() fails during a repeat login, preserving access to the untouched old secret", async () => {
+    const secrets = new Map<string, string>()
+    let failNextStore = false
+    const helper: CredentialHelper = {
+      name: "linux",
+      isAvailable: async () => true,
+      store: async (key, value) => {
+        if (failNextStore) throw new Error("keyring is locked")
+        secrets.set(key, value)
+      },
+      retrieve: async (key) => secrets.get(key),
+      erase: async (key) => void secrets.delete(key),
+    }
+    const store = fileCredentialStore({ dir, helper })
+    await store.set("https://a.test", "old-token") // establish a working login first
+
+    failNextStore = true
+    await expect(store.set("https://a.test", "new-token")).rejects.toThrow()
+
+    // The old, still-good credential must remain reachable — a failed
+    // repeat login must not corrupt or lose access to it.
+    expect(await store.get("https://a.test")).toBe("old-token")
   })
 
   it("does not erase the credential on a repeat login when the metadata write fails, since the on-disk config still points at it", async () => {
@@ -268,6 +318,25 @@ describe("fileCredentialStore", () => {
       // of the helper). Keep it so a later attempt (e.g. once whatever
       // caused the write failure clears) can retry from scratch.
       await expect(fs.access(legacyFile)).resolves.toBeUndefined()
+    })
+
+    it("retries the failed migration attempt itself (not just file deletion) on a later access within the same store instance", async () => {
+      const legacyFile = await writeLegacyCredentials({ "https://a.test": "old-plaintext-token" })
+      const configFile = path.join(dir, "config.json")
+      await fs.mkdir(configFile) // block writeConfig for the first attempt
+      const helper = fakeHelper()
+
+      const store = fileCredentialStore({ dir, helper })
+      // First attempt: migration can't persist, nothing migrated yet.
+      expect(await store.get("https://a.test")).toBeUndefined()
+
+      // Clear the obstruction — a later access on the SAME store instance
+      // must retry the whole migration attempt, not just the file
+      // deletion step, or this token can never be recovered without
+      // restarting the process.
+      await fs.rm(configFile, { recursive: true, force: true })
+      expect(await store.get("https://a.test")).toBe("old-plaintext-token")
+      await expect(fs.access(legacyFile)).rejects.toThrow()
     })
 
     it("does eventually delete the legacy file once a later attempt succeeds after an earlier migration-write failure", async () => {
