@@ -955,6 +955,11 @@ export class PluginHost {
     if (!entry) return
 
     if (entry.source.kind === "dev") {
+      if (entry.status === "active") {
+        await this.registry.setEnabled(pluginId, false)
+      }
+      await this.disconnectAllCredentials(entry)
+      await this.grants.purgeAllForPluginId(pluginId)
       await removeDevPluginReference(this.devFilePath, entry.rootDir)
       await this.reload()
       return
@@ -973,12 +978,14 @@ export class PluginHost {
     if (entry.status === "active") {
       await this.registry.setEnabled(pluginId, false)
     }
-    // GrantIdentity is pluginId+publisher+signingKeyFingerprint+declarationHash
-    // — reinstalling the exact same package reconstructs the identical
-    // identity, so anything left un-revoked here would silently come back
-    // rather than requiring the user to re-consent.
-    await this.revokeTriggerUseGrants(entry)
-    await this.teardownAllGrantsAndCredentials(entry)
+    await this.disconnectAllCredentials(entry)
+    // purgeAllForPluginId (not just this manifest's current GrantIdentity)
+    // clears grants recorded under ANY historical identity for this
+    // pluginId — an older version's declaration hash, or a dev build's —
+    // not just the one currently installed. Reinstalling (or downgrading
+    // to) any of those would otherwise reconstruct an identity the store
+    // still remembers as granted, restoring it with no re-consent.
+    await this.grants.purgeAllForPluginId(pluginId)
     this.bridge.clearPluginData(pluginId)
     await removeDirectoryInside(entry.rootDir, this.userDir)
     await this.preferences.delete(pluginId)
@@ -989,15 +996,14 @@ export class PluginHost {
     await this.reload()
   }
 
-  /** Revokes every declared capability grant and disconnects every declared
-   *  credential for a plugin being fully removed. `revokeCapability()`
-   *  handles the single-capability, still-active-plugin case (also tearing
-   *  down its sandbox/registry/bridge state); this is the full-teardown
-   *  counterpart `uninstall()` needs, since a removed plugin's sandbox
-   *  state is already torn down by disabling it above. */
-  private async teardownAllGrantsAndCredentials(entry: PluginRegistryEntry): Promise<void> {
+  /** Disconnects every credential declared by the currently-installed
+   *  manifest, for a plugin being fully removed. Only needs the current
+   *  manifest (unlike grants): the credential vault keys its storage slot by
+   *  `pluginId:credentialId` alone, not by the full identity, so `disconnect()`
+   *  already reaches whatever is stored there regardless of which identity
+   *  originally connected it. */
+  private async disconnectAllCredentials(entry: PluginRegistryEntry): Promise<void> {
     if (!entry.manifest) return
-    const identity = buildGrantIdentity(entry.pluginId, entry.manifest, entry.source.kind)
     for (const cred of entry.manifest.contributes.credentials ?? []) {
       await this.credentialBroker.disconnect(
         entry.pluginId,
@@ -1005,9 +1011,6 @@ export class PluginHost {
         entry.source.kind,
         cred.id
       )
-    }
-    for (const capability of entry.manifest.capabilities) {
-      await this.grants.revoke(identity, capability.id, "user")
     }
   }
 

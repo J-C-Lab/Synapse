@@ -214,10 +214,13 @@ async function writeHostPlugin(
     tools?: PluginManifest["contributes"]["tools"]
     triggers?: PluginManifest["triggers"]
     credentials?: PluginManifest["contributes"]["credentials"]
+    /** Writes the plugin outside the normal user plugins dir — for a
+     *  dev-linked fixture, so it isn't also picked up by the userDir scan. */
+    rootDir?: string
   } = {}
 ): Promise<string> {
   const pluginId = options.id ?? "com.synapse.clipboard"
-  const pluginDir = path.join(dir, "plugins", pluginId)
+  const pluginDir = options.rootDir ?? path.join(dir, "plugins", pluginId)
   await fs.mkdir(path.join(pluginDir, "dist"), { recursive: true })
   await fs.writeFile(
     path.join(pluginDir, "synapse.json"),
@@ -274,6 +277,14 @@ module.exports = {
     "utf-8"
   )
   return pluginDir
+}
+
+/** Registers `rootDir` in dev-plugins.json (the same file `link`/`unlink`
+ *  maintain) so a `writeHostPlugin({ rootDir: ... })` fixture is discovered
+ *  as a dev-source plugin instead of a user-installed one. */
+async function writeDevPluginsFile(rootDir: string): Promise<void> {
+  const devFilePath = path.join(dir, "dev-plugins.json")
+  await fs.writeFile(devFilePath, JSON.stringify([rootDir], null, 2))
 }
 
 const baseEntry: PluginRegistryEntry = {
@@ -645,6 +656,32 @@ describe("pluginHost.uninstall", () => {
     expect(await host.grants.isGranted(reinstalledIdentity, "storage:plugin")).toBe(false)
   })
 
+  it("purges grants recorded under any historical identity for this pluginId, not just the currently-installed manifest's", async () => {
+    await writeHostPlugin({ permissions: ["clipboard:read"] })
+    const pluginId = "com.synapse.clipboard"
+    const host = makeHost()
+    await host.init()
+
+    const entry = host.get(pluginId)!
+    const currentIdentity = buildGrantIdentity(pluginId, entry.manifest!, entry.source.kind)
+    // Simulate a grant left over from a previous version of this exact
+    // plugin (different declared capabilities => different declaration
+    // hash) that was upgraded in place without ever being uninstalled.
+    const staleIdentity = {
+      ...currentIdentity,
+      capabilityDeclarationHash: "stale-hash-from-a-previous-version",
+    }
+    await host.grants.grant(staleIdentity, "clipboard:watch", "user")
+    expect(await host.grants.isGranted(staleIdentity, "clipboard:watch")).toBe(true)
+
+    await host.uninstall(pluginId)
+
+    // Downgrading to (or otherwise reconstructing) that old identity must
+    // not find a still-live grant waiting for it.
+    expect(await host.grants.isGranted(staleIdentity, "clipboard:watch")).toBe(false)
+    expect(await host.grants.isGranted(currentIdentity, "clipboard:read")).toBe(false)
+  })
+
   it("disconnects every declared credential", async () => {
     await writeHostPlugin({
       permissions: [
@@ -709,6 +746,27 @@ describe("pluginHost.uninstall", () => {
 
     await host.uninstall(pluginId)
     expect(await host.grants.isGranted(identity, "clipboard:read")).toBe(false)
+  })
+
+  it("dev-linked plugin uninstall also revokes grants, not just unlinking the dev-plugins.json reference", async () => {
+    const pluginId = "com.synapse.devtest"
+    const devRoot = path.join(dir, "dev-source", pluginId)
+    await writeHostPlugin({ id: pluginId, permissions: ["clipboard:read"], rootDir: devRoot })
+    await writeDevPluginsFile(devRoot)
+    const host = makeHost()
+    await host.init()
+
+    const entry = host.get(pluginId)!
+    expect(entry.source.kind).toBe("dev")
+    const identity = buildGrantIdentity(pluginId, entry.manifest!, entry.source.kind)
+    expect(await host.grants.isGranted(identity, "clipboard:read")).toBe(true)
+
+    await host.uninstall(pluginId)
+
+    expect(await host.grants.isGranted(identity, "clipboard:read")).toBe(false)
+    // Re-linking the same dev build later must not silently regain the grant.
+    await host.reload()
+    expect(host.get(pluginId)).toBeUndefined()
   })
 })
 
