@@ -126,6 +126,32 @@ describe("fileCredentialStore", () => {
     expect(eraseSpy).toHaveBeenCalledWith("synapse-cli:https://a.test")
   })
 
+  it("does not erase the credential on a repeat login when the metadata write fails, since the on-disk config still points at it", async () => {
+    const helper = fakeHelper()
+    const store = fileCredentialStore({ dir, helper })
+    await store.set("https://a.test", "token-a") // first, successful login
+
+    // Make config.json read-only so a second login's write fails (EPERM)
+    // while the *read* that determines `hadExistingEntry` still succeeds —
+    // the on-disk config genuinely still references this credentialId.
+    // credentialIdFor() is deterministic, so store() below reuses that
+    // exact same credentialId.
+    const configFile = path.join(dir, "config.json")
+    await fs.chmod(configFile, 0o444)
+    const eraseSpy = vi.spyOn(helper, "erase")
+
+    try {
+      await expect(store.set("https://a.test", "token-a-2")).rejects.toThrow()
+    } finally {
+      await fs.chmod(configFile, 0o666)
+    }
+
+    // Erasing here would destroy a credential the (unchanged) on-disk
+    // config still legitimately references — this must not happen just
+    // because a repeat login's metadata write failed.
+    expect(eraseSpy).not.toHaveBeenCalled()
+  })
+
   describe("legacy plaintext migration", () => {
     async function writeLegacyCredentials(tokens: Record<string, string>): Promise<string> {
       await fs.mkdir(dir, { recursive: true })
@@ -224,6 +250,41 @@ describe("fileCredentialStore", () => {
       await store.get("https://a.test")
 
       expect(eraseSpy).toHaveBeenCalledWith("synapse-cli:https://a.test")
+    })
+
+    it("keeps the legacy plaintext file when writing the migrated config fails, so a later attempt can retry", async () => {
+      const legacyFile = await writeLegacyCredentials({ "https://a.test": "old-plaintext-token" })
+      // Occupy config.json's path with a directory so writeConfig()
+      // deterministically fails during the migration attempt.
+      await fs.mkdir(path.join(dir, "config.json"))
+      const helper = fakeHelper()
+
+      const store = fileCredentialStore({ dir, helper })
+      await store.get("https://a.test")
+
+      // This migration attempt didn't complete — deleting the plaintext
+      // file now would destroy the only remaining copy of a token that
+      // ended up nowhere (not in the on-disk config, and rolled back out
+      // of the helper). Keep it so a later attempt (e.g. once whatever
+      // caused the write failure clears) can retry from scratch.
+      await expect(fs.access(legacyFile)).resolves.toBeUndefined()
+    })
+
+    it("does eventually delete the legacy file once a later attempt succeeds after an earlier migration-write failure", async () => {
+      const legacyFile = await writeLegacyCredentials({ "https://a.test": "old-plaintext-token" })
+      await fs.mkdir(path.join(dir, "config.json"))
+      const helper = fakeHelper()
+
+      const store = fileCredentialStore({ dir, helper })
+      await store.get("https://a.test") // first attempt: writeConfig fails, file kept
+
+      // Clear the obstruction and retry with a fresh store instance (a new
+      // `synapse-plugin` process would get a fresh migration attempt too).
+      await fs.rm(path.join(dir, "config.json"), { recursive: true, force: true })
+      const retryStore = fileCredentialStore({ dir, helper })
+      expect(await retryStore.get("https://a.test")).toBe("old-plaintext-token")
+
+      await expect(fs.access(legacyFile)).rejects.toThrow()
     })
 
     it("keeps retrying legacy-file deletion on later access when an earlier attempt failed, instead of silently accepting it as permanent", async () => {

@@ -64,20 +64,21 @@ export function fileCredentialStore(
   // Must never reject: a rejected promise here would memoize permanently
   // (see `tokenMigration` below), turning one transient failure (a locked
   // keyring, a corrupt legacy file) into a permanently broken store for the
-  // rest of the process.
-  async function migrateLegacyTokens(): Promise<void> {
+  // rest of the process. Returns whether it's safe to delete the legacy
+  // plaintext file now — see the `false` case below.
+  async function migrateLegacyTokens(): Promise<boolean> {
     let legacyRaw: string
     try {
       legacyRaw = await fs.readFile(legacyFile, "utf-8")
     } catch {
-      return // no legacy file — nothing to migrate
+      return true // no legacy file — nothing to migrate
     }
 
     let legacyTokens: Record<string, string> = {}
     try {
       legacyTokens = (JSON.parse(legacyRaw) as { tokens?: Record<string, string> }).tokens ?? {}
     } catch {
-      return // corrupt/unreadable JSON — nothing parseable to migrate
+      return true // corrupt/unreadable JSON — nothing recoverable to migrate
     }
 
     const config = await readConfig()
@@ -99,18 +100,26 @@ export function fileCredentialStore(
       }
     }
 
-    if (storedThisRun.length > 0) {
-      try {
-        await writeConfig(config)
-      } catch {
-        // The metadata write is what makes each credentialId reachable at
-        // all. If it fails, none of the tokens stored this run were ever
-        // recorded, so roll them all back rather than leaving them
-        // orphaned in the Keychain/DPAPI/Secret Service forever.
-        for (const credentialId of storedThisRun) {
-          await helper?.erase(credentialId).catch(() => {})
-        }
+    if (storedThisRun.length === 0) return true // nothing new to persist
+
+    try {
+      await writeConfig(config)
+      return true // fully persisted — safe to delete the plaintext file
+    } catch {
+      // The metadata write is what makes each credentialId reachable at
+      // all. Roll back everything stored this run so nothing is left
+      // orphaned — but regardless of whether that rollback itself
+      // succeeds (the keyring could be locked for the erase() call too),
+      // this migration attempt did not complete. Report "not safe to
+      // delete": destroying the plaintext file now, on top of a token
+      // that ended up nowhere (not in config, maybe not in the helper
+      // either), would be a net loss instead of a transient hiccup a
+      // later attempt (the next `synapse-plugin` invocation, or the next
+      // access in this process) could still recover from.
+      for (const credentialId of storedThisRun) {
+        await helper?.erase(credentialId).catch(() => {})
       }
+      return false
     }
   }
 
@@ -119,22 +128,22 @@ export function fileCredentialStore(
   // exactly the vulnerability this store replaces, so a transient failure
   // (permission denied, a lock held by another process) must not be
   // silently accepted as "done"; it must keep getting retried until it
-  // actually succeeds. `force`-style ENOENT suppression is handled
-  // explicitly so a real failure is distinguishable from "already gone".
+  // actually succeeds.
   async function tryDeleteLegacyFile(): Promise<void> {
-    // ENOENT means it's already gone — nothing to do. Anything else is a
-    // real failure, deliberately not treated as success: this function
-    // still doesn't throw (a stuck legacy file must never break ordinary
-    // get/set/clear), but `ensureMigrated()` calls this on every access, so
-    // a transient failure keeps getting retried rather than being
-    // memoized as a final outcome.
+    // Any failure here (including ENOENT) is deliberately not treated as
+    // success: this function still doesn't throw (a stuck legacy file
+    // must never break ordinary get/set/clear), but `ensureMigrated()`
+    // calls this on every access, so a transient failure keeps getting
+    // retried rather than being memoized as a final outcome.
     await deleteFile(legacyFile).catch(() => {})
   }
 
-  let tokenMigration: Promise<void> | undefined
+  let tokenMigration: Promise<boolean> | undefined
   function ensureMigrated(): Promise<void> {
     tokenMigration ??= migrateLegacyTokens()
-    return tokenMigration.then(() => tryDeleteLegacyFile())
+    return tokenMigration.then((safeToDeleteLegacyFile) => {
+      if (safeToDeleteLegacyFile) return tryDeleteLegacyFile()
+    })
   }
 
   return {
@@ -157,17 +166,29 @@ export function fileCredentialStore(
         )
       }
       const credentialId = credentialIdFor(baseUrl)
-      await helper.store(credentialId, token)
       const config = await readConfig()
+      // credentialIdFor() is deterministic, so a repeat login to a server
+      // that's already configured reuses the exact same credentialId the
+      // on-disk config already references — capture that *before*
+      // store()/writeConfig() below decide whether a rollback is safe.
+      const hadExistingEntry = Boolean(config.servers[baseUrl])
+      await helper.store(credentialId, token)
       config.servers[baseUrl] = { credentialId }
       try {
         await writeConfig(config)
       } catch (err) {
-        // The metadata write is what makes this credentialId reachable at
-        // all — if it fails, the secret we just stored would otherwise sit
-        // in the Keychain/DPAPI/Secret Service forever with nothing ever
-        // able to reference or erase it again.
-        await helper.erase(credentialId).catch(() => {})
+        if (!hadExistingEntry) {
+          // This credentialId was never referenced by any successfully
+          // written config before this call — nothing else points at it,
+          // so it's safe (and necessary) to roll it back rather than
+          // leaving it orphaned in the Keychain/DPAPI/Secret Service.
+          await helper.erase(credentialId).catch(() => {})
+        }
+        // If an entry already existed for this baseUrl, the on-disk config
+        // (unchanged, since this write just failed) still correctly
+        // references this same credentialId — erasing it here would
+        // destroy a credential the user could already reach, even though
+        // store() above already overwrote its value in place.
         throw err
       }
     },
