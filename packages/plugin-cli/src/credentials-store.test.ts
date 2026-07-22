@@ -176,6 +176,53 @@ describe("fileCredentialStore", () => {
     expect(await store.get("https://a.test")).toBe("old-token")
   })
 
+  it("does not lose access to a previous entry recorded under a different credentialId scheme when store() fails and the rollback write also fails", async () => {
+    // Simulate an existing config entry using a credentialId scheme other
+    // than what credentialIdFor() computes today (e.g. a historical scheme
+    // change) — defensive: this can't happen with the current, unchanged
+    // credentialIdFor(), but the store must not assume it never will.
+    const configFile = path.join(dir, "config.json")
+    const secrets = new Map<string, string>([["old-scheme:https://a.test", "old-token"]])
+    let breakConfigWrites = false
+    const helper: CredentialHelper = {
+      name: "linux",
+      isAvailable: async () => true,
+      store: async (key, value) => {
+        if (breakConfigWrites) {
+          // The metadata write that follows this call must fail too — as
+          // if the disk/permissions problem that broke the login attempt
+          // affects both operations, not just the helper call.
+          await fs.chmod(configFile, 0o444)
+          throw new Error("keyring is locked")
+        }
+        secrets.set(key, value)
+      },
+      retrieve: async (key) => secrets.get(key),
+      erase: async (key) => void secrets.delete(key),
+    }
+    await fs.mkdir(dir, { recursive: true })
+    await fs.writeFile(
+      configFile,
+      JSON.stringify({
+        servers: { "https://a.test": { credentialId: "old-scheme:https://a.test" } },
+      })
+    )
+
+    const store = fileCredentialStore({ dir, helper })
+    expect(await store.get("https://a.test")).toBe("old-token")
+
+    breakConfigWrites = true
+    try {
+      await expect(store.set("https://a.test", "new-token")).rejects.toThrow()
+    } finally {
+      await fs.chmod(configFile, 0o666)
+    }
+
+    // The old, still-good credential — under its own, different id — must
+    // remain reachable; the failed re-login must not have severed it.
+    expect(await store.get("https://a.test")).toBe("old-token")
+  })
+
   it("does not erase the credential on a repeat login when the metadata write fails, since the on-disk config still points at it", async () => {
     const helper = fakeHelper()
     const store = fileCredentialStore({ dir, helper })

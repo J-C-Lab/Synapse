@@ -176,27 +176,47 @@ export function fileCredentialStore(
       }
       const credentialId = credentialIdFor(baseUrl)
       const config = await readConfig()
-      // Written *before* storing the secret (see below): if this write
-      // fails, nothing has been stored yet, so there's nothing to roll
-      // back at all. If it succeeds but the store() call that follows
-      // fails, the metadata is restored to whatever it looked like before
-      // this call — verbatim, not inferred from a presence check, so it's
-      // correct however the config previously used this baseUrl.
       const previousEntry = config.servers[baseUrl]
-      config.servers[baseUrl] = { credentialId }
-      await writeConfig(config)
+
+      if (!previousEntry || previousEntry.credentialId === credentialId) {
+        // Common case: no existing entry, or the existing entry already
+        // points at the same credentialId this call is about to (re)store
+        // under (true for every entry credentialIdFor() has ever produced,
+        // since it's a pure function of baseUrl alone). Writing the
+        // metadata *before* storing the secret is always safe here: a
+        // brand-new entry has nothing to lose if the write fails, and a
+        // repeat login's "rollback" write below reproduces byte-identical
+        // content to what's already on disk, so even a failed rollback
+        // write leaves the file exactly as correct as it already was.
+        config.servers[baseUrl] = { credentialId }
+        await writeConfig(config)
+        try {
+          await helper.store(credentialId, token)
+        } catch (err) {
+          if (previousEntry) config.servers[baseUrl] = previousEntry
+          else delete config.servers[baseUrl]
+          await writeConfig(config).catch(() => {})
+          throw err
+        }
+        return
+      }
+
+      // Rare/defensive: the existing entry points at a DIFFERENT
+      // credentialId (e.g. a historical scheme change — can't happen with
+      // the current, unchanged credentialIdFor(), but this must not assume
+      // it never will). Writing the metadata first here would sever the
+      // *old*, still-valid entry the instant the file changes, before the
+      // new secret is even confirmed stored — so store the new secret
+      // first instead, and only swap the pointer once it's live. A
+      // config-write failure at that point rolls back by erasing the new
+      // (not-yet-referenced-by-anything) secret, leaving the untouched old
+      // entry exactly as reachable as it was before this call.
+      await helper.store(credentialId, token)
       try {
-        await helper.store(credentialId, token)
+        config.servers[baseUrl] = { credentialId }
+        await writeConfig(config)
       } catch (err) {
-        if (previousEntry) config.servers[baseUrl] = previousEntry
-        else delete config.servers[baseUrl]
-        // Best-effort: even if this rewrite also fails, get() still
-        // resolves safely either way — to the untouched previous
-        // credential (a repeat login) or to "not found" (a brand-new
-        // login, since store() above never got to create anything under
-        // this credentialId) — never to a secret with nothing pointing at
-        // it, since nothing was ever stored before the metadata existed.
-        await writeConfig(config).catch(() => {})
+        await helper.erase(credentialId).catch(() => {})
         throw err
       }
     },
