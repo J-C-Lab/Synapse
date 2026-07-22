@@ -210,9 +210,10 @@ async function writeHostPlugin(
     id?: string
     code?: string
     activationEvents?: PluginManifest["contributes"]["activationEvents"]
-    permissions?: string[]
+    permissions?: (string | { id: string; scope?: unknown })[]
     tools?: PluginManifest["contributes"]["tools"]
     triggers?: PluginManifest["triggers"]
+    credentials?: PluginManifest["contributes"]["credentials"]
   } = {}
 ): Promise<string> {
   const pluginId = options.id ?? "com.synapse.clipboard"
@@ -235,10 +236,11 @@ async function writeHostPlugin(
           activationEvents: options.activationEvents,
           commands: [{ id: "clipboard.run", title: "Clipboard", mode: "view" }],
           tools: options.tools,
+          credentials: options.credentials,
         },
-        capabilities: (options.permissions ?? ["clipboard:read", "storage:plugin"]).map((id) => ({
-          id,
-        })),
+        capabilities: (options.permissions ?? ["clipboard:read", "storage:plugin"]).map((p) =>
+          typeof p === "string" ? { id: p } : p
+        ),
         triggers: options.triggers,
       },
       null,
@@ -607,6 +609,106 @@ describe("pluginHost grant migration", () => {
     const identity = buildGrantIdentity(entry.pluginId, entry.manifest!, entry.source.kind)
     expect(await second.grants.isGranted(identity, "storage:plugin")).toBe(false)
     second.dispose()
+  })
+})
+
+describe("pluginHost.uninstall", () => {
+  it("revokes every capability grant, so reinstalling the same package doesn't silently restore them", async () => {
+    await writeHostPlugin({ permissions: ["clipboard:read", "storage:plugin"] })
+    const pluginId = "com.synapse.clipboard"
+    const host = makeHost()
+    await host.init()
+
+    const entry = host.get(pluginId)!
+    const identity = buildGrantIdentity(pluginId, entry.manifest!, entry.source.kind)
+    // Grandfathered on init (see the grant-store tests above).
+    expect(await host.grants.isGranted(identity, "clipboard:read")).toBe(true)
+    expect(await host.grants.isGranted(identity, "storage:plugin")).toBe(true)
+
+    await host.uninstall(pluginId)
+    expect(await host.grants.isGranted(identity, "clipboard:read")).toBe(false)
+    expect(await host.grants.isGranted(identity, "storage:plugin")).toBe(false)
+
+    // Reinstalling the exact same package (same publisher/signature/declared
+    // capabilities => same GrantIdentity) must start from zero, not
+    // silently regain everything the user revoked by uninstalling.
+    await writeHostPlugin({ permissions: ["clipboard:read", "storage:plugin"] })
+    await host.reload()
+    const reinstalled = host.get(pluginId)!
+    const reinstalledIdentity = buildGrantIdentity(
+      pluginId,
+      reinstalled.manifest!,
+      reinstalled.source.kind
+    )
+    expect(reinstalledIdentity).toEqual(identity)
+    expect(await host.grants.isGranted(reinstalledIdentity, "clipboard:read")).toBe(false)
+    expect(await host.grants.isGranted(reinstalledIdentity, "storage:plugin")).toBe(false)
+  })
+
+  it("disconnects every declared credential", async () => {
+    await writeHostPlugin({
+      permissions: [
+        "storage:plugin",
+        { id: "network:https", scope: { hosts: ["api.example.com"] } },
+        {
+          id: "credentials:broker",
+          scope: {
+            credentialIds: ["myApiKey"],
+            inject: [{ credentialId: "myApiKey", scope: { hosts: ["api.example.com"] } }],
+          },
+        },
+      ],
+      credentials: [
+        {
+          id: "myApiKey",
+          type: "static",
+          label: "My API Key",
+          inject: { scheme: "bearer" },
+        },
+      ],
+    })
+    const pluginId = "com.synapse.clipboard"
+    const host = makeHost()
+    await host.init()
+    const disconnectSpy = vi.spyOn(host.credentialBroker, "disconnect")
+
+    await host.uninstall(pluginId)
+
+    expect(disconnectSpy).toHaveBeenCalledWith(
+      pluginId,
+      expect.objectContaining({ id: pluginId }),
+      "user",
+      "myApiKey"
+    )
+  })
+
+  it("revokes trigger-use grants on uninstall (not just when disabling normally)", async () => {
+    await writeHostPlugin({
+      permissions: [],
+      triggers: [
+        {
+          id: "tick",
+          type: "timer",
+          handler: "triggers.onTick",
+          schedule: { intervalMs: 60_000 },
+          // clipboard:read is "consent" tier and not on the explicit-trigger-
+          // confirmation exclusion list, so grantTriggerUses() auto-grants it
+          // on init — unlike storage:plugin, which is "auto" tier and never
+          // gets a grant record at all (always allowed, nothing to revoke).
+          uses: [{ capability: "clipboard:read", budget: { maxCalls: 10, period: "1h" } }],
+        },
+      ],
+    })
+    const pluginId = "com.synapse.clipboard"
+    const host = makeHost()
+    await host.init()
+
+    const entry = host.get(pluginId)!
+    const identity = buildGrantIdentity(pluginId, entry.manifest!, entry.source.kind)
+    expect(await host.grants.isGranted(identity, "clipboard:read")).toBe(true)
+
+    await host.uninstall(pluginId)
+    expect(await host.grants.isGranted(identity, "clipboard:read")).toBe(false)
   })
 })
 

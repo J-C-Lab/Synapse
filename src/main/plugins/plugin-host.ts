@@ -973,6 +973,12 @@ export class PluginHost {
     if (entry.status === "active") {
       await this.registry.setEnabled(pluginId, false)
     }
+    // GrantIdentity is pluginId+publisher+signingKeyFingerprint+declarationHash
+    // — reinstalling the exact same package reconstructs the identical
+    // identity, so anything left un-revoked here would silently come back
+    // rather than requiring the user to re-consent.
+    await this.revokeTriggerUseGrants(entry)
+    await this.teardownAllGrantsAndCredentials(entry)
     this.bridge.clearPluginData(pluginId)
     await removeDirectoryInside(entry.rootDir, this.userDir)
     await this.preferences.delete(pluginId)
@@ -981,6 +987,28 @@ export class PluginHost {
       path.join(this.options.userDataDir, "plugin-data")
     )
     await this.reload()
+  }
+
+  /** Revokes every declared capability grant and disconnects every declared
+   *  credential for a plugin being fully removed. `revokeCapability()`
+   *  handles the single-capability, still-active-plugin case (also tearing
+   *  down its sandbox/registry/bridge state); this is the full-teardown
+   *  counterpart `uninstall()` needs, since a removed plugin's sandbox
+   *  state is already torn down by disabling it above. */
+  private async teardownAllGrantsAndCredentials(entry: PluginRegistryEntry): Promise<void> {
+    if (!entry.manifest) return
+    const identity = buildGrantIdentity(entry.pluginId, entry.manifest, entry.source.kind)
+    for (const cred of entry.manifest.contributes.credentials ?? []) {
+      await this.credentialBroker.disconnect(
+        entry.pluginId,
+        entry.manifest,
+        entry.source.kind,
+        cred.id
+      )
+    }
+    for (const capability of entry.manifest.capabilities) {
+      await this.grants.revoke(identity, capability.id, "user")
+    }
   }
 
   async reload(pluginId?: string): Promise<PluginRegistryEntry | undefined> {
