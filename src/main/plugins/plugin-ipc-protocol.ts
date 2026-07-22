@@ -38,6 +38,28 @@ import type { ToolCaller, ToolContentBlock } from "@synapse/plugin-sdk"
 
 // ── Command / tool / event / trigger invocation (host -> child) ──────────
 
+/**
+ * `pluginId`/`locale`/`theme`/`preferences` are host-computed state
+ * (settings, manifest defaults + user overrides) `PluginContext` needs but
+ * the child has no other way to obtain — `PluginBridge.createContext()`
+ * used to compute these directly, in-process; now the host must send a
+ * fresh snapshot with every invocation that builds a full `PluginContext`
+ * (commands, clipboard-change events, triggers). Tool contexts
+ * (`ToolContext extends Omit<PluginContext, "locale"|"theme">`) only need
+ * `preferences` — see `ToolContextData`.
+ */
+export interface CommandContextData {
+  pluginId: string
+  locale: string
+  theme: { mode: "light" | "dark"; accent: string }
+  preferences: Record<string, unknown>
+}
+
+export interface ToolContextData {
+  pluginId: string
+  preferences: Record<string, unknown>
+}
+
 export interface InvokeCommandWireRequest {
   commandId: string
   phase: "run" | "onSearchChange" | "onAction"
@@ -47,13 +69,20 @@ export interface InvokeCommandWireRequest {
 export interface InvokeCommandMessage {
   type: "invoke-command"
   callId: string
+  /** Tags every capability-call this invocation's ctx methods make, so the
+   *  host can look up the InvocationContext (grants/audit/budget) it built
+   *  when it sent this message — never sent to the child itself. */
+  invocationId: string
   request: InvokeCommandWireRequest
+  context: CommandContextData
 }
 
 export interface DisposeCommandMessage {
   type: "dispose-command"
   callId: string
+  invocationId: string
   commandId: string
+  context: CommandContextData
 }
 
 export interface InvokeToolWireRequest {
@@ -65,7 +94,9 @@ export interface InvokeToolWireRequest {
 export interface InvokeToolMessage {
   type: "invoke-tool"
   callId: string
+  invocationId: string
   request: InvokeToolWireRequest
+  context: ToolContextData
 }
 
 /** Host tells the child to abort a tool's `ctx.signal` (timeout or caller cancel). */
@@ -78,8 +109,10 @@ export interface CancelToolMessage {
 export interface DispatchEventMessage {
   type: "dispatch-event"
   callId: string
+  invocationId: string
   event: "clipboard:change"
   payload: unknown
+  context: CommandContextData
 }
 
 export interface DispatchTriggerMessage {
@@ -90,6 +123,7 @@ export interface DispatchTriggerMessage {
   trigger: string
   invocationId: string
   event: unknown
+  context: CommandContextData
 }
 
 /** Host tells the child to abort a trigger dispatch's signal. */
