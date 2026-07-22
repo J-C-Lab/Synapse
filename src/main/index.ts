@@ -1951,6 +1951,7 @@ if (isMcpStdioMode) {
       headlessApprovalServer = await startHeadlessApprovalServer({
         approveCapability: capabilityService.capabilityApprover,
         approveHostResource: hostResourceIpcService.hostResourceApprover,
+        promptForGrant: capabilityService.grantPrompt,
         portFilePath: path.join(app.getPath("userData"), "mcp-approval.json"),
       })
 
