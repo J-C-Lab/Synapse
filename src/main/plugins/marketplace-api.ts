@@ -14,6 +14,7 @@ import type {
 import type { z } from "zod"
 import process from "node:process"
 import {
+  actionOkResponseSchema,
   adminReportsResponseSchema,
   deviceCodePollResponseSchema,
   deviceCodeStartResponseSchema,
@@ -186,25 +187,39 @@ export function createMarketplaceApi(options: MarketplaceApiOptions = {}): Marke
       )
     },
     async report(pluginId: string, reason: string) {
-      await send<{ status: string }>(`/plugins/${encodeURIComponent(pluginId)}/report`, "POST", {
-        reason,
-      })
+      await send(
+        `/plugins/${encodeURIComponent(pluginId)}/report`,
+        "POST",
+        { reason },
+        actionOkResponseSchema
+      )
     },
     async adminRemove(pluginId: string) {
-      await send<{ status: string }>(`/plugins/${encodeURIComponent(pluginId)}/remove`, "POST", {})
+      await send(
+        `/plugins/${encodeURIComponent(pluginId)}/remove`,
+        "POST",
+        {},
+        actionOkResponseSchema
+      )
     },
     async adminRestore(pluginId: string) {
-      await send<{ status: string }>(`/plugins/${encodeURIComponent(pluginId)}/restore`, "POST", {})
+      await send(
+        `/plugins/${encodeURIComponent(pluginId)}/restore`,
+        "POST",
+        {},
+        actionOkResponseSchema
+      )
     },
     adminReports(status?: ReportStatus) {
       const suffix = status ? `?status=${encodeURIComponent(status)}` : ""
       return get(`/admin/reports${suffix}`, adminReportsResponseSchema)
     },
     async resolveReport(reportId: string, status: "reviewed" | "dismissed") {
-      await send<{ status: string }>(
+      await send(
         `/admin/reports/${encodeURIComponent(reportId)}/resolve`,
         "POST",
-        { status }
+        { status },
+        actionOkResponseSchema
       )
     },
     session() {
