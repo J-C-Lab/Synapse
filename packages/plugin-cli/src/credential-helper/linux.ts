@@ -1,4 +1,5 @@
 import type { CredentialHelper } from "./types"
+import * as path from "node:path"
 import process from "node:process"
 import { fileExists as defaultFileExists, runWithStdin } from "./exec"
 
@@ -41,7 +42,13 @@ export function createLinuxCredentialHelper(
   async function resolvePath(): Promise<string | undefined> {
     if (resolved) return resolved
     const override = process.env[SECRET_TOOL_PATH_ENV]
-    if (override && (await fileExists(override))) {
+    // Must be absolute: fileExists() (fs.access) resolves a bare/relative
+    // name against the process's cwd, but spawn() resolves a bare command
+    // name (no path separator) via a PATH search regardless (execvp
+    // semantics) — accepting anything less than an absolute path here
+    // would let an override "pass" this check yet still run via PATH,
+    // reintroducing the exact PATH-hijack (CWE-426) this design closes.
+    if (override && path.isAbsolute(override) && (await fileExists(override))) {
       resolved = override
       return resolved
     }

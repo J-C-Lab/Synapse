@@ -56,6 +56,29 @@ describe("createLinuxCredentialHelper", () => {
     )
   })
 
+  // Regression test: fileExists() resolves a bare name relative to the
+  // process's cwd (fs.access has no concept of PATH), but spawn() resolves
+  // a bare command name (no path separator) via a PATH search regardless
+  // (execvp semantics) — so accepting a non-absolute override here would
+  // let it "pass" a filesystem check yet still end up spawned via PATH,
+  // reintroducing the exact PATH-hijack (CWE-426) this design closes.
+  it("rejects a non-absolute SYNAPSE_SECRET_TOOL_PATH override, even if fileExists would resolve it", async () => {
+    process.env[SECRET_TOOL_PATH_ENV] = "secret-tool"
+    const exec = fakeExec(() => ({ code: 0, stdout: "", stderr: "" }))
+    // Simulate the override "resolving" via a cwd-relative fs.access hit —
+    // it must still be rejected for not being an absolute path.
+    const fileExists = vi.fn(
+      async (p: string) => p === "secret-tool" || p === "/usr/bin/secret-tool"
+    )
+    const helper = createLinuxCredentialHelper(exec, { fileExists })
+    await helper.store("k", "v")
+    expect(exec).toHaveBeenCalledWith(
+      "/usr/bin/secret-tool",
+      expect.arrayContaining(["store"]),
+      "v"
+    )
+  })
+
   // Regression test: an earlier version fell back to `exec("which", ["secret-tool"])`
   // and trusted whatever path it returned. That's still a PATH search — a
   // malicious `which` (or a hijacked `secret-tool` that `which` legitimately
