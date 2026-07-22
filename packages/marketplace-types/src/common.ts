@@ -29,15 +29,20 @@ export const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/)
 export const timestampSchema = z.iso.datetime()
 
 /** An https URL — the marketplace never serves plugin payloads over plaintext.
- *  Also rejects shell metacharacters (`&|;` and backtick/newline) as defense
+ *  Also rejects shell metacharacters (`|;` and backtick/newline) as defense
  *  in depth: a `verificationUri`-shaped value flows into an OS "open in
  *  browser" call downstream (plugin-cli's `openBrowser`), and this schema is
- *  the first gate a malicious/compromised server's response passes through. */
+ *  the first gate a malicious/compromised server's response passes through.
+ *  `&` is deliberately NOT in this set — it's the standard query-parameter
+ *  separator (`URLSearchParams.toString()` joins with it), and any real
+ *  multi-param url — including GitHub's own OAuth authorize url — has one.
+ *  Rejecting it broke device-code login outright (every /auth/device/start
+ *  response failed schema validation). */
 export const httpsUrlSchema = z
   .string()
   .url()
   .startsWith("https://")
-  .refine((url) => !/[&|;`\n\r]/.test(url), {
+  .refine((url) => !/[|;`\n\r]/.test(url), {
     message: "url must not contain shell metacharacters",
   })
 
