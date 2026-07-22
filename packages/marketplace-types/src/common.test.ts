@@ -10,6 +10,10 @@ describe("httpsUrlSchema", () => {
     expect(httpsUrlSchema.safeParse("http://example.com").success).toBe(false)
   })
 
+  it("rejects a non-url string", () => {
+    expect(httpsUrlSchema.safeParse("not a url").success).toBe(false)
+  })
+
   // Regression test: `&` is the standard query-param separator
   // (URLSearchParams.toString() joins with it), and any real multi-param
   // url has one — most notably GitHub's own OAuth authorize url, which is
@@ -22,17 +26,20 @@ describe("httpsUrlSchema", () => {
     expect(httpsUrlSchema.safeParse(url).success).toBe(true)
   })
 
-  // A verificationUri containing shell metacharacters is passed to an OS
-  // "open in browser" call downstream (packages/plugin-cli/src/cli.ts).
-  // Rejecting them here is defense in depth so a malicious/compromised
-  // marketplace server can never even get a schema-valid response accepted,
-  // regardless of how the CLI later opens the URL.
+  // Regression test: `;` is a legal URL sub-delimiter per RFC 3986 and can
+  // appear in a real, well-formed query string. An earlier version of this
+  // schema rejected it (and `|`, backtick, newline) as "shell
+  // metacharacters" — that check was removed entirely, since `openBrowser`
+  // (plugin-cli/src/cli.ts) uses the `open` package, which never spawns a
+  // shell around the url, so there's no injection vector left downstream
+  // for a url-shape check to defend against.
   it.each([
-    "https://example.com/verify?code=ABC123|calc.exe",
-    "https://example.com/verify?code=ABC123;calc.exe",
-    "https://example.com/verify?code=`calc.exe`",
-    "https://example.com/verify?code=ABC123\ncalc.exe",
-  ])("rejects a url containing shell metacharacters: %s", (url) => {
-    expect(httpsUrlSchema.safeParse(url).success).toBe(false)
-  })
+    "https://example.com/verify?code=ABC123;more",
+    "https://example.com/verify?code=ABC123|more",
+  ])(
+    "accepts a url containing characters an earlier version rejected as shell metacharacters: %s",
+    (url) => {
+      expect(httpsUrlSchema.safeParse(url).success).toBe(true)
+    }
+  )
 })
