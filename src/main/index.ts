@@ -462,37 +462,45 @@ function bindCapabilityPromptLifecycle(win: BrowserWindow): void {
 }
 
 function registerIpc(): void {
-  ipcMain.handle("launcher:search", (_event, query: unknown) => {
+  ipcMain.handle("launcher:search", (event, query: unknown) => {
+    if (!isTrustedIpcSender(event)) return []
     return launcher.search(typeof query === "string" ? query : "")
   })
 
-  ipcMain.handle("launcher:launch", async (_event, id: unknown) => {
-    if (typeof id !== "string") return false
+  ipcMain.handle("launcher:launch", async (event, id: unknown) => {
+    if (!isTrustedIpcSender(event) || typeof id !== "string") return false
     const ok = await launcher.launchById(id)
     if (ok) hideSearchWindow()
     return ok
   })
 
-  ipcMain.handle("launcher:refresh", () => launcher.refreshApps())
+  ipcMain.handle("launcher:refresh", (event) => {
+    if (!isTrustedIpcSender(event)) return []
+    return launcher.refreshApps()
+  })
 
-  ipcMain.handle("launcher:frequent", (_event, limit: unknown) => {
+  ipcMain.handle("launcher:frequent", (event, limit: unknown) => {
+    if (!isTrustedIpcSender(event)) return []
     return launcher.getFrequentApps(typeof limit === "number" ? limit : undefined)
   })
 
-  ipcMain.handle("launcher:remove-frequent", (_event, id: unknown) => {
-    if (typeof id !== "string") return
+  ipcMain.handle("launcher:remove-frequent", (event, id: unknown) => {
+    if (!isTrustedIpcSender(event) || typeof id !== "string") return
     return launcher.removeFrequentApp(id)
   })
 
-  ipcMain.handle("launcher:pause-hotkey", () => {
+  ipcMain.handle("launcher:pause-hotkey", (event) => {
+    if (!isTrustedIpcSender(event)) return
     suspendGlobalShortcut()
   })
 
-  ipcMain.handle("launcher:resume-hotkey", () => {
+  ipcMain.handle("launcher:resume-hotkey", (event) => {
+    if (!isTrustedIpcSender(event)) return false
     return resumeGlobalShortcut(() => toggleSearchWindow(searchWindowDeps()))
   })
 
-  ipcMain.handle("launcher:hide", () => {
+  ipcMain.handle("launcher:hide", (event) => {
+    if (!isTrustedIpcSender(event)) return
     hideSearchWindow()
   })
 
@@ -516,39 +524,49 @@ function registerIpc(): void {
   })
 
   ipcMain.handle("window:set-title-bar-dimmed", (event, dimmed: unknown) => {
+    if (!isTrustedIpcSender(event)) return
     titleBarDimmed = dimmed === true
     const win = BrowserWindow.fromWebContents(event.sender)
     if (win) applyTitleBarScheme(win, launcher.getSettings().themeMode)
   })
 
   ipcMain.on("launcher:ready", (event) => {
+    if (!isTrustedIpcSender(event)) return
     markSearchWindowReady(event.sender)
   })
 
-  ipcMain.handle("floating-ball:toggle-menu", () => {
+  ipcMain.handle("floating-ball:toggle-menu", (event) => {
+    if (!isTrustedIpcSender(event)) return
     toggleFloatingBallMenu()
   })
 
-  ipcMain.handle("floating-ball:open-feature", (_event, feature: unknown) => {
+  ipcMain.handle("floating-ball:open-feature", (event, feature: unknown) => {
+    if (!isTrustedIpcSender(event)) return
     if (feature === "appLauncher") {
       openFloatingBallFeature(feature)
     }
   })
 
-  ipcMain.handle("floating-ball:hide", async () => {
+  ipcMain.handle("floating-ball:hide", async (event) => {
+    if (!isTrustedIpcSender(event)) return
     await disableFloatingBall()
   })
 
-  ipcMain.handle("floating-ball:move-by", (_event, delta: unknown) => {
+  ipcMain.handle("floating-ball:move-by", (event, delta: unknown) => {
+    if (!isTrustedIpcSender(event)) return
     if (!delta || typeof delta !== "object") return
     const value = delta as Record<string, unknown>
     if (typeof value.x !== "number" || typeof value.y !== "number") return
     moveFloatingBallBy({ x: value.x, y: value.y })
   })
 
-  ipcMain.handle("settings:get", () => launcher.getSettings())
+  ipcMain.handle("settings:get", (event) => {
+    if (!isTrustedIpcSender(event)) return undefined
+    return launcher.getSettings()
+  })
 
-  ipcMain.handle("settings:update", async (_event, patch: unknown) => {
+  ipcMain.handle("settings:update", async (event, patch: unknown) => {
+    if (!isTrustedIpcSender(event)) return launcher.getSettings()
     const previous = launcher.getSettings()
     let next = await launcher.updateSettings(coercePatch(patch))
 
@@ -571,9 +589,10 @@ function registerIpc(): void {
     return next
   })
 
-  ipcMain.handle("ai:list-execution-workspaces", (_event, workspaceId: unknown) =>
-    agent.listWorkspaceRoots(typeof workspaceId === "string" ? workspaceId : "default")
-  )
+  ipcMain.handle("ai:list-execution-workspaces", (event, workspaceId: unknown) => {
+    if (!isTrustedIpcSender(event)) return []
+    return agent.listWorkspaceRoots(typeof workspaceId === "string" ? workspaceId : "default")
+  })
 
   registerPluginIpc(ipcMain, plugins, {
     isTrustedSender: isTrustedIpcSender,
@@ -709,7 +728,7 @@ async function importSynapseFromOs(filePath: string): Promise<void> {
   }
 }
 
-function isTrustedIpcSender(event: IpcMainInvokeEvent): boolean {
+function isTrustedIpcSender(event: Pick<IpcMainInvokeEvent, "senderFrame" | "sender">): boolean {
   const url = event.senderFrame?.url || event.sender.getURL()
   let target: URL
   try {
