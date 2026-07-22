@@ -27,12 +27,18 @@ interface ConfigFile {
  * (`credentials.json`'s `mode: 0o600` doesn't mean anything on Windows).
  */
 export function fileCredentialStore(
-  options: { dir?: string; helper?: CredentialHelper } = {}
+  options: {
+    dir?: string
+    helper?: CredentialHelper
+    /** Test-only seam for injecting a legacy-file-deletion failure. */
+    deleteLegacyFile?: (filePath: string) => Promise<void>
+  } = {}
 ): CredentialStore {
   const dir = options.dir ?? path.join(os.homedir(), ".synapse")
   const configFile = path.join(dir, "config.json")
   const legacyFile = path.join(dir, "credentials.json")
   const helper = options.helper === undefined ? resolveCredentialHelper() : options.helper
+  const deleteFile = options.deleteLegacyFile ?? ((filePath: string) => fs.rm(filePath))
 
   function credentialIdFor(baseUrl: string): string {
     return `synapse-cli:${baseUrl}`
@@ -53,17 +59,13 @@ export function fileCredentialStore(
     await fs.writeFile(configFile, JSON.stringify(data, null, 2))
   }
 
-  // One-time migration off the previous implementation's plaintext
-  // ~/.synapse/credentials.json. Tokens it can migrate (helper available,
-  // server not already present in the new config) move into the
-  // helper-backed store; the plaintext file is deleted afterward no matter
-  // what — leaving a stale plaintext copy of a secret (or an unparseable
-  // remnant of one) on disk is exactly the vulnerability this store
-  // replaces, migrated or not. This function must never reject: a rejected
-  // promise here would memoize permanently (see `migration` below), turning
-  // one transient failure (a locked keyring, a corrupt legacy file) into a
-  // permanently broken store for the rest of the process.
-  async function migrateLegacyCredentials(): Promise<void> {
+  // One-time migration of tokens off the previous implementation's
+  // plaintext ~/.synapse/credentials.json into the helper-backed store.
+  // Must never reject: a rejected promise here would memoize permanently
+  // (see `tokenMigration` below), turning one transient failure (a locked
+  // keyring, a corrupt legacy file) into a permanently broken store for the
+  // rest of the process.
+  async function migrateLegacyTokens(): Promise<void> {
     let legacyRaw: string
     try {
       legacyRaw = await fs.readFile(legacyFile, "utf-8")
@@ -71,43 +73,68 @@ export function fileCredentialStore(
       return // no legacy file — nothing to migrate
     }
 
+    let legacyTokens: Record<string, string> = {}
     try {
-      let legacyTokens: Record<string, string> = {}
-      try {
-        legacyTokens = (JSON.parse(legacyRaw) as { tokens?: Record<string, string> }).tokens ?? {}
-      } catch {
-        // Corrupt/unreadable JSON — nothing parseable to migrate. Still
-        // falls through to the `finally` below, which deletes the file.
-      }
+      legacyTokens = (JSON.parse(legacyRaw) as { tokens?: Record<string, string> }).tokens ?? {}
+    } catch {
+      return // corrupt/unreadable JSON — nothing parseable to migrate
+    }
 
-      const config = await readConfig()
-      let changed = false
-      for (const [baseUrl, token] of Object.entries(legacyTokens)) {
-        if (config.servers[baseUrl]) continue
-        if (!helper) continue
-        try {
-          if (!(await helper.isAvailable())) continue
-          const credentialId = credentialIdFor(baseUrl)
-          await helper.store(credentialId, token)
-          config.servers[baseUrl] = { credentialId }
-          changed = true
-        } catch {
-          // This one entry couldn't be migrated (e.g. the keyring is
-          // locked) — leave it out of the new config (the user re-logs-in
-          // for that server) rather than aborting the rest of the
-          // migration or leaving the plaintext file behind because of it.
+    const config = await readConfig()
+    const storedThisRun: string[] = []
+    for (const [baseUrl, token] of Object.entries(legacyTokens)) {
+      if (config.servers[baseUrl]) continue
+      if (!helper) continue
+      try {
+        if (!(await helper.isAvailable())) continue
+        const credentialId = credentialIdFor(baseUrl)
+        await helper.store(credentialId, token)
+        config.servers[baseUrl] = { credentialId }
+        storedThisRun.push(credentialId)
+      } catch {
+        // This one entry couldn't be migrated (e.g. the keyring is
+        // locked) — leave it out of the new config (the user re-logs-in
+        // for that server) rather than aborting the rest of the
+        // migration or leaving the plaintext file behind because of it.
+      }
+    }
+
+    if (storedThisRun.length > 0) {
+      try {
+        await writeConfig(config)
+      } catch {
+        // The metadata write is what makes each credentialId reachable at
+        // all. If it fails, none of the tokens stored this run were ever
+        // recorded, so roll them all back rather than leaving them
+        // orphaned in the Keychain/DPAPI/Secret Service forever.
+        for (const credentialId of storedThisRun) {
+          await helper?.erase(credentialId).catch(() => {})
         }
       }
-      if (changed) await writeConfig(config).catch(() => {})
-    } finally {
-      await fs.rm(legacyFile, { force: true }).catch(() => {})
     }
   }
 
-  let migration: Promise<void> | undefined
+  // Deletion of the legacy plaintext file is retried on every access (not
+  // just once) — leaving a stale plaintext copy of a secret on disk is
+  // exactly the vulnerability this store replaces, so a transient failure
+  // (permission denied, a lock held by another process) must not be
+  // silently accepted as "done"; it must keep getting retried until it
+  // actually succeeds. `force`-style ENOENT suppression is handled
+  // explicitly so a real failure is distinguishable from "already gone".
+  async function tryDeleteLegacyFile(): Promise<void> {
+    // ENOENT means it's already gone — nothing to do. Anything else is a
+    // real failure, deliberately not treated as success: this function
+    // still doesn't throw (a stuck legacy file must never break ordinary
+    // get/set/clear), but `ensureMigrated()` calls this on every access, so
+    // a transient failure keeps getting retried rather than being
+    // memoized as a final outcome.
+    await deleteFile(legacyFile).catch(() => {})
+  }
+
+  let tokenMigration: Promise<void> | undefined
   function ensureMigrated(): Promise<void> {
-    migration ??= migrateLegacyCredentials()
-    return migration
+    tokenMigration ??= migrateLegacyTokens()
+    return tokenMigration.then(() => tryDeleteLegacyFile())
   }
 
   return {
@@ -133,7 +160,16 @@ export function fileCredentialStore(
       await helper.store(credentialId, token)
       const config = await readConfig()
       config.servers[baseUrl] = { credentialId }
-      await writeConfig(config)
+      try {
+        await writeConfig(config)
+      } catch (err) {
+        // The metadata write is what makes this credentialId reachable at
+        // all — if it fails, the secret we just stored would otherwise sit
+        // in the Keychain/DPAPI/Secret Service forever with nothing ever
+        // able to reference or erase it again.
+        await helper.erase(credentialId).catch(() => {})
+        throw err
+      }
     },
 
     async clear(baseUrl) {

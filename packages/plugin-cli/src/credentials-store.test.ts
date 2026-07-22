@@ -3,7 +3,7 @@ import type { CredentialHelper } from "./credential-helper/types"
 import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { fileCredentialStore } from "./credentials-store"
 
 let dir: string
@@ -112,6 +112,20 @@ describe("fileCredentialStore", () => {
     expect(await store.get("https://a.test")).toBeUndefined()
   })
 
+  it("rolls back the just-stored credential if writing the metadata fails, so it isn't left orphaned", async () => {
+    // Occupy config.json's path with a directory so fs.writeFile(configFile, ...)
+    // deterministically fails with EISDIR, without needing OS-specific
+    // permission/locking tricks.
+    await fs.mkdir(path.join(dir, "config.json"))
+    const helper = fakeHelper()
+    const eraseSpy = vi.spyOn(helper, "erase")
+
+    const store = fileCredentialStore({ dir, helper })
+    await expect(store.set("https://a.test", "token-a")).rejects.toThrow()
+
+    expect(eraseSpy).toHaveBeenCalledWith("synapse-cli:https://a.test")
+  })
+
   describe("legacy plaintext migration", () => {
     async function writeLegacyCredentials(tokens: Record<string, string>): Promise<string> {
       await fs.mkdir(dir, { recursive: true })
@@ -196,6 +210,46 @@ describe("fileCredentialStore", () => {
       await expect(fs.access(legacyFile)).rejects.toThrow()
       // The store must remain usable, not permanently wedged by the bad file.
       await expect(store.set("https://a.test", "token-a")).resolves.toBeUndefined()
+    })
+
+    it("rolls back migrated credentials if writing the metadata fails during migration", async () => {
+      await writeLegacyCredentials({ "https://a.test": "old-plaintext-token" })
+      // Occupy config.json's path with a directory so writeConfig()
+      // deterministically fails during the migration attempt.
+      await fs.mkdir(path.join(dir, "config.json"))
+      const helper = fakeHelper()
+      const eraseSpy = vi.spyOn(helper, "erase")
+
+      const store = fileCredentialStore({ dir, helper })
+      await store.get("https://a.test")
+
+      expect(eraseSpy).toHaveBeenCalledWith("synapse-cli:https://a.test")
+    })
+
+    it("keeps retrying legacy-file deletion on later access when an earlier attempt failed, instead of silently accepting it as permanent", async () => {
+      const legacyFile = await writeLegacyCredentials({ "https://a.test": "old-plaintext-token" })
+      const helper = fakeHelper()
+      let attempts = 0
+      const deleteLegacyFile = vi.fn(async (filePath: string) => {
+        attempts += 1
+        if (attempts === 1) {
+          const err = new Error("EBUSY: resource busy or locked") as NodeJS.ErrnoException
+          err.code = "EBUSY"
+          throw err
+        }
+        await fs.rm(filePath)
+      })
+
+      const store = fileCredentialStore({ dir, helper, deleteLegacyFile })
+      await store.get("https://a.test")
+      // First deletion attempt failed — the file must still be there, not
+      // silently treated as cleaned up.
+      await expect(fs.access(legacyFile)).resolves.toBeUndefined()
+
+      await store.get("https://a.test")
+      // Second attempt (same store instance) succeeds.
+      await expect(fs.access(legacyFile)).rejects.toThrow()
+      expect(deleteLegacyFile).toHaveBeenCalledTimes(2)
     })
   })
 })
