@@ -88,6 +88,33 @@ describe("pluginRegistry", () => {
     expect(sandbox.unloadPlugin).toHaveBeenCalledWith("com.synapse.test")
   })
 
+  it("marks plugins crashed when a trigger handler is not exported by the plugin module", async () => {
+    const baseModule = moduleFromManifest(manifest())
+    // The module never exports a `triggers.onTick` handler, but the manifest
+    // declares one — this must fail loudly at load time instead of silently
+    // no-oping the first time the trigger fires (plugin-sandbox.ts's
+    // dispatchTrigger returns early when the handler is missing).
+    const sandbox = fakeSandbox({ ...baseModule, triggers: {} })
+    const registry = new PluginRegistry({ sandbox })
+
+    await registry.load([
+      discovered({
+        triggers: [
+          {
+            id: "tick",
+            type: "timer",
+            handler: "triggers.onTick",
+            schedule: { intervalMs: 60_000 },
+            uses: [],
+          },
+        ],
+      }),
+    ])
+
+    expect(registry.get("com.synapse.test")?.status).toBe("crashed")
+    expect(sandbox.unloadPlugin).toHaveBeenCalledWith("com.synapse.test")
+  })
+
   it("marks plugins crashed and rethrows a typed sentinel when command invocation throws", async () => {
     const sandbox = fakeSandbox()
     sandbox.invokeCommand = vi.fn<PluginSandboxRuntime["invokeCommand"]>(() => {
@@ -384,6 +411,7 @@ function discovered(
     activationEvents?: PluginManifest["contributes"]["activationEvents"]
     permissions?: string[]
     tools?: PluginManifest["contributes"]["tools"]
+    triggers?: PluginManifest["triggers"]
   } = {}
 ): DiscoveredPlugin {
   const pluginManifest = manifest(overrides)
@@ -404,6 +432,7 @@ function manifest(
     activationEvents?: PluginManifest["contributes"]["activationEvents"]
     permissions?: string[]
     tools?: PluginManifest["contributes"]["tools"]
+    triggers?: PluginManifest["triggers"]
   } = {}
 ): PluginManifest {
   const id = overrides.id ?? "com.synapse.test"
@@ -431,6 +460,7 @@ function manifest(
       ],
       tools: overrides.tools,
     },
+    triggers: overrides.triggers,
     capabilities: (
       overrides.permissions ??
       (overrides.activationEvents?.includes("clipboard:change") ? ["clipboard:watch"] : [])

@@ -1,3 +1,4 @@
+import type { TriggerDeclaration } from "@synapse/plugin-manifest"
 import type {
   ClipboardContent,
   LocalizedString,
@@ -145,6 +146,7 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
       })
       validateManifestCommands(entry.manifest.contributes.commands, loaded.module.commands)
       validateManifestTools(entry.manifest.contributes.tools, loaded.module.tools)
+      validateManifestTriggers(entry.manifest.triggers, loaded.module.triggers)
       validateActivationEvents(entry.manifest, loaded.module)
       this.indexActivationEvents(entry.manifest, loaded.module)
       const next = { ...entry, status: "active" as const, error: undefined, loadedAt: this.now() }
@@ -336,6 +338,7 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
       const loaded = await this.options.sandbox.loadPlugin(plugin)
       validateManifestCommands(plugin.manifest.contributes.commands, loaded.module.commands)
       validateManifestTools(plugin.manifest.contributes.tools, loaded.module.tools)
+      validateManifestTriggers(plugin.manifest.triggers, loaded.module.triggers)
       validateActivationEvents(plugin.manifest, loaded.module)
       this.indexActivationEvents(plugin.manifest, loaded.module)
       const entry: PluginRegistryEntry = {
@@ -458,6 +461,20 @@ function validateManifestTools(
   for (const tool of tools ?? []) {
     if (!exported?.[tool.name]) {
       throw new Error(`Manifest tool is not exported by plugin module: ${tool.name}`)
+    }
+  }
+}
+
+function validateManifestTriggers(
+  triggers: TriggerDeclaration[] | undefined,
+  exported: Record<string, unknown> | undefined
+): void {
+  for (const trigger of triggers ?? []) {
+    const exportName = trigger.handler.slice("triggers.".length)
+    if (typeof exported?.[exportName] !== "function") {
+      throw new TypeError(
+        `Manifest trigger handler is not exported by plugin module: ${trigger.handler}`
+      )
     }
   }
 }
