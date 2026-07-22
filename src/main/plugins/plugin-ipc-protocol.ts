@@ -4,11 +4,12 @@ import type { ToolCaller, ToolContentBlock } from "@synapse/plugin-sdk"
 /**
  * Message shapes exchanged between the host process and a plugin's
  * `utilityProcess` child over a `MessagePortMain`. Plugin code runs in its
- * own OS process here (Critical #1 — see plugin-process-host.ts) instead of
- * a `node:vm` context in the host process: there is no shared V8 heap,
- * `require` cache, or object graph, so the escape this replaces (a captured
- * host function reference reaching real `process`/`require` via
- * `Function.constructor`) has nothing to capture.
+ * own OS process here (Critical #1 — see plugin-process-host.ts, not yet
+ * written) instead of a `node:vm` context in the host process: there is no
+ * shared V8 heap, `require` cache, or object graph, so the ORIGINAL escape
+ * this replaces (a captured host function reference reaching the HOST's
+ * real `process`/`require` via `Function.constructor`, from inside the
+ * host's own memory space) has nothing to capture.
  *
  * Capability-gate state (grants, prompts, budgets, `CapabilityGovernance`)
  * stays entirely host-side. The child only ever carries opaque ids
@@ -16,6 +17,23 @@ import type { ToolCaller, ToolContentBlock } from "@synapse/plugin-sdk"
  * function reference, or secret. Every capability call the child's thin
  * `ctx` stub makes is a plain, serializable request; the host looks up the
  * real `PluginBridge`-backed implementation itself.
+ *
+ * IMPORTANT — what this protocol alone does NOT provide: OS-process
+ * isolation only guarantees the plugin can't reach INTO the host's memory.
+ * It says nothing about what the plugin can reach from INSIDE its own
+ * process. Unless plugin-runtime-entry.ts (not yet written) also restricts
+ * the child's own Node environment — e.g. by intercepting `require`/
+ * `Module._load` before the plugin's code loads so `require("fs")`,
+ * `require("child_process")`, `require("net")`, etc. are unavailable or
+ * shimmed, and by minimizing the child's inherited environment variables —
+ * a plugin running in this child has completely unrestricted, ungated
+ * access to the real filesystem, network, environment, and process APIs.
+ * It would have no NEED to go through the capability-call protocol below
+ * at all, and every capability gate this design relies on would be
+ * bypassable by the plugin simply choosing not to use `ctx`. Closing that
+ * gap is a hard requirement for this migration to actually deliver its
+ * stated security goal, not an optional hardening pass — it is unresolved
+ * as of this file; do not treat process isolation alone as "done."
  */
 
 // ── Command / tool / event / trigger invocation (host -> child) ──────────
@@ -281,4 +299,180 @@ export function deserializeError(serialized: SerializedError): Error {
   const err = new Error(serialized.message)
   if (serialized.stack) err.stack = serialized.stack
   return err
+}
+
+// ── Runtime validation for messages arriving from the child ──────────────
+//
+// TypeScript types are erased at runtime and enforce nothing on a message
+// that actually crosses the process boundary — a compromised or merely
+// buggy child process is untrusted input from the host's point of view,
+// exactly like any other IPC sender. `parseChildToHostMessage` is the gate
+// every message from a plugin's utilityProcess must pass before the host's
+// dispatcher (plugin-process-host.ts, not yet written) acts on it: right
+// shape, right types, and bounded sizes so a malformed or oversized message
+// can't wedge the host's call-tracking state or exhaust memory.
+//
+// This validates STRUCTURE, not tool-result content safety in depth — the
+// pre-migration sandbox's `cloneToolResultInContext`/`boundNonStreamingToolResult`
+// (plugin-sandbox.ts) additionally guarded against a plugin returning a
+// Proxy/accessor-backed object; `MessagePortMain`'s structured clone can't
+// carry a live Proxy or getter across a process boundary the way `node:vm`
+// could within one, so that specific attack is closed by construction here,
+// but the same JSON-shape/size validation `boundNonStreamingToolResult`
+// already does downstream still applies on top of this structural check.
+
+const MAX_ID_LENGTH = 200
+const MAX_MESSAGE_LENGTH = 8_000
+const MAX_ARGS = 32
+const MAX_CONTENT_BLOCKS = 256
+
+/** Every `ctx.*` method reachable through the generic capability-call
+ *  envelope — the host dispatcher's allowlist. A `capability-call` naming
+ *  anything else is rejected here, before it ever reaches a dispatch table
+ *  that might (through a bug) resolve an unintended host method by string. */
+export const CAPABILITY_NAMES: ReadonlySet<string> = new Set([
+  "storage.get",
+  "storage.set",
+  "storage.delete",
+  "storage.list",
+  "clipboard.read",
+  "clipboard.write",
+  "clipboard.watch",
+  "clipboard.unwatch",
+  "clipboard.readText",
+  "clipboard.writeText",
+  "notifications.show",
+  "system.openUrl",
+  "system.openPath",
+  "system.captureScreen",
+  "network.fetch",
+  "network.fetchStream",
+  "fs.resolvePath",
+  "fs.readText",
+  "fs.writeText",
+  "fs.mkdir",
+  "fs.move",
+  "credentials.status",
+  "credentials.requestConnect",
+  "log",
+])
+
+function isString(v: unknown, maxLen = MAX_ID_LENGTH): v is string {
+  return typeof v === "string" && v.length <= maxLen
+}
+
+function isNonEmptyString(v: unknown, maxLen = MAX_ID_LENGTH): v is string {
+  return isString(v, maxLen) && v.length > 0
+}
+
+function isBoolean(v: unknown): v is boolean {
+  return typeof v === "boolean"
+}
+
+function isSerializedError(v: unknown): v is SerializedError {
+  if (!v || typeof v !== "object") return false
+  const e = v as Record<string, unknown>
+  if (!isNonEmptyString(e.message, MAX_MESSAGE_LENGTH)) return false
+  if (e.stack !== undefined && !isString(e.stack, MAX_MESSAGE_LENGTH)) return false
+  return true
+}
+
+/** Every result message shares `{ callId, ok, error? }`; `ok: false` requires
+ *  a valid SerializedError, `ok: true` must not carry one (unambiguous). */
+function hasValidResultEnvelope(v: Record<string, unknown>): boolean {
+  if (!isNonEmptyString(v.callId)) return false
+  if (!isBoolean(v.ok)) return false
+  if (v.ok) return v.error === undefined
+  return isSerializedError(v.error)
+}
+
+function isToolContentBlock(v: unknown): boolean {
+  if (!v || typeof v !== "object") return false
+  const b = v as Record<string, unknown>
+  if (b.type === "text") return isString(b.text, MAX_MESSAGE_LENGTH)
+  if (b.type === "json") return true
+  if (b.type === "image") return isNonEmptyString(b.path) && isNonEmptyString(b.mimeType, 200)
+  return false
+}
+
+export function parseChildToHostMessage(raw: unknown): ChildToHostMessage | undefined {
+  if (!raw || typeof raw !== "object") return undefined
+  const v = raw as Record<string, unknown>
+  if (!isString(v.type, 64)) return undefined
+
+  switch (v.type) {
+    case "load-plugin-result": {
+      if (!hasValidResultEnvelope(v)) return undefined
+      if (v.value !== undefined) {
+        const value = v.value as Record<string, unknown>
+        if (!value || typeof value !== "object") return undefined
+        if (
+          !Array.isArray(value.commandIds) ||
+          value.commandIds.length > MAX_ARGS ||
+          !value.commandIds.every((id) => isString(id))
+        )
+          return undefined
+        if (
+          !Array.isArray(value.toolNames) ||
+          value.toolNames.length > MAX_ARGS ||
+          !value.toolNames.every((id) => isString(id))
+        )
+          return undefined
+        if (!isBoolean(value.hasClipboardChangeHandler)) return undefined
+      }
+      return v as unknown as LoadPluginResultMessage
+    }
+
+    case "invoke-command-result":
+    case "dispose-command-result":
+    case "dispatch-event-result":
+    case "dispatch-trigger-result": {
+      if (!hasValidResultEnvelope(v)) return undefined
+      return v as unknown as ChildToHostMessage
+    }
+
+    case "invoke-tool-result": {
+      if (!hasValidResultEnvelope(v)) return undefined
+      if (v.value !== undefined) {
+        const value = v.value as Record<string, unknown>
+        if (!value || typeof value !== "object") return undefined
+        if (
+          !Array.isArray(value.content) ||
+          value.content.length > MAX_CONTENT_BLOCKS ||
+          !value.content.every(isToolContentBlock)
+        )
+          return undefined
+        if (value.isError !== undefined && !isBoolean(value.isError)) return undefined
+      }
+      return v as unknown as InvokeToolResultMessage
+    }
+
+    case "tool-progress": {
+      if (!isNonEmptyString(v.callId)) return undefined
+      if (typeof v.pct !== "number" || !Number.isFinite(v.pct)) return undefined
+      if (v.message !== undefined && !isString(v.message, MAX_MESSAGE_LENGTH)) return undefined
+      return v as unknown as ToolProgressMessage
+    }
+
+    case "capability-call": {
+      if (!isNonEmptyString(v.callId)) return undefined
+      if (!isNonEmptyString(v.invocationId)) return undefined
+      if (!isString(v.capability, 100) || !CAPABILITY_NAMES.has(v.capability)) return undefined
+      if (!Array.isArray(v.args) || v.args.length > MAX_ARGS) return undefined
+      return v as unknown as CapabilityCallMessage
+    }
+
+    case "stream-cancel": {
+      if (!isNonEmptyString(v.streamId)) return undefined
+      return v as unknown as StreamCancelMessage
+    }
+
+    case "child-fault": {
+      if (!isSerializedError(v.error)) return undefined
+      return v as unknown as ChildFaultMessage
+    }
+
+    default:
+      return undefined
+  }
 }
