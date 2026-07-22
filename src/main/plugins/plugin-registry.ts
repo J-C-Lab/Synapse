@@ -58,6 +58,8 @@ export interface PluginRegistryOptions {
 interface CommandIndexEntry {
   pluginId: string
   command: ManifestCommand
+  /** The plugin manifest's top-level icon, used when the command declares none of its own. */
+  manifestIcon?: string
 }
 
 interface ToolIndexEntry {
@@ -174,7 +176,7 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
         commandId: indexed.command.id,
         title: indexed.command.title,
         subtitle: indexed.command.subtitle,
-        icon: indexed.command.icon,
+        icon: indexed.command.icon ?? indexed.manifestIcon,
         mode: indexed.command.mode,
         score: match.score,
         matches: match.matches,
@@ -371,6 +373,7 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
       this.commandIndex.set(commandIndexKey(entry.pluginId, command.id), {
         pluginId: entry.pluginId,
         command,
+        manifestIcon: entry.manifest.icon,
       })
     }
   }

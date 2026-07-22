@@ -28,6 +28,24 @@ describe("pluginRegistry", () => {
     expect(changed).toHaveBeenCalledOnce()
   })
 
+  it("falls back to the manifest's top-level icon when a command declares none of its own", async () => {
+    const sandbox = fakeSandbox()
+    const registry = new PluginRegistry({ sandbox })
+
+    await registry.load([discovered({ icon: "icon.png" })])
+
+    expect(registry.searchCommands("run")[0]?.icon).toBe("icon.png")
+  })
+
+  it("prefers a command's own icon over the manifest's top-level icon", async () => {
+    const sandbox = fakeSandbox()
+    const registry = new PluginRegistry({ sandbox })
+
+    await registry.load([discovered({ icon: "icon.png", commandIcon: "command-icon.png" })])
+
+    expect(registry.searchCommands("run")[0]?.icon).toBe("command-icon.png")
+  })
+
   it("indexes duplicate command ids per plugin", async () => {
     const sandbox = fakeSandbox()
     const registry = new PluginRegistry({ sandbox, now: () => 1 })
@@ -412,6 +430,8 @@ function discovered(
     permissions?: string[]
     tools?: PluginManifest["contributes"]["tools"]
     triggers?: PluginManifest["triggers"]
+    icon?: string
+    commandIcon?: string
   } = {}
 ): DiscoveredPlugin {
   const pluginManifest = manifest(overrides)
@@ -433,6 +453,8 @@ function manifest(
     permissions?: string[]
     tools?: PluginManifest["contributes"]["tools"]
     triggers?: PluginManifest["triggers"]
+    icon?: string
+    commandIcon?: string
   } = {}
 ): PluginManifest {
   const id = overrides.id ?? "com.synapse.test"
@@ -448,6 +470,7 @@ function manifest(
     author: "Synapse",
     engines: { synapse: "^0.1.0" },
     main: "dist/index.js",
+    icon: overrides.icon,
     contributes: {
       activationEvents: overrides.activationEvents,
       commands: [
@@ -456,6 +479,7 @@ function manifest(
           title: { en: title, "zh-CN": "运行测试" },
           mode: "view",
           keywords: ["run"],
+          icon: overrides.commandIcon,
         },
       ],
       tools: overrides.tools,
