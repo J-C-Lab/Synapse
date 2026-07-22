@@ -1023,13 +1023,13 @@ function initPluginHost(): PluginHost {
 
   capabilityService = new CapabilityIpcService(
     () => plugins,
-    createCapabilityPromptSender(broadcast),
+    createCapabilityPromptSender(broadcast, showMainWindow),
     approvalRegistry
   )
 
   hostResourceIpcService = new HostResourceIpcService(
     {
-      ...createHostResourcePromptSender(broadcast),
+      ...createHostResourcePromptSender(broadcast, showMainWindow),
       audit: hostResourceAudit,
     },
     approvalRegistry
@@ -1778,13 +1778,14 @@ function createMainWindow(): BrowserWindow {
   return win
 }
 
-function showMainWindow(): void {
+function showMainWindow(): BrowserWindow {
   if (!mainWindow || mainWindow.isDestroyed()) {
     mainWindow = createMainWindow()
   }
   if (mainWindow.isMinimized()) mainWindow.restore()
   mainWindow.show()
   mainWindow.focus()
+  return mainWindow
 }
 
 function rebindHotkey(accelerator: string): boolean {
