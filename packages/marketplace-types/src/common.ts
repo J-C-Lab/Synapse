@@ -28,8 +28,18 @@ export const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/)
 /** ISO-8601 timestamp string (UTC). Transport-friendly; DBs store as timestamptz. */
 export const timestampSchema = z.iso.datetime()
 
-/** An https URL — the marketplace never serves plugin payloads over plaintext. */
-export const httpsUrlSchema = z.string().url().startsWith("https://")
+/** An https URL — the marketplace never serves plugin payloads over plaintext.
+ *  Also rejects shell metacharacters (`&|;` and backtick/newline) as defense
+ *  in depth: a `verificationUri`-shaped value flows into an OS "open in
+ *  browser" call downstream (plugin-cli's `openBrowser`), and this schema is
+ *  the first gate a malicious/compromised server's response passes through. */
+export const httpsUrlSchema = z
+  .string()
+  .url()
+  .startsWith("https://")
+  .refine((url) => !/[&|;`\n\r]/.test(url), {
+    message: "url must not contain shell metacharacters",
+  })
 
 /**
  * A localized, human-facing string: either a single string or a locale→string

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import type { AccountDeps, CommandIo } from "./account-commands"
 import type { BuildResult } from "./build"
-import { spawn } from "node:child_process"
 import * as path from "node:path"
 import process from "node:process"
 import { ManifestValidationError } from "@synapsepkg/plugin-manifest"
+import open from "open"
 import { runLogin, runLogout, runPublish, runWhoami } from "./account-commands"
 import { buildPlugin, PluginBuildError } from "./build"
 import { fileCredentialStore } from "./credentials-store"
@@ -126,16 +126,16 @@ function realIo(): CommandIo {
   }
 }
 
-function openBrowser(url: string): void {
-  const platform = process.platform
-  const [cmd, cmdArgs] =
-    platform === "win32"
-      ? (["cmd", ["/c", "start", "", url]] as const)
-      : platform === "darwin"
-        ? (["open", [url]] as const)
-        : (["xdg-open", [url]] as const)
+/** Opens a url in the OS default browser via the cross-platform `open`
+ *  package, never through a shell. The previous implementation shelled out
+ *  to `cmd /c start "" <url>` on Windows, and `cmd.exe`'s `start` builtin
+ *  re-parses `&`/`|` in its argument as its own command separators — a
+ *  command-injection path for a url that ultimately comes from the
+ *  marketplace's `verificationUri` response (schema-validated, but this is
+ *  the second, structural layer of defense: no shell in the loop at all). */
+export async function openBrowser(url: string): Promise<void> {
   try {
-    spawn(cmd, [...cmdArgs], { stdio: "ignore", detached: true }).unref()
+    await open(url)
   } catch {
     // best-effort; the user can open the URL manually
   }
