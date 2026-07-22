@@ -263,6 +263,9 @@ module.exports = {
       const entries = (await ctx.storage.get("entries")) ?? []
       await ctx.storage.set("entries", entries.concat(event.content.text))
     }
+  },
+  triggers: {
+    async onTick(event, ctx) {}
   }
 }
 `,
