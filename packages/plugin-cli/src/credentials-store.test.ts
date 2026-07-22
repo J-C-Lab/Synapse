@@ -157,5 +157,45 @@ describe("fileCredentialStore", () => {
       await expect(store.get("https://a.test")).resolves.toBeUndefined()
       await expect(fs.access(path.join(dir, "credentials.json"))).rejects.toThrow()
     })
+
+    it("deletes the plaintext file even when the helper throws migrating one entry (e.g. a locked keyring)", async () => {
+      const legacyFile = await writeLegacyCredentials({
+        "https://a.test": "old-plaintext-token-a",
+        "https://b.test": "old-plaintext-token-b",
+      })
+      const secrets = new Map<string, string>()
+      const helper: CredentialHelper = {
+        name: "linux",
+        isAvailable: async () => true,
+        store: async (key, value) => {
+          if (key.includes("a.test")) throw new Error("keyring is locked")
+          secrets.set(key, value)
+        },
+        retrieve: async (key) => secrets.get(key),
+        erase: async (key) => void secrets.delete(key),
+      }
+
+      const store = fileCredentialStore({ dir, helper })
+      // The failed entry simply isn't migrated (the user re-logs-in for that
+      // server) — but the plaintext file must be gone either way, and the
+      // store must remain fully usable afterward, not permanently wedged.
+      expect(await store.get("https://a.test")).toBeUndefined()
+      expect(await store.get("https://b.test")).toBe("old-plaintext-token-b")
+      await expect(fs.access(legacyFile)).rejects.toThrow()
+      await expect(store.set("https://c.test", "token-c")).resolves.toBeUndefined()
+    })
+
+    it("deletes the plaintext file even when it contains corrupt JSON", async () => {
+      await fs.mkdir(dir, { recursive: true })
+      const legacyFile = path.join(dir, "credentials.json")
+      await fs.writeFile(legacyFile, "{ not valid json, has-a-token: abc123")
+      const helper = fakeHelper()
+
+      const store = fileCredentialStore({ dir, helper })
+      await expect(store.get("https://a.test")).resolves.toBeUndefined()
+      await expect(fs.access(legacyFile)).rejects.toThrow()
+      // The store must remain usable, not permanently wedged by the bad file.
+      await expect(store.set("https://a.test", "token-a")).resolves.toBeUndefined()
+    })
   })
 })

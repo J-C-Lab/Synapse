@@ -56,33 +56,57 @@ export function fileCredentialStore(
   // One-time migration off the previous implementation's plaintext
   // ~/.synapse/credentials.json. Tokens it can migrate (helper available,
   // server not already present in the new config) move into the
-  // helper-backed store; the plaintext file is deleted afterward
-  // regardless — leaving a stale plaintext copy of a secret on disk is
-  // exactly the vulnerability this store replaces, migrated or not.
-  let migration: Promise<void> | undefined
-  function ensureMigrated(): Promise<void> {
-    migration ??= (async () => {
-      let legacyTokens: Record<string, string>
+  // helper-backed store; the plaintext file is deleted afterward no matter
+  // what — leaving a stale plaintext copy of a secret (or an unparseable
+  // remnant of one) on disk is exactly the vulnerability this store
+  // replaces, migrated or not. This function must never reject: a rejected
+  // promise here would memoize permanently (see `migration` below), turning
+  // one transient failure (a locked keyring, a corrupt legacy file) into a
+  // permanently broken store for the rest of the process.
+  async function migrateLegacyCredentials(): Promise<void> {
+    let legacyRaw: string
+    try {
+      legacyRaw = await fs.readFile(legacyFile, "utf-8")
+    } catch {
+      return // no legacy file — nothing to migrate
+    }
+
+    try {
+      let legacyTokens: Record<string, string> = {}
       try {
-        const raw = await fs.readFile(legacyFile, "utf-8")
-        legacyTokens = (JSON.parse(raw) as { tokens?: Record<string, string> }).tokens ?? {}
+        legacyTokens = (JSON.parse(legacyRaw) as { tokens?: Record<string, string> }).tokens ?? {}
       } catch {
-        return
+        // Corrupt/unreadable JSON — nothing parseable to migrate. Still
+        // falls through to the `finally` below, which deletes the file.
       }
 
       const config = await readConfig()
       let changed = false
       for (const [baseUrl, token] of Object.entries(legacyTokens)) {
         if (config.servers[baseUrl]) continue
-        if (!helper || !(await helper.isAvailable())) continue
-        const credentialId = credentialIdFor(baseUrl)
-        await helper.store(credentialId, token)
-        config.servers[baseUrl] = { credentialId }
-        changed = true
+        if (!helper) continue
+        try {
+          if (!(await helper.isAvailable())) continue
+          const credentialId = credentialIdFor(baseUrl)
+          await helper.store(credentialId, token)
+          config.servers[baseUrl] = { credentialId }
+          changed = true
+        } catch {
+          // This one entry couldn't be migrated (e.g. the keyring is
+          // locked) — leave it out of the new config (the user re-logs-in
+          // for that server) rather than aborting the rest of the
+          // migration or leaving the plaintext file behind because of it.
+        }
       }
-      if (changed) await writeConfig(config)
-      await fs.rm(legacyFile, { force: true })
-    })()
+      if (changed) await writeConfig(config).catch(() => {})
+    } finally {
+      await fs.rm(legacyFile, { force: true }).catch(() => {})
+    }
+  }
+
+  let migration: Promise<void> | undefined
+  function ensureMigrated(): Promise<void> {
+    migration ??= migrateLegacyCredentials()
     return migration
   }
 
