@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import {
   CAPABILITY_NAMES,
   deserializeError,
@@ -151,6 +151,18 @@ describe("parseChildToHostMessage", () => {
     it("rejects a non-array content field", () => {
       const msg = { type: "invoke-tool-result", callId: "c1", ok: true, value: { content: "nope" } }
       expect(parseChildToHostMessage(msg)).toBeUndefined()
+    })
+
+    it("rejects an accessor-backed content property without ever invoking its getter", () => {
+      // A plugin's tool handler is untrusted input from the host's point of
+      // view even under process isolation — a getter reachable this deep must
+      // never execute merely because the host is validating message shape.
+      const getterCalls = vi.fn(() => [])
+      const value: Record<string, unknown> = {}
+      Object.defineProperty(value, "content", { enumerable: true, get: getterCalls })
+      const msg = { type: "invoke-tool-result", callId: "c1", ok: true, value }
+      expect(parseChildToHostMessage(msg)).toBeUndefined()
+      expect(getterCalls).not.toHaveBeenCalled()
     })
   })
 

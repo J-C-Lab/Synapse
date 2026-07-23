@@ -410,6 +410,14 @@ function isBoolean(v: unknown): v is boolean {
   return typeof v === "boolean"
 }
 
+/** Rejects an accessor descriptor (`get`/`set`) before its value is ever
+ *  read — the caller must branch on this before touching `.value`. */
+function isDataDescriptor(
+  descriptor: PropertyDescriptor
+): descriptor is PropertyDescriptor & { value: unknown } {
+  return "value" in descriptor
+}
+
 function isSerializedError(v: unknown): v is SerializedError {
   if (!v || typeof v !== "object") return false
   const e = v as Record<string, unknown>
@@ -483,13 +491,24 @@ export function parseChildToHostMessage(raw: unknown): ChildToHostMessage | unde
       if (v.value !== undefined) {
         const value = v.value as Record<string, unknown>
         if (!value || typeof value !== "object") return undefined
-        if (
-          !Array.isArray(value.content) ||
-          value.content.length > MAX_CONTENT_BLOCKS ||
-          !value.content.every(isToolContentBlock)
-        )
-          return undefined
-        if (value.isError !== undefined && !isBoolean(value.isError)) return undefined
+        // Read via property descriptors, never direct member access: a
+        // compromised/buggy child is untrusted input, and an accessor this
+        // deep (e.g. a tool handler's returned object) must never execute
+        // merely because the host is validating message shape.
+        const contentDescriptor = Object.getOwnPropertyDescriptor(value, "content")
+        if (!contentDescriptor || !isDataDescriptor(contentDescriptor)) return undefined
+        const content: unknown = contentDescriptor.value
+        if (!Array.isArray(content) || content.length > MAX_CONTENT_BLOCKS) return undefined
+        for (let i = 0; i < content.length; i += 1) {
+          const blockDescriptor = Object.getOwnPropertyDescriptor(content, i)
+          if (!blockDescriptor || !isDataDescriptor(blockDescriptor)) return undefined
+          if (!isToolContentBlock(blockDescriptor.value)) return undefined
+        }
+        const isErrorDescriptor = Object.getOwnPropertyDescriptor(value, "isError")
+        if (isErrorDescriptor !== undefined) {
+          if (!isDataDescriptor(isErrorDescriptor) || !isBoolean(isErrorDescriptor.value))
+            return undefined
+        }
       }
       return v as unknown as InvokeToolResultMessage
     }

@@ -52,9 +52,14 @@ export default defineConfig({
         // Synapse-as-MCP-server. The latter is launched with
         // ELECTRON_RUN_AS_NODE=1 so it actually receives piped stdin (a spawned
         // Electron GUI process on Windows does not) — see src/main/mcp/stdio-entry.ts.
+        // `plugin-runtime-entry` is loaded via `utilityProcess.fork()` (Critical
+        // #1 sandbox migration) — one child process per loaded plugin, referenced
+        // from plugin-sandbox.ts as a sibling build output (`__dirname`-relative,
+        // same pattern as the `mcp-stdio.js` reference in src/main/index.ts).
         input: {
           index: resolve(__dirname, "src/main/index.ts"),
           "mcp-stdio": resolve(__dirname, "src/main/mcp/stdio-entry.ts"),
+          "plugin-runtime-entry": resolve(__dirname, "src/main/plugins/plugin-runtime-entry.ts"),
         },
       },
     },

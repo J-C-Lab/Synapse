@@ -145,7 +145,9 @@ export class PluginProcessHost {
   constructor(private readonly options: PluginProcessHostOptions) {
     this.loadTimeoutMs = options.loadTimeoutMs ?? 5_000
     this.invokeTimeoutMs = options.invokeTimeoutMs ?? 5_000
-    this.commandRunTimeoutMs = options.commandRunTimeoutMs ?? 60_000
+    // Matches the pre-migration sandbox's default (plugin-sandbox.ts):
+    // `run` may await JIT capability prompts, so this stays generous.
+    this.commandRunTimeoutMs = options.commandRunTimeoutMs ?? 120_000
     this.toolInvokeTimeoutMs = options.toolInvokeTimeoutMs ?? 30_000
   }
 
@@ -363,7 +365,10 @@ export class PluginProcessHost {
           callId,
           invocationId,
           event: request.event,
-          payload: request.payload,
+          // Wire payload is the bare ClipboardContent — the child wraps it
+          // back into `{ content }` before calling events.onClipboardChange
+          // (see plugin-runtime-entry.ts's "dispatch-event" case).
+          payload: request.payload.content,
           context: commandContextData(ctx as PluginContext),
         },
         callId,
@@ -434,7 +439,10 @@ export class PluginProcessHost {
     if (!proc) return
     void capability // reserved for future per-capability teardown
 
-    this.rejectAllPending(proc, new PluginSandboxError(`Plugin capability revoked: ${pluginId}`))
+    this.rejectAllPending(
+      proc,
+      new PluginSandboxError(`Plugin call was cancelled: capability revoked for ${pluginId}`)
+    )
     this.teardownWatchesAndStreams(proc)
     proc.expectedExit = true
     proc.handle.kill()
@@ -499,24 +507,38 @@ export class PluginProcessHost {
 
   private async sendLoadPlugin(proc: ManagedProcess): Promise<void> {
     const callId = nextCallId("load")
-    const value = await this.sendAndAwait<{
+    let value: {
       commandIds: string[]
       toolNames: string[]
       hasClipboardChangeHandler: boolean
       triggerHandlerNames: string[]
-    }>(
-      proc,
-      {
-        type: "load-plugin",
+    }
+    try {
+      value = await this.sendAndAwait(
+        proc,
+        {
+          type: "load-plugin",
+          callId,
+          pluginId: proc.pluginId,
+          rootDir: proc.rootDir,
+          mainPath: proc.mainPath,
+          manifest: proc.manifest,
+        },
         callId,
-        pluginId: proc.pluginId,
-        rootDir: proc.rootDir,
-        mainPath: proc.mainPath,
-        manifest: proc.manifest,
-      },
-      callId,
-      this.loadTimeoutMs
-    )
+        this.loadTimeoutMs
+      )
+    } catch (err) {
+      // A load failure reported by the child (e.g. normalizePluginModule's
+      // validation in plugin-runtime-entry.ts) crosses the wire as a plain
+      // deserialized Error — its original class identity doesn't survive
+      // serializeError/deserializeError's duck-typed {message, stack}
+      // shape. Re-wrap as PluginSandboxError so this stays, as it always
+      // was, an infrastructure-failure type callers can rely on (a real
+      // PluginInvocationTimeoutError from sendAndAwait's own timeout is
+      // already correctly typed and passes through unchanged here).
+      if (err instanceof PluginSandboxError) throw err
+      throw new PluginSandboxError(errorMessage(err))
+    }
     proc.commandIds = value.commandIds
     proc.toolNames = value.toolNames
     proc.hasClipboardChangeHandler = value.hasClipboardChangeHandler

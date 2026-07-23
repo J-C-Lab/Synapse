@@ -33,6 +33,7 @@ import type { MigrationMarker } from "./grant-migration"
 import type { MarketplaceApi } from "./marketplace-api"
 import type { MarketplaceEntry } from "./marketplace-registry"
 import type { PluginBridgeAdapters, PluginRuntimeSnapshot } from "./plugin-bridge"
+import type { ChildProcessHandle } from "./plugin-process-host"
 import type { TimerAdapter } from "./timer-adapter"
 import type { PendingTriggerCapability } from "./trigger-grants"
 import type { TriggerInstanceRecord } from "./trigger-instance-store"
@@ -129,6 +130,11 @@ export interface PluginHostOptions {
   fsWatchAdapter?: import("./fs-watch-adapter").FsWatchAdapter
   /** Test seam: inject a fake hotkey adapter (no real globalShortcut). */
   hotkeyAdapter?: import("./hotkey-adapter").HotkeyAdapter
+  /** Test seam: replace the sandbox's real `utilityProcess.fork()`-backed
+   *  child spawner (Critical #1) — e.g. with
+   *  `createInProcessPluginFork()` so tests can run real plugin code without
+   *  forking an actual OS process. */
+  sandboxForkProcess?: (entryScriptPath: string, pluginId: string) => ChildProcessHandle
   /** Accelerators reserved by the host (for example the launcher shortcut). */
   reservedAccelerators?: () => readonly string[]
   /** Supplies the currently selected chat provider/model for trigger-woken agents. */
@@ -338,7 +344,10 @@ export class PluginHost {
       invoker: this.invoker,
     })
     readClipboardForHost = () => this.bridge.readClipboardForHost()
-    this.sandbox = new PluginSandbox({ bridge: this.bridge })
+    this.sandbox = new PluginSandbox({
+      bridge: this.bridge,
+      forkProcess: options.sandboxForkProcess,
+    })
     this.registry = new PluginRegistry({ sandbox: this.sandbox })
     this.tools = new PluginToolBridge({ registry: this.registry })
     this.registry.on("changed", this.handleRegistryChanged)

@@ -17,6 +17,7 @@ import type {
   ToolContextData,
 } from "./plugin-ipc-protocol"
 import { Buffer } from "node:buffer"
+import process from "node:process"
 import { deserializeError, nextCallId, serializeError } from "./plugin-ipc-protocol"
 
 /**
@@ -471,6 +472,25 @@ export function createPluginRuntime(
 function defaultLoadModule(mainPath: string): unknown {
   // eslint-disable-next-line ts/no-require-imports
   return require(mainPath)
+}
+
+// ── Real Electron entry point ─────────────────────────────────────────────
+//
+// `electron.vite.config.ts` builds this file as its own script
+// (`out/main/plugin-runtime-entry.js`), loaded via `utilityProcess.fork()`
+// from plugin-sandbox.ts. `process.parentPort` is an Electron-only global
+// that exists only inside a forked utility process — it is never present
+// under plain Node/Vitest, so this bootstrap is a no-op everywhere
+// `createPluginRuntime()` is unit tested against a fake `RuntimePort`.
+if (process.parentPort) {
+  const parentPort = process.parentPort
+  const port: RuntimePort = {
+    postMessage: (message) => parentPort.postMessage(message),
+    onMessage: (listener) => {
+      parentPort.on("message", (event) => listener(event.data as HostToChildMessage))
+    },
+  }
+  createPluginRuntime(port)
 }
 
 function initialQueryOf(payload: unknown): string | undefined {

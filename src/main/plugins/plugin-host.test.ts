@@ -27,6 +27,7 @@ import {
   PluginPreferenceTypeError,
 } from "./plugin-host"
 import { PluginSandboxError } from "./plugin-sandbox"
+import { createInProcessPluginFork } from "./test-support/in-process-plugin-fork"
 
 let dir: string
 let backgroundHostsForCleanup: PluginHost[] = []
@@ -157,6 +158,7 @@ function hostOptions(
     adapters: noopAdapters,
     hotkeyAdapter: createHeadlessHotkeyAdapter(),
     workspaceRoots: { listForWorkspace: async () => [] },
+    sandboxForkProcess: createInProcessPluginFork(),
     ...runsSupport(dir),
     workspaces: {
       get: async (id: string) =>
@@ -811,13 +813,19 @@ describe("pluginHost.revokeCapability", () => {
     }
   })
 
-  it("clears all sandbox timers and intervals for the plugin (plugin-wide teardown)", async () => {
+  it("tears down and transparently reloads the plugin's sandbox process on any capability revoke (plugin-wide teardown)", async () => {
+    // Pre-migration (node:vm), this asserted the sandbox's own tracked
+    // setTimeout/setInterval handles were cleared — a concept that no longer
+    // exists now that plugin code runs in a real OS process the host can't
+    // introspect (see PluginProcessHost.abortPluginCapability's docs). The
+    // guarantee that actually matters at this layer is: revoking ANY
+    // capability tears the plugin's process down and reloads it
+    // transparently — proven by the sandbox spy plus the plugin still being
+    // fully usable immediately after.
     const host = makeHost()
     const pluginId = "com.synapse.clipboard"
     await writeHostPlugin({
       code: `
-setInterval(() => {}, 60_000)
-setTimeout(() => {}, 60_000)
 module.exports = {
   commands: {
     "clipboard.run": {
@@ -832,11 +840,14 @@ module.exports = {
     })
 
     await host.init()
-    expect(host.sandbox.trackedWorkCounts(pluginId)).toEqual({ timers: 1, intervals: 1 })
+    const abortSpy = vi.spyOn(host.sandbox, "abortPluginCapability")
 
     await host.revokeCapability(pluginId, "storage:plugin")
 
-    expect(host.sandbox.trackedWorkCounts(pluginId)).toEqual({ timers: 0, intervals: 0 })
+    expect(abortSpy).toHaveBeenCalledWith(pluginId, "storage:plugin")
+    await expect(
+      host.sandbox.invokeCommand({ pluginId, commandId: "clipboard.run", phase: "run" })
+    ).resolves.toEqual({ type: "toast", level: "info", message: "ok" })
   })
 
   it("aborts an in-flight tool via capabilityAbort when any capability is revoked", async () => {
@@ -1400,6 +1411,7 @@ describe("github inbox bundled plugin", () => {
       hotkeyAdapter: createHeadlessHotkeyAdapter(),
       fsWatchAdapter: noopFsWatchAdapter,
       workspaceRoots: { listForWorkspace: async () => [] },
+      sandboxForkProcess: createInProcessPluginFork(),
       ...runsSupport(dir),
       capabilityGovernance: {
         userDataDir: dir,
