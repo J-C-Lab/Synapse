@@ -280,7 +280,12 @@ describe("parseChildToHostMessage", () => {
         type: "load-plugin-result",
         callId: "c1",
         ok: true,
-        value: { commandIds: ["a.b"], toolNames: ["t1"], hasClipboardChangeHandler: false },
+        value: {
+          commandIds: ["a.b"],
+          toolNames: ["t1"],
+          hasClipboardChangeHandler: false,
+          triggerHandlerNames: ["onTick"],
+        },
       }
       expect(parseChildToHostMessage(msg)).toEqual(msg)
     })
@@ -290,7 +295,12 @@ describe("parseChildToHostMessage", () => {
         type: "load-plugin-result",
         callId: "c1",
         ok: true,
-        value: { commandIds: [123], toolNames: [], hasClipboardChangeHandler: false },
+        value: {
+          commandIds: [123],
+          toolNames: [],
+          hasClipboardChangeHandler: false,
+          triggerHandlerNames: [],
+        },
       }
       expect(parseChildToHostMessage(msg)).toBeUndefined()
     })
@@ -300,7 +310,32 @@ describe("parseChildToHostMessage", () => {
         type: "load-plugin-result",
         callId: "c1",
         ok: true,
-        value: { commandIds: [], toolNames: [] },
+        value: { commandIds: [], toolNames: [], triggerHandlerNames: [] },
+      }
+      expect(parseChildToHostMessage(msg)).toBeUndefined()
+    })
+
+    it("rejects a value with non-string entries in triggerHandlerNames", () => {
+      const msg = {
+        type: "load-plugin-result",
+        callId: "c1",
+        ok: true,
+        value: {
+          commandIds: [],
+          toolNames: [],
+          hasClipboardChangeHandler: false,
+          triggerHandlerNames: [123],
+        },
+      }
+      expect(parseChildToHostMessage(msg)).toBeUndefined()
+    })
+
+    it("rejects a value missing triggerHandlerNames", () => {
+      const msg = {
+        type: "load-plugin-result",
+        callId: "c1",
+        ok: true,
+        value: { commandIds: [], toolNames: [], hasClipboardChangeHandler: false },
       }
       expect(parseChildToHostMessage(msg)).toBeUndefined()
     })

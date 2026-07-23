@@ -263,8 +263,15 @@ export interface LoadPluginResultMessage {
   type: "load-plugin-result"
   callId: string
   ok: boolean
-  /** Command ids and tool names the loaded module actually exports. */
-  value?: { commandIds: string[]; toolNames: string[]; hasClipboardChangeHandler: boolean }
+  /** Command ids, tool names, and trigger export names the loaded module
+   *  actually exports — lets the host validate manifest triggers/commands/
+   *  tools against reality without the real functions ever crossing over. */
+  value?: {
+    commandIds: string[]
+    toolNames: string[]
+    hasClipboardChangeHandler: boolean
+    triggerHandlerNames: string[]
+  }
   error?: SerializedError
 }
 
@@ -453,6 +460,12 @@ export function parseChildToHostMessage(raw: unknown): ChildToHostMessage | unde
         )
           return undefined
         if (!isBoolean(value.hasClipboardChangeHandler)) return undefined
+        if (
+          !Array.isArray(value.triggerHandlerNames) ||
+          value.triggerHandlerNames.length > MAX_ARGS ||
+          !value.triggerHandlerNames.every((id) => isString(id))
+        )
+          return undefined
       }
       return v as unknown as LoadPluginResultMessage
     }

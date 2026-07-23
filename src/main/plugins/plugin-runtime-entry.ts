@@ -290,6 +290,7 @@ export function createPluginRuntime(
               commandIds: Object.keys(loaded.commands),
               toolNames: Object.keys(loaded.tools ?? {}),
               hasClipboardChangeHandler: typeof loaded.events?.onClipboardChange === "function",
+              triggerHandlerNames: Object.keys(loaded.triggers ?? {}),
             },
           })
         } catch (err) {

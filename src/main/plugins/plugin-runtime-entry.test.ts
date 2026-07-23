@@ -63,7 +63,12 @@ describe("createPluginRuntime — load-plugin", () => {
       type: "load-plugin-result",
       callId: "load1",
       ok: true,
-      value: { commandIds: ["a.run"], toolNames: ["greet"], hasClipboardChangeHandler: true },
+      value: {
+        commandIds: ["a.run"],
+        toolNames: ["greet"],
+        hasClipboardChangeHandler: true,
+        triggerHandlerNames: [],
+      },
     })
   })
 
@@ -75,7 +80,27 @@ describe("createPluginRuntime — load-plugin", () => {
     loadValidPlugin(harness, undefined)
     expect(harness.lastOfType("load-plugin-result")).toMatchObject({
       ok: true,
-      value: { commandIds: ["a.run"], toolNames: [], hasClipboardChangeHandler: false },
+      value: {
+        commandIds: ["a.run"],
+        toolNames: [],
+        hasClipboardChangeHandler: false,
+        triggerHandlerNames: [],
+      },
+    })
+  })
+
+  it("reports the exported trigger handler names so the host can validate manifest triggers", () => {
+    const harness = fakePort()
+    createPluginRuntime(harness.port, {
+      loadModule: () => ({
+        commands: { "a.run": { run: () => {} } },
+        triggers: { onTick: () => {}, onDownloads: () => {} },
+      }),
+    })
+    loadValidPlugin(harness, undefined)
+    expect(harness.lastOfType("load-plugin-result")).toMatchObject({
+      ok: true,
+      value: { triggerHandlerNames: ["onTick", "onDownloads"] },
     })
   })
 
