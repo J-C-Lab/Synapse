@@ -379,7 +379,7 @@ describe("pluginRegistry", () => {
     // integration test).
     const sandbox = fakeSandbox()
     sandbox.invokeTool = vi.fn<PluginSandboxRuntime["invokeTool"]>(() => {
-      throw new PluginCallCancelledError("Plugin call was cancelled: capability revoked for x")
+      throw new PluginCallCancelledError("x", "Plugin call was cancelled: capability revoked for x")
     })
     const registry = new PluginRegistry({ sandbox })
     await registry.load([discovered({ tools: [toolDef("greet")] })])

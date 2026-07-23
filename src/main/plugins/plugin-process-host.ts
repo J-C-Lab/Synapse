@@ -78,7 +78,10 @@ export class PluginInvocationTimeoutError extends PluginSandboxError {
  * `PluginInvocationTimeoutError` — never as a crash.
  */
 export class PluginCallCancelledError extends PluginSandboxError {
-  constructor(message: string) {
+  constructor(
+    readonly pluginId: string,
+    message: string
+  ) {
     super(message)
     this.name = "PluginCallCancelledError"
   }
@@ -207,7 +210,10 @@ export class PluginProcessHost {
     }
 
     this.processes.delete(pluginId)
-    this.rejectAllPending(proc, new PluginCallCancelledError(`Plugin unloaded: ${pluginId}`))
+    this.rejectAllPending(
+      proc,
+      new PluginCallCancelledError(pluginId, `Plugin unloaded: ${pluginId}`)
+    )
     this.teardownWatchesAndStreams(proc)
     proc.expectedExit = true
     proc.handle.kill()
@@ -463,7 +469,10 @@ export class PluginProcessHost {
 
     this.rejectAllPending(
       proc,
-      new PluginCallCancelledError(`Plugin call was cancelled: capability revoked for ${pluginId}`)
+      new PluginCallCancelledError(
+        pluginId,
+        `Plugin call was cancelled: capability revoked for ${pluginId}`
+      )
     )
     this.teardownWatchesAndStreams(proc)
     proc.expectedExit = true
