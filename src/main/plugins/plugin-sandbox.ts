@@ -37,10 +37,20 @@ export interface PluginSandboxOptions {
   toolInvokeTimeoutMs?: number
   /**
    * Absolute path to the built `plugin-runtime-entry.js` script that
-   * `utilityProcess.fork()` loads. Defaults to the sibling build output next
-   * to this bundle (`electron.vite.config.ts`'s `plugin-runtime-entry` main
-   * entry) — the same `__dirname`-relative pattern `src/main/index.ts` uses
-   * to locate `mcp-stdio.js`.
+   * `utilityProcess.fork()` loads. The default below (this module's own
+   * `__dirname`) is only correct if this module ends up bundled into the
+   * SAME Rollup chunk as an actual entry point — true when only one
+   * main-process entry uses it, but NOT guaranteed once code is shared
+   * across multiple entries (`index.js`/`mcp-stdio.js`), since a shared
+   * chunk's `__dirname` is the chunk's own folder under `out/main/chunks/`,
+   * not `out/main/`. Real callers (`src/main/index.ts`'s `initPluginHost()`,
+   * `src/main/mcp/stdio-entry.ts`) MUST compute this from their OWN
+   * `__dirname` and pass it explicitly (via `PluginHostOptions.
+   * sandboxEntryScriptPath`) rather than rely on this default — verified by
+   * building the app and confirming `entryScriptPath` did NOT resolve
+   * correctly through the shared chunk before that fix. Only test code
+   * (which always overrides `forkProcess` too, so this value is never
+   * actually dereferenced) may safely omit it.
    */
   entryScriptPath?: string
   /** Test seam: replaces the real `utilityProcess.fork()`-backed factory. */

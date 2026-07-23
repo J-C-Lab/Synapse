@@ -164,6 +164,10 @@ async function main(): Promise<void> {
     upsertTrace: (input) => upsertRunTrace(runsDir, input),
     workspaceRoots: workspaceRootStore,
     mode: "tools-only",
+    // __dirname here is this actual entry chunk's own folder (out/main/) —
+    // a sibling build output, same pattern as src/main/index.ts's own
+    // reference to this file (mcp-stdio.js) from the "index" entry.
+    sandboxEntryScriptPath: path.join(__dirname, "plugin-runtime-entry.js"),
   })
 
   await pluginHost.init()

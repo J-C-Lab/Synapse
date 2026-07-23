@@ -1041,6 +1041,10 @@ function initPluginHost(): PluginHost {
     marketplaceGetToken: () => marketplaceTokenStore().get(),
     userDataDir,
     resourcesDir: pluginResourcesDir(),
+    // __dirname here is this actual entry chunk's own folder (out/main/) —
+    // plugin-sandbox.ts can't safely compute this itself, since shared code
+    // can end up bundled into a different chunk with a different __dirname.
+    sandboxEntryScriptPath: path.join(__dirname, "plugin-runtime-entry.js"),
     adapters: createElectronPluginAdapters(userDataDir, {
       onNotificationAction: (notificationId, actionId) => {
         void hostRef?.bridge

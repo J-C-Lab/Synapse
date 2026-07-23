@@ -135,6 +135,18 @@ export interface PluginHostOptions {
    *  `createInProcessPluginFork()` so tests can run real plugin code without
    *  forking an actual OS process. */
   sandboxForkProcess?: (entryScriptPath: string, pluginId: string) => ChildProcessHandle
+  /**
+   * Absolute path to the built `plugin-runtime-entry.js` script. Must be
+   * computed by the caller from ITS OWN `__dirname` (`src/main/index.ts`'s
+   * `initPluginHost()` and `src/main/mcp/stdio-entry.ts` both do this) —
+   * `PluginSandbox`'s own `__dirname`-based default is only correct when the
+   * module ends up in the same Rollup chunk as the real entry point, which
+   * is not guaranteed once code is shared across multiple main-process
+   * entries (`index.js`/`mcp-stdio.js`); a shared chunk's `__dirname` is the
+   * chunk's own folder, not `out/main/`. Omitted only in tests, which always
+   * override `sandboxForkProcess` and never actually dereference this path.
+   */
+  sandboxEntryScriptPath?: string
   /** Accelerators reserved by the host (for example the launcher shortcut). */
   reservedAccelerators?: () => readonly string[]
   /** Supplies the currently selected chat provider/model for trigger-woken agents. */
@@ -347,6 +359,7 @@ export class PluginHost {
     this.sandbox = new PluginSandbox({
       bridge: this.bridge,
       forkProcess: options.sandboxForkProcess,
+      entryScriptPath: options.sandboxEntryScriptPath,
     })
     this.registry = new PluginRegistry({ sandbox: this.sandbox })
     this.tools = new PluginToolBridge({ registry: this.registry })
