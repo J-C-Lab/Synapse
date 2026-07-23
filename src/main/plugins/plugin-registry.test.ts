@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from "vitest"
 import { logger } from "../logging"
 import { PermissionDenied } from "./permissions"
 import { PluginRegistry } from "./plugin-registry"
-import { PluginInvocationTimeoutError } from "./plugin-sandbox"
+import { PluginCallCancelledError, PluginInvocationTimeoutError } from "./plugin-sandbox"
 
 describe("pluginRegistry", () => {
   it("loads valid plugins, indexes manifest commands and emits changes", async () => {
@@ -316,6 +316,78 @@ describe("pluginRegistry", () => {
     await expect(registry.invokeTool("com.synapse.ghost", "greet", {}, options())).rejects.toThrow(
       /not active/
     )
+  })
+
+  it("marks the plugin crashed and rethrows a typed sentinel when the sandbox itself fails a tool call", async () => {
+    // sandbox.invokeTool only ever throws for infrastructure failures — a
+    // fault inside the plugin's own tool handler already comes back as a
+    // resolved isError ToolResult (see plugin-process-host.ts's invokeTool).
+    // A sandbox-level failure here (e.g. the plugin's utilityProcess crashed
+    // between calls) must be treated the same way invoke()/disposeCommand()/
+    // dispatchEvent() already treat it, or the registry keeps advertising a
+    // tool whose every future call re-throws the same crash forever.
+    const sandbox = fakeSandbox()
+    sandbox.invokeTool = vi.fn<PluginSandboxRuntime["invokeTool"]>(() => {
+      throw new Error("Plugin is not loaded: com.synapse.test")
+    })
+    const registry = new PluginRegistry({ sandbox })
+    await registry.load([discovered({ tools: [toolDef("greet")] })])
+
+    await expect(
+      registry.invokeTool("com.synapse.test", "greet", {}, options())
+    ).rejects.toMatchObject({ name: "PluginCrashedError", pluginId: "com.synapse.test" })
+    expect(registry.get("com.synapse.test")?.status).toBe("crashed")
+    expect(registry.listTools()).toHaveLength(0)
+  })
+
+  it("passes PermissionDenied through invokeTool without crashing the plugin", async () => {
+    const sandbox = fakeSandbox()
+    sandbox.invokeTool = vi.fn<PluginSandboxRuntime["invokeTool"]>(() => {
+      throw new PermissionDenied("com.synapse.test", "clipboard:write")
+    })
+    const registry = new PluginRegistry({ sandbox })
+    await registry.load([discovered({ tools: [toolDef("greet")] })])
+
+    await expect(
+      registry.invokeTool("com.synapse.test", "greet", {}, options())
+    ).rejects.toBeInstanceOf(PermissionDenied)
+    expect(registry.get("com.synapse.test")?.status).toBe("active")
+  })
+
+  it("passes invocation timeouts through invokeTool without crashing the plugin", async () => {
+    const sandbox = fakeSandbox()
+    sandbox.invokeTool = vi.fn<PluginSandboxRuntime["invokeTool"]>(() => {
+      throw new PluginInvocationTimeoutError("Plugin call exceeded 30000ms")
+    })
+    const registry = new PluginRegistry({ sandbox })
+    await registry.load([discovered({ tools: [toolDef("greet")] })])
+
+    await expect(
+      registry.invokeTool("com.synapse.test", "greet", {}, options())
+    ).rejects.toBeInstanceOf(PluginInvocationTimeoutError)
+    expect(registry.get("com.synapse.test")?.status).toBe("active")
+  })
+
+  it("passes a capability-revoke cancellation through invokeTool without crashing the plugin", async () => {
+    // PluginProcessHost.abortPluginCapability rejects any in-flight call with
+    // PluginCallCancelledError when a capability is revoked mid-call — an
+    // expected, intentional outcome of a policy decision, not evidence the
+    // plugin's process crashed. Regression test for the gap the crash-marking
+    // fix above introduced: a blanket "anything unexpected is a crash" catch
+    // would otherwise misclassify this exact scenario (caught in
+    // plugin-host.test.ts's "aborts an in-flight tool via capabilityAbort"
+    // integration test).
+    const sandbox = fakeSandbox()
+    sandbox.invokeTool = vi.fn<PluginSandboxRuntime["invokeTool"]>(() => {
+      throw new PluginCallCancelledError("Plugin call was cancelled: capability revoked for x")
+    })
+    const registry = new PluginRegistry({ sandbox })
+    await registry.load([discovered({ tools: [toolDef("greet")] })])
+
+    await expect(
+      registry.invokeTool("com.synapse.test", "greet", {}, options())
+    ).rejects.toBeInstanceOf(PluginCallCancelledError)
+    expect(registry.get("com.synapse.test")?.status).toBe("active")
   })
 
   it("crashes a plugin whose manifest tool is not exported", async () => {

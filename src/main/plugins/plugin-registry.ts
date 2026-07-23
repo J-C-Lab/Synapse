@@ -25,7 +25,7 @@ import { fuzzyMatch } from "../launcher/search"
 import { logger } from "../logging"
 import { CapabilityDenied } from "./capability-gate"
 import { PermissionDenied } from "./permissions"
-import { PluginInvocationTimeoutError } from "./plugin-sandbox"
+import { PluginCallCancelledError, PluginInvocationTimeoutError } from "./plugin-sandbox"
 import { toolFqName } from "./types"
 
 /**
@@ -200,7 +200,8 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
       if (
         err instanceof PermissionDenied ||
         err instanceof CapabilityDenied ||
-        err instanceof PluginInvocationTimeoutError
+        err instanceof PluginInvocationTimeoutError ||
+        err instanceof PluginCallCancelledError
       )
         throw err
       this.markCrashed(request.pluginId, err)
@@ -239,13 +240,33 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
     const indexed = this.toolIndex.get(toolFqName(pluginId, toolName))
     if (!indexed) throw new Error(`Plugin tool not found: ${toolFqName(pluginId, toolName)}`)
 
-    return this.options.sandbox.invokeTool({
-      pluginId,
-      toolName,
-      input,
-      capabilities: indexed.tool.capabilities,
-      options,
-    })
+    try {
+      return await this.options.sandbox.invokeTool({
+        pluginId,
+        toolName,
+        input,
+        capabilities: indexed.tool.capabilities,
+        options,
+      })
+    } catch (err) {
+      // sandbox.invokeTool only ever throws for infrastructure failures — a
+      // fault inside the tool handler itself already comes back as a
+      // resolved isError ToolResult. Permission denials and timeouts are
+      // already-classified policy/budget decisions, not plugin defects;
+      // anything else (e.g. the plugin's process crashed between calls)
+      // means the sandbox and the registry have fallen out of sync, so mark
+      // the plugin crashed the same way invoke()/disposeCommand()/
+      // dispatchEvent() already do.
+      if (
+        err instanceof PermissionDenied ||
+        err instanceof CapabilityDenied ||
+        err instanceof PluginInvocationTimeoutError ||
+        err instanceof PluginCallCancelledError
+      )
+        throw err
+      this.markCrashed(pluginId, err)
+      throw new PluginCrashedError(pluginId, err)
+    }
   }
 
   async disposeCommand(pluginId: string, commandId: string): Promise<void> {
@@ -255,7 +276,8 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
       if (
         err instanceof PermissionDenied ||
         err instanceof CapabilityDenied ||
-        err instanceof PluginInvocationTimeoutError
+        err instanceof PluginInvocationTimeoutError ||
+        err instanceof PluginCallCancelledError
       )
         throw err
       this.markCrashed(pluginId, err)
@@ -314,7 +336,8 @@ export class PluginRegistry extends EventEmitter<PluginRegistryEvents> {
       if (
         err instanceof PermissionDenied ||
         err instanceof CapabilityDenied ||
-        err instanceof PluginInvocationTimeoutError
+        err instanceof PluginInvocationTimeoutError ||
+        err instanceof PluginCallCancelledError
       )
         throw err
       this.markCrashed(request.pluginId, err)

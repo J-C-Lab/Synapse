@@ -12,6 +12,7 @@ import type {
 import * as path from "node:path"
 import { utilityProcess } from "electron"
 import {
+  PluginCallCancelledError,
   PluginInvocationTimeoutError,
   PluginProcessHost,
   PluginSandboxError,
@@ -21,7 +22,7 @@ import {
 // "./plugin-sandbox"` (and `instanceof` check against it) keeps working
 // unchanged — these classes now live in plugin-process-host.ts, the new
 // canonical home for sandbox errors.
-export { PluginInvocationTimeoutError, PluginSandboxError }
+export { PluginCallCancelledError, PluginInvocationTimeoutError, PluginSandboxError }
 
 export interface PluginSandboxOptions {
   bridge: PluginBridge

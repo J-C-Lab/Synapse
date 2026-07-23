@@ -69,6 +69,21 @@ export class PluginInvocationTimeoutError extends PluginSandboxError {
   }
 }
 
+/**
+ * A call was rejected because `abortPluginCapability` cancelled it — an
+ * expected, intentional outcome of a capability revoke, not a sign the
+ * plugin's process crashed. Callers that distinguish "plugin defect/crash"
+ * from "policy decision" (e.g. `PluginRegistry`'s `markCrashed` gating)
+ * must treat this the same as `PermissionDenied`/`CapabilityDenied`/
+ * `PluginInvocationTimeoutError` — never as a crash.
+ */
+export class PluginCallCancelledError extends PluginSandboxError {
+  constructor(message: string) {
+    super(message)
+    this.name = "PluginCallCancelledError"
+  }
+}
+
 /** Abstraction over Electron's `utilityProcess.fork()` return value, so the
  *  real Electron API is confined to whatever supplies `forkProcess`. */
 export interface ChildProcessHandle {
@@ -192,7 +207,7 @@ export class PluginProcessHost {
     }
 
     this.processes.delete(pluginId)
-    this.rejectAllPending(proc, new PluginSandboxError(`Plugin unloaded: ${pluginId}`))
+    this.rejectAllPending(proc, new PluginCallCancelledError(`Plugin unloaded: ${pluginId}`))
     this.teardownWatchesAndStreams(proc)
     proc.expectedExit = true
     proc.handle.kill()
@@ -245,7 +260,14 @@ export class PluginProcessHost {
     const controller = new AbortController()
     const signal = linkAbortSignals(controller.signal, request.options.signal)
     const timer = setTimeout(() => {
-      controller.abort(new PluginSandboxError(`Plugin tool exceeded ${this.toolInvokeTimeoutMs}ms`))
+      // Typed the same as invokeCommand's timeout (via sendAndAwait) so
+      // callers — notably PluginRegistry's crash-detection — can reliably
+      // distinguish "this call timed out" from "the plugin actually
+      // crashed" by class alone, regardless of which of the two racing
+      // timeout mechanisms below actually wins.
+      controller.abort(
+        new PluginInvocationTimeoutError(`Plugin tool exceeded ${this.toolInvokeTimeoutMs}ms`)
+      )
     }, this.toolInvokeTimeoutMs)
 
     const invocationId = nextCallId("inv")
@@ -441,7 +463,7 @@ export class PluginProcessHost {
 
     this.rejectAllPending(
       proc,
-      new PluginSandboxError(`Plugin call was cancelled: capability revoked for ${pluginId}`)
+      new PluginCallCancelledError(`Plugin call was cancelled: capability revoked for ${pluginId}`)
     )
     this.teardownWatchesAndStreams(proc)
     proc.expectedExit = true

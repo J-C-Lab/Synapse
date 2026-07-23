@@ -13,6 +13,7 @@ import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { PluginBridge } from "./plugin-bridge"
 import {
+  PluginCallCancelledError,
   PluginInvocationTimeoutError,
   PluginProcessHost,
   PluginSandboxError,
@@ -307,6 +308,20 @@ describe("pluginProcessHost — unloadPlugin", () => {
     const { child } = await loadPlugin(host, children)
     await host.unloadPlugin("com.synapse.test")
     expect(child.kill).toHaveBeenCalled()
+  })
+
+  it("rejects any other in-flight call with PluginCallCancelledError, not a generic crash-shaped error", async () => {
+    const { host, children } = hostForTest({ invokeTimeoutMs: 30 })
+    const { child } = await loadPlugin(host, children)
+    const promise = host.invokeCommand({
+      pluginId: "com.synapse.test",
+      commandId: "test.run",
+      phase: "run",
+    })
+    await waitForMessage(child, "invoke-command")
+
+    await host.unloadPlugin("com.synapse.test")
+    await expect(promise).rejects.toBeInstanceOf(PluginCallCancelledError)
   })
 })
 
@@ -803,14 +818,22 @@ describe("pluginProcessHost — abortPluginCapability", () => {
 
   it("rejects in-flight calls immediately when the capability is revoked", async () => {
     const { host, children } = hostForTest()
-    await loadPlugin(host, children)
+    const { child } = await loadPlugin(host, children)
     const promise = host.invokeCommand({
       pluginId: "com.synapse.test",
       commandId: "test.run",
       phase: "run",
     })
+    // invokeCommand awaits resolveProcess before it registers the pending
+    // call, so abortPluginCapability must wait for the message to actually
+    // be sent — otherwise it fires before there's anything to reject, and
+    // this call would only fail later via its own timeout instead.
+    await waitForMessage(child, "invoke-command")
     host.abortPluginCapability("com.synapse.test", "storage:plugin")
-    await expect(promise).rejects.toBeInstanceOf(PluginSandboxError)
+    // Specifically PluginCallCancelledError, not just any PluginSandboxError
+    // — callers (PluginRegistry) must be able to tell "cancelled by a policy
+    // decision" apart from "the process actually crashed".
+    await expect(promise).rejects.toBeInstanceOf(PluginCallCancelledError)
   })
 
   it("is a no-op for a plugin that is not loaded", () => {
