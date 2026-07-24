@@ -137,6 +137,22 @@ export interface CancelTriggerMessage {
 export interface SerializedError {
   message: string
   stack?: string
+  /**
+   * The original error's `.name` (e.g. "CapabilityDenied") — duck-typed, not
+   * a class reference, so this shared protocol file never needs to import
+   * host-only error classes (capability-gate.ts, permissions.ts) into the
+   * child's bundle. Lets a HOST-side boundary (plugin-process-host.ts,
+   * which already imports those classes for other reasons) reconstruct the
+   * specific error type after it has crossed one or more process hops —
+   * without this, a CapabilityDenied thrown inside a capability-call
+   * handler degrades to a generic Error by the time it reaches
+   * PluginRegistry, which then misclassifies a policy denial as a crash.
+   */
+  kind?: string
+  /** Additional own string/number/boolean properties the original error
+   *  carried (e.g. CapabilityDenied's pluginId/capability/why,
+   *  PermissionDenied's pluginId/permission) — also duck-typed. */
+  extra?: Record<string, string | number | boolean>
 }
 
 export interface InvokeCommandResultMessage {
@@ -319,16 +335,38 @@ export function nextCallId(prefix: string): string {
   return `${prefix}-${callIdCounter}`
 }
 
+/** Own-property keys that would reach the prototype chain (or otherwise
+ *  aren't plain data) if ever copied onto a live object via `Object.assign`/
+ *  `Object.defineProperty` — rejected outright rather than merely skipped,
+ *  since a message trying to smuggle one of these is itself a signal
+ *  something is wrong upstream. */
+const DANGEROUS_EXTRA_KEYS = new Set(["__proto__", "constructor", "prototype"])
+
 export function serializeError(err: unknown): SerializedError {
   if (
     err &&
     typeof err === "object" &&
     typeof (err as { message?: unknown }).message === "string"
   ) {
-    const stack = (err as { stack?: unknown }).stack
+    const obj = err as Record<string, unknown>
+    const stack = obj.stack
+    const name = obj.name
+    // "Error" is the default/uninformative name every plain Error carries —
+    // only a real, more specific name is worth round-tripping as `kind`.
+    const kind = typeof name === "string" && name !== "Error" ? name : undefined
+    const extra: Record<string, string | number | boolean> = {}
+    for (const key of Object.keys(obj)) {
+      if (key === "message" || key === "stack" || key === "name") continue
+      const value = obj[key]
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+        extra[key] = value
+      }
+    }
     return {
-      message: (err as { message: string }).message,
+      message: obj.message as string,
       stack: typeof stack === "string" ? stack : undefined,
+      kind,
+      extra: Object.keys(extra).length > 0 ? extra : undefined,
     }
   }
   return { message: String(err) }
@@ -339,6 +377,22 @@ export function serializeError(err: unknown): SerializedError {
 export function deserializeError(serialized: SerializedError): Error {
   const err = new Error(serialized.message)
   if (serialized.stack) err.stack = serialized.stack
+  if (serialized.kind) err.name = serialized.kind
+  if (serialized.extra) {
+    // Never blindly Object.assign an externally-sourced bag onto a live
+    // object — parseChildToHostMessage already rejects a dangerous key
+    // (__proto__/constructor/prototype) upstream, but this function must
+    // not rely on always being called after that gate.
+    for (const [key, value] of Object.entries(serialized.extra)) {
+      if (DANGEROUS_EXTRA_KEYS.has(key)) continue
+      Object.defineProperty(err, key, {
+        value,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      })
+    }
+  }
   return err
 }
 
@@ -418,11 +472,27 @@ function isDataDescriptor(
   return "value" in descriptor
 }
 
+const MAX_EXTRA_KEYS = 16
+
 function isSerializedError(v: unknown): v is SerializedError {
   if (!v || typeof v !== "object") return false
   const e = v as Record<string, unknown>
   if (!isNonEmptyString(e.message, MAX_MESSAGE_LENGTH)) return false
   if (e.stack !== undefined && !isString(e.stack, MAX_MESSAGE_LENGTH)) return false
+  if (e.kind !== undefined && !isNonEmptyString(e.kind)) return false
+  if (e.extra !== undefined && !isValidExtra(e.extra)) return false
+  return true
+}
+
+function isValidExtra(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const entries = Object.entries(value as Record<string, unknown>)
+  if (entries.length === 0 || entries.length > MAX_EXTRA_KEYS) return false
+  for (const [key, val] of entries) {
+    if (!isNonEmptyString(key) || DANGEROUS_EXTRA_KEYS.has(key)) return false
+    if (typeof val !== "string" && typeof val !== "number" && typeof val !== "boolean") return false
+    if (typeof val === "string" && val.length > MAX_MESSAGE_LENGTH) return false
+  }
   return true
 }
 

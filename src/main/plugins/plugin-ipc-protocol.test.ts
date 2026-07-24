@@ -34,6 +34,41 @@ describe("serializeError", () => {
     expect(serializeError("just a string").message).toBe("just a string")
     expect(serializeError(42).message).toBe("42")
   })
+
+  it("captures name as kind and extra own string/number/boolean properties", () => {
+    // A capability-gate error thrown inside a capability-call handler (or a
+    // plugin re-throwing what it caught from ctx.*) needs to survive one or
+    // more process hops without plugin-ipc-protocol.ts importing the real
+    // host-only error classes — duck-typing name+extra fields is what lets
+    // plugin-process-host.ts reconstruct the specific class on the far side.
+    class FakeCapabilityDenied extends Error {
+      constructor(
+        readonly pluginId: string,
+        readonly capability: string,
+        readonly why: string
+      ) {
+        super(`Capability denied for ${pluginId}: ${capability} (${why})`)
+        this.name = "CapabilityDenied"
+      }
+    }
+    const serialized = serializeError(
+      new FakeCapabilityDenied("com.example.test", "network:https", "not granted")
+    )
+    expect(serialized.kind).toBe("CapabilityDenied")
+    expect(serialized.extra).toEqual({
+      pluginId: "com.example.test",
+      capability: "network:https",
+      why: "not granted",
+    })
+  })
+
+  it('does not set kind for a plain Error (name is just "Error")', () => {
+    expect(serializeError(new Error("nope")).kind).toBeUndefined()
+  })
+
+  it("omits extra entirely when there are no additional own properties", () => {
+    expect(serializeError(new Error("nope")).extra).toBeUndefined()
+  })
 })
 
 describe("deserializeError", () => {
@@ -47,6 +82,37 @@ describe("deserializeError", () => {
   it("still produces a usable Error when no stack was captured", () => {
     const err = deserializeError({ message: "boom" })
     expect(err.message).toBe("boom")
+  })
+
+  it("defensively ignores a dangerous key in extra even if validation was bypassed", () => {
+    // Belt-and-suspenders: parseChildToHostMessage already rejects this shape
+    // (see the child-fault tests below), but deserializeError must never
+    // trust its input either, since nothing stops a future caller from
+    // constructing a SerializedError directly. JSON.parse (like structured
+    // clone) defines "__proto__" as a plain OWN property rather than
+    // invoking the exotic setter, which is exactly how this would arrive
+    // over the wire — a literal `{ __proto__: ... }` in test source would
+    // not reproduce that and must not be used here.
+    const extra = JSON.parse('{"__proto__": "boom"}') as Record<string, string>
+    const err = deserializeError({ message: "boom", extra })
+    expect((Object.prototype as unknown as { polluted?: boolean }).polluted).toBeUndefined()
+    expect(Object.getPrototypeOf(err)).toBe(Error.prototype)
+  })
+
+  it("restores kind as .name and extra as plain own properties", () => {
+    // The child re-serializes whatever it catches (e.g. a plugin's own code
+    // re-throwing a capability error unchanged) — deserializeError must put
+    // kind/extra back as duck-typed data so that second serialization round
+    // trip still carries them, all the way to the host's own reconstruction.
+    const err = deserializeError({
+      message: "Capability denied for com.example.test: network:https (not granted)",
+      kind: "CapabilityDenied",
+      extra: { pluginId: "com.example.test", capability: "network:https", why: "not granted" },
+    })
+    expect(err.name).toBe("CapabilityDenied")
+    expect((err as unknown as { pluginId: string }).pluginId).toBe("com.example.test")
+    expect((err as unknown as { capability: string }).capability).toBe("network:https")
+    expect((err as unknown as { why: string }).why).toBe("not granted")
   })
 })
 
@@ -283,6 +349,54 @@ describe("parseChildToHostMessage", () => {
         parseChildToHostMessage({ type: "child-fault", error: { message: 123 } })
       ).toBeUndefined()
       expect(parseChildToHostMessage({ type: "child-fault" })).toBeUndefined()
+    })
+
+    it("accepts a well-formed error carrying kind and extra", () => {
+      const msg = {
+        type: "child-fault",
+        error: {
+          message: "Capability denied for x: network:https (not granted)",
+          kind: "CapabilityDenied",
+          extra: { pluginId: "com.example.test", capability: "network:https", why: "not granted" },
+        },
+      }
+      expect(parseChildToHostMessage(msg)).toEqual(msg)
+    })
+
+    it("rejects an oversized kind string", () => {
+      const msg = {
+        type: "child-fault",
+        error: { message: "x", kind: "y".repeat(10_000) },
+      }
+      expect(parseChildToHostMessage(msg)).toBeUndefined()
+    })
+
+    it("rejects extra with too many keys", () => {
+      const extra: Record<string, string> = {}
+      for (let i = 0; i < 100; i += 1) extra[`k${i}`] = "v"
+      expect(
+        parseChildToHostMessage({ type: "child-fault", error: { message: "x", extra } })
+      ).toBeUndefined()
+    })
+
+    it("rejects extra with a non-string/number/boolean value", () => {
+      expect(
+        parseChildToHostMessage({
+          type: "child-fault",
+          error: { message: "x", extra: { nested: { a: 1 } } },
+        })
+      ).toBeUndefined()
+    })
+
+    it("rejects extra carrying a dangerous key (prototype-pollution guard)", () => {
+      for (const key of ["__proto__", "constructor", "prototype"]) {
+        expect(
+          parseChildToHostMessage({
+            type: "child-fault",
+            error: { message: "x", extra: { [key]: "boom" } },
+          })
+        ).toBeUndefined()
+      }
     })
   })
 

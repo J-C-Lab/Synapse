@@ -637,7 +637,7 @@ export class PluginProcessHost {
         if (!pending) return
         proc.pendingCalls.delete(message.callId)
         if (message.ok) pending.resolve("value" in message ? message.value : undefined)
-        else pending.reject(deserializeError(message.error ?? { message: "plugin call failed" }))
+        else pending.reject(reconstructError(message.error ?? { message: "plugin call failed" }))
         return
       }
       case "tool-progress":
@@ -934,6 +934,37 @@ function rejectWhenAborted(signal: AbortSignal): Promise<never> {
     if (signal.aborted) fail()
     else signal.addEventListener("abort", fail, { once: true })
   })
+}
+
+/**
+ * Reconstructs a real, `instanceof`-checkable error from a `SerializedError`
+ * that crossed the wire from the child — the counterpart to
+ * plugin-ipc-protocol.ts's generic, duck-typed `serializeError`/
+ * `deserializeError` (which never import these classes, so the child's
+ * bundle stays free of host-only security modules). Without this, a
+ * CapabilityDenied/PermissionDenied thrown inside a capability-call handler
+ * (or re-thrown unchanged by a plugin's own command/tool code) degrades to
+ * a generic Error by the time it reaches PluginRegistry, which then
+ * misclassifies a policy denial as a plugin crash.
+ */
+function reconstructError(serialized: SerializedError): Error {
+  const extra = serialized.extra ?? {}
+  const str = (key: string): string =>
+    typeof extra[key] === "string" ? (extra[key] as string) : ""
+  switch (serialized.kind) {
+    case "CapabilityDenied":
+      return new CapabilityDenied(str("pluginId"), str("capability"), str("why"))
+    case "PermissionDenied":
+      return new PermissionDenied(str("pluginId"), str("permission"))
+    case "PluginInvocationTimeoutError":
+      return new PluginInvocationTimeoutError(serialized.message)
+    case "PluginCallCancelledError":
+      return new PluginCallCancelledError(str("pluginId"), serialized.message)
+    case "PluginSandboxError":
+      return new PluginSandboxError(serialized.message)
+    default:
+      return deserializeError(serialized)
+  }
 }
 
 function errorMessage(err: unknown): string {

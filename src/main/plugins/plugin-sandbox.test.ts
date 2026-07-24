@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { CapabilityDenied } from "./capability-gate"
 import { PluginBridge } from "./plugin-bridge"
 import { PluginInvocationTimeoutError, PluginSandbox, PluginSandboxError } from "./plugin-sandbox"
 import { createInProcessPluginFork } from "./test-support/in-process-plugin-fork"
@@ -434,31 +435,26 @@ module.exports = {
     // Plugin is granted clipboard:write, but the tool declares no capabilities,
     // so its context must be gated down and deny the write.
     //
-    // Pre-migration this rejected with a real CapabilityDenied instance
-    // (same-process throw, no serialization). Now the denial is thrown
-    // inside the child, crosses back over the wire's plain {message, stack}
-    // SerializedError shape (see plugin-ipc-protocol.ts), and loses its
-    // specific class identity — nothing downstream actually instanceof-checks
-    // CapabilityDenied from a tool's rejection (verified: the only such check
-    // in the codebase is plugin-host.ts's unrelated, same-process clipboard
-    // watch authorization), so a soft isError result carrying the same
-    // message is an accepted, observably-equivalent simplification.
+    // The denial is thrown host-side inside a capability-call handler, sent
+    // to the child as a SerializedError, re-thrown by the child's ctx stub,
+    // and re-serialized again when the tool handler doesn't catch it —
+    // reconstructError (plugin-process-host.ts) restores the real
+    // CapabilityDenied instance from the kind/extra fields serializeError/
+    // deserializeError carry across each hop (plugin-ipc-protocol.ts), so
+    // this matches the pre-migration same-process behavior exactly.
     entry.manifest!.capabilities = [{ id: "clipboard:write" }]
     const sandbox = sandboxForTest()
     await sandbox.loadPlugin(entry)
 
-    const result = await sandbox.invokeTool({
-      pluginId: entry.pluginId,
-      toolName: "write",
-      input: {},
-      capabilities: [],
-      options: { caller: { kind: "agent" } },
-    })
-    expect(result.isError).toBe(true)
-    expect(result.content[0]).toMatchObject({
-      type: "text",
-      text: expect.stringContaining("clipboard:write"),
-    })
+    await expect(
+      sandbox.invokeTool({
+        pluginId: entry.pluginId,
+        toolName: "write",
+        input: {},
+        capabilities: [],
+        options: { caller: { kind: "agent" } },
+      })
+    ).rejects.toBeInstanceOf(CapabilityDenied)
   })
 
   it("abortPluginCapability lets the plugin keep working afterward (transparent reload)", async () => {

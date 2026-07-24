@@ -11,6 +11,8 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { CapabilityDenied } from "./capability-gate"
+import { PermissionDenied } from "./permissions"
 import { PluginBridge } from "./plugin-bridge"
 import {
   PluginCallCancelledError,
@@ -386,6 +388,86 @@ describe("pluginProcessHost — invokeCommand", () => {
       error: { message: "boom" },
     })
     await expect(promise).rejects.toThrow("boom")
+  })
+
+  it("reconstructs a CapabilityDenied reported by the child with its real class and fields", async () => {
+    // A capability-call handler throws CapabilityDenied host-side; if the
+    // child's own ctx stub re-throws it unchanged, the child re-serializes
+    // it when reporting invoke-command-result — kind/extra must round-trip
+    // so PluginRegistry's `instanceof CapabilityDenied` exclusion (crash vs.
+    // policy-denial) actually works, instead of degrading to a generic Error.
+    const { host, children } = hostForTest()
+    const { child } = await loadPlugin(host, children)
+    const promise = host.invokeCommand({
+      pluginId: "com.synapse.test",
+      commandId: "test.run",
+      phase: "run",
+    })
+    const msg = await waitForMessage(child, "invoke-command")
+    child.send({
+      type: "invoke-command-result",
+      callId: msg.callId,
+      ok: false,
+      error: {
+        message: "Capability denied for com.synapse.test: network:https (not granted)",
+        kind: "CapabilityDenied",
+        extra: { pluginId: "com.synapse.test", capability: "network:https", why: "not granted" },
+      },
+    })
+    let caught: unknown
+    await promise.catch((err: unknown) => {
+      caught = err
+    })
+    expect(caught).toBeInstanceOf(CapabilityDenied)
+    expect((caught as CapabilityDenied).pluginId).toBe("com.synapse.test")
+    expect((caught as CapabilityDenied).capability).toBe("network:https")
+    expect((caught as CapabilityDenied).why).toBe("not granted")
+  })
+
+  it("reconstructs a PermissionDenied reported by the child with its real class and fields", async () => {
+    const { host, children } = hostForTest()
+    const { child } = await loadPlugin(host, children)
+    const promise = host.invokeCommand({
+      pluginId: "com.synapse.test",
+      commandId: "test.run",
+      phase: "run",
+    })
+    const msg = await waitForMessage(child, "invoke-command")
+    child.send({
+      type: "invoke-command-result",
+      callId: msg.callId,
+      ok: false,
+      error: {
+        message: "Plugin com.synapse.test has not declared required permission: clipboard:write",
+        kind: "PermissionDenied",
+        extra: { pluginId: "com.synapse.test", permission: "clipboard:write" },
+      },
+    })
+    let caught: unknown
+    await promise.catch((err: unknown) => {
+      caught = err
+    })
+    expect(caught).toBeInstanceOf(PermissionDenied)
+    expect((caught as PermissionDenied).permission).toBe("clipboard:write")
+  })
+
+  it("falls back to a generic Error for an unrecognized kind", async () => {
+    const { host, children } = hostForTest()
+    const { child } = await loadPlugin(host, children)
+    const promise = host.invokeCommand({
+      pluginId: "com.synapse.test",
+      commandId: "test.run",
+      phase: "run",
+    })
+    const msg = await waitForMessage(child, "invoke-command")
+    child.send({
+      type: "invoke-command-result",
+      callId: msg.callId,
+      ok: false,
+      error: { message: "plugin's own module-load fault", kind: "RuntimeFault" },
+    })
+    await expect(promise).rejects.toThrow("plugin's own module-load fault")
+    await expect(promise).rejects.not.toBeInstanceOf(CapabilityDenied)
   })
 
   it("times out a run phase that never responds", async () => {
